@@ -64,6 +64,12 @@ fn init_creates_config_without_overwrite() {
         .stdout(predicate::str::contains("Refused to overwrite"));
     let second = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
     assert_eq!(first, second);
+
+    // init also seeds agent guidance files; CLAUDE.md must reference AGENTS.md
+    // so `doctor` does not flag a freshly initialized repo.
+    assert!(temp.path().join("AGENTS.md").exists());
+    let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("AGENTS.md"));
 }
 
 #[test]

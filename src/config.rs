@@ -152,6 +152,17 @@ pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
         report.created.push(agents_path);
     }
 
+    let claude_path = repo_root.join("CLAUDE.md");
+    if claude_path.exists() {
+        report.existing.push(claude_path);
+    } else {
+        fs::write(&claude_path, CLAUDE_TEMPLATE).map_err(|source| ToimijaError::WriteFile {
+            path: claude_path.clone(),
+            source,
+        })?;
+        report.created.push(claude_path);
+    }
+
     Ok(report)
 }
 
@@ -172,6 +183,15 @@ toimija validate --plan
 ```
 
 Use `.toimija/repo.yaml` for repo boundaries and validation hints.
+"#;
+
+pub const CLAUDE_TEMPLATE: &str = r#"@AGENTS.md
+
+## Claude Code notes
+
+Work in small changes.
+Do not add MCP, Tree-sitter, LSP, SCIP, Sykli, Vaisto, Kerto, or Terraform support unless a human explicitly moves it into scope.
+Run formatting, tests, and clippy before claiming completion.
 "#;
 
 #[cfg(test)]
