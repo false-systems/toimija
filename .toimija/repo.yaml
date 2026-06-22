@@ -1,0 +1,26 @@
+repo:
+  name: toimija
+  role: internal CLI that compiles local Git context for coding agents
+  not:
+    - platform
+    - dashboard
+    - dispatcher
+    - graph database
+    - MCP server
+
+context:
+  default_budget: 4000
+  important_docs:
+    - README.md
+    - AGENTS.md
+
+validation:
+  fast: []
+  strict: []
+  full: []
+  privileged: []
+
+boundaries:
+  - Keep v0.0 as one Rust crate.
+  - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Sykli, Vaisto, or Kerto integration yet.
+  - Do not add network calls or background tasks.
