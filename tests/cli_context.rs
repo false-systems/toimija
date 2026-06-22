@@ -190,6 +190,45 @@ fn context_json_has_stable_ordering_in_real_repo() {
 }
 
 #[test]
+fn context_budget_truncates_markdown_output() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: demo\n  role: test fixture\ncontext:\n  important_docs:\n    - README.md\nboundaries:\n  - stay inside fixture\n",
+    )
+    .unwrap();
+    for index in 0..20 {
+        fs::write(
+            temp.path().join(format!("changed_{index:02}.txt")),
+            format!("changed {index}\n"),
+        )
+        .unwrap();
+    }
+
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--budget", "240"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Toimija Context"))
+        .stdout(predicate::str::contains(
+            "Output truncated to fit approximate budget.",
+        ));
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.len() <= 260,
+        "expected truncated output near budget, got {} bytes:\n{stdout}",
+        stdout.len()
+    );
+}
+
+#[test]
 fn context_outside_git_repo_fails_clearly() {
     let temp = tempfile::tempdir().unwrap();
     Command::cargo_bin("toimija")
