@@ -171,9 +171,7 @@ pub fn collect_git_state(
         warnings.push("Detached HEAD. Broad agent work is risky here.".to_string());
     }
     if !parsed.conflicted_files.is_empty() {
-        warnings.push(
-            "Conflicted files exist. Resolve conflicts before agent work continues.".to_string(),
-        );
+        warnings.push("Conflicted files exist. Resolve conflicts before continuing.".to_string());
     }
     if !parsed.unstaged_files.is_empty() {
         warnings.push("Working tree has unstaged changes.".to_string());
