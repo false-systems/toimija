@@ -113,6 +113,30 @@ fn staged_file_appears_in_context() {
 }
 
 #[test]
+fn committed_branch_change_appears_in_surface_with_clean_tree() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    // Pin the base branch name so discover_base resolves it deterministically.
+    run_git(temp.path(), &["branch", "-M", "main"]);
+    run_git(temp.path(), &["checkout", "-b", "feature"]);
+    fs::write(temp.path().join("feature.txt"), "feature\n").unwrap();
+    run_git(temp.path(), &["add", "feature.txt"]);
+    run_git(temp.path(), &["commit", "-m", "add feature"]);
+    // Working tree is clean: the file is only visible via merge-base..HEAD.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dirty: false"))
+        .stdout(predicate::str::contains("feature.txt"));
+}
+
+#[test]
 fn unborn_branch_reports_head_and_merge_base_unavailable() {
     if !git_available() {
         return;

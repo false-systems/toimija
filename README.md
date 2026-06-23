@@ -147,6 +147,7 @@ boundaries:
 
 Context packets use explicit ordering rules so agents can diff and consume them predictably:
 
+- the changed surface unions working-tree changes (staged, unstaged, untracked) with files changed by commits on this branch since the merge-base, so a clean tree on a feature branch still reports its diff
 - changed files are sorted by path and deduplicated in the changed surface
 - read-first entries are grouped as changed files, matching-test hints, then configured docs
 - warnings are sorted and deduplicated

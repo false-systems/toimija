@@ -116,6 +116,7 @@ fn all_changed(git: &GitState) -> Vec<ChangedFile> {
         .staged_files
         .iter()
         .chain(git.unstaged_files.iter())
+        .chain(git.branch_files.iter())
         .cloned()
         .chain(git.untracked_files.iter().cloned().map(|path| ChangedFile {
             path,
@@ -133,6 +134,7 @@ fn all_changed(git: &GitState) -> Vec<ChangedFile> {
 fn normalize_git_state(git: &mut GitState) {
     sort_changed_files(&mut git.staged_files);
     sort_changed_files(&mut git.unstaged_files);
+    sort_changed_files(&mut git.branch_files);
     git.untracked_files = stable_paths(std::mem::take(&mut git.untracked_files));
     git.conflicted_files = stable_paths(std::mem::take(&mut git.conflicted_files));
 }
@@ -229,6 +231,7 @@ mod tests {
             unstaged_files: Vec::new(),
             untracked_files: Vec::new(),
             conflicted_files: Vec::new(),
+            branch_files: Vec::new(),
             recent_commits: Vec::new(),
         };
         let packet = ContextPacket {
@@ -304,10 +307,27 @@ mod tests {
             }],
             untracked_files: vec![PathBuf::from("notes.md"), PathBuf::from("notes.md")],
             conflicted_files: vec![PathBuf::from("b.txt"), PathBuf::from("a.txt")],
+            branch_files: vec![
+                ChangedFile {
+                    path: PathBuf::from("src/z.rs"),
+                    status: ChangeStatus::Modified,
+                },
+                ChangedFile {
+                    path: PathBuf::from("src/a.rs"),
+                    status: ChangeStatus::Added,
+                },
+            ],
             recent_commits: Vec::new(),
         };
 
         normalize_git_state(&mut git);
+        assert_eq!(
+            git.branch_files
+                .iter()
+                .map(|file| file.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![Path::new("src/a.rs"), Path::new("src/z.rs")]
+        );
         assert_eq!(
             git.staged_files
                 .iter()

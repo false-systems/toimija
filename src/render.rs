@@ -217,6 +217,7 @@ mod tests {
                 unstaged_files: Vec::new(),
                 untracked_files: Vec::new(),
                 conflicted_files: Vec::new(),
+                branch_files: Vec::new(),
                 recent_commits: Vec::new(),
             },
             changed_surface: Vec::new(),
@@ -327,6 +328,7 @@ Warnings:
     "unstaged_files": [],
     "untracked_files": [],
     "conflicted_files": [],
+    "branch_files": [],
     "recent_commits": []
   },
   "changed_surface": [],

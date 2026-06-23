@@ -21,6 +21,10 @@ pub struct GitState {
     pub unstaged_files: Vec<ChangedFile>,
     pub untracked_files: Vec<PathBuf>,
     pub conflicted_files: Vec<PathBuf>,
+    /// Files changed by commits on this branch since `merge_base`
+    /// (`git diff --name-status <merge_base> HEAD`). Empty when there is no
+    /// merge-base or the branch adds no commits beyond it.
+    pub branch_files: Vec<ChangedFile>,
     pub recent_commits: Vec<RecentCommit>,
 }
 
@@ -129,6 +133,16 @@ pub fn collect_git_state(
             None => warnings.push("No base branch detected. Merge-base unavailable.".to_string()),
         }
     }
+    let branch_files = match (merge_base.as_deref(), head_oid.as_deref()) {
+        (Some(base_oid), Some(head)) if base_oid != head => run_git_ok(
+            runner,
+            &repo_root,
+            &["diff", "--name-status", base_oid, head],
+        )
+        .map(|text| parse_name_status(&text))
+        .unwrap_or_default(),
+        _ => Vec::new(),
+    };
     let recent_commits = run_git_ok(runner, &repo_root, &["log", "-n", "10", "--oneline"])
         .map(|text| parse_recent_commits(&text))
         .unwrap_or_default();
@@ -179,6 +193,7 @@ pub fn collect_git_state(
             unstaged_files: parsed.unstaged_files,
             untracked_files: parsed.untracked_files,
             conflicted_files: parsed.conflicted_files,
+            branch_files,
             recent_commits,
         },
         warnings,
@@ -315,6 +330,33 @@ fn status_from_char(value: char) -> ChangeStatus {
     }
 }
 
+/// Parse `git diff --name-status` output. Each line is a status column
+/// followed by tab-separated path(s); renames and copies (`R100`, `C075`)
+/// carry an old and a new path, and we keep the new one.
+pub fn parse_name_status(text: &str) -> Vec<ChangedFile> {
+    let mut files = Vec::new();
+    for line in text.lines() {
+        let mut fields = line.split('\t');
+        let Some(status) = fields.next() else {
+            continue;
+        };
+        let Some(code) = status.chars().next() else {
+            continue;
+        };
+        let Some(path) = fields.next_back() else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        files.push(ChangedFile {
+            path: PathBuf::from(path),
+            status: status_from_char(code),
+        });
+    }
+    files
+}
+
 fn parse_recent_commits(text: &str) -> Vec<RecentCommit> {
     text.lines()
         .filter_map(|line| {
@@ -425,6 +467,38 @@ u UU N... 100644 100644 100644 100644 a b c src/lib.rs
         );
         assert_eq!(parsed.staged_files[1].status, ChangeStatus::Copied);
         assert_eq!(parsed.staged_files[1].path, PathBuf::from("src/copied.rs"));
+    }
+
+    #[test]
+    fn name_status_keeps_new_path_for_renames() {
+        let text = "\
+M\tsrc/lib.rs
+A\tsrc/new.rs
+D\tsrc/gone.rs
+R094\tsrc/old.rs\tsrc/renamed.rs
+";
+        let files = parse_name_status(text);
+        assert_eq!(
+            files,
+            vec![
+                ChangedFile {
+                    path: PathBuf::from("src/lib.rs"),
+                    status: ChangeStatus::Modified,
+                },
+                ChangedFile {
+                    path: PathBuf::from("src/new.rs"),
+                    status: ChangeStatus::Added,
+                },
+                ChangedFile {
+                    path: PathBuf::from("src/gone.rs"),
+                    status: ChangeStatus::Deleted,
+                },
+                ChangedFile {
+                    path: PathBuf::from("src/renamed.rs"),
+                    status: ChangeStatus::Renamed,
+                },
+            ]
+        );
     }
 
     #[test]
