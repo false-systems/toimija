@@ -32,7 +32,7 @@ Or install the binary from this checkout:
 cargo install --path .
 ```
 
-Release artifacts are built by GitHub Actions when a `v*` tag is pushed. The v0.0 workflow uploads Linux x86_64 and macOS aarch64 binaries as workflow artifacts; it does not publish a GitHub Release yet.
+Release artifacts are built by GitHub Actions when a `v*` tag is pushed. The v0.0 workflow runs on False Systems ARC/Hetzner ARM64 runners and uploads a Linux aarch64 binary as a workflow artifact; it does not publish a GitHub Release yet.
 
 ## Commands
 

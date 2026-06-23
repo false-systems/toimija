@@ -12,16 +12,37 @@ permissions:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-latest
+    runs-on: arc-arm64
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
+      - name: Install build prerequisites
+        run: |
+          set -euo pipefail
+          if command -v cc >/dev/null 2>&1; then
+            exit 0
+          fi
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::runner is missing cc and apt-get; install a C toolchain on the arc-arm64 runner image"
+            exit 1
+          fi
+          sudo_cmd=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if ! command -v sudo >/dev/null 2>&1; then
+              echo "::error::runner is missing cc and needs sudo or root to install build-essential"
+              exit 1
+            fi
+            sudo_cmd="sudo"
+          fi
+          $sudo_cmd apt-get update
+          $sudo_cmd apt-get install -y --no-install-recommends build-essential ca-certificates
 
       - name: Check formatting
         run: cargo fmt --check
