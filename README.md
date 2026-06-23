@@ -34,6 +34,22 @@ cargo install --path .
 
 Release artifacts are built by GitHub Actions when a `v*` tag is pushed. The v0.0 workflow runs on False Systems ARC/Hetzner ARM64 runners and uploads a Linux aarch64 binary as a workflow artifact; it does not publish a GitHub Release yet.
 
+### Pre-commit hook
+
+A `xtask` crate provides a git pre-commit hook via
+[`devx-pre-commit`](https://docs.rs/devx-pre-commit). It is dev-only and kept
+out of the shipped binary by `default-members = ["."]` in the workspace, so
+bare `cargo build`/`test`/`clippy` and the release build never compile it.
+Install the hook once per clone:
+
+```bash
+cargo xtask install-pre-commit-hook
+```
+
+The hook formats the staged Rust crates, re-stages the result, then runs
+`cargo clippy --all-targets -- -D warnings` and blocks the commit on any
+warning — the same gates CI enforces. Re-run the command after editing `xtask`.
+
 ## Commands
 
 ```bash

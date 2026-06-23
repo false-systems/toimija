@@ -1,3 +1,9 @@
+[workspace]
+members = ["xtask"]
+# Bare `cargo build/test/clippy` (and CI/release) target only the root crate.
+# `xtask` and its dev-only deps are built solely via `cargo xtask ...`.
+default-members = ["."]
+
 [package]
 name = "toimija"
 version = "0.0.0"
