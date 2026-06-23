@@ -105,7 +105,7 @@ fn validate_plan_infers_rust_commands() {
         .stdout(predicate::str::contains("cargo test --workspace"))
         .stdout(predicate::str::contains("cargo fmt --check"))
         .stdout(predicate::str::contains(
-            "validation inferred from Rust repo shape, not proven by Sykli",
+            "Validation inferred from Rust repo shape, not proven by Sykli",
         ));
 }
 

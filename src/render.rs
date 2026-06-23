@@ -502,7 +502,7 @@ Privileged:
 - unavailable
 
 Notes:
-- validation inferred from Rust repo shape, not proven by Sykli
+- Validation inferred from Rust repo shape, not proven by Sykli
 
 Warnings:
 - No upstream detected. Branch divergence is unavailable.
@@ -557,7 +557,7 @@ Warnings:
     ],
     "privileged": [],
     "notes": [
-      "validation inferred from Rust repo shape, not proven by Sykli"
+      "Validation inferred from Rust repo shape, not proven by Sykli"
     ]
   },
   "warnings": [
