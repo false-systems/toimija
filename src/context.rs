@@ -272,7 +272,7 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|entry| entry.path == PathBuf::from("README.md"))
+                .any(|entry| entry.path == Path::new("README.md"))
         );
     }
 
