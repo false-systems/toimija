@@ -31,15 +31,28 @@ fn run_hook() -> Result<()> {
     // CI step (`cargo clippy --all-targets -- -D warnings`) so failures surface
     // locally instead of after a push.
     run_clippy()?;
+    // Test gate: the suite must be green before the commit lands. Runs after
+    // clippy so the cheaper lint failures surface first.
+    run_tests()?;
     Ok(())
 }
 
 fn run_clippy() -> Result<()> {
-    let status = Command::new(cargo())
-        .args(["clippy", "--all-targets", "--", "-D", "warnings"])
-        .status()?;
+    run_gate(
+        &["clippy", "--all-targets", "--", "-D", "warnings"],
+        "clippy reported issues",
+    )
+}
+
+fn run_tests() -> Result<()> {
+    run_gate(&["test"], "tests failed")
+}
+
+/// Run a `cargo` subcommand and abort the commit if it exits non-zero.
+fn run_gate(args: &[&str], what: &str) -> Result<()> {
+    let status = Command::new(cargo()).args(args).status()?;
     if !status.success() {
-        bail!("clippy reported issues; commit aborted. Fix the warnings and commit again.");
+        bail!("{what}; commit aborted. Fix the problem and commit again.");
     }
     Ok(())
 }
@@ -61,7 +74,9 @@ fn main() -> Result<()> {
         Some("install-pre-commit-hook") => {
             install_self_as_hook(&locate_project_root()?)?;
             eprintln!("Installed git pre-commit hook (.git/hooks/pre-commit).");
-            eprintln!("It runs rustfmt on staged crates, re-stages, then clippy -D warnings.");
+            eprintln!(
+                "It runs rustfmt on staged crates, re-stages, then clippy -D warnings and tests."
+            );
         }
         other => {
             if let Some(arg) = other {

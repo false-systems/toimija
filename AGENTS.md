@@ -28,8 +28,9 @@ cargo xtask install-pre-commit-hook
 ```
 
 The hook runs rustfmt on the staged crates, re-stages the formatted result,
-then runs `cargo clippy --all-targets -- -D warnings` and aborts the commit on
-any warning. It mirrors CI so failures surface locally. Re-run the install
-command after changing `xtask` (the hook is a copied binary snapshot).
+then runs `cargo clippy --all-targets -- -D warnings` followed by `cargo test`,
+aborting the commit if either fails. It mirrors CI so failures surface locally.
+Re-run the install command after changing `xtask` (the hook is a copied binary
+snapshot).
 
 Update README.md when CLI behavior changes.

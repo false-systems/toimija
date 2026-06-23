@@ -47,8 +47,9 @@ cargo xtask install-pre-commit-hook
 ```
 
 The hook formats the staged Rust crates, re-stages the result, then runs
-`cargo clippy --all-targets -- -D warnings` and blocks the commit on any
-warning — the same gates CI enforces. Re-run the command after editing `xtask`.
+`cargo clippy --all-targets -- -D warnings` followed by `cargo test`, blocking
+the commit if either fails — the same gates CI enforces. Re-run the command
+after editing `xtask`.
 
 ## Commands
 
