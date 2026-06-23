@@ -32,6 +32,8 @@ pub struct RepoSection {
 pub struct ContextSection {
     pub default_budget: usize,
     pub important_docs: Vec<PathBuf>,
+    pub read_first: Vec<PathBuf>,
+    pub safe_to_ignore: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -54,6 +56,8 @@ impl Default for ContextSection {
         Self {
             default_budget: DEFAULT_BUDGET,
             important_docs: vec![PathBuf::from("README.md")],
+            read_first: Vec::new(),
+            safe_to_ignore: Vec::new(),
         }
     }
 }
@@ -215,6 +219,30 @@ mod tests {
         assert_eq!(
             config.context.important_docs,
             vec![PathBuf::from("README.md")]
+        );
+        assert!(config.context.read_first.is_empty());
+        assert!(config.context.safe_to_ignore.is_empty());
+    }
+
+    #[test]
+    fn loads_config_context_rules() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".toimija");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("repo.yaml"),
+            "repo:\n  name: demo\ncontext:\n  read_first:\n    - docs/architecture.md\n  safe_to_ignore:\n    - target/\n    - _build/\n",
+        )
+        .unwrap();
+
+        let config = RepoConfig::load(temp.path()).unwrap();
+        assert_eq!(
+            config.context.read_first,
+            vec![PathBuf::from("docs/architecture.md")]
+        );
+        assert_eq!(
+            config.context.safe_to_ignore,
+            vec![PathBuf::from("target/"), PathBuf::from("_build/")]
         );
     }
 

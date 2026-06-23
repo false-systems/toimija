@@ -138,6 +138,12 @@ context:
   important_docs:
     - README.md
     - AGENTS.md
+  read_first:
+    - docs/architecture.md
+  safe_to_ignore:
+    - target/
+    - _build/
+    - deps/
 
 validation:
   fast: []
@@ -149,6 +155,9 @@ boundaries:
   - Keep the core as a single Rust crate for v0.0.
   - Do not add MCP, LSP, SCIP, Tree-sitter, background tasks, or network calls yet.
 ```
+
+`context.read_first` adds repo-specific files to the Read first section when they exist.
+`context.safe_to_ignore` lists path prefixes that are omitted from the changed surface and read-first hints.
 
 ## v0.0 Limitations
 

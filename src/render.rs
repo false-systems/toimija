@@ -141,6 +141,8 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         }
     }
     writeln!(&mut output).unwrap();
+    write_paths(&mut output, "Safe to ignore", &packet.safe_to_ignore);
+    writeln!(&mut output).unwrap();
     output.push_str(&render_validation_plan(&packet.validation_plan));
     write_section(&mut output, "Warnings", &packet.warnings);
 
@@ -351,6 +353,9 @@ Changed surface:
 - unavailable
 
 Read first:
+- unavailable
+
+Safe to ignore:
 - unavailable
 
 Validation plan

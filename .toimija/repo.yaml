@@ -13,6 +13,9 @@ context:
   important_docs:
     - README.md
     - AGENTS.md
+  read_first: []
+  safe_to_ignore:
+    - target/
 
 validation:
   fast: []

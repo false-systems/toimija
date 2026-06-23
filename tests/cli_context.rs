@@ -100,6 +100,48 @@ fn context_json_is_valid() {
 }
 
 #[test]
+fn context_json_applies_configured_read_first_and_ignore_rules() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::create_dir_all(temp.path().join("docs")).unwrap();
+    fs::create_dir_all(temp.path().join("src")).unwrap();
+    fs::create_dir_all(temp.path().join("target/debug")).unwrap();
+    fs::write(temp.path().join("docs/architecture.md"), "# Architecture\n").unwrap();
+    run_git(temp.path(), &["add", "docs/architecture.md"]);
+    run_git(temp.path(), &["commit", "-m", "add architecture doc"]);
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: demo\n  role: test fixture\ncontext:\n  read_first:\n    - docs/architecture.md\n  safe_to_ignore:\n    - target/\nboundaries:\n  - stay inside fixture\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
+    fs::write(temp.path().join("target/debug/noise.txt"), "noise\n").unwrap();
+
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(strings_at(&value, "/safe_to_ignore"), vec!["target/"]);
+    assert!(
+        !strings_at(&value, "/changed_surface")
+            .iter()
+            .any(|path| path.starts_with("target/"))
+    );
+    assert!(value["read_first"].as_array().unwrap().iter().any(|entry| {
+        entry["path"] == "docs/architecture.md" && entry["reason"] == "repo config"
+    }));
+}
+
+#[test]
 fn context_json_has_stable_ordering_in_real_repo() {
     if !git_available() {
         return;

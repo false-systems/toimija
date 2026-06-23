@@ -77,17 +77,24 @@ pub fn build_context_packet(
             warnings.push(note.clone());
         }
     }
-    warnings = stable_strings(warnings);
-    let changed = all_changed(&git);
+    let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
+    let changed = filter_ignored(all_changed(&git), &safe_to_ignore);
     let changed_surface = changed.iter().map(|file| file.path.clone()).collect();
-    let read_first = read_first(&git.repo_root, &config, adapter.as_ref(), &changed);
+    let read_first = read_first(
+        &git.repo_root,
+        &config,
+        adapter.as_ref(),
+        &changed,
+        &mut warnings,
+    );
+    warnings = stable_strings(warnings);
     let packet = ContextPacket {
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
         git,
         changed_surface,
         read_first,
-        safe_to_ignore: Vec::new(),
+        safe_to_ignore,
         validation_plan,
         warnings,
         for_diff,
@@ -131,6 +138,13 @@ fn all_changed(git: &GitState) -> Vec<ChangedFile> {
     files
 }
 
+fn filter_ignored(files: Vec<ChangedFile>, safe_to_ignore: &[PathBuf]) -> Vec<ChangedFile> {
+    files
+        .into_iter()
+        .filter(|file| !matches_safe_to_ignore(&file.path, safe_to_ignore))
+        .collect()
+}
+
 fn normalize_git_state(git: &mut GitState) {
     sort_changed_files(&mut git.staged_files);
     sort_changed_files(&mut git.unstaged_files);
@@ -168,6 +182,19 @@ fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
+fn matches_safe_to_ignore(path: &Path, safe_to_ignore: &[PathBuf]) -> bool {
+    safe_to_ignore.iter().any(|rule| {
+        let normalized = trim_trailing_separator(rule);
+        !normalized.as_os_str().is_empty() && (path == normalized || path.starts_with(normalized))
+    })
+}
+
+fn trim_trailing_separator(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    let trimmed = text.trim_end_matches(['/', '\\']);
+    PathBuf::from(trimmed)
+}
+
 fn stable_strings(strings: Vec<String>) -> Vec<String> {
     strings
         .into_iter()
@@ -181,6 +208,7 @@ fn read_first(
     config: &RepoConfig,
     adapter: &dyn LanguageAdapter,
     changed: &[ChangedFile],
+    warnings: &mut Vec<String>,
 ) -> Vec<ReadFirstEntry> {
     let mut seen = BTreeSet::new();
     let mut entries = Vec::new();
@@ -197,6 +225,21 @@ fn read_first(
     for (path, reason) in hints {
         if seen.insert(path.clone()) {
             entries.push(ReadFirstEntry { path, reason });
+        }
+    }
+    for path in &config.context.read_first {
+        if repo_root.join(path).exists() {
+            if seen.insert(path.clone()) {
+                entries.push(ReadFirstEntry {
+                    path: path.clone(),
+                    reason: "repo config".to_string(),
+                });
+            }
+        } else {
+            warnings.push(format!(
+                "Configured read_first path does not exist: {}",
+                path.display()
+            ));
         }
     }
     for doc in &config.context.important_docs {
@@ -270,12 +313,71 @@ mod tests {
             path: PathBuf::from("src/lib.rs"),
             status: ChangeStatus::Modified,
         }];
-        let entries = read_first(temp.path(), &config, &GenericAdapter, &changed);
+        let mut warnings = Vec::new();
+        let entries = read_first(
+            temp.path(),
+            &config,
+            &GenericAdapter,
+            &changed,
+            &mut warnings,
+        );
         assert_eq!(entries[0].path, PathBuf::from("src/lib.rs"));
         assert!(
             entries
                 .iter()
                 .any(|entry| entry.path == Path::new("README.md"))
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn read_first_includes_configured_paths_and_warns_when_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("docs")).unwrap();
+        std::fs::write(temp.path().join("docs/architecture.md"), "arch").unwrap();
+        let mut config = RepoConfig::default();
+        config.context.read_first = vec![
+            PathBuf::from("docs/architecture.md"),
+            PathBuf::from("docs/missing.md"),
+        ];
+        let mut warnings = Vec::new();
+
+        let entries = read_first(temp.path(), &config, &GenericAdapter, &[], &mut warnings);
+
+        assert!(entries.iter().any(|entry| {
+            entry.path == Path::new("docs/architecture.md") && entry.reason == "repo config"
+        }));
+        assert_eq!(
+            warnings,
+            vec!["Configured read_first path does not exist: docs/missing.md"]
+        );
+    }
+
+    #[test]
+    fn safe_to_ignore_filters_changed_paths_by_prefix() {
+        let files = vec![
+            ChangedFile {
+                path: PathBuf::from("src/lib.rs"),
+                status: ChangeStatus::Modified,
+            },
+            ChangedFile {
+                path: PathBuf::from("target/debug/build.log"),
+                status: ChangeStatus::Untracked,
+            },
+            ChangedFile {
+                path: PathBuf::from("_build/dev/app.beam"),
+                status: ChangeStatus::Untracked,
+            },
+        ];
+
+        let filtered = filter_ignored(files, &[PathBuf::from("target/"), PathBuf::from("_build")]);
+
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|file| file.path.as_path())
+                .collect::<Vec<_>>(),
+            vec![Path::new("src/lib.rs")]
         );
     }
 
