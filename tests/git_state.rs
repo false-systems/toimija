@@ -108,7 +108,7 @@ fn staged_file_appears_in_context() {
         .arg("context")
         .assert()
         .success()
-        .stdout(predicate::str::contains("staged count: 1"))
+        .stdout(predicate::str::contains("staged: 1"))
         .stdout(predicate::str::contains("staged.txt"));
 }
 
@@ -133,7 +133,14 @@ fn committed_branch_change_appears_in_surface_with_clean_tree() {
         .assert()
         .success()
         .stdout(predicate::str::contains("dirty: false"))
-        .stdout(predicate::str::contains("feature.txt"));
+        .stdout(predicate::str::contains("feature.txt"))
+        // Changed surface is sourced from the branch diff, and branch intent is
+        // rendered because a merge-base exists.
+        .stdout(predicate::str::contains(
+            "source: branch diff since merge-base",
+        ))
+        .stdout(predicate::str::contains("Branch intent:"))
+        .stdout(predicate::str::contains("files changed since merge-base:"));
 }
 
 #[test]
@@ -153,5 +160,81 @@ fn unborn_branch_reports_head_and_merge_base_unavailable() {
         .stdout(predicate::str::contains(
             "HEAD unavailable; branch has no commits yet.",
         ))
-        .stdout(predicate::str::contains("Merge-base unavailable"));
+        // No HEAD and no base: branch intent is unavailable and the changed
+        // surface has no source to derive from.
+        .stdout(predicate::str::contains(
+            "No base branch detected. Branch intent is unavailable.",
+        ))
+        .stdout(predicate::str::contains(
+            "- unavailable: no merge-base with",
+        ))
+        .stdout(predicate::str::contains(
+            "source: unknown; no HEAD and no local changes",
+        ));
+}
+
+#[test]
+fn detached_head_warns_and_renders() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    run_git(temp.path(), &["checkout", "--detach"]);
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("detached: true"))
+        .stdout(predicate::str::contains(
+            "Detached HEAD. Broad agent work is risky here.",
+        ));
+}
+
+#[test]
+fn untracked_file_warns() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::write(temp.path().join("scratch.txt"), "scratch\n").unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("untracked: 1"))
+        .stdout(predicate::str::contains(
+            "Untracked files exist. They will not be committed unless added.",
+        ));
+}
+
+#[test]
+fn changed_surface_falls_back_to_working_tree_without_a_base() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    // Rename the branch away from main/master so no base candidate resolves.
+    // HEAD exists but there is no merge-base, so the surface source is the
+    // working tree and index, not branch intent.
+    run_git(temp.path(), &["branch", "-M", "wip"]);
+    fs::write(temp.path().join("scratch.txt"), "scratch\n").unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "source: working tree and index only; merge-base unavailable",
+        ))
+        .stdout(predicate::str::contains(
+            "No base branch detected. Branch intent is unavailable.",
+        ));
 }

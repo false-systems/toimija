@@ -8,6 +8,22 @@ Core line:
 
 > Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
 
+## Git as the starting point
+
+Most agent tools make the model rediscover the repo from files.
+
+Toimija starts from the one truth database every repo already has: Git. HEAD, refs, index, merge-base, staged and unstaged changes, dirty state, branch divergence, and reflog are not just metadata. They are the repo's working state machine.
+
+Toimija reads that state machine first, then compiles it into a small context packet: what changed, what is risky, what to read, what to ignore, and what validation can honestly prove.
+
+Git is not a save button here.
+
+Git is the substrate.
+
+> We do not ask the model to understand the repo first. We ask Git what state the repo is in.
+
+`toimija context` makes that state explicit: the `Git:` block (HEAD, branch, detached, upstream, merge-base, dirty, and staged/unstaged/untracked/conflict counts), a `Branch intent:` section (what the whole branch changed since the merge-base, distinct from dirty state), and a `Changed surface:` whose `source:` line names whether it came from the branch diff or only the working tree and index.
+
 ## What It Is Not
 
 Toimija v0.0 is not a platform, dashboard, dispatcher, queue, graph database, Tree-sitter indexer, LSP client, MCP server, or replacement for Git, Sykli, Vaisto, Kerto, or BaseMind.
@@ -86,21 +102,46 @@ Repo:
 - kind: Rust
 
 Git:
-- branch: main
-- HEAD: unavailable
+- branch: feat/git-ceramics
+- HEAD: abc123
 - detached: false
+- upstream: unavailable
+- merge-base: origin/main @ def456
 - dirty: true
-- staged count: 0
-- unstaged count: 2
-- untracked count: 1
-- merge-base: unavailable
+- staged: 0
+- unstaged: 2
+- untracked: 1
+- conflicts: 0
+
+Git state:
+Toimija starts from Git's state machine: HEAD, index, working tree, branch, and merge-base.
+
+Branch intent:
+- compared against: origin/main
+- merge-base: def456
+- files changed since merge-base: 3
+
+Working tree:
+Staged:
+- none
+Unstaged:
+- modified src/git.rs
+- modified src/render.rs
+Untracked:
+- tests/git_state.rs
+Conflicts:
+- none
 
 Changed surface:
-- src/git.rs
+source: branch diff since merge-base
 - README.md
+- src/git.rs
+- src/render.rs
+- tests/git_state.rs
 
 Read first:
 - src/git.rs (changed)
+- tests/git_state.rs (changed)
 - README.md (important doc)
 
 Validation plan
@@ -110,15 +151,13 @@ Source: inferred
 Fast:
 - cargo test --workspace
 
-Strict:
-- cargo fmt --check
-- cargo clippy --workspace --all-targets -- -D warnings
-
-Full:
-- cargo test --workspace
-
 Notes:
 - validation inferred from Rust repo shape, not proven by Sykli
+
+Warnings:
+- No upstream detected. Branch divergence is unavailable.
+- Untracked files exist. They will not be committed unless added.
+- Working tree has unstaged changes.
 ```
 
 ## Config
