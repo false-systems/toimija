@@ -170,6 +170,14 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - warnings are sorted and deduplicated
 - Markdown and pretty JSON output have exact regression tests
 
+`toimija context --for-diff` adds a diff-focused Markdown section that separates:
+
+- committed files changed since the selected merge-base
+- staged files
+- unstaged files
+- untracked files
+- conflicted files
+
 ## Read-First Heuristics
 
 Read-first hints are bounded and path-derived. Toimija does not scan the whole repo or parse source code in v0.0.

@@ -2,6 +2,7 @@ use std::fmt::Write;
 
 use crate::config::InitReport;
 use crate::context::ContextPacket;
+use crate::git::{ChangeStatus, ChangedFile};
 use crate::repo::{DoctorReport, DoctorStatus};
 use crate::validate::{ValidationPlan, ValidationSource};
 
@@ -126,6 +127,10 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     )
     .unwrap();
 
+    if packet.for_diff {
+        write_diff_focus(&mut output, packet);
+    }
+
     write_paths(&mut output, "Changed surface", &packet.changed_surface);
     writeln!(&mut output, "\nRead first:").unwrap();
     if packet.read_first.is_empty() {
@@ -161,6 +166,45 @@ fn write_paths(output: &mut String, title: &str, items: &[std::path::PathBuf]) {
         for item in items {
             writeln!(output, "- {}", item.display()).unwrap();
         }
+    }
+}
+
+fn write_diff_focus(output: &mut String, packet: &ContextPacket) {
+    writeln!(output, "Diff focus:").unwrap();
+    write_changed_files(output, "Committed since base", &packet.git.branch_files);
+    write_changed_files(output, "Staged", &packet.git.staged_files);
+    write_changed_files(output, "Unstaged", &packet.git.unstaged_files);
+    write_paths(output, "Untracked", &packet.git.untracked_files);
+    write_paths(output, "Conflicts", &packet.git.conflicted_files);
+    writeln!(output).unwrap();
+}
+
+fn write_changed_files(output: &mut String, title: &str, items: &[ChangedFile]) {
+    writeln!(output, "{title}:").unwrap();
+    if items.is_empty() {
+        writeln!(output, "- unavailable").unwrap();
+    } else {
+        for item in items {
+            writeln!(
+                output,
+                "- {} {}",
+                status_label(&item.status),
+                item.path.display()
+            )
+            .unwrap();
+        }
+    }
+}
+
+fn status_label(status: &ChangeStatus) -> &'static str {
+    match status {
+        ChangeStatus::Added => "added",
+        ChangeStatus::Modified => "modified",
+        ChangeStatus::Deleted => "deleted",
+        ChangeStatus::Renamed => "renamed",
+        ChangeStatus::Copied => "copied",
+        ChangeStatus::Untracked => "untracked",
+        ChangeStatus::Unknown(_) => "unknown",
     }
 }
 
@@ -247,6 +291,39 @@ mod tests {
     fn budget_truncation_does_not_panic() {
         let rendered = render_context_markdown(&packet(), 100);
         assert!(rendered.contains("Output truncated"));
+    }
+
+    #[test]
+    fn for_diff_markdown_includes_diff_focus_sections() {
+        let mut packet = packet();
+        packet.for_diff = true;
+        packet.git.branch_files = vec![ChangedFile {
+            path: PathBuf::from("src/committed.rs"),
+            status: ChangeStatus::Modified,
+        }];
+        packet.git.staged_files = vec![ChangedFile {
+            path: PathBuf::from("src/staged.rs"),
+            status: ChangeStatus::Added,
+        }];
+        packet.git.unstaged_files = vec![ChangedFile {
+            path: PathBuf::from("src/unstaged.rs"),
+            status: ChangeStatus::Deleted,
+        }];
+        packet.git.untracked_files = vec![PathBuf::from("notes.txt")];
+        packet.git.conflicted_files = vec![PathBuf::from("src/conflict.rs")];
+
+        let rendered = render_context_markdown(&packet, 4000);
+        assert!(rendered.contains("Diff focus:"));
+        assert!(rendered.contains("Committed since base:"));
+        assert!(rendered.contains("- modified src/committed.rs"));
+        assert!(rendered.contains("Staged:"));
+        assert!(rendered.contains("- added src/staged.rs"));
+        assert!(rendered.contains("Unstaged:"));
+        assert!(rendered.contains("- deleted src/unstaged.rs"));
+        assert!(rendered.contains("Untracked:"));
+        assert!(rendered.contains("- notes.txt"));
+        assert!(rendered.contains("Conflicts:"));
+        assert!(rendered.contains("- src/conflict.rs"));
     }
 
     #[test]
