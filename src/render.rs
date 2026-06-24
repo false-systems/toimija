@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
 use crate::config::InitReport;
-use crate::context::ContextPacket;
+use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
 use crate::repo::{DoctorReport, DoctorStatus};
 use crate::validate::{ValidationPlan, ValidationSource};
@@ -101,37 +101,50 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     )
     .unwrap();
     writeln!(&mut output, "- detached: {}", packet.git.detached).unwrap();
-    writeln!(&mut output, "- dirty: {}", packet.git.dirty).unwrap();
     writeln!(
         &mut output,
-        "- staged count: {}",
-        packet.git.staged_files.len()
+        "- upstream: {}",
+        packet.git.upstream.as_deref().unwrap_or("unavailable")
     )
     .unwrap();
+    writeln!(&mut output, "- merge-base: {}", merge_base_label(packet)).unwrap();
+    writeln!(&mut output, "- dirty: {}", packet.git.dirty).unwrap();
+    writeln!(&mut output, "- staged: {}", packet.git.staged_files.len()).unwrap();
     writeln!(
         &mut output,
-        "- unstaged count: {}",
+        "- unstaged: {}",
         packet.git.unstaged_files.len()
     )
     .unwrap();
     writeln!(
         &mut output,
-        "- untracked count: {}",
+        "- untracked: {}",
         packet.git.untracked_files.len()
     )
     .unwrap();
     writeln!(
         &mut output,
-        "- merge-base: {}\n",
-        packet.git.merge_base.as_deref().unwrap_or("unavailable")
+        "- conflicts: {}\n",
+        packet.git.conflicted_files.len()
     )
     .unwrap();
 
+    writeln!(&mut output, "Git state:").unwrap();
+    writeln!(
+        &mut output,
+        "Toimija starts from Git’s state machine: HEAD, index, working tree, branch, and merge-base.\n"
+    )
+    .unwrap();
+
+    write_branch_intent(&mut output, packet);
+
     if packet.for_diff {
         write_diff_focus(&mut output, packet);
+    } else {
+        write_worktree_breakdown(&mut output, packet);
     }
 
-    write_paths(&mut output, "Changed surface", &packet.changed_surface);
+    write_changed_surface(&mut output, packet);
     writeln!(&mut output, "\nRead first:").unwrap();
     if packet.read_first.is_empty() {
         writeln!(&mut output, "- unavailable").unwrap();
@@ -141,7 +154,12 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         }
     }
     writeln!(&mut output).unwrap();
-    write_paths(&mut output, "Safe to ignore", &packet.safe_to_ignore);
+    write_paths(
+        &mut output,
+        "Safe to ignore",
+        &packet.safe_to_ignore,
+        "unavailable",
+    );
     writeln!(&mut output).unwrap();
     output.push_str(&render_validation_plan(&packet.validation_plan));
     write_section(&mut output, "Warnings", &packet.warnings);
@@ -160,10 +178,10 @@ fn write_section(output: &mut String, title: &str, items: &[String]) {
     }
 }
 
-fn write_paths(output: &mut String, title: &str, items: &[std::path::PathBuf]) {
+fn write_paths(output: &mut String, title: &str, items: &[std::path::PathBuf], empty: &str) {
     writeln!(output, "{title}:").unwrap();
     if items.is_empty() {
-        writeln!(output, "- unavailable").unwrap();
+        writeln!(output, "- {empty}").unwrap();
     } else {
         for item in items {
             writeln!(output, "- {}", item.display()).unwrap();
@@ -171,20 +189,108 @@ fn write_paths(output: &mut String, title: &str, items: &[std::path::PathBuf]) {
     }
 }
 
-fn write_diff_focus(output: &mut String, packet: &ContextPacket) {
-    writeln!(output, "Diff focus:").unwrap();
-    write_changed_files(output, "Committed since base", &packet.git.branch_files);
-    write_changed_files(output, "Staged", &packet.git.staged_files);
-    write_changed_files(output, "Unstaged", &packet.git.unstaged_files);
-    write_paths(output, "Untracked", &packet.git.untracked_files);
-    write_paths(output, "Conflicts", &packet.git.conflicted_files);
+/// Render the merge-base as `<base> @ <oid>` when both are known, the bare oid
+/// when only the oid is known, or `unavailable`.
+fn merge_base_label(packet: &ContextPacket) -> String {
+    match (packet.git.merge_base.as_deref(), packet.git.base.as_deref()) {
+        (Some(oid), Some(base)) => format!("{base} @ {oid}"),
+        (Some(oid), None) => oid.to_string(),
+        (None, _) => "unavailable".to_string(),
+    }
+}
+
+/// Branch intent is what the whole branch is about (its diff since the
+/// merge-base), as opposed to dirty state, which is only what changed now.
+fn write_branch_intent(output: &mut String, packet: &ContextPacket) {
+    writeln!(output, "Branch intent:").unwrap();
+    match packet.git.merge_base.as_deref() {
+        Some(merge_base) => {
+            writeln!(
+                output,
+                "- compared against: {}",
+                packet.git.base.as_deref().unwrap_or("unavailable")
+            )
+            .unwrap();
+            writeln!(output, "- merge-base: {merge_base}").unwrap();
+            writeln!(
+                output,
+                "- files changed since merge-base: {}",
+                packet.git.branch_files.len()
+            )
+            .unwrap();
+        }
+        None => {
+            writeln!(
+                output,
+                "- unavailable: no merge-base with {}",
+                packet.git.base.as_deref().unwrap_or("origin/main")
+            )
+            .unwrap();
+        }
+    }
     writeln!(output).unwrap();
 }
 
-fn write_changed_files(output: &mut String, title: &str, items: &[ChangedFile]) {
+/// The plain-mode breakdown that keeps staged, unstaged, and untracked
+/// separate so an agent does not lose track of files it created but never
+/// added. `--for-diff` renders the richer diff focus instead.
+fn write_worktree_breakdown(output: &mut String, packet: &ContextPacket) {
+    writeln!(output, "Working tree:").unwrap();
+    write_changed_files(output, "Staged", &packet.git.staged_files, "none");
+    write_changed_files(output, "Unstaged", &packet.git.unstaged_files, "none");
+    write_paths(output, "Untracked", &packet.git.untracked_files, "none");
+    write_paths(output, "Conflicts", &packet.git.conflicted_files, "none");
+    writeln!(output).unwrap();
+}
+
+/// The changed surface, labelled with the source it was derived from so the
+/// reader knows whether branch intent informed it.
+fn write_changed_surface(output: &mut String, packet: &ContextPacket) {
+    writeln!(output, "Changed surface:").unwrap();
+    writeln!(
+        output,
+        "source: {}",
+        changed_surface_source_label(packet.changed_surface_source)
+    )
+    .unwrap();
+    if packet.changed_surface.is_empty() {
+        writeln!(output, "- unavailable").unwrap();
+    } else {
+        for item in &packet.changed_surface {
+            writeln!(output, "- {}", item.display()).unwrap();
+        }
+    }
+}
+
+fn changed_surface_source_label(source: ChangedSurfaceSource) -> &'static str {
+    match source {
+        ChangedSurfaceSource::BranchDiffSinceMergeBase => "branch diff since merge-base",
+        ChangedSurfaceSource::WorkingTreeAndIndex => {
+            "working tree and index only; merge-base unavailable"
+        }
+        ChangedSurfaceSource::Unknown => "unknown; no HEAD and no local changes",
+    }
+}
+
+fn write_diff_focus(output: &mut String, packet: &ContextPacket) {
+    writeln!(output, "Diff focus:").unwrap();
+    write_changed_files(
+        output,
+        "Committed since base",
+        &packet.git.branch_files,
+        "none",
+    );
+    write_changed_files(output, "Staged", &packet.git.staged_files, "none");
+    write_changed_files(output, "Unstaged", &packet.git.unstaged_files, "none");
+    write_paths(output, "Untracked", &packet.git.untracked_files, "none");
+    write_paths(output, "Conflicts", &packet.git.conflicted_files, "none");
+    writeln!(output).unwrap();
+}
+
+fn write_changed_files(output: &mut String, title: &str, items: &[ChangedFile], empty: &str) {
     writeln!(output, "{title}:").unwrap();
     if items.is_empty() {
-        writeln!(output, "- unavailable").unwrap();
+        writeln!(output, "- {empty}").unwrap();
     } else {
         for item in items {
             writeln!(
@@ -267,6 +373,7 @@ mod tests {
                 recent_commits: Vec::new(),
             },
             changed_surface: Vec::new(),
+            changed_surface_source: crate::context::ChangedSurfaceSource::WorkingTreeAndIndex,
             read_first: Vec::new(),
             safe_to_ignore: Vec::new(),
             validation_plan: crate::validate::validation_plan(
@@ -274,7 +381,7 @@ mod tests {
                 &RepoConfig::default(),
                 RepoKind::Rust,
             ),
-            warnings: vec!["No upstream detected.".to_string()],
+            warnings: vec!["No upstream detected. Branch divergence is unavailable.".to_string()],
             for_diff: false,
             default_budget: Some(4000),
         }
@@ -343,13 +450,32 @@ Git:
 - branch: main
 - HEAD: abc
 - detached: false
-- dirty: false
-- staged count: 0
-- unstaged count: 0
-- untracked count: 0
+- upstream: unavailable
 - merge-base: unavailable
+- dirty: false
+- staged: 0
+- unstaged: 0
+- untracked: 0
+- conflicts: 0
+
+Git state:
+Toimija starts from Git’s state machine: HEAD, index, working tree, branch, and merge-base.
+
+Branch intent:
+- unavailable: no merge-base with origin/main
+
+Working tree:
+Staged:
+- none
+Unstaged:
+- none
+Untracked:
+- none
+Conflicts:
+- none
 
 Changed surface:
+source: working tree and index only; merge-base unavailable
 - unavailable
 
 Read first:
@@ -376,10 +502,10 @@ Privileged:
 - unavailable
 
 Notes:
-- validation inferred from Rust repo shape, not proven by Sykli
+- Validation inferred from Rust repo shape, not proven by Sykli
 
 Warnings:
-- No upstream detected.
+- No upstream detected. Branch divergence is unavailable.
 "#;
         assert_eq!(rendered, expected);
     }
@@ -414,6 +540,7 @@ Warnings:
     "recent_commits": []
   },
   "changed_surface": [],
+  "changed_surface_source": "working_tree_and_index",
   "read_first": [],
   "safe_to_ignore": [],
   "validation_plan": {
@@ -430,11 +557,11 @@ Warnings:
     ],
     "privileged": [],
     "notes": [
-      "validation inferred from Rust repo shape, not proven by Sykli"
+      "Validation inferred from Rust repo shape, not proven by Sykli"
     ]
   },
   "warnings": [
-    "No upstream detected."
+    "No upstream detected. Branch divergence is unavailable."
   ],
   "for_diff": false,
   "default_budget": 4000

@@ -47,7 +47,7 @@ pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -
                 full: vec!["cargo test --workspace".to_string()],
                 privileged: Vec::new(),
                 notes: vec![
-                    "validation inferred from Rust repo shape, not proven by Sykli".to_string(),
+                    "Validation inferred from Rust repo shape, not proven by Sykli".to_string(),
                 ],
             }
         }
@@ -60,7 +60,7 @@ pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -
                 full: vec!["mix test".to_string()],
                 privileged: Vec::new(),
                 notes: vec![
-                    "validation inferred from Elixir repo shape, not proven by Sykli".to_string(),
+                    "Validation inferred from Elixir repo shape, not proven by Sykli".to_string(),
                 ],
             }
         }

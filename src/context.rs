@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::adapters::LanguageAdapter;
 use crate::adapters::elixir::ElixirAdapter;
@@ -20,12 +20,27 @@ pub struct ContextPacket {
     pub repo_kind: RepoKind,
     pub git: GitState,
     pub changed_surface: Vec<PathBuf>,
+    pub changed_surface_source: ChangedSurfaceSource,
     pub read_first: Vec<ReadFirstEntry>,
     pub safe_to_ignore: Vec<PathBuf>,
     pub validation_plan: ValidationPlan,
     pub warnings: Vec<String>,
     pub for_diff: bool,
     pub default_budget: Option<usize>,
+}
+
+/// Where the changed surface came from. Named honestly: the surface either
+/// reflects the whole branch (diff since the merge-base) or only the local
+/// working tree and index, and we never claim branch intent we cannot derive.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangedSurfaceSource {
+    /// A merge-base exists, so the surface includes branch work since the base.
+    BranchDiffSinceMergeBase,
+    /// No merge-base; the surface reflects only the working tree and index.
+    WorkingTreeAndIndex,
+    /// No HEAD and no local changes: there is nothing to derive a source from.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,6 +94,12 @@ pub fn build_context_packet(
     }
     let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
     let changed = filter_ignored(all_changed(&git), &safe_to_ignore);
+    let changed_surface_source = changed_surface_source(&git);
+    debug!(
+        event = "toimija.git.changed_surface.selected",
+        source = ?changed_surface_source,
+        files = changed.len()
+    );
     let changed_surface = changed.iter().map(|file| file.path.clone()).collect();
     let read_first = read_first(
         &git.repo_root,
@@ -93,6 +114,7 @@ pub fn build_context_packet(
         repo_kind,
         git,
         changed_surface,
+        changed_surface_source,
         read_first,
         safe_to_ignore,
         validation_plan,
@@ -100,12 +122,34 @@ pub fn build_context_packet(
         for_diff,
         default_budget: Some(config.context.default_budget),
     };
+    debug!(
+        event = "toimija.context.git_section.rendered",
+        branch = packet.git.branch.as_deref().unwrap_or("none"),
+        detached = packet.git.detached
+    );
     info!(
         event = "toimija.context.rendered",
         repo_kind = ?packet.repo_kind,
         warnings = packet.warnings.len()
     );
     Ok(packet)
+}
+
+/// Decide how to describe the changed surface. A merge-base means we can speak
+/// to whole-branch intent; otherwise we only have the working tree and index;
+/// with neither HEAD nor local changes there is nothing to source from.
+fn changed_surface_source(git: &GitState) -> ChangedSurfaceSource {
+    let has_local_changes = !git.staged_files.is_empty()
+        || !git.unstaged_files.is_empty()
+        || !git.untracked_files.is_empty()
+        || !git.branch_files.is_empty();
+    if git.merge_base.is_some() {
+        ChangedSurfaceSource::BranchDiffSinceMergeBase
+    } else if git.head_oid.is_some() || has_local_changes {
+        ChangedSurfaceSource::WorkingTreeAndIndex
+    } else {
+        ChangedSurfaceSource::Unknown
+    }
 }
 
 fn adapter_for(kind: RepoKind) -> Box<dyn LanguageAdapter> {
@@ -288,6 +332,7 @@ mod tests {
             repo_kind: RepoKind::Generic,
             git,
             changed_surface: Vec::new(),
+            changed_surface_source: ChangedSurfaceSource::Unknown,
             read_first: Vec::new(),
             safe_to_ignore: Vec::new(),
             validation_plan: crate::validate::validation_plan(

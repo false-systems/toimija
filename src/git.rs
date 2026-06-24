@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::command::CommandRunner;
 use crate::error::ToimijaError;
@@ -91,6 +93,7 @@ pub fn collect_git_state(
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
     )
     .map(|text| text.trim().to_string());
+    let status_started = Instant::now();
     let status_output = run_git_required(
         runner,
         &repo_root,
@@ -101,6 +104,7 @@ pub fn collect_git_state(
             "--untracked-files=all",
         ],
     )?;
+    let status_duration_ms = status_started.elapsed().as_millis();
     let mut parsed = parse_porcelain_v2(&status_output);
     if parsed.branch.is_none() {
         parsed.branch = branch.clone();
@@ -123,14 +127,18 @@ pub fn collect_git_state(
         None
     };
     if merge_base.is_none() {
+        debug!(
+            event = "toimija.git.merge_base.unavailable",
+            base = base.as_deref().unwrap_or("none"),
+            head_available = head_oid.is_some()
+        );
         match base.as_deref() {
-            Some(base) if head_oid.is_some() => {
-                warnings.push(format!("No merge-base detected against {base}."));
-            }
             Some(base) => warnings.push(format!(
-                "Merge-base unavailable against {base}; HEAD is unavailable."
+                "No merge-base with {base}. Branch intent is unavailable."
             )),
-            None => warnings.push("No base branch detected. Merge-base unavailable.".to_string()),
+            None => {
+                warnings.push("No base branch detected. Branch intent is unavailable.".to_string())
+            }
         }
     }
     let branch_files = match (merge_base.as_deref(), head_oid.as_deref()) {
@@ -147,13 +155,7 @@ pub fn collect_git_state(
         .map(|text| parse_recent_commits(&text))
         .unwrap_or_default();
     if parsed.upstream.is_none() {
-        if let Some(base) = &base {
-            warnings.push(format!(
-                "No upstream detected; using {base} as base candidate."
-            ));
-        } else {
-            warnings.push("No upstream detected.".to_string());
-        }
+        warnings.push("No upstream detected. Branch divergence is unavailable.".to_string());
     }
     if run_git_ok(
         runner,
@@ -163,21 +165,33 @@ pub fn collect_git_state(
     .map(|text| text.trim() == "true")
     .unwrap_or(false)
     {
-        warnings.push("Shallow repository detected; merge-base may be incomplete.".to_string());
+        warnings.push("Shallow repository. Merge-base may be incomplete.".to_string());
     }
     if detached {
-        warnings.push("Detached HEAD detected.".to_string());
+        warnings.push("Detached HEAD. Broad agent work is risky here.".to_string());
     }
     if !parsed.conflicted_files.is_empty() {
-        warnings.push("Conflicted files detected.".to_string());
+        warnings.push("Conflicted files exist. Resolve conflicts before continuing.".to_string());
+    }
+    if !parsed.unstaged_files.is_empty() {
+        warnings.push("Working tree has unstaged changes.".to_string());
+    }
+    if !parsed.untracked_files.is_empty() {
+        warnings
+            .push("Untracked files exist. They will not be committed unless added.".to_string());
     }
     let dirty = !parsed.staged_files.is_empty()
         || !parsed.unstaged_files.is_empty()
         || !parsed.untracked_files.is_empty()
         || !parsed.conflicted_files.is_empty();
-    if dirty {
-        warnings.push("Working tree has local changes.".to_string());
-    }
+    debug!(
+        event = "toimija.git.state.collected",
+        repo_root = %repo_root.display(),
+        branch = parsed.branch.as_deref().or(branch.as_deref()).unwrap_or("none"),
+        detached,
+        merge_base_available = merge_base.is_some(),
+        status_duration_ms = status_duration_ms
+    );
     Ok((
         GitState {
             repo_root,
