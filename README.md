@@ -162,6 +162,8 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 `toimija init` creates `.toimija/repo.yaml` if missing and refuses to overwrite existing files.
 
+On a fresh config it seeds `context.safe_to_ignore` with the detected kind's build dirs (Rust `target/`; Elixir `_build/`, `deps/`) and prints a **Next steps** line pointing at the identity fields (`role`, `not`, `boundaries`) you still need to fill — Git supplies the work state, but only you can supply the repo's purpose and boundaries. Until those are set, `toimija context` renders them as `(unset — add to .toimija/repo.yaml)` rather than pretending they are unavailable.
+
 ```yaml
 repo:
   name: toimija

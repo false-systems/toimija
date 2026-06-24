@@ -53,7 +53,9 @@ fn init_creates_config_without_overwrite() {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicate::str::contains(".toimija/repo.yaml"));
+        .stdout(predicate::str::contains(".toimija/repo.yaml"))
+        // A fresh config prints next-steps guidance to fill identity fields.
+        .stdout(predicate::str::contains("Next steps:"));
     let first = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
     Command::cargo_bin("toimija")
         .unwrap()
@@ -61,7 +63,9 @@ fn init_creates_config_without_overwrite() {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Refused to overwrite"));
+        .stdout(predicate::str::contains("Refused to overwrite"))
+        // Nothing was created, so there is no guidance the second time.
+        .stdout(predicate::str::contains("Next steps:").not());
     let second = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
     assert_eq!(first, second);
 
@@ -70,6 +74,33 @@ fn init_creates_config_without_overwrite() {
     assert!(temp.path().join("AGENTS.md").exists());
     let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
     assert!(claude.contains("AGENTS.md"));
+}
+
+#[test]
+fn init_seeds_safe_to_ignore_for_detected_kind() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+    // Rust repo -> target/ seeded into safe_to_ignore so the obvious build
+    // noise is ignored without hand-tuning.
+    let config = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
+    assert!(
+        config.contains("safe_to_ignore:") && config.contains("- target/"),
+        "expected target/ seeded; got:\n{config}"
+    );
 }
 
 #[test]

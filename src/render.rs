@@ -23,6 +23,12 @@ pub fn render_init_report(report: &InitReport) -> String {
             writeln!(&mut output, "- {}", path.display()).unwrap();
         }
     }
+    if !report.guidance.is_empty() {
+        writeln!(&mut output, "\nNext steps:").unwrap();
+        for step in &report.guidance {
+            writeln!(&mut output, "- {step}").unwrap();
+        }
+    }
     output
 }
 
@@ -44,6 +50,12 @@ pub fn render_doctor_report(report: &DoctorReport) -> String {
     }
     output
 }
+
+/// Hint for identity fields (`role`, `not`) that come from `.toimija/repo.yaml`,
+/// never from Git. When empty they are *unset* (user-fillable), not
+/// *unavailable* (underivable), so they point at the file to edit instead of
+/// silently degrading the packet.
+const UNSET_HINT: &str = "(unset — add to .toimija/repo.yaml)";
 
 /// A top-level section heading. A blank line precedes every `##` so sections
 /// are visually separated; this is the single place that rule lives.
@@ -126,14 +138,14 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     writeln!(
         &mut output,
         "- role: {}",
-        packet.repo.role.as_deref().unwrap_or("unavailable")
+        packet.repo.role.as_deref().unwrap_or(UNSET_HINT)
     )
     .unwrap();
     writeln!(
         &mut output,
         "- not: {}",
         if packet.repo.not_roles.is_empty() {
-            "unavailable".to_string()
+            UNSET_HINT.to_string()
         } else {
             packet.repo.not_roles.join(", ")
         }
@@ -455,6 +467,16 @@ mod tests {
     }
 
     #[test]
+    fn unset_identity_fields_render_fillable_hint() {
+        let mut packet = packet();
+        packet.repo.role = None;
+        packet.repo.not_roles = Vec::new();
+        let rendered = render_context_markdown(&packet, 4000);
+        assert!(rendered.contains("- role: (unset — add to .toimija/repo.yaml)"));
+        assert!(rendered.contains("- not: (unset — add to .toimija/repo.yaml)"));
+    }
+
+    #[test]
     fn recent_commits_absent_renders_unavailable() {
         // The fixture has no commits.
         let rendered = render_context_markdown(&packet(), 4000);
@@ -502,7 +524,7 @@ mod tests {
 ## Repo
 - name: demo
 - role: tool
-- not: unavailable
+- not: (unset — add to .toimija/repo.yaml)
 - kind: Rust
 
 ## Git
