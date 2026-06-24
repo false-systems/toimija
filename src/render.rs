@@ -138,6 +138,8 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     write_branch_intent(&mut output, packet);
 
+    write_recent_commits(&mut output, packet);
+
     if packet.for_diff {
         write_diff_focus(&mut output, packet);
     } else {
@@ -226,6 +228,23 @@ fn write_branch_intent(output: &mut String, packet: &ContextPacket) {
                 packet.git.base.as_deref().unwrap_or("origin/main")
             )
             .unwrap();
+        }
+    }
+    writeln!(output).unwrap();
+}
+
+/// A short window of recent history (capped), so an agent sees what the branch
+/// has been doing without running `git log` itself. Already collected in
+/// GitState; this only renders it.
+const RECENT_COMMITS_SHOWN: usize = 5;
+
+fn write_recent_commits(output: &mut String, packet: &ContextPacket) {
+    writeln!(output, "Recent commits:").unwrap();
+    if packet.git.recent_commits.is_empty() {
+        writeln!(output, "- unavailable").unwrap();
+    } else {
+        for commit in packet.git.recent_commits.iter().take(RECENT_COMMITS_SHOWN) {
+            writeln!(output, "- {} {}", commit.oid, commit.summary).unwrap();
         }
     }
     writeln!(output).unwrap();
@@ -403,6 +422,32 @@ mod tests {
     }
 
     #[test]
+    fn recent_commits_render_capped_with_oid_and_summary() {
+        use crate::git::RecentCommit;
+        let mut packet = packet();
+        packet.git.recent_commits = (0..7)
+            .map(|i| RecentCommit {
+                oid: format!("oid{i}"),
+                summary: format!("commit {i}"),
+            })
+            .collect();
+        let rendered = render_context_markdown(&packet, 4000);
+        assert!(rendered.contains("Recent commits:"));
+        assert!(rendered.contains("- oid0 commit 0"));
+        // Capped at RECENT_COMMITS_SHOWN (5): the 6th and 7th are omitted.
+        assert!(rendered.contains("- oid4 commit 4"));
+        assert!(!rendered.contains("oid5"));
+        assert!(!rendered.contains("oid6"));
+    }
+
+    #[test]
+    fn recent_commits_absent_renders_unavailable() {
+        // The fixture has no commits.
+        let rendered = render_context_markdown(&packet(), 4000);
+        assert!(rendered.contains("Recent commits:\n- unavailable"));
+    }
+
+    #[test]
     fn for_diff_markdown_includes_diff_focus_sections() {
         let mut packet = packet();
         packet.for_diff = true;
@@ -463,6 +508,9 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 
 Branch intent:
 - unavailable: no merge-base with origin/main
+
+Recent commits:
+- unavailable
 
 Working tree:
 Staged:
