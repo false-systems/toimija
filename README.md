@@ -95,13 +95,13 @@ Logs go to stderr. Command output goes to stdout.
 ```text
 # Toimija Context
 
-Repo:
+## Repo
 - name: toimija
 - role: internal CLI that compiles local Git context for coding agents
 - not: platform, dashboard, dispatcher
 - kind: Rust
 
-Git:
+## Git
 - branch: feat/git-ceramics
 - HEAD: abc123
 - detached: false
@@ -113,48 +113,46 @@ Git:
 - untracked: 1
 - conflicts: 0
 
-Git state:
+## Git state
 Toimija starts from Git's state machine: HEAD, index, working tree, branch, and merge-base.
 
-Branch intent:
+## Branch intent
 - compared against: origin/main
 - merge-base: def456
 - files changed since merge-base: 3
 
-Working tree:
-Staged:
+## Working tree
+### Staged
 - none
-Unstaged:
+### Unstaged
 - modified src/git.rs
 - modified src/render.rs
-Untracked:
+### Untracked
 - tests/git_state.rs
-Conflicts:
+### Conflicts
 - none
 
-Changed surface:
-source: branch diff since merge-base
-- README.md
-- src/git.rs
-- src/render.rs
-- tests/git_state.rs
+## Changed surface
+- source: branch diff since merge-base
+- files:
+  - README.md
+  - src/git.rs
+  - src/render.rs
+  - tests/git_state.rs
 
-Read first:
+## Read first
 - src/git.rs (changed)
 - tests/git_state.rs (changed)
 - README.md (important doc)
 
-Validation plan
-
-Source: inferred
-
-Fast:
+## Validation plan
+- source: inferred
+### Fast
 - cargo test --workspace
-
-Notes:
+### Notes
 - validation inferred from Rust repo shape, not proven by Sykli
 
-Warnings:
+## Warnings
 - No upstream detected. Branch divergence is unavailable.
 - Untracked files exist. They will not be committed unless added.
 - Working tree has unstaged changes.
@@ -216,6 +214,8 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - changed files are sorted by path and deduplicated in the changed surface
 - read-first entries are grouped as changed files, matching-test hints, then configured docs
 - warnings are sorted and deduplicated
+- Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
+- empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
 - Markdown and pretty JSON output have exact regression tests
 
 `toimija context --for-diff` adds a diff-focused Markdown section that separates:

@@ -45,29 +45,83 @@ pub fn render_doctor_report(report: &DoctorReport) -> String {
     output
 }
 
+/// A top-level section heading. A blank line precedes every `##` so sections
+/// are visually separated; this is the single place that rule lives.
+fn write_h2(output: &mut String, title: &str) {
+    writeln!(output, "\n## {title}").unwrap();
+}
+
+/// A sub-section heading. No leading blank line: the `###` marker itself
+/// distinguishes adjacent sub-blocks (e.g. Staged / Unstaged under Working tree).
+fn write_h3(output: &mut String, title: &str) {
+    writeln!(output, "### {title}").unwrap();
+}
+
+fn write_str_list(output: &mut String, items: &[String], empty: &str) {
+    if items.is_empty() {
+        writeln!(output, "- {empty}").unwrap();
+    } else {
+        for item in items {
+            writeln!(output, "- {item}").unwrap();
+        }
+    }
+}
+
+fn write_path_list(output: &mut String, items: &[std::path::PathBuf], empty: &str) {
+    if items.is_empty() {
+        writeln!(output, "- {empty}").unwrap();
+    } else {
+        for item in items {
+            writeln!(output, "- {}", item.display()).unwrap();
+        }
+    }
+}
+
+fn write_changed_list(output: &mut String, items: &[ChangedFile], empty: &str) {
+    if items.is_empty() {
+        writeln!(output, "- {empty}").unwrap();
+    } else {
+        for item in items {
+            writeln!(
+                output,
+                "- {} {}",
+                status_label(&item.status),
+                item.path.display()
+            )
+            .unwrap();
+        }
+    }
+}
+
 pub fn render_validation_plan(plan: &ValidationPlan) -> String {
     let mut output = String::new();
-    writeln!(&mut output, "Validation plan\n").unwrap();
-    writeln!(&mut output, "Source: {}", source_label(&plan.source)).unwrap();
-    write_section(&mut output, "Fast", &plan.fast);
-    write_section(&mut output, "Strict", &plan.strict);
-    write_section(&mut output, "Full", &plan.full);
-    write_section(&mut output, "Privileged", &plan.privileged);
-    write_section(&mut output, "Notes", &plan.notes);
+    write_h2(&mut output, "Validation plan");
+    writeln!(&mut output, "- source: {}", source_label(&plan.source)).unwrap();
+    write_h3(&mut output, "Fast");
+    write_str_list(&mut output, &plan.fast, "none");
+    write_h3(&mut output, "Strict");
+    write_str_list(&mut output, &plan.strict, "none");
+    write_h3(&mut output, "Full");
+    write_str_list(&mut output, &plan.full, "none");
+    write_h3(&mut output, "Privileged");
+    write_str_list(&mut output, &plan.privileged, "none");
+    write_h3(&mut output, "Notes");
+    write_str_list(&mut output, &plan.notes, "none");
     output
 }
 
 pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String {
     let mut output = String::new();
-    writeln!(&mut output, "# Toimija Context\n").unwrap();
+    writeln!(&mut output, "# Toimija Context").unwrap();
     if packet.for_diff {
         writeln!(
             &mut output,
-            "Mode: for-diff. Impact analysis: unavailable in v0.0.\n"
+            "\nMode: for-diff. Impact analysis: unavailable in v0.0."
         )
         .unwrap();
     }
-    writeln!(&mut output, "Repo:").unwrap();
+
+    write_h2(&mut output, "Repo");
     writeln!(&mut output, "- name: {}", packet.repo.name).unwrap();
     writeln!(
         &mut output,
@@ -85,9 +139,9 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         }
     )
     .unwrap();
-    writeln!(&mut output, "- kind: {:?}\n", packet.repo_kind).unwrap();
+    writeln!(&mut output, "- kind: {:?}", packet.repo_kind).unwrap();
 
-    writeln!(&mut output, "Git:").unwrap();
+    write_h2(&mut output, "Git");
     writeln!(
         &mut output,
         "- branch: {}",
@@ -124,20 +178,19 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     .unwrap();
     writeln!(
         &mut output,
-        "- conflicts: {}\n",
+        "- conflicts: {}",
         packet.git.conflicted_files.len()
     )
     .unwrap();
 
-    writeln!(&mut output, "Git state:").unwrap();
+    write_h2(&mut output, "Git state");
     writeln!(
         &mut output,
-        "Toimija starts from Git’s state machine: HEAD, index, working tree, branch, and merge-base.\n"
+        "Toimija starts from Git’s state machine: HEAD, index, working tree, branch, and merge-base."
     )
     .unwrap();
 
     write_branch_intent(&mut output, packet);
-
     write_recent_commits(&mut output, packet);
 
     if packet.for_diff {
@@ -147,48 +200,25 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     }
 
     write_changed_surface(&mut output, packet);
-    writeln!(&mut output, "\nRead first:").unwrap();
+
+    write_h2(&mut output, "Read first");
     if packet.read_first.is_empty() {
-        writeln!(&mut output, "- unavailable").unwrap();
+        writeln!(&mut output, "- none").unwrap();
     } else {
         for entry in &packet.read_first {
             writeln!(&mut output, "- {} ({})", entry.path.display(), entry.reason).unwrap();
         }
     }
-    writeln!(&mut output).unwrap();
-    write_paths(
-        &mut output,
-        "Safe to ignore",
-        &packet.safe_to_ignore,
-        "unavailable",
-    );
-    writeln!(&mut output).unwrap();
+
+    write_h2(&mut output, "Safe to ignore");
+    write_path_list(&mut output, &packet.safe_to_ignore, "none");
+
     output.push_str(&render_validation_plan(&packet.validation_plan));
-    write_section(&mut output, "Warnings", &packet.warnings);
+
+    write_h2(&mut output, "Warnings");
+    write_str_list(&mut output, &packet.warnings, "none");
 
     truncate_to_budget(output, budget)
-}
-
-fn write_section(output: &mut String, title: &str, items: &[String]) {
-    writeln!(output, "\n{title}:").unwrap();
-    if items.is_empty() {
-        writeln!(output, "- unavailable").unwrap();
-    } else {
-        for item in items {
-            writeln!(output, "- {item}").unwrap();
-        }
-    }
-}
-
-fn write_paths(output: &mut String, title: &str, items: &[std::path::PathBuf], empty: &str) {
-    writeln!(output, "{title}:").unwrap();
-    if items.is_empty() {
-        writeln!(output, "- {empty}").unwrap();
-    } else {
-        for item in items {
-            writeln!(output, "- {}", item.display()).unwrap();
-        }
-    }
 }
 
 /// Render the merge-base as `<base> @ <oid>` when both are known, the bare oid
@@ -204,7 +234,7 @@ fn merge_base_label(packet: &ContextPacket) -> String {
 /// Branch intent is what the whole branch is about (its diff since the
 /// merge-base), as opposed to dirty state, which is only what changed now.
 fn write_branch_intent(output: &mut String, packet: &ContextPacket) {
-    writeln!(output, "Branch intent:").unwrap();
+    write_h2(output, "Branch intent");
     match packet.git.merge_base.as_deref() {
         Some(merge_base) => {
             writeln!(
@@ -230,7 +260,6 @@ fn write_branch_intent(output: &mut String, packet: &ContextPacket) {
             .unwrap();
         }
     }
-    writeln!(output).unwrap();
 }
 
 /// A short window of recent history (capped), so an agent sees what the branch
@@ -239,44 +268,47 @@ fn write_branch_intent(output: &mut String, packet: &ContextPacket) {
 const RECENT_COMMITS_SHOWN: usize = 5;
 
 fn write_recent_commits(output: &mut String, packet: &ContextPacket) {
-    writeln!(output, "Recent commits:").unwrap();
+    write_h2(output, "Recent commits");
     if packet.git.recent_commits.is_empty() {
-        writeln!(output, "- unavailable").unwrap();
+        writeln!(output, "- none").unwrap();
     } else {
         for commit in packet.git.recent_commits.iter().take(RECENT_COMMITS_SHOWN) {
             writeln!(output, "- {} {}", commit.oid, commit.summary).unwrap();
         }
     }
-    writeln!(output).unwrap();
 }
 
 /// The plain-mode breakdown that keeps staged, unstaged, and untracked
 /// separate so an agent does not lose track of files it created but never
 /// added. `--for-diff` renders the richer diff focus instead.
 fn write_worktree_breakdown(output: &mut String, packet: &ContextPacket) {
-    writeln!(output, "Working tree:").unwrap();
-    write_changed_files(output, "Staged", &packet.git.staged_files, "none");
-    write_changed_files(output, "Unstaged", &packet.git.unstaged_files, "none");
-    write_paths(output, "Untracked", &packet.git.untracked_files, "none");
-    write_paths(output, "Conflicts", &packet.git.conflicted_files, "none");
-    writeln!(output).unwrap();
+    write_h2(output, "Working tree");
+    write_h3(output, "Staged");
+    write_changed_list(output, &packet.git.staged_files, "none");
+    write_h3(output, "Unstaged");
+    write_changed_list(output, &packet.git.unstaged_files, "none");
+    write_h3(output, "Untracked");
+    write_path_list(output, &packet.git.untracked_files, "none");
+    write_h3(output, "Conflicts");
+    write_path_list(output, &packet.git.conflicted_files, "none");
 }
 
 /// The changed surface, labelled with the source it was derived from so the
 /// reader knows whether branch intent informed it.
 fn write_changed_surface(output: &mut String, packet: &ContextPacket) {
-    writeln!(output, "Changed surface:").unwrap();
+    write_h2(output, "Changed surface");
     writeln!(
         output,
-        "source: {}",
+        "- source: {}",
         changed_surface_source_label(packet.changed_surface_source)
     )
     .unwrap();
     if packet.changed_surface.is_empty() {
-        writeln!(output, "- unavailable").unwrap();
+        writeln!(output, "- files: none").unwrap();
     } else {
+        writeln!(output, "- files:").unwrap();
         for item in &packet.changed_surface {
-            writeln!(output, "- {}", item.display()).unwrap();
+            writeln!(output, "  - {}", item.display()).unwrap();
         }
     }
 }
@@ -292,35 +324,17 @@ fn changed_surface_source_label(source: ChangedSurfaceSource) -> &'static str {
 }
 
 fn write_diff_focus(output: &mut String, packet: &ContextPacket) {
-    writeln!(output, "Diff focus:").unwrap();
-    write_changed_files(
-        output,
-        "Committed since base",
-        &packet.git.branch_files,
-        "none",
-    );
-    write_changed_files(output, "Staged", &packet.git.staged_files, "none");
-    write_changed_files(output, "Unstaged", &packet.git.unstaged_files, "none");
-    write_paths(output, "Untracked", &packet.git.untracked_files, "none");
-    write_paths(output, "Conflicts", &packet.git.conflicted_files, "none");
-    writeln!(output).unwrap();
-}
-
-fn write_changed_files(output: &mut String, title: &str, items: &[ChangedFile], empty: &str) {
-    writeln!(output, "{title}:").unwrap();
-    if items.is_empty() {
-        writeln!(output, "- {empty}").unwrap();
-    } else {
-        for item in items {
-            writeln!(
-                output,
-                "- {} {}",
-                status_label(&item.status),
-                item.path.display()
-            )
-            .unwrap();
-        }
-    }
+    write_h2(output, "Diff focus");
+    write_h3(output, "Committed since base");
+    write_changed_list(output, &packet.git.branch_files, "none");
+    write_h3(output, "Staged");
+    write_changed_list(output, &packet.git.staged_files, "none");
+    write_h3(output, "Unstaged");
+    write_changed_list(output, &packet.git.unstaged_files, "none");
+    write_h3(output, "Untracked");
+    write_path_list(output, &packet.git.untracked_files, "none");
+    write_h3(output, "Conflicts");
+    write_path_list(output, &packet.git.conflicted_files, "none");
 }
 
 fn status_label(status: &ChangeStatus) -> &'static str {
@@ -410,9 +424,9 @@ mod tests {
     fn markdown_includes_key_sections() {
         let rendered = render_context_markdown(&packet(), 4000);
         assert!(rendered.contains("# Toimija Context"));
-        assert!(rendered.contains("Repo:"));
-        assert!(rendered.contains("Git:"));
-        assert!(rendered.contains("Validation plan"));
+        assert!(rendered.contains("## Repo"));
+        assert!(rendered.contains("## Git"));
+        assert!(rendered.contains("## Validation plan"));
     }
 
     #[test]
@@ -432,7 +446,7 @@ mod tests {
             })
             .collect();
         let rendered = render_context_markdown(&packet, 4000);
-        assert!(rendered.contains("Recent commits:"));
+        assert!(rendered.contains("## Recent commits"));
         assert!(rendered.contains("- oid0 commit 0"));
         // Capped at RECENT_COMMITS_SHOWN (5): the 6th and 7th are omitted.
         assert!(rendered.contains("- oid4 commit 4"));
@@ -444,7 +458,7 @@ mod tests {
     fn recent_commits_absent_renders_unavailable() {
         // The fixture has no commits.
         let rendered = render_context_markdown(&packet(), 4000);
-        assert!(rendered.contains("Recent commits:\n- unavailable"));
+        assert!(rendered.contains("## Recent commits\n- none"));
     }
 
     #[test]
@@ -467,16 +481,16 @@ mod tests {
         packet.git.conflicted_files = vec![PathBuf::from("src/conflict.rs")];
 
         let rendered = render_context_markdown(&packet, 4000);
-        assert!(rendered.contains("Diff focus:"));
-        assert!(rendered.contains("Committed since base:"));
+        assert!(rendered.contains("## Diff focus"));
+        assert!(rendered.contains("### Committed since base"));
         assert!(rendered.contains("- modified src/committed.rs"));
-        assert!(rendered.contains("Staged:"));
+        assert!(rendered.contains("### Staged"));
         assert!(rendered.contains("- added src/staged.rs"));
-        assert!(rendered.contains("Unstaged:"));
+        assert!(rendered.contains("### Unstaged"));
         assert!(rendered.contains("- deleted src/unstaged.rs"));
-        assert!(rendered.contains("Untracked:"));
+        assert!(rendered.contains("### Untracked"));
         assert!(rendered.contains("- notes.txt"));
-        assert!(rendered.contains("Conflicts:"));
+        assert!(rendered.contains("### Conflicts"));
         assert!(rendered.contains("- src/conflict.rs"));
     }
 
@@ -485,13 +499,13 @@ mod tests {
         let rendered = render_context_markdown(&packet(), 4000);
         let expected = r#"# Toimija Context
 
-Repo:
+## Repo
 - name: demo
 - role: tool
 - not: unavailable
 - kind: Rust
 
-Git:
+## Git
 - branch: main
 - HEAD: abc
 - detached: false
@@ -503,56 +517,50 @@ Git:
 - untracked: 0
 - conflicts: 0
 
-Git state:
+## Git state
 Toimija starts from Git’s state machine: HEAD, index, working tree, branch, and merge-base.
 
-Branch intent:
+## Branch intent
 - unavailable: no merge-base with origin/main
 
-Recent commits:
-- unavailable
-
-Working tree:
-Staged:
-- none
-Unstaged:
-- none
-Untracked:
-- none
-Conflicts:
+## Recent commits
 - none
 
-Changed surface:
-source: working tree and index only; merge-base unavailable
-- unavailable
+## Working tree
+### Staged
+- none
+### Unstaged
+- none
+### Untracked
+- none
+### Conflicts
+- none
 
-Read first:
-- unavailable
+## Changed surface
+- source: working tree and index only; merge-base unavailable
+- files: none
 
-Safe to ignore:
-- unavailable
+## Read first
+- none
 
-Validation plan
+## Safe to ignore
+- none
 
-Source: inferred
-
-Fast:
+## Validation plan
+- source: inferred
+### Fast
 - cargo test --workspace
-
-Strict:
+### Strict
 - cargo fmt --check
 - cargo clippy --workspace --all-targets -- -D warnings
-
-Full:
+### Full
 - cargo test --workspace
-
-Privileged:
-- unavailable
-
-Notes:
+### Privileged
+- none
+### Notes
 - Validation inferred from Rust repo shape, not proven by Sykli
 
-Warnings:
+## Warnings
 - No upstream detected. Branch divergence is unavailable.
 "#;
         assert_eq!(rendered, expected);
