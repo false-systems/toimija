@@ -162,7 +162,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 `toimija init` creates `.toimija/repo.yaml` if missing and refuses to overwrite existing files.
 
-On a fresh config it seeds `context.safe_to_ignore` with the detected kind's build dirs (Rust `target/`; Elixir `_build/`, `deps/`) and prints a **Next steps** line pointing at the identity fields (`role`, `not`, `boundaries`) you still need to fill — Git supplies the work state, but only you can supply the repo's purpose and boundaries. Until those are set, `toimija context` renders them as `(unset — add to .toimija/repo.yaml)` rather than pretending they are unavailable.
+On a fresh config it seeds `context.safe_to_ignore` with a conservative universal set of generated build/dependency dirs (`target/`, `_build/`, `deps/`, `node_modules/`, `dist/`, `build/`) and prints a **Next steps** line pointing at the identity fields (`role`, `not`, `boundaries`) you still need to fill — Git supplies the work state, but only you can supply the repo's purpose and boundaries. Until those are set, `toimija context` renders them as `(unset — add to .toimija/repo.yaml)` rather than pretending they are unavailable.
 
 ```yaml
 repo:
@@ -183,6 +183,9 @@ context:
     - target/
     - _build/
     - deps/
+    - node_modules/
+    - dist/
+    - build/
 
 validation:
   fast: []
@@ -196,7 +199,7 @@ boundaries:
 ```
 
 `context.read_first` adds repo-specific files to the Read first section when they exist.
-`context.safe_to_ignore` lists path prefixes that are omitted from the changed surface and read-first hints.
+`context.safe_to_ignore` lists path component sequences that are omitted from the changed surface and read-first hints. A rule like `target/` matches `target/...` and nested paths such as `fixtures/rust/target/...`, but not `targeted.rs` or `targets/...`; a multi-component rule like `deploy/container/` matches that contiguous component sequence at any depth.
 
 ## v0.0 Limitations
 

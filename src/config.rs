@@ -54,16 +54,19 @@ pub struct InitReport {
     pub guidance: Vec<String>,
 }
 
-/// Build-output directories Toimija can safely omit from the changed surface
-/// for a detected repo kind. Conservative: only well-known build dirs, nothing
-/// that could hide real source. Empty for `Generic` — we do not guess.
-fn default_safe_to_ignore(kind: crate::repo::RepoKind) -> Vec<PathBuf> {
-    use crate::repo::RepoKind;
-    match kind {
-        RepoKind::Rust => vec![PathBuf::from("target/")],
-        RepoKind::Elixir => vec![PathBuf::from("_build/"), PathBuf::from("deps/")],
-        RepoKind::Generic => Vec::new(),
-    }
+/// Build-output directories Toimija can safely omit from the changed surface.
+/// Conservative: only well-known generated dependency/build dirs, and the same
+/// universal set is used for `Generic` so nested fixture output does not flood
+/// an otherwise unclassified repo.
+fn default_safe_to_ignore(_kind: crate::repo::RepoKind) -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("target/"),
+        PathBuf::from("_build/"),
+        PathBuf::from("deps/"),
+        PathBuf::from("node_modules/"),
+        PathBuf::from("dist/"),
+        PathBuf::from("build/"),
+    ]
 }
 
 impl Default for ContextSection {
@@ -268,6 +271,22 @@ mod tests {
         assert_eq!(
             config.context.safe_to_ignore,
             vec![PathBuf::from("target/"), PathBuf::from("_build/")]
+        );
+    }
+
+    #[test]
+    fn default_safe_to_ignore_is_seeded_for_generic_repos() {
+        let safe_to_ignore = default_safe_to_ignore(crate::repo::RepoKind::Generic);
+        assert_eq!(
+            safe_to_ignore,
+            vec![
+                PathBuf::from("target/"),
+                PathBuf::from("_build/"),
+                PathBuf::from("deps/"),
+                PathBuf::from("node_modules/"),
+                PathBuf::from("dist/"),
+                PathBuf::from("build/"),
+            ]
         );
     }
 

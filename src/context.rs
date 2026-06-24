@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
@@ -227,9 +228,10 @@ fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 fn matches_safe_to_ignore(path: &Path, safe_to_ignore: &[PathBuf]) -> bool {
+    let path_components = normal_components(path);
     safe_to_ignore.iter().any(|rule| {
         let normalized = trim_trailing_separator(rule);
-        !normalized.as_os_str().is_empty() && (path == normalized || path.starts_with(normalized))
+        matches_ignore_rule(&path_components, &normalized)
     })
 }
 
@@ -237,6 +239,26 @@ fn trim_trailing_separator(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     let trimmed = text.trim_end_matches(['/', '\\']);
     PathBuf::from(trimmed)
+}
+
+fn matches_ignore_rule(path_components: &[&OsStr], rule: &Path) -> bool {
+    let rule_components = normal_components(rule);
+    if rule_components.is_empty() {
+        return false;
+    }
+    path_components
+        .windows(rule_components.len())
+        .any(|window| window == rule_components.as_slice())
+}
+
+fn normal_components(path: &Path) -> Vec<&OsStr> {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value),
+            Component::CurDir => None,
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => None,
+        })
+        .collect()
 }
 
 fn stable_strings(strings: Vec<String>) -> Vec<String> {
@@ -399,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn safe_to_ignore_filters_changed_paths_by_prefix() {
+    fn safe_to_ignore_filters_changed_paths_by_component_sequence() {
         let files = vec![
             ChangedFile {
                 path: PathBuf::from("src/lib.rs"),
@@ -410,19 +432,46 @@ mod tests {
                 status: ChangeStatus::Untracked,
             },
             ChangedFile {
+                path: PathBuf::from("fixtures/rust/target/debug/build.log"),
+                status: ChangeStatus::Untracked,
+            },
+            ChangedFile {
+                path: PathBuf::from("fixtures/rust/targeted.rs"),
+                status: ChangeStatus::Untracked,
+            },
+            ChangedFile {
+                path: PathBuf::from("fixtures/rust/targets/debug/build.log"),
+                status: ChangeStatus::Untracked,
+            },
+            ChangedFile {
                 path: PathBuf::from("_build/dev/app.beam"),
+                status: ChangeStatus::Untracked,
+            },
+            ChangedFile {
+                path: PathBuf::from("apps/web/deploy/container/image.tar"),
                 status: ChangeStatus::Untracked,
             },
         ];
 
-        let filtered = filter_ignored(files, &[PathBuf::from("target/"), PathBuf::from("_build")]);
+        let filtered = filter_ignored(
+            files,
+            &[
+                PathBuf::from("./target/"),
+                PathBuf::from("_build"),
+                PathBuf::from("deploy/container/"),
+            ],
+        );
 
         assert_eq!(
             filtered
                 .iter()
                 .map(|file| file.path.as_path())
                 .collect::<Vec<_>>(),
-            vec![Path::new("src/lib.rs")]
+            vec![
+                Path::new("src/lib.rs"),
+                Path::new("fixtures/rust/targeted.rs"),
+                Path::new("fixtures/rust/targets/debug/build.log"),
+            ]
         );
     }
 

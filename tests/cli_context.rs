@@ -110,6 +110,7 @@ fn context_json_applies_configured_read_first_and_ignore_rules() {
     fs::create_dir_all(temp.path().join("docs")).unwrap();
     fs::create_dir_all(temp.path().join("src")).unwrap();
     fs::create_dir_all(temp.path().join("target/debug")).unwrap();
+    fs::create_dir_all(temp.path().join("fixtures/rust/target/debug")).unwrap();
     fs::write(temp.path().join("docs/architecture.md"), "# Architecture\n").unwrap();
     run_git(temp.path(), &["add", "docs/architecture.md"]);
     run_git(temp.path(), &["commit", "-m", "add architecture doc"]);
@@ -120,6 +121,11 @@ fn context_json_applies_configured_read_first_and_ignore_rules() {
     .unwrap();
     fs::write(temp.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
     fs::write(temp.path().join("target/debug/noise.txt"), "noise\n").unwrap();
+    fs::write(
+        temp.path().join("fixtures/rust/target/debug/noise.txt"),
+        "noise\n",
+    )
+    .unwrap();
 
     let assert = Command::cargo_bin("toimija")
         .unwrap()
@@ -134,7 +140,7 @@ fn context_json_applies_configured_read_first_and_ignore_rules() {
     assert!(
         !strings_at(&value, "/changed_surface")
             .iter()
-            .any(|path| path.starts_with("target/"))
+            .any(|path| path.starts_with("target/") || path.contains("/target/"))
     );
     assert!(value["read_first"].as_array().unwrap().iter().any(|entry| {
         entry["path"] == "docs/architecture.md" && entry["reason"] == "repo config"
