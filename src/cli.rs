@@ -20,12 +20,16 @@ use crate::validate;
     about = "Git-aware local context compiler for coding agents"
 )]
 pub struct Cli {
+    /// Increase log verbosity: -v for info, -vv for debug. Logs go to stderr.
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
+    /// Suppress logs. Command output still goes to stdout.
     #[arg(short, long, global = true)]
     pub quiet: bool,
+    /// Log format written to stderr.
     #[arg(long, value_enum, default_value_t = LogFormat::Text, global = true)]
     pub log_format: LogFormat,
+    /// Disable ANSI colour in logs.
     #[arg(long, global = true)]
     pub no_color: bool,
     #[command(subcommand)]
@@ -34,24 +38,32 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Create .toimija/repo.yaml (and AGENTS.md/CLAUDE.md if missing).
     Init,
+    /// Check Toimija setup: git, config, repo kind, and agent docs.
     Doctor,
+    /// Compile the current Git work state into a context packet.
     Context(ContextArgs),
+    /// Print the validation plan. Does not run any commands.
     Validate(ValidateArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct ContextArgs {
+    /// Emit the packet as JSON instead of Markdown.
     #[arg(long)]
     pub json: bool,
+    /// Add a diff-focused section: committed, staged, unstaged, untracked, conflicts.
     #[arg(long)]
     pub for_diff: bool,
+    /// Approximate output cap in characters; long lists are truncated.
     #[arg(long)]
     pub budget: Option<usize>,
 }
 
 #[derive(Debug, Args)]
 pub struct ValidateArgs {
+    /// Print the plan only. Required: Toimija never runs validation in v0.
     #[arg(long)]
     pub plan: bool,
 }
