@@ -66,12 +66,12 @@ fn context_markdown_reports_dirty_repo() {
         .assert()
         .success()
         .stdout(predicate::str::contains("# Toimija Context"))
-        .stdout(predicate::str::contains("Diff focus:"))
-        .stdout(predicate::str::contains("Committed since base:"))
-        .stdout(predicate::str::contains("Staged:"))
-        .stdout(predicate::str::contains("Unstaged:"))
-        .stdout(predicate::str::contains("Untracked:"))
-        .stdout(predicate::str::contains("Conflicts:"))
+        .stdout(predicate::str::contains("## Diff focus"))
+        .stdout(predicate::str::contains("### Committed since base"))
+        .stdout(predicate::str::contains("### Staged"))
+        .stdout(predicate::str::contains("### Unstaged"))
+        .stdout(predicate::str::contains("### Untracked"))
+        .stdout(predicate::str::contains("### Conflicts"))
         .stdout(predicate::str::contains("src/lib.rs"))
         .stdout(predicate::str::contains("cargo test --workspace"));
 }

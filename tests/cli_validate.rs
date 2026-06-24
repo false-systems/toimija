@@ -73,7 +73,7 @@ fn validate_plan_uses_repo_config_when_present() {
         .args(["validate", "--plan"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Source: repo config"))
+        .stdout(predicate::str::contains("source: repo config"))
         .stdout(predicate::str::contains("just test-fast"))
         .stdout(predicate::str::contains("just test-strict"))
         .stdout(predicate::str::contains("just test-full"))
@@ -101,7 +101,7 @@ fn validate_plan_infers_rust_commands() {
         .args(["validate", "--plan"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Source: inferred"))
+        .stdout(predicate::str::contains("source: inferred"))
         .stdout(predicate::str::contains("cargo test --workspace"))
         .stdout(predicate::str::contains("cargo fmt --check"))
         .stdout(predicate::str::contains(
@@ -123,7 +123,7 @@ fn validate_plan_for_generic_repo_is_unknown() {
         .args(["validate", "--plan"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Source: unknown"))
+        .stdout(predicate::str::contains("source: unknown"))
         .stdout(predicate::str::contains(
             "validation unavailable for generic repo without repo config",
         ));

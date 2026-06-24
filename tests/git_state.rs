@@ -139,7 +139,7 @@ fn committed_branch_change_appears_in_surface_with_clean_tree() {
         .stdout(predicate::str::contains(
             "source: branch diff since merge-base",
         ))
-        .stdout(predicate::str::contains("Branch intent:"))
+        .stdout(predicate::str::contains("## Branch intent"))
         .stdout(predicate::str::contains("files changed since merge-base:"));
 }
 
