@@ -175,6 +175,45 @@ fn committed_branch_change_appears_in_surface_with_clean_tree() {
 }
 
 #[test]
+fn branch_intent_uses_trunk_not_feature_upstream() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    run_git(temp.path(), &["branch", "-M", "main"]);
+    let origin = temp.path().to_str().unwrap();
+    run_git(temp.path(), &["remote", "add", "origin", origin]);
+    run_git(
+        temp.path(),
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    run_git(temp.path(), &["checkout", "-b", "feature"]);
+    fs::write(temp.path().join("feature.txt"), "feature\n").unwrap();
+    run_git(temp.path(), &["add", "feature.txt"]);
+    run_git(temp.path(), &["commit", "-m", "add feature"]);
+    run_git(
+        temp.path(),
+        &["update-ref", "refs/remotes/origin/feature", "HEAD"],
+    );
+    run_git(temp.path(), &["branch", "--set-upstream-to=origin/feature"]);
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("upstream: origin/feature"))
+        .stdout(predicate::str::contains("compared against: origin/main"))
+        .stdout(predicate::str::contains(
+            "files changed since merge-base: 1",
+        ))
+        .stdout(predicate::str::contains("feature.txt"))
+        .stdout(predicate::str::contains("files changed since merge-base: 0").not());
+}
+
+#[test]
 fn unborn_branch_reports_head_and_merge_base_unavailable() {
     if !git_available() {
         return;
