@@ -11,6 +11,7 @@ use crate::adapters::rust::RustAdapter;
 use crate::command::CommandRunner;
 use crate::config::RepoConfig;
 use crate::git::{self, ChangedFile, GitState};
+use crate::relevance::{RelevancePacket, RelevanceSource};
 use crate::repo::{self, RepoInfo, RepoKind};
 use crate::validate::ValidationPlan;
 
@@ -27,6 +28,7 @@ pub struct ContextPacket {
     pub warnings: Vec<String>,
     pub for_diff: bool,
     pub default_budget: Option<usize>,
+    pub relevance: RelevancePacket,
 }
 
 /// Where the changed surface came from. Named honestly: the surface either
@@ -105,7 +107,24 @@ pub fn build_context_packet(
         source = ?changed_surface_source,
         files = changed.len()
     );
-    let changed_surface = changed.iter().map(|file| file.path.clone()).collect();
+    let changed_surface: Vec<PathBuf> = changed.iter().map(|file| file.path.clone()).collect();
+    // Files this branch added (status A in the merge-base..HEAD diff): the
+    // youngest possible surface, which base-history mining cannot see.
+    let branch_added: Vec<PathBuf> = git
+        .branch_files
+        .iter()
+        .filter(|file| matches!(file.status, git::ChangeStatus::Added))
+        .map(|file| file.path.clone())
+        .collect();
+    let relevance = crate::relevance::compute_relevance(
+        runner,
+        &git.repo_root,
+        &changed_surface,
+        &branch_added,
+        scope_source(changed_surface_source),
+        git.merge_base.as_deref(),
+        git.head_oid.is_some(),
+    );
     let read_first = read_first(
         &git.repo_root,
         &config,
@@ -126,6 +145,7 @@ pub fn build_context_packet(
         warnings,
         for_diff,
         default_budget: Some(config.context.default_budget),
+        relevance,
     };
     debug!(
         event = "toimija.context.git_section.rendered",
@@ -148,12 +168,25 @@ fn changed_surface_source(git: &GitState) -> ChangedSurfaceSource {
         || !git.unstaged_files.is_empty()
         || !git.untracked_files.is_empty()
         || !git.branch_files.is_empty();
-    if git.merge_base.is_some() {
+    // The surface reflects branch intent only when commits since the merge-base
+    // actually contributed files. A merge-base that equals HEAD (branch sitting
+    // at its base) with only working-tree dirt is working-tree, not branch diff.
+    if !git.branch_files.is_empty() {
         ChangedSurfaceSource::BranchDiffSinceMergeBase
     } else if git.head_oid.is_some() || has_local_changes {
         ChangedSurfaceSource::WorkingTreeAndIndex
     } else {
         ChangedSurfaceSource::Unknown
+    }
+}
+
+/// Map the changed-surface provenance onto a relevance source so the Scope
+/// section never claims branch-diff evidence it does not have.
+fn scope_source(source: ChangedSurfaceSource) -> RelevanceSource {
+    match source {
+        ChangedSurfaceSource::BranchDiffSinceMergeBase => RelevanceSource::MergeBaseDiff,
+        ChangedSurfaceSource::WorkingTreeAndIndex => RelevanceSource::WorkingTreeAndIndex,
+        ChangedSurfaceSource::Unknown => RelevanceSource::Unavailable,
     }
 }
 
@@ -378,6 +411,7 @@ mod tests {
             warnings: Vec::new(),
             for_diff: false,
             default_budget: Some(4000),
+            relevance: RelevancePacket::default(),
         };
         let json = serde_json::to_string(&packet).unwrap();
         assert!(json.contains("\"repo\""));

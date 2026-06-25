@@ -22,7 +22,7 @@ Git is the substrate.
 
 > We do not ask the model to understand the repo first. We ask Git what state the repo is in.
 
-`toimija context` makes that state explicit: the `Git:` block (HEAD, branch, detached, upstream, merge-base, dirty, and staged/unstaged/untracked/conflict counts), a `Branch intent:` section (what the whole branch changed since the merge-base, distinct from dirty state), and a `Changed surface:` whose `source:` line names whether it came from the branch diff or only the working tree and index.
+`toimija context` makes that state explicit: the `Git:` block (HEAD, branch, detached, upstream, merge-base, dirty, and staged/unstaged/untracked/conflict counts), a `Branch intent:` section (what the whole branch changed since the merge-base, distinct from dirty state), Git-derived relevance sections (`Scope`, `Read order`, `Coupling`, `Risk`), and a `Changed surface:` whose `source:` line names whether it came from the branch diff or only the working tree and index.
 
 ## What It Is Not
 
@@ -121,6 +121,54 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - merge-base: def456
 - files changed since merge-base: 3
 
+## Recent commits
+- abc123 feat: make Git state explicit
+- def456 feat: add config-driven context rules
+
+## Scope
+- source: branch diff since merge-base
+- in play: README.md, src, tests
+- out of scope this branch: .github, fixtures, xtask
+
+## Read order
+1. README.md — changed docs
+2. tests/git_state.rs — tests
+3. src/git.rs, src/render.rs — source files
+
+## Read first
+- src/git.rs (changed)
+- tests/git_state.rs (changed)
+- README.md (important doc)
+
+## Validation plan
+- source: inferred
+### Fast
+- cargo test --workspace
+### Strict
+- cargo fmt --check
+- cargo clippy --workspace --all-targets -- -D warnings
+### Full
+- cargo test --workspace
+### Privileged
+- none
+### Notes
+- validation inferred from Rust repo shape, not proven by Sykli
+
+## Warnings
+- No upstream detected. Branch divergence is unavailable.
+- Untracked files exist. They will not be committed unless added.
+- Working tree has unstaged changes.
+
+## Coupling
+- src/git.rs ↔ src/render.rs — changed together 4 times in the last 200 commits
+
+## Risk
+- src/render.rs — high churn — 9 commits in the last 200 commits
+- tests/git_state.rs — added on this branch — new surface
+
+## Safe to ignore
+- target/
+
 ## Working tree
 ### Staged
 - none
@@ -139,23 +187,6 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
   - src/git.rs
   - src/render.rs
   - tests/git_state.rs
-
-## Read first
-- src/git.rs (changed)
-- tests/git_state.rs (changed)
-- README.md (important doc)
-
-## Validation plan
-- source: inferred
-### Fast
-- cargo test --workspace
-### Notes
-- validation inferred from Rust repo shape, not proven by Sykli
-
-## Warnings
-- No upstream detected. Branch divergence is unavailable.
-- Untracked files exist. They will not be committed unless added.
-- Working tree has unstaged changes.
 ```
 
 ## Config
@@ -219,7 +250,8 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - read-first entries are grouped as changed files, matching-test hints, then configured docs
 - warnings are sorted and deduplicated
 - Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
-- Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections such as Read first, Validation plan, or Warnings
+- high-value Markdown sections (`Scope`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Coupling`, `Risk`) render before the raw working-tree and changed-surface lists
+- Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections
 - empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
 - Markdown and pretty JSON output have exact regression tests
 
@@ -247,6 +279,19 @@ Elixir:
 - changed Elixir files are included directly
 - `lib/foo/bar.ex` may point to `test/foo/bar_test.exs` if present
 - `mix.exs` may point to `test/test_helper.exs` if present
+
+## Git-derived relevance
+
+Toimija does not only report Git state. It also uses bounded Git history to help an agent decide what to read first and what to ignore.
+
+This is not semantic code understanding. It is relevance from Git:
+
+- changed areas since merge-base, and areas untouched by the branch (`Scope`)
+- changed files ranked by likely relevance with a short reason (`Read order`)
+- files that historically change together (`Coupling`)
+- files with high churn or young history (`Risk`)
+
+These hints are advisory. They come from `git ls-tree`, `git log`, and `git diff` (no source parsing, no network, no index), and every hint carries an honest source label. History mining is bounded: the last 200 non-merge commits. Coupling needs a pair to co-change at least twice; "high churn" means at least 8 commits touched the file in that window. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
 
 ## Future Drawer
 

@@ -3,6 +3,7 @@ use std::fmt::Write;
 use crate::config::InitReport;
 use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
+use crate::relevance::RelevanceSource;
 use crate::repo::{DoctorReport, DoctorStatus};
 use crate::validate::{ValidationPlan, ValidationSource};
 
@@ -219,14 +220,11 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     write_branch_intent(&mut output, packet);
     write_recent_commits(&mut output, packet);
-
-    if packet.for_diff {
-        write_diff_focus(&mut output, packet);
-    } else {
-        write_worktree_breakdown(&mut output, packet);
-    }
-
-    write_changed_surface(&mut output, packet);
+    // Section order is also the budget-priority order: the raw changed-file
+    // lists are emitted LAST so a large diff can never starve the high-value
+    // sections (scope, read order, validation, warnings) under a tight budget.
+    write_scope(&mut output, packet);
+    write_read_order(&mut output, packet);
 
     write_h2(&mut output, "Read first");
     if packet.read_first.is_empty() {
@@ -238,15 +236,62 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         write_more_line(&mut output, packet.read_first.len(), MAX_LIST_SHOWN, "");
     }
 
-    write_h2(&mut output, "Safe to ignore");
-    write_path_list(&mut output, &packet.safe_to_ignore, "none");
-
     output.push_str(&render_validation_plan(&packet.validation_plan));
 
     write_h2(&mut output, "Warnings");
-    write_str_list(&mut output, &packet.warnings, "none");
+    // Relevance warnings (e.g. shallow history) render alongside Git warnings.
+    let mut warnings = packet.warnings.clone();
+    warnings.extend(packet.relevance.warnings.iter().cloned());
+    write_str_list(&mut output, &warnings, "none");
+
+    write_coupling(&mut output, packet);
+    write_risk(&mut output, packet);
+
+    write_h2(&mut output, "Safe to ignore");
+    write_path_list(&mut output, &packet.safe_to_ignore, "none");
+
+    if packet.for_diff {
+        write_diff_focus(&mut output, packet);
+    } else {
+        write_worktree_breakdown(&mut output, packet);
+    }
+    write_changed_surface(&mut output, packet);
 
     truncate_to_budget(output, budget)
+}
+
+/// Render the Coupling section: pairs of changed files that historically change
+/// together within the mined window. Advisory; omitted when there is no signal.
+fn write_coupling(output: &mut String, packet: &ContextPacket) {
+    let coupling = &packet.relevance.coupling;
+    if coupling.is_empty() {
+        return;
+    }
+    write_h2(output, "Coupling");
+    for hint in coupling {
+        writeln!(
+            output,
+            "- {} ↔ {} — changed together {} times in the {}",
+            hint.left.display(),
+            hint.right.display(),
+            hint.count,
+            hint.window
+        )
+        .unwrap();
+    }
+}
+
+/// Render the Risk section: changed files flagged by cheap Git-history
+/// heuristics (high churn, young surface). Advisory; omitted when empty.
+fn write_risk(output: &mut String, packet: &ContextPacket) {
+    let risk = &packet.relevance.risk;
+    if risk.is_empty() {
+        return;
+    }
+    write_h2(output, "Risk");
+    for hint in risk {
+        writeln!(output, "- {} — {}", hint.path.display(), hint.reason).unwrap();
+    }
 }
 
 /// Render the merge-base as `<base> @ <oid>` when both are known, the bare oid
@@ -345,9 +390,7 @@ fn write_changed_surface(output: &mut String, packet: &ContextPacket) {
 fn changed_surface_source_label(source: ChangedSurfaceSource) -> &'static str {
     match source {
         ChangedSurfaceSource::BranchDiffSinceMergeBase => "branch diff since merge-base",
-        ChangedSurfaceSource::WorkingTreeAndIndex => {
-            "working tree and index only; merge-base unavailable"
-        }
+        ChangedSurfaceSource::WorkingTreeAndIndex => "working tree and index",
         ChangedSurfaceSource::Unknown => "unknown; no HEAD and no local changes",
     }
 }
@@ -378,6 +421,78 @@ fn status_label(status: &ChangeStatus) -> &'static str {
     }
 }
 
+/// Render the Scope section: the areas this branch is touching versus the
+/// areas it leaves alone. Advisory, Git-derived; omitted when there is nothing
+/// to say.
+fn write_scope(output: &mut String, packet: &ContextPacket) {
+    let Some(scope) = &packet.relevance.scope else {
+        return;
+    };
+    if scope.in_play.is_empty() {
+        return;
+    }
+    write_h2(output, "Scope");
+    writeln!(output, "- source: {}", relevance_source_label(scope.source)).unwrap();
+    let in_play = scope
+        .in_play
+        .iter()
+        .map(|area| area.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(output, "- in play: {in_play}").unwrap();
+    if !scope.out_of_scope.is_empty() {
+        let out = scope
+            .out_of_scope
+            .iter()
+            .map(|area| area.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(output, "- out of scope this branch: {out}").unwrap();
+    }
+}
+
+/// Render the Read order section: changed areas ranked by likely relevance,
+/// each with a short boring reason. Numbered for the reader; paths grouped and
+/// capped so it stays a digest, not a raw dump.
+fn write_read_order(output: &mut String, packet: &ContextPacket) {
+    let entries = &packet.relevance.read_order;
+    if entries.is_empty() {
+        return;
+    }
+    write_h2(output, "Read order");
+    const PATHS_PER_ENTRY: usize = 5;
+    for (index, entry) in entries.iter().enumerate() {
+        let mut shown: Vec<String> = entry
+            .paths
+            .iter()
+            .take(PATHS_PER_ENTRY)
+            .map(|path| path.display().to_string())
+            .collect();
+        if entry.paths.len() > PATHS_PER_ENTRY {
+            shown.push(format!("+{} more", entry.paths.len() - PATHS_PER_ENTRY));
+        }
+        writeln!(
+            output,
+            "{}. {} — {}",
+            index + 1,
+            shown.join(", "),
+            entry.reason
+        )
+        .unwrap();
+    }
+}
+
+fn relevance_source_label(source: RelevanceSource) -> &'static str {
+    match source {
+        RelevanceSource::MergeBaseDiff => "branch diff since merge-base",
+        RelevanceSource::WorkingTreeAndIndex => "working tree and index",
+        RelevanceSource::GitLog => "git log history",
+        RelevanceSource::GitBlame => "git blame",
+        RelevanceSource::Heuristic => "file-pattern heuristic",
+        RelevanceSource::Unavailable => "unavailable",
+    }
+}
+
 fn truncate_to_budget(mut output: String, budget: usize) -> String {
     if output.len() <= budget {
         return output;
@@ -405,6 +520,7 @@ mod tests {
     use crate::config::RepoConfig;
     use crate::context::ContextPacket;
     use crate::git::GitState;
+    use crate::relevance::RelevancePacket;
     use crate::repo::{RepoInfo, RepoKind};
 
     fn packet() -> ContextPacket {
@@ -446,6 +562,7 @@ mod tests {
             warnings: vec!["No upstream detected. Branch divergence is unavailable.".to_string()],
             for_diff: false,
             default_budget: Some(4000),
+            relevance: RelevancePacket::default(),
         }
     }
 
@@ -456,6 +573,33 @@ mod tests {
         assert!(rendered.contains("## Repo"));
         assert!(rendered.contains("## Git"));
         assert!(rendered.contains("## Validation plan"));
+    }
+
+    #[test]
+    fn budget_preserves_high_value_sections_over_raw_lists() {
+        let mut packet = packet();
+        // A large working tree + changed surface that, in document order, would
+        // starve the sections that matter most.
+        packet.git.unstaged_files = (0..40)
+            .map(|i| ChangedFile {
+                path: PathBuf::from(format!("src/some/deep/module_{i:02}.rs")),
+                status: ChangeStatus::Modified,
+            })
+            .collect();
+        packet.changed_surface = (0..40)
+            .map(|i| PathBuf::from(format!("src/some/deep/module_{i:02}.rs")))
+            .collect();
+        let rendered = render_context_markdown(&packet, 1000);
+        assert!(rendered.contains("Output truncated"));
+        // Validation and Warnings precede the raw lists, so they survive.
+        assert!(
+            rendered.contains("## Validation plan"),
+            "validation must survive truncation"
+        );
+        assert!(
+            rendered.contains("## Warnings"),
+            "warnings must survive truncation"
+        );
     }
 
     #[test]
@@ -606,24 +750,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 ## Recent commits
 - none
 
-## Working tree
-### Staged
-- none
-### Unstaged
-- none
-### Untracked
-- none
-### Conflicts
-- none
-
-## Changed surface
-- source: working tree and index only; merge-base unavailable
-- files: none
-
 ## Read first
-- none
-
-## Safe to ignore
 - none
 
 ## Validation plan
@@ -642,6 +769,23 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 
 ## Warnings
 - No upstream detected. Branch divergence is unavailable.
+
+## Safe to ignore
+- none
+
+## Working tree
+### Staged
+- none
+### Unstaged
+- none
+### Untracked
+- none
+### Conflicts
+- none
+
+## Changed surface
+- source: working tree and index
+- files: none
 "#;
         assert_eq!(rendered, expected);
     }
@@ -700,7 +844,14 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "No upstream detected. Branch divergence is unavailable."
   ],
   "for_diff": false,
-  "default_budget": 4000
+  "default_budget": 4000,
+  "relevance": {
+    "scope": null,
+    "read_order": [],
+    "coupling": [],
+    "risk": [],
+    "warnings": []
+  }
 }"#;
         assert_eq!(rendered, expected);
     }
