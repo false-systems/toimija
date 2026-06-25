@@ -6,7 +6,11 @@ use tracing::{debug, info};
 
 use crate::error::ToimijaError;
 
-pub const DEFAULT_BUDGET: usize = 4000;
+/// Default character budget for the Markdown context packet. Sized so the full
+/// relevance layer (Scope, Read order, Coupling, Risk) survives on a real-repo
+/// packet; a tighter packet stays well under it. Raised from 4000 when the
+/// relevance layer (#12) enlarged the packet (#23).
+pub const DEFAULT_BUDGET: usize = 8000;
 pub const CONFIG_PATH: &str = ".toimija/repo.yaml";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

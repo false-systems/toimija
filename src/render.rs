@@ -603,6 +603,68 @@ mod tests {
     }
 
     #[test]
+    fn relevance_sections_survive_the_default_budget() {
+        use crate::config::DEFAULT_BUDGET;
+        use crate::relevance::{
+            CouplingHint, RelevanceSource, RiskHint, RiskKind, ScopeArea, ScopeHints,
+        };
+        // A packet sized like a real feature branch: populated relevance plus a
+        // sizable changed surface and working tree. Guards against the default
+        // budget falling behind the packet (it did at 4000 — see #23).
+        let mut packet = packet();
+        packet.relevance.scope = Some(ScopeHints {
+            in_play: vec![ScopeArea {
+                label: "src".to_string(),
+                paths: vec![PathBuf::from("src/a.rs")],
+                reason: "1 changed file".to_string(),
+            }],
+            out_of_scope: vec![ScopeArea {
+                label: "docs".to_string(),
+                paths: Vec::new(),
+                reason: "untouched by this branch".to_string(),
+            }],
+            source: RelevanceSource::MergeBaseDiff,
+        });
+        packet.relevance.coupling = (0..5)
+            .map(|i| CouplingHint {
+                left: PathBuf::from(format!("apps/core/lib/very/long/module_{i}.ex")),
+                right: PathBuf::from(format!("apps/core/test/very/long/module_{i}_test.exs")),
+                count: 5,
+                window: "last 200 commits".to_string(),
+                source: RelevanceSource::GitLog,
+            })
+            .collect();
+        packet.relevance.risk = (0..5)
+            .map(|i| RiskHint {
+                path: PathBuf::from(format!("apps/core/lib/risky/module_{i}.ex")),
+                kind: RiskKind::HighChurn,
+                reason: "high churn — 9 commits in the last 200 commits".to_string(),
+                source: RelevanceSource::GitLog,
+            })
+            .collect();
+        packet.changed_surface = (0..30)
+            .map(|i| PathBuf::from(format!("apps/core/lib/some/deep/path/module_{i:02}.ex")))
+            .collect();
+        packet.git.unstaged_files = (0..30)
+            .map(|i| ChangedFile {
+                path: PathBuf::from(format!("apps/core/lib/some/deep/path/module_{i:02}.ex")),
+                status: ChangeStatus::Modified,
+            })
+            .collect();
+
+        let rendered = render_context_markdown(&packet, DEFAULT_BUDGET);
+        // Risk is the last relevance section; if it survives, all of them do.
+        assert!(
+            rendered.contains("## Coupling"),
+            "coupling must survive the default budget"
+        );
+        assert!(
+            rendered.contains("## Risk"),
+            "risk must survive the default budget"
+        );
+    }
+
+    #[test]
     fn budget_truncation_does_not_panic() {
         let rendered = render_context_markdown(&packet(), 100);
         assert!(rendered.contains("Output truncated"));

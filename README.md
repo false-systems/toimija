@@ -206,7 +206,7 @@ repo:
     - dashboard
 
 context:
-  default_budget: 4000
+  default_budget: 8000
   important_docs:
     - README.md
     - AGENTS.md
