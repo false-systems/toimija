@@ -219,6 +219,7 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - read-first entries are grouped as changed files, matching-test hints, then configured docs
 - warnings are sorted and deduplicated
 - Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
+- Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections such as Read first, Validation plan, or Warnings
 - empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
 - Markdown and pretty JSON output have exact regression tests
 
