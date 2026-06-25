@@ -56,6 +56,7 @@ pub fn render_doctor_report(report: &DoctorReport) -> String {
 /// *unavailable* (underivable), so they point at the file to edit instead of
 /// silently degrading the packet.
 const UNSET_HINT: &str = "(unset — add to .toimija/repo.yaml)";
+const MAX_LIST_SHOWN: usize = 25;
 
 /// A top-level section heading. A blank line precedes every `##` so sections
 /// are visually separated; this is the single place that rule lives.
@@ -73,9 +74,10 @@ fn write_str_list(output: &mut String, items: &[String], empty: &str) {
     if items.is_empty() {
         writeln!(output, "- {empty}").unwrap();
     } else {
-        for item in items {
+        for item in items.iter().take(MAX_LIST_SHOWN) {
             writeln!(output, "- {item}").unwrap();
         }
+        write_more_line(output, items.len(), MAX_LIST_SHOWN, "");
     }
 }
 
@@ -83,9 +85,10 @@ fn write_path_list(output: &mut String, items: &[std::path::PathBuf], empty: &st
     if items.is_empty() {
         writeln!(output, "- {empty}").unwrap();
     } else {
-        for item in items {
+        for item in items.iter().take(MAX_LIST_SHOWN) {
             writeln!(output, "- {}", item.display()).unwrap();
         }
+        write_more_line(output, items.len(), MAX_LIST_SHOWN, "");
     }
 }
 
@@ -93,7 +96,7 @@ fn write_changed_list(output: &mut String, items: &[ChangedFile], empty: &str) {
     if items.is_empty() {
         writeln!(output, "- {empty}").unwrap();
     } else {
-        for item in items {
+        for item in items.iter().take(MAX_LIST_SHOWN) {
             writeln!(
                 output,
                 "- {} {}",
@@ -102,6 +105,18 @@ fn write_changed_list(output: &mut String, items: &[ChangedFile], empty: &str) {
             )
             .unwrap();
         }
+        write_more_line(output, items.len(), MAX_LIST_SHOWN, "");
+    }
+}
+
+fn write_more_line(output: &mut String, total: usize, shown: usize, indent: &str) {
+    if total > shown {
+        writeln!(
+            output,
+            "{indent}- ... and {} more (truncated)",
+            total - shown
+        )
+        .unwrap();
     }
 }
 
@@ -217,9 +232,10 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     if packet.read_first.is_empty() {
         writeln!(&mut output, "- none").unwrap();
     } else {
-        for entry in &packet.read_first {
+        for entry in packet.read_first.iter().take(MAX_LIST_SHOWN) {
             writeln!(&mut output, "- {} ({})", entry.path.display(), entry.reason).unwrap();
         }
+        write_more_line(&mut output, packet.read_first.len(), MAX_LIST_SHOWN, "");
     }
 
     write_h2(&mut output, "Safe to ignore");
@@ -319,9 +335,10 @@ fn write_changed_surface(output: &mut String, packet: &ContextPacket) {
         writeln!(output, "- files: none").unwrap();
     } else {
         writeln!(output, "- files:").unwrap();
-        for item in &packet.changed_surface {
+        for item in packet.changed_surface.iter().take(MAX_LIST_SHOWN) {
             writeln!(output, "  - {}", item.display()).unwrap();
         }
+        write_more_line(output, packet.changed_surface.len(), MAX_LIST_SHOWN, "  ");
     }
 }
 
@@ -481,6 +498,47 @@ mod tests {
         // The fixture has no commits.
         let rendered = render_context_markdown(&packet(), 4000);
         assert!(rendered.contains("## Recent commits\n- none"));
+    }
+
+    #[test]
+    fn long_lists_are_capped_with_honest_remaining_count() {
+        let mut packet = packet();
+        packet.git.untracked_files = (0..(MAX_LIST_SHOWN + 3))
+            .map(|index| PathBuf::from(format!("changed_{index:02}.txt")))
+            .collect();
+
+        let rendered = render_context_markdown(&packet, 4000);
+
+        assert!(rendered.contains("- changed_00.txt"));
+        assert!(rendered.contains("- changed_24.txt"));
+        assert!(!rendered.contains("- changed_25.txt"));
+        assert!(rendered.contains("- ... and 3 more (truncated)"));
+    }
+
+    #[test]
+    fn large_worktree_does_not_starve_later_sections_at_default_budget() {
+        let mut packet = packet();
+        packet.git.untracked_files = (0..500)
+            .map(|index| PathBuf::from(format!("file_{index:03}.txt")))
+            .collect();
+        packet.changed_surface = packet.git.untracked_files.clone();
+        packet.read_first = packet
+            .changed_surface
+            .iter()
+            .map(|path| crate::context::ReadFirstEntry {
+                path: path.clone(),
+                reason: "changed".to_string(),
+            })
+            .collect();
+
+        let rendered = render_context_markdown(&packet, 4000);
+
+        assert!(rendered.contains("## Read first"));
+        assert!(rendered.contains("## Validation plan"));
+        assert!(rendered.contains("## Warnings"));
+        assert!(rendered.contains("  - ... and 475 more (truncated)"));
+        assert!(rendered.contains("- ... and 475 more (truncated)"));
+        assert!(!rendered.contains("Output truncated"));
     }
 
     #[test]
