@@ -248,6 +248,19 @@ Elixir:
 - `lib/foo/bar.ex` may point to `test/foo/bar_test.exs` if present
 - `mix.exs` may point to `test/test_helper.exs` if present
 
+## Git-derived relevance
+
+Toimija does not only report Git state. It also uses bounded Git history to help an agent decide what to read first and what to ignore.
+
+This is not semantic code understanding. It is relevance from Git:
+
+- changed areas since merge-base, and areas untouched by the branch (`Scope`)
+- changed files ranked by likely relevance with a short reason (`Read order`)
+- files that historically change together (`Coupling`)
+- files with high churn or young history (`Risk`)
+
+These hints are advisory. They come from `git ls-tree`, `git log`, and `git diff` (no source parsing, no network, no index), and every hint carries an honest source label. History mining is bounded: the last 200 non-merge commits. Coupling needs a pair to co-change at least twice; "high churn" means at least 8 commits touched the file in that window. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
+
 ## Future Drawer
 
 These are intentionally not implemented in v0.0:

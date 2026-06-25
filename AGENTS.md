@@ -2,7 +2,7 @@
 
 This repo is Toimija, an internal False Systems Rust CLI.
 
-Before inspecting files broadly, run `toimija context` (or `cargo run -- context --for-diff --budget 4000`). Toimija starts from Git state — branch, HEAD, index, merge-base, staged/unstaged/untracked files — so use that packet, and especially its Git and Branch intent sections, before reading the repo cold.
+Before inspecting files broadly, run `toimija context` (or `cargo run -- context --for-diff --budget 4000`). Toimija starts from Git state — branch, HEAD, index, merge-base, staged/unstaged/untracked files — so use that packet, and especially its Git and Branch intent sections, before reading the repo cold. The packet also carries Git-derived relevance hints (Scope, Read order, Coupling, Risk) mined from bounded Git history — advisory, not semantic truth, but use them to read the right files first.
 
 Keep changes small and reviewable. Preserve the v0.0 scope: Git-aware local context compilation, config, repo detection, validation plan rendering, observability, and tests.
 

@@ -9,8 +9,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::command::CommandRunner;
 use crate::git::run_git_ok;
@@ -122,27 +124,55 @@ pub fn compute_relevance(
     merge_base: Option<&str>,
     head_available: bool,
 ) -> RelevancePacket {
+    let started = Instant::now();
     let scope = compute_scope(runner, repo_root, changed, merge_base, head_available);
+    debug!(
+        event = "toimija.relevance.scope.computed",
+        in_play = scope.as_ref().map_or(0, |scope| scope.in_play.len()),
+        out_of_scope = scope.as_ref().map_or(0, |scope| scope.out_of_scope.len())
+    );
     let read_order = compute_read_order(changed);
+    debug!(
+        event = "toimija.relevance.read_order.computed",
+        entries = read_order.len()
+    );
 
-    // History mining is bounded to one `git log` call, reused for coupling (and
-    // risk, later). Shallow/empty history degrades to no hints plus one warning.
+    // History mining is bounded to one `git log` call, reused for coupling and
+    // risk. Shallow/empty history degrades to no hints plus one warning.
     let history = mine_log_commits(runner, repo_root, DEFAULT_LOG_WINDOW_COMMITS);
     let mut warnings = Vec::new();
     let (coupling, risk) = match &history {
         Some(commits) if !commits.is_empty() => {
             let coupling = compute_coupling(commits, changed);
+            debug!(
+                event = "toimija.relevance.coupling.computed",
+                coupling_entries = coupling.len(),
+                commits_scanned = commits.len()
+            );
             let added = mine_added_files(runner, repo_root, DEFAULT_LOG_WINDOW_COMMITS);
             let risk = compute_risk(commits, &added, changed);
+            debug!(
+                event = "toimija.relevance.risk.computed",
+                risk_entries = risk.len()
+            );
             (coupling, risk)
         }
         _ => (Vec::new(), Vec::new()),
     };
     if !changed.is_empty() && history.as_ref().is_none_or(|commits| commits.is_empty()) {
+        debug!(event = "toimija.relevance.history.unavailable");
         warnings.push(
             "Relevance history unavailable: shallow or insufficient Git history.".to_string(),
         );
     }
+    debug!(
+        event = "toimija.relevance.computed",
+        changed_files_count = changed.len(),
+        commits_scanned = history.as_ref().map_or(0, Vec::len),
+        coupling_entries = coupling.len(),
+        risk_entries = risk.len(),
+        duration_ms = started.elapsed().as_millis() as u64
+    );
 
     RelevancePacket {
         scope,
