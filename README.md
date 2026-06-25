@@ -162,7 +162,9 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 `toimija init` creates `.toimija/repo.yaml` if missing and refuses to overwrite existing files.
 
-On a fresh config it seeds `context.safe_to_ignore` with a conservative universal set of generated build/dependency dirs (`target/`, `_build/`, `deps/`, `node_modules/`, `dist/`, `build/`) and prints a **Next steps** line pointing at the identity fields (`role`, `not`, `boundaries`) you still need to fill — Git supplies the work state, but only you can supply the repo's purpose and boundaries. Until those are set, `toimija context` renders them as `(unset — add to .toimija/repo.yaml)` rather than pretending they are unavailable.
+On a fresh config it seeds `context.safe_to_ignore` with a conservative universal set of generated dirs that are effectively never tracked source — `target/`, `_build/`, `node_modules/` — and prints a **Next steps** line pointing at the identity fields (`role`, `not`, `boundaries`) you still need to fill — Git supplies the work state, but only you can supply the repo's purpose and boundaries. Until those are set, `toimija context` renders them as `(unset — add to .toimija/repo.yaml)` rather than pretending they are unavailable.
+
+Ambiguous English-word build dirs (`build/`, `dist/`, `deps/`) are **not** seeded by default: because rules match a directory name at any depth, seeding them universally would silently hide a real `src/build/` or a checked-in `dist/`. Add them yourself if your repo needs them. Note that git-ignored paths are already excluded from the surface, so `safe_to_ignore` only matters for generated output your `.gitignore` does not catch (e.g. nested build dirs missed by a root-anchored rule like `/target/` instead of `target/`).
 
 ```yaml
 repo:
@@ -182,10 +184,8 @@ context:
   safe_to_ignore:
     - target/
     - _build/
-    - deps/
     - node_modules/
-    - dist/
-    - build/
+    # opt-in (ambiguous with source dirs; match at any depth): build/, dist/, deps/
 
 validation:
   fast: []

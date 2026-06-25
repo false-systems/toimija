@@ -55,17 +55,22 @@ pub struct InitReport {
 }
 
 /// Build-output directories Toimija can safely omit from the changed surface.
-/// Conservative: only well-known generated dependency/build dirs, and the same
-/// universal set is used for `Generic` so nested fixture output does not flood
-/// an otherwise unclassified repo.
+///
+/// `safe_to_ignore` rules match a directory name at *any* depth (see
+/// `matches_ignore_rule`), and git already excludes anything in `.gitignore`
+/// before the surface is built — so this list only matters for generated output
+/// git does not ignore. We therefore seed only names that are effectively never
+/// tracked source: `target/`, `_build/`, `node_modules/`. Ambiguous English-word
+/// dirs (`build/`, `dist/`, `deps/`) are deliberately left out — seeding them
+/// universally and matching at any depth would silently hide a real `src/build/`
+/// or checked-in `dist/`. Users who want them add them explicitly and own that
+/// trade-off. The same set is used for `Generic` so nested output does not flood
+/// an unclassified repo.
 fn default_safe_to_ignore(_kind: crate::repo::RepoKind) -> Vec<PathBuf> {
     vec![
         PathBuf::from("target/"),
         PathBuf::from("_build/"),
-        PathBuf::from("deps/"),
         PathBuf::from("node_modules/"),
-        PathBuf::from("dist/"),
-        PathBuf::from("build/"),
     ]
 }
 
@@ -282,12 +287,22 @@ mod tests {
             vec![
                 PathBuf::from("target/"),
                 PathBuf::from("_build/"),
-                PathBuf::from("deps/"),
                 PathBuf::from("node_modules/"),
-                PathBuf::from("dist/"),
-                PathBuf::from("build/"),
             ]
         );
+    }
+
+    #[test]
+    fn default_safe_to_ignore_omits_ambiguous_source_dir_names() {
+        // build/, dist/, deps/ are common source dir names; seeding them
+        // universally + matching at any depth would silently hide real source.
+        let safe_to_ignore = default_safe_to_ignore(crate::repo::RepoKind::Rust);
+        for ambiguous in ["build/", "dist/", "deps/"] {
+            assert!(
+                !safe_to_ignore.contains(&PathBuf::from(ambiguous)),
+                "{ambiguous} must not be in the default seed"
+            );
+        }
     }
 
     #[test]
