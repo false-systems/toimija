@@ -247,6 +247,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     output.push_str(&render_validation_plan(&packet.validation_plan));
 
     write_coupling(&mut output, packet);
+    write_risk(&mut output, packet);
 
     write_h2(&mut output, "Warnings");
     // Relevance warnings (e.g. shallow history) render alongside Git warnings.
@@ -275,6 +276,19 @@ fn write_coupling(output: &mut String, packet: &ContextPacket) {
             hint.window
         )
         .unwrap();
+    }
+}
+
+/// Render the Risk section: changed files flagged by cheap Git-history
+/// heuristics (high churn, young surface). Advisory; omitted when empty.
+fn write_risk(output: &mut String, packet: &ContextPacket) {
+    let risk = &packet.relevance.risk;
+    if risk.is_empty() {
+        return;
+    }
+    write_h2(output, "Risk");
+    for hint in risk {
+        writeln!(output, "- {} — {}", hint.path.display(), hint.reason).unwrap();
     }
 }
 

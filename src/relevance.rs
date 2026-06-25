@@ -129,9 +129,14 @@ pub fn compute_relevance(
     // risk, later). Shallow/empty history degrades to no hints plus one warning.
     let history = mine_log_commits(runner, repo_root, DEFAULT_LOG_WINDOW_COMMITS);
     let mut warnings = Vec::new();
-    let coupling = match &history {
-        Some(commits) if !commits.is_empty() => compute_coupling(commits, changed),
-        _ => Vec::new(),
+    let (coupling, risk) = match &history {
+        Some(commits) if !commits.is_empty() => {
+            let coupling = compute_coupling(commits, changed);
+            let added = mine_added_files(runner, repo_root, DEFAULT_LOG_WINDOW_COMMITS);
+            let risk = compute_risk(commits, &added, changed);
+            (coupling, risk)
+        }
+        _ => (Vec::new(), Vec::new()),
     };
     if !changed.is_empty() && history.as_ref().is_none_or(|commits| commits.is_empty()) {
         warnings.push(
@@ -143,8 +148,8 @@ pub fn compute_relevance(
         scope,
         read_order,
         coupling,
+        risk,
         warnings,
-        ..RelevancePacket::default()
     }
 }
 
@@ -155,6 +160,99 @@ const DEFAULT_LOG_WINDOW_COMMITS: usize = 200;
 const MIN_COUPLING_COUNT: usize = 2;
 /// Cap on emitted coupling hints.
 const MAX_COUPLING_HINTS: usize = 5;
+/// A file touched by at least this many commits in the window is "high churn".
+const HIGH_CHURN_THRESHOLD: usize = 8;
+/// Cap on emitted risk hints.
+const MAX_RISK_HINTS: usize = 5;
+
+/// The set of paths added (`--diff-filter=A`) within the window — used to flag
+/// young/new surface. Empty on any failure.
+fn mine_added_files(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    window: usize,
+) -> BTreeSet<String> {
+    let limit = window.to_string();
+    run_git_ok(
+        runner,
+        repo_root,
+        &[
+            "log",
+            "--no-merges",
+            "-n",
+            &limit,
+            "--diff-filter=A",
+            "--name-only",
+            "--pretty=format:",
+        ],
+    )
+    .map(|stdout| {
+        stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn risk_rank(kind: RiskKind) -> u8 {
+    match kind {
+        RiskKind::HighChurn => 0,
+        RiskKind::YoungFile => 1,
+        RiskKind::OldLoadBearing => 2,
+    }
+}
+
+/// Flag changed files that look risky from cheap Git-history signals: high churn
+/// (many commits in the window) and young surface (added within the window).
+/// Churn takes precedence so a file is flagged at most once.
+fn compute_risk(
+    commits: &[Vec<String>],
+    added: &BTreeSet<String>,
+    changed: &[PathBuf],
+) -> Vec<RiskHint> {
+    let mut churn: BTreeMap<&str, usize> = BTreeMap::new();
+    for files in commits {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for file in files {
+            if seen.insert(file.as_str()) {
+                *churn.entry(file.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let window = format!("last {DEFAULT_LOG_WINDOW_COMMITS} commits");
+    let mut hints: Vec<RiskHint> = Vec::new();
+    for path in changed {
+        let Some(key) = path.to_str() else {
+            continue;
+        };
+        let count = churn.get(key).copied().unwrap_or(0);
+        if count >= HIGH_CHURN_THRESHOLD {
+            hints.push(RiskHint {
+                path: path.clone(),
+                kind: RiskKind::HighChurn,
+                reason: format!("high churn — {count} commits in the {window}"),
+                source: RelevanceSource::GitLog,
+            });
+        } else if added.contains(key) {
+            hints.push(RiskHint {
+                path: path.clone(),
+                kind: RiskKind::YoungFile,
+                reason: format!("added within the {window} — young surface"),
+                source: RelevanceSource::GitLog,
+            });
+        }
+    }
+    hints.sort_by(|a, b| {
+        risk_rank(a.kind)
+            .cmp(&risk_rank(b.kind))
+            .then(a.path.cmp(&b.path))
+    });
+    hints.truncate(MAX_RISK_HINTS);
+    hints
+}
 
 /// Mine the last `window` non-merge commits as lists of changed file paths.
 /// Returns `None` when `git log` fails, `Some(vec![])` when there is no history.
@@ -733,6 +831,41 @@ mod tests {
             "expected a history-unavailable warning, got {:?}",
             packet.warnings
         );
+    }
+
+    #[test]
+    fn risk_flags_high_churn_and_young_files() {
+        let mut commits: Vec<Vec<String>> = (0..8).map(|_| vec!["hot.rs".to_string()]).collect();
+        commits.push(vec!["calm.rs".to_string()]);
+        commits.push(vec!["calm.rs".to_string()]);
+        let added: BTreeSet<String> = ["new.rs".to_string()].into_iter().collect();
+        let changed = vec![
+            PathBuf::from("hot.rs"),
+            PathBuf::from("calm.rs"),
+            PathBuf::from("new.rs"),
+        ];
+        let risk = compute_risk(&commits, &added, &changed);
+        let summary: Vec<(&str, RiskKind)> = risk
+            .iter()
+            .map(|hint| (hint.path.to_str().unwrap(), hint.kind))
+            .collect();
+        // hot.rs = high churn; new.rs = young; calm.rs (2 commits, not added) = neither.
+        assert_eq!(
+            summary,
+            vec![
+                ("hot.rs", RiskKind::HighChurn),
+                ("new.rs", RiskKind::YoungFile)
+            ]
+        );
+    }
+
+    #[test]
+    fn risk_prefers_churn_over_young() {
+        let commits: Vec<Vec<String>> = (0..8).map(|_| vec!["both.rs".to_string()]).collect();
+        let added: BTreeSet<String> = ["both.rs".to_string()].into_iter().collect();
+        let risk = compute_risk(&commits, &added, &[PathBuf::from("both.rs")]);
+        assert_eq!(risk.len(), 1);
+        assert_eq!(risk[0].kind, RiskKind::HighChurn);
     }
 
     #[test]
