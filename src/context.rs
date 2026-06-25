@@ -11,7 +11,7 @@ use crate::adapters::rust::RustAdapter;
 use crate::command::CommandRunner;
 use crate::config::RepoConfig;
 use crate::git::{self, ChangedFile, GitState};
-use crate::relevance::{RelevancePacket, RelevanceSource};
+use crate::relevance::{RelevanceInput, RelevancePacket, RelevanceSource};
 use crate::repo::{self, RepoInfo, RepoKind};
 use crate::validate::ValidationPlan;
 
@@ -119,11 +119,14 @@ pub fn build_context_packet(
     let relevance = crate::relevance::compute_relevance(
         runner,
         &git.repo_root,
-        &changed_surface,
-        &branch_added,
-        scope_source(changed_surface_source),
-        git.merge_base.as_deref(),
-        git.head_oid.is_some(),
+        RelevanceInput {
+            adapter: adapter.as_ref(),
+            changed: &changed_surface,
+            branch_added: &branch_added,
+            scope_source: scope_source(changed_surface_source),
+            merge_base: git.merge_base.as_deref(),
+            head_available: git.head_oid.is_some(),
+        },
     );
     let read_first = read_first(
         &git.repo_root,

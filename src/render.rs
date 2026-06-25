@@ -265,8 +265,8 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     truncate_to_budget(output, budget)
 }
 
-/// Render the Coupling section: pairs of changed files that historically change
-/// together within the mined window. Advisory; omitted when there is no signal.
+/// Render the Coupling section: companions that are absent from the current
+/// diff. Advisory; omitted when there is no signal.
 fn write_coupling(output: &mut String, packet: &ContextPacket) {
     let coupling = &packet.relevance.coupling;
     if coupling.is_empty() {
@@ -276,18 +276,17 @@ fn write_coupling(output: &mut String, packet: &ContextPacket) {
     for hint in coupling {
         writeln!(
             output,
-            "- {} ↔ {} — changed together {} times in the {}",
-            hint.left.display(),
-            hint.right.display(),
-            hint.count,
-            hint.window
+            "- {} changed, but {} was not — {}",
+            hint.changed.display(),
+            hint.missing.display(),
+            hint.reason
         )
         .unwrap();
     }
 }
 
 /// Render the Risk section: changed files flagged by cheap Git-history
-/// heuristics (high churn, young surface). Advisory; omitted when empty.
+/// heuristics, with an advisory action. Omitted when empty.
 fn write_risk(output: &mut String, packet: &ContextPacket) {
     let risk = &packet.relevance.risk;
     if risk.is_empty() {
@@ -295,7 +294,14 @@ fn write_risk(output: &mut String, packet: &ContextPacket) {
     }
     write_h2(output, "Risk");
     for hint in risk {
-        writeln!(output, "- {} — {}", hint.path.display(), hint.reason).unwrap();
+        writeln!(
+            output,
+            "- {} — {}; {}",
+            hint.path.display(),
+            hint.reason,
+            hint.action
+        )
+        .unwrap();
     }
 }
 
@@ -633,10 +639,10 @@ mod tests {
         });
         packet.relevance.coupling = (0..5)
             .map(|i| CouplingHint {
-                left: PathBuf::from(format!("apps/core/lib/very/long/module_{i}.ex")),
-                right: PathBuf::from(format!("apps/core/test/very/long/module_{i}_test.exs")),
-                count: 5,
-                window: "last 200 commits".to_string(),
+                changed: PathBuf::from(format!("apps/core/lib/very/long/module_{i}.ex")),
+                missing: PathBuf::from(format!("apps/core/test/very/long/module_{i}_test.exs")),
+                reason: "companion test exists but is not in this diff — confirm intentional"
+                    .to_string(),
                 source: RelevanceSource::GitLog,
             })
             .collect();
@@ -645,6 +651,7 @@ mod tests {
                 path: PathBuf::from(format!("apps/core/lib/risky/module_{i}.ex")),
                 kind: RiskKind::HighChurn,
                 reason: "high churn — 9 commits in the last 200 commits".to_string(),
+                action: "hot file — keep the change small and well-tested".to_string(),
                 source: RelevanceSource::GitLog,
             })
             .collect();
