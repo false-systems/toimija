@@ -221,6 +221,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     write_branch_intent(&mut output, packet);
     write_recent_commits(&mut output, packet);
     write_scope(&mut output, packet);
+    write_read_order(&mut output, packet);
 
     if packet.for_diff {
         write_diff_focus(&mut output, packet);
@@ -407,6 +408,37 @@ fn write_scope(output: &mut String, packet: &ContextPacket) {
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(output, "- out of scope this branch: {out}").unwrap();
+    }
+}
+
+/// Render the Read order section: changed areas ranked by likely relevance,
+/// each with a short boring reason. Numbered for the reader; paths grouped and
+/// capped so it stays a digest, not a raw dump.
+fn write_read_order(output: &mut String, packet: &ContextPacket) {
+    let entries = &packet.relevance.read_order;
+    if entries.is_empty() {
+        return;
+    }
+    write_h2(output, "Read order");
+    const PATHS_PER_ENTRY: usize = 5;
+    for (index, entry) in entries.iter().enumerate() {
+        let mut shown: Vec<String> = entry
+            .paths
+            .iter()
+            .take(PATHS_PER_ENTRY)
+            .map(|path| path.display().to_string())
+            .collect();
+        if entry.paths.len() > PATHS_PER_ENTRY {
+            shown.push(format!("+{} more", entry.paths.len() - PATHS_PER_ENTRY));
+        }
+        writeln!(
+            output,
+            "{}. {} — {}",
+            index + 1,
+            shown.join(", "),
+            entry.reason
+        )
+        .unwrap();
     }
 }
 

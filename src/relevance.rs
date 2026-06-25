@@ -124,8 +124,180 @@ pub fn compute_relevance(
 ) -> RelevancePacket {
     RelevancePacket {
         scope: compute_scope(runner, repo_root, changed, merge_base, head_available),
+        read_order: compute_read_order(changed),
         ..RelevancePacket::default()
     }
+}
+
+/// Boring, file-pattern categories for read ordering. Order of the variants is
+/// the read priority: packaging first, generated/unknown last. No source
+/// parsing — purely path and name patterns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadCategory {
+    Packaging,
+    Docs,
+    Manifest,
+    Tests,
+    Source,
+    Lockfile,
+    Generated,
+}
+
+impl ReadCategory {
+    /// Lower reads first. Stable and total so ranking is deterministic.
+    fn priority(self) -> u8 {
+        match self {
+            ReadCategory::Packaging => 1,
+            ReadCategory::Docs => 2,
+            ReadCategory::Manifest => 3,
+            ReadCategory::Tests => 4,
+            ReadCategory::Source => 5,
+            ReadCategory::Lockfile => 6,
+            ReadCategory::Generated => 7,
+        }
+    }
+
+    fn reason(self) -> &'static str {
+        match self {
+            ReadCategory::Packaging => "packaging surface",
+            ReadCategory::Docs => "changed docs",
+            ReadCategory::Manifest => "manifest / dependency source",
+            ReadCategory::Tests => "tests",
+            ReadCategory::Source => "source files",
+            ReadCategory::Lockfile => "lockfile — dependency ripple, read after the manifest",
+            ReadCategory::Generated => "generated or unknown",
+        }
+    }
+}
+
+const LOCKFILES: &[&str] = &[
+    "cargo.lock",
+    "mix.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "go.sum",
+    "poetry.lock",
+    "gemfile.lock",
+    "composer.lock",
+];
+
+const MANIFESTS: &[&str] = &[
+    "cargo.toml",
+    "mix.exs",
+    "package.json",
+    "pyproject.toml",
+    "go.mod",
+    "build.gradle",
+    "build.gradle.kts",
+    "pom.xml",
+    "setup.py",
+    "gemfile",
+    "composer.json",
+];
+
+fn classify_path(path: &Path) -> ReadCategory {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let segments: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(segment) => segment.to_str().map(str::to_ascii_lowercase),
+            _ => None,
+        })
+        .collect();
+    let has_segment = |segment: &str| segments.iter().any(|seg| seg == segment);
+    let is_yaml = ext == "yml" || ext == "yaml";
+
+    if LOCKFILES.contains(&name.as_str()) {
+        return ReadCategory::Lockfile;
+    }
+    if MANIFESTS.contains(&name.as_str()) || name.ends_with(".gemspec") {
+        return ReadCategory::Manifest;
+    }
+    if name == "dockerfile"
+        || name == "containerfile"
+        || ext == "dockerfile"
+        || ((name.starts_with("docker-compose") || name.starts_with("compose")) && is_yaml)
+        || has_segment("deploy")
+        || has_segment("k8s")
+        || has_segment("charts")
+        || has_segment("helm")
+        || has_segment("infra")
+    {
+        return ReadCategory::Packaging;
+    }
+    if has_segment("generated")
+        || name.ends_with(".pb.go")
+        || name.ends_with(".pb.rs")
+        || name.ends_with("_pb2.py")
+        || name.contains(".generated.")
+        || name.ends_with(".min.js")
+        || name.ends_with(".min.css")
+    {
+        return ReadCategory::Generated;
+    }
+    if matches!(ext.as_str(), "md" | "mdx" | "rst")
+        || has_segment("docs")
+        || matches!(
+            stem.as_str(),
+            "README" | "CHANGELOG" | "LICENSE" | "CONTRIBUTING" | "AUTHORS"
+        )
+    {
+        return ReadCategory::Docs;
+    }
+    if has_segment("test")
+        || has_segment("tests")
+        || has_segment("spec")
+        || name.contains("_test.")
+        || name.contains(".test.")
+        || name.starts_with("test_")
+        || name.contains("_spec.")
+        || name.contains(".spec.")
+    {
+        return ReadCategory::Tests;
+    }
+    ReadCategory::Source
+}
+
+/// Group the changed surface into read-order categories, one entry per present
+/// category, ranked by [`ReadCategory::priority`]. Deterministic: paths within
+/// an entry are sorted.
+fn compute_read_order(changed: &[PathBuf]) -> Vec<ReadOrderEntry> {
+    let mut grouped: BTreeMap<u8, (ReadCategory, Vec<PathBuf>)> = BTreeMap::new();
+    for path in changed {
+        let category = classify_path(path);
+        grouped
+            .entry(category.priority())
+            .or_insert_with(|| (category, Vec::new()))
+            .1
+            .push(path.clone());
+    }
+    grouped
+        .into_values()
+        .map(|(category, mut paths)| {
+            paths.sort();
+            ReadOrderEntry {
+                paths,
+                reason: category.reason().to_string(),
+                priority: category.priority(),
+                source: RelevanceSource::Heuristic,
+            }
+        })
+        .collect()
 }
 
 /// The scope-area key for a path: its top-level component, or `container/child`
@@ -343,5 +515,69 @@ mod tests {
     fn scope_is_none_without_changes() {
         let runner = FakeRunner::default();
         assert!(compute_scope(&runner, Path::new("/repo"), &[], Some("x"), true).is_none());
+    }
+
+    #[test]
+    fn classify_path_recognises_boring_categories() {
+        assert_eq!(
+            classify_path(Path::new("Dockerfile")),
+            ReadCategory::Packaging
+        );
+        assert_eq!(
+            classify_path(Path::new("deploy/container/ahti.toml")),
+            ReadCategory::Packaging
+        );
+        assert_eq!(classify_path(Path::new("docs/ops.md")), ReadCategory::Docs);
+        assert_eq!(
+            classify_path(Path::new("ahti-query/Cargo.toml")),
+            ReadCategory::Manifest
+        );
+        assert_eq!(
+            classify_path(Path::new("Cargo.lock")),
+            ReadCategory::Lockfile
+        );
+        assert_eq!(
+            classify_path(Path::new("tests/foo.rs")),
+            ReadCategory::Tests
+        );
+        assert_eq!(
+            classify_path(Path::new("src/foo_test.rs")),
+            ReadCategory::Tests
+        );
+        assert_eq!(
+            classify_path(Path::new("api/types.pb.go")),
+            ReadCategory::Generated
+        );
+        assert_eq!(
+            classify_path(Path::new("src/cold_scan.rs")),
+            ReadCategory::Source
+        );
+    }
+
+    #[test]
+    fn read_order_ranks_manifest_before_lockfile_and_source() {
+        let changed = vec![
+            PathBuf::from("Cargo.lock"),
+            PathBuf::from("src/cold_scan.rs"),
+            PathBuf::from("ahti-query/Cargo.toml"),
+            PathBuf::from("Dockerfile"),
+            PathBuf::from("docs/ops.md"),
+        ];
+        let order = compute_read_order(&changed);
+        let reasons: Vec<&str> = order.iter().map(|entry| entry.reason.as_str()).collect();
+        // packaging, docs, manifest, source, lockfile — manifest before its ripple.
+        assert_eq!(
+            reasons,
+            vec![
+                "packaging surface",
+                "changed docs",
+                "manifest / dependency source",
+                "source files",
+                "lockfile — dependency ripple, read after the manifest",
+            ]
+        );
+        // priorities are strictly increasing.
+        let priorities: Vec<u8> = order.iter().map(|entry| entry.priority).collect();
+        assert!(priorities.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }
