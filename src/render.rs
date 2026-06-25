@@ -405,6 +405,7 @@ mod tests {
     use crate::config::RepoConfig;
     use crate::context::ContextPacket;
     use crate::git::GitState;
+    use crate::relevance::RelevancePacket;
     use crate::repo::{RepoInfo, RepoKind};
 
     fn packet() -> ContextPacket {
@@ -446,6 +447,7 @@ mod tests {
             warnings: vec!["No upstream detected. Branch divergence is unavailable.".to_string()],
             for_diff: false,
             default_budget: Some(4000),
+            relevance: RelevancePacket::default(),
         }
     }
 
@@ -700,7 +702,14 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "No upstream detected. Branch divergence is unavailable."
   ],
   "for_diff": false,
-  "default_budget": 4000
+  "default_budget": 4000,
+  "relevance": {
+    "scope": null,
+    "read_order": [],
+    "coupling": [],
+    "risk": [],
+    "warnings": []
+  }
 }"#;
         assert_eq!(rendered, expected);
     }

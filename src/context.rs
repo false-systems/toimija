@@ -11,6 +11,7 @@ use crate::adapters::rust::RustAdapter;
 use crate::command::CommandRunner;
 use crate::config::RepoConfig;
 use crate::git::{self, ChangedFile, GitState};
+use crate::relevance::RelevancePacket;
 use crate::repo::{self, RepoInfo, RepoKind};
 use crate::validate::ValidationPlan;
 
@@ -27,6 +28,7 @@ pub struct ContextPacket {
     pub warnings: Vec<String>,
     pub for_diff: bool,
     pub default_budget: Option<usize>,
+    pub relevance: RelevancePacket,
 }
 
 /// Where the changed surface came from. Named honestly: the surface either
@@ -126,6 +128,7 @@ pub fn build_context_packet(
         warnings,
         for_diff,
         default_budget: Some(config.context.default_budget),
+        relevance: RelevancePacket::default(),
     };
     debug!(
         event = "toimija.context.git_section.rendered",
@@ -378,6 +381,7 @@ mod tests {
             warnings: Vec::new(),
             for_diff: false,
             default_budget: Some(4000),
+            relevance: RelevancePacket::default(),
         };
         let json = serde_json::to_string(&packet).unwrap();
         assert!(json.contains("\"repo\""));
