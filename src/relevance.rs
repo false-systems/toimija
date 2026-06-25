@@ -1036,7 +1036,7 @@ mod tests {
             packet
                 .risk
                 .iter()
-                .any(|hint| hint.path == PathBuf::from("new.rs")
+                .any(|hint| hint.path == Path::new("new.rs")
                     && hint.kind == RiskKind::YoungFile
                     && hint.reason.contains("this branch")),
             "branch-added file should be young with a branch reason: {:?}",
@@ -1046,7 +1046,7 @@ mod tests {
             !packet
                 .risk
                 .iter()
-                .any(|hint| hint.path == PathBuf::from("existing.rs"))
+                .any(|hint| hint.path == Path::new("existing.rs"))
         );
     }
 
