@@ -220,16 +220,11 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     write_branch_intent(&mut output, packet);
     write_recent_commits(&mut output, packet);
+    // Section order is also the budget-priority order: the raw changed-file
+    // lists are emitted LAST so a large diff can never starve the high-value
+    // sections (scope, read order, validation, warnings) under a tight budget.
     write_scope(&mut output, packet);
     write_read_order(&mut output, packet);
-
-    if packet.for_diff {
-        write_diff_focus(&mut output, packet);
-    } else {
-        write_worktree_breakdown(&mut output, packet);
-    }
-
-    write_changed_surface(&mut output, packet);
 
     write_h2(&mut output, "Read first");
     if packet.read_first.is_empty() {
@@ -241,19 +236,26 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         write_more_line(&mut output, packet.read_first.len(), MAX_LIST_SHOWN, "");
     }
 
-    write_h2(&mut output, "Safe to ignore");
-    write_path_list(&mut output, &packet.safe_to_ignore, "none");
-
     output.push_str(&render_validation_plan(&packet.validation_plan));
-
-    write_coupling(&mut output, packet);
-    write_risk(&mut output, packet);
 
     write_h2(&mut output, "Warnings");
     // Relevance warnings (e.g. shallow history) render alongside Git warnings.
     let mut warnings = packet.warnings.clone();
     warnings.extend(packet.relevance.warnings.iter().cloned());
     write_str_list(&mut output, &warnings, "none");
+
+    write_coupling(&mut output, packet);
+    write_risk(&mut output, packet);
+
+    write_h2(&mut output, "Safe to ignore");
+    write_path_list(&mut output, &packet.safe_to_ignore, "none");
+
+    if packet.for_diff {
+        write_diff_focus(&mut output, packet);
+    } else {
+        write_worktree_breakdown(&mut output, packet);
+    }
+    write_changed_surface(&mut output, packet);
 
     truncate_to_budget(output, budget)
 }
@@ -576,6 +578,33 @@ mod tests {
     }
 
     #[test]
+    fn budget_preserves_high_value_sections_over_raw_lists() {
+        let mut packet = packet();
+        // A large working tree + changed surface that, in document order, would
+        // starve the sections that matter most.
+        packet.git.unstaged_files = (0..40)
+            .map(|i| ChangedFile {
+                path: PathBuf::from(format!("src/some/deep/module_{i:02}.rs")),
+                status: ChangeStatus::Modified,
+            })
+            .collect();
+        packet.changed_surface = (0..40)
+            .map(|i| PathBuf::from(format!("src/some/deep/module_{i:02}.rs")))
+            .collect();
+        let rendered = render_context_markdown(&packet, 1000);
+        assert!(rendered.contains("Output truncated"));
+        // Validation and Warnings precede the raw lists, so they survive.
+        assert!(
+            rendered.contains("## Validation plan"),
+            "validation must survive truncation"
+        );
+        assert!(
+            rendered.contains("## Warnings"),
+            "warnings must survive truncation"
+        );
+    }
+
+    #[test]
     fn budget_truncation_does_not_panic() {
         let rendered = render_context_markdown(&packet(), 100);
         assert!(rendered.contains("Output truncated"));
@@ -723,24 +752,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 ## Recent commits
 - none
 
-## Working tree
-### Staged
-- none
-### Unstaged
-- none
-### Untracked
-- none
-### Conflicts
-- none
-
-## Changed surface
-- source: working tree and index only; merge-base unavailable
-- files: none
-
 ## Read first
-- none
-
-## Safe to ignore
 - none
 
 ## Validation plan
@@ -759,6 +771,23 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 
 ## Warnings
 - No upstream detected. Branch divergence is unavailable.
+
+## Safe to ignore
+- none
+
+## Working tree
+### Staged
+- none
+### Unstaged
+- none
+### Untracked
+- none
+### Conflicts
+- none
+
+## Changed surface
+- source: working tree and index only; merge-base unavailable
+- files: none
 "#;
         assert_eq!(rendered, expected);
     }
