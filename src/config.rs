@@ -54,18 +54,6 @@ pub struct InitReport {
     pub guidance: Vec<String>,
 }
 
-/// Build-output directories Toimija can safely omit from the changed surface
-/// for a detected repo kind. Conservative: only well-known build dirs, nothing
-/// that could hide real source. Empty for `Generic` — we do not guess.
-fn default_safe_to_ignore(kind: crate::repo::RepoKind) -> Vec<PathBuf> {
-    use crate::repo::RepoKind;
-    match kind {
-        RepoKind::Rust => vec![PathBuf::from("target/")],
-        RepoKind::Elixir => vec![PathBuf::from("_build/"), PathBuf::from("deps/")],
-        RepoKind::Generic => Vec::new(),
-    }
-}
-
 impl Default for ContextSection {
     fn default() -> Self {
         Self {
@@ -152,12 +140,11 @@ pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
     if config_path.exists() {
         report.existing.push(config_path);
     } else {
-        let mut config = RepoConfig::default_for(repo_root);
-        // Seed safe_to_ignore with the detected kind's build dirs so a fresh
-        // repo ignores the obvious noise without hand-tuning.
-        config.context.safe_to_ignore =
-            default_safe_to_ignore(crate::repo::detect_repo_kind(repo_root));
-        let text = serde_yaml::to_string(&config).expect("config serializes");
+        // Build/vendor noise is filtered live at context time (see
+        // BUILTIN_ARTIFACT_DIRS), so the fresh config is left clean —
+        // safe_to_ignore is for the repo's own additions only.
+        let text =
+            serde_yaml::to_string(&RepoConfig::default_for(repo_root)).expect("config serializes");
         fs::write(&config_path, text).map_err(|source| ToimijaError::WriteFile {
             path: config_path.clone(),
             source,
