@@ -329,10 +329,39 @@ fn changed_surface_falls_back_to_working_tree_without_a_base() {
         .arg("context")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "source: working tree and index only; merge-base unavailable",
-        ))
+        .stdout(predicate::str::contains("source: working tree and index"))
         .stdout(predicate::str::contains(
             "No base branch detected. Branch intent is unavailable.",
         ));
+}
+
+#[test]
+fn working_tree_dirt_at_base_is_not_labelled_branch_diff() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    // A branch sitting at its base: merge-base exists (== HEAD) but the branch
+    // has no committed diff. Only an untracked file is present. The surface and
+    // the relevance scope must say "working tree and index", not branch diff.
+    run_git(temp.path(), &["branch", "-M", "main"]);
+    run_git(temp.path(), &["checkout", "-b", "feature"]);
+    fs::write(temp.path().join("scratch.txt"), "scratch\n").unwrap();
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        value["changed_surface_source"], "working_tree_and_index",
+        "no committed branch diff -> working tree, not merge-base diff"
+    );
+    assert_eq!(
+        value["relevance"]["scope"]["source"], "working_tree_and_index",
+        "relevance scope must mirror the real surface source"
+    );
 }

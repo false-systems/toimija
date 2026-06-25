@@ -121,11 +121,12 @@ pub fn compute_relevance(
     runner: &impl CommandRunner,
     repo_root: &Path,
     changed: &[PathBuf],
+    scope_source: RelevanceSource,
     merge_base: Option<&str>,
     head_available: bool,
 ) -> RelevancePacket {
     let started = Instant::now();
-    let scope = compute_scope(runner, repo_root, changed, merge_base, head_available);
+    let scope = compute_scope(runner, repo_root, changed, scope_source, head_available);
     debug!(
         event = "toimija.relevance.scope.computed",
         in_play = scope.as_ref().map_or(0, |scope| scope.in_play.len()),
@@ -137,9 +138,12 @@ pub fn compute_relevance(
         entries = read_order.len()
     );
 
-    // History mining is bounded to one `git log` call, reused for coupling and
-    // risk. Shallow/empty history degrades to no hints plus one warning.
-    let history = mine_log_commits(runner, repo_root, DEFAULT_LOG_WINDOW_COMMITS);
+    // History mining starts from the merge-base, not HEAD, so the branch's own
+    // commits do not count as historical evidence (they would make any file the
+    // branch repeatedly edits look "coupled"). Falls back to HEAD when there is
+    // no merge-base. Bounded to one `git log` call, reused for coupling and risk.
+    let log_ref = merge_base.unwrap_or("HEAD");
+    let history = mine_log_commits(runner, repo_root, log_ref, DEFAULT_LOG_WINDOW_COMMITS);
     let mut warnings = Vec::new();
     let (coupling, risk) = match &history {
         Some(commits) if !commits.is_empty() => {
@@ -149,7 +153,7 @@ pub fn compute_relevance(
                 coupling_entries = coupling.len(),
                 commits_scanned = commits.len()
             );
-            let added = mine_added_files(runner, repo_root, DEFAULT_LOG_WINDOW_COMMITS);
+            let added = mine_added_files(runner, repo_root, log_ref, DEFAULT_LOG_WINDOW_COMMITS);
             let risk = compute_risk(commits, &added, changed);
             debug!(
                 event = "toimija.relevance.risk.computed",
@@ -200,6 +204,7 @@ const MAX_RISK_HINTS: usize = 5;
 fn mine_added_files(
     runner: &impl CommandRunner,
     repo_root: &Path,
+    start_ref: &str,
     window: usize,
 ) -> BTreeSet<String> {
     let limit = window.to_string();
@@ -208,6 +213,7 @@ fn mine_added_files(
         repo_root,
         &[
             "log",
+            start_ref,
             "--no-merges",
             "-n",
             &limit,
@@ -291,6 +297,7 @@ fn compute_risk(
 fn mine_log_commits(
     runner: &impl CommandRunner,
     repo_root: &Path,
+    start_ref: &str,
     window: usize,
 ) -> Option<Vec<Vec<String>>> {
     let limit = window.to_string();
@@ -299,6 +306,7 @@ fn mine_log_commits(
         repo_root,
         &[
             "log",
+            start_ref,
             "--no-merges",
             "-n",
             &limit,
@@ -602,17 +610,12 @@ fn compute_scope(
     runner: &impl CommandRunner,
     repo_root: &Path,
     changed: &[PathBuf],
-    merge_base: Option<&str>,
+    source: RelevanceSource,
     head_available: bool,
 ) -> Option<ScopeHints> {
     if changed.is_empty() {
         return None;
     }
-    let source = if merge_base.is_some() {
-        RelevanceSource::MergeBaseDiff
-    } else {
-        RelevanceSource::WorkingTreeAndIndex
-    };
 
     let mut grouped: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for path in changed {
@@ -737,8 +740,14 @@ mod tests {
             PathBuf::from("apps/vartio_core/lib/x.ex"),
             PathBuf::from("deploy/container/a.toml"),
         ];
-        let scope =
-            compute_scope(&runner, Path::new("/repo"), &changed, Some("abc123"), true).unwrap();
+        let scope = compute_scope(
+            &runner,
+            Path::new("/repo"),
+            &changed,
+            RelevanceSource::MergeBaseDiff,
+            true,
+        )
+        .unwrap();
         assert_eq!(scope.source, RelevanceSource::MergeBaseDiff);
         assert_eq!(labels(&scope.in_play), vec!["apps/vartio_core", "deploy"]);
         // apps expanded one level; only the untouched areas remain.
@@ -752,7 +761,14 @@ mod tests {
     fn scope_omits_out_of_scope_when_structure_unclear() {
         let runner = FakeRunner::default().with(&["ls-tree", "--name-only", "-d", "HEAD"], "src\n");
         let changed = vec![PathBuf::from("src/main.rs")];
-        let scope = compute_scope(&runner, Path::new("/repo"), &changed, None, true).unwrap();
+        let scope = compute_scope(
+            &runner,
+            Path::new("/repo"),
+            &changed,
+            RelevanceSource::WorkingTreeAndIndex,
+            true,
+        )
+        .unwrap();
         assert_eq!(scope.source, RelevanceSource::WorkingTreeAndIndex);
         assert!(scope.out_of_scope.is_empty());
     }
@@ -760,7 +776,16 @@ mod tests {
     #[test]
     fn scope_is_none_without_changes() {
         let runner = FakeRunner::default();
-        assert!(compute_scope(&runner, Path::new("/repo"), &[], Some("x"), true).is_none());
+        assert!(
+            compute_scope(
+                &runner,
+                Path::new("/repo"),
+                &[],
+                RelevanceSource::Unavailable,
+                true
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -805,6 +830,7 @@ mod tests {
         let runner = FakeRunner::default().with(
             &[
                 "log",
+                "basesha",
                 "--no-merges",
                 "-n",
                 "200",
@@ -813,10 +839,44 @@ mod tests {
             ],
             "@@hash1\nsrc/a.rs\nsrc/b.rs\n\n@@hash2\nsrc/a.rs\n",
         );
-        let commits = mine_log_commits(&runner, Path::new("/repo"), 200).unwrap();
+        let commits = mine_log_commits(&runner, Path::new("/repo"), "basesha", 200).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0], vec!["src/a.rs", "src/b.rs"]);
         assert_eq!(commits[1], vec!["src/a.rs"]);
+    }
+
+    #[test]
+    fn history_is_mined_from_merge_base_not_head() {
+        // The fake runner answers log only for the "basesha" ref. If mining used
+        // HEAD instead of the merge-base, it would get nothing and no coupling.
+        let runner = FakeRunner::default().with(
+            &[
+                "log",
+                "basesha",
+                "--no-merges",
+                "-n",
+                "200",
+                "--name-only",
+                "--pretty=format:@@%H",
+            ],
+            "@@h1\na.rs\nb.rs\n@@h2\na.rs\nb.rs\n",
+        );
+        let changed = vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")];
+        let packet = compute_relevance(
+            &runner,
+            Path::new("/repo"),
+            &changed,
+            RelevanceSource::MergeBaseDiff,
+            Some("basesha"),
+            true,
+        );
+        assert_eq!(
+            packet.coupling.len(),
+            1,
+            "coupling should come from merge-base history"
+        );
+        assert_eq!(packet.coupling[0].count, 2);
+        assert!(packet.warnings.is_empty());
     }
 
     #[test]
@@ -851,7 +911,14 @@ mod tests {
         // FakeRunner returns failure for every command, so log mining yields None.
         let runner = FakeRunner::default();
         let changed = vec![PathBuf::from("src/a.rs")];
-        let packet = compute_relevance(&runner, Path::new("/repo"), &changed, Some("base"), true);
+        let packet = compute_relevance(
+            &runner,
+            Path::new("/repo"),
+            &changed,
+            RelevanceSource::MergeBaseDiff,
+            Some("base"),
+            true,
+        );
         assert!(packet.coupling.is_empty());
         assert!(
             packet

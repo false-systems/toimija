@@ -390,9 +390,7 @@ fn write_changed_surface(output: &mut String, packet: &ContextPacket) {
 fn changed_surface_source_label(source: ChangedSurfaceSource) -> &'static str {
     match source {
         ChangedSurfaceSource::BranchDiffSinceMergeBase => "branch diff since merge-base",
-        ChangedSurfaceSource::WorkingTreeAndIndex => {
-            "working tree and index only; merge-base unavailable"
-        }
+        ChangedSurfaceSource::WorkingTreeAndIndex => "working tree and index",
         ChangedSurfaceSource::Unknown => "unknown; no HEAD and no local changes",
     }
 }
@@ -786,7 +784,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 - none
 
 ## Changed surface
-- source: working tree and index only; merge-base unavailable
+- source: working tree and index
 - files: none
 "#;
         assert_eq!(rendered, expected);
