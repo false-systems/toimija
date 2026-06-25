@@ -30,3 +30,28 @@ Re-run the install command after changing `xtask` (the hook is a copied binary
 snapshot).
 
 Update README.md when CLI behavior changes.
+
+## Working with other agents
+
+Several agents may work this repo at once and fast. Coordinate through Git and
+GitHub primitives, not assumptions:
+
+- **Claim before you work.** Before starting an issue, assign it to yourself
+  (`gh issue edit <n> --add-assignee @me`) or comment that you are taking it.
+  First check whether it is already assigned or has an open PR — do not
+  duplicate work.
+- **Re-orient before you act.** Run `toimija context`, then
+  `git fetch && git log --oneline origin/main && gh pr list`. Never branch from
+  a stale `main`.
+- **Small, short-lived branches.** One unit of work → one small PR → merge →
+  others pull. Long-lived branches drift and rot.
+- **Rebase on `origin/main` right before opening or merging**, not only at
+  branch creation.
+- **Merge bottom-up; delete only leaf branches.** Never delete a branch another
+  PR is stacked on — it closes the stacked PR.
+- **After any merge, pull and reinstall.** `git pull && cargo install --path .`
+  — a stale local binary lies about the code.
+
+Coordination state — who is doing what right now — lives in issue assignments,
+draft PRs, and labels, not in Git. Toimija reports Git work state; it does not
+coordinate agents, and should not be made to.
