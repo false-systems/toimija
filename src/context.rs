@@ -108,10 +108,19 @@ pub fn build_context_packet(
         files = changed.len()
     );
     let changed_surface: Vec<PathBuf> = changed.iter().map(|file| file.path.clone()).collect();
+    // Files this branch added (status A in the merge-base..HEAD diff): the
+    // youngest possible surface, which base-history mining cannot see.
+    let branch_added: Vec<PathBuf> = git
+        .branch_files
+        .iter()
+        .filter(|file| matches!(file.status, git::ChangeStatus::Added))
+        .map(|file| file.path.clone())
+        .collect();
     let relevance = crate::relevance::compute_relevance(
         runner,
         &git.repo_root,
         &changed_surface,
+        &branch_added,
         scope_source(changed_surface_source),
         git.merge_base.as_deref(),
         git.head_oid.is_some(),

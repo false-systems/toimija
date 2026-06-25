@@ -121,6 +121,7 @@ pub fn compute_relevance(
     runner: &impl CommandRunner,
     repo_root: &Path,
     changed: &[PathBuf],
+    branch_added: &[PathBuf],
     scope_source: RelevanceSource,
     merge_base: Option<&str>,
     head_available: bool,
@@ -153,8 +154,16 @@ pub fn compute_relevance(
                 coupling_entries = coupling.len(),
                 commits_scanned = commits.len()
             );
-            let added = mine_added_files(runner, repo_root, log_ref, DEFAULT_LOG_WINDOW_COMMITS);
-            let risk = compute_risk(commits, &added, changed);
+            // Young surface comes from two places: files added in base history
+            // (mined) and files this branch itself added (never in base-history
+            // mining, but the youngest surface there is).
+            let base_added =
+                mine_added_files(runner, repo_root, log_ref, DEFAULT_LOG_WINDOW_COMMITS);
+            let branch_added_set: BTreeSet<String> = branch_added
+                .iter()
+                .filter_map(|path| path.to_str().map(str::to_string))
+                .collect();
+            let risk = compute_risk(commits, &base_added, &branch_added_set, changed);
             debug!(
                 event = "toimija.relevance.risk.computed",
                 risk_entries = risk.len()
@@ -233,20 +242,15 @@ fn mine_added_files(
     .unwrap_or_default()
 }
 
-fn risk_rank(kind: RiskKind) -> u8 {
-    match kind {
-        RiskKind::HighChurn => 0,
-        RiskKind::YoungFile => 1,
-        RiskKind::OldLoadBearing => 2,
-    }
-}
-
-/// Flag changed files that look risky from cheap Git-history signals: high churn
-/// (many commits in the window) and young surface (added within the window).
-/// Churn takes precedence so a file is flagged at most once.
+/// Flag changed files that look risky from cheap Git-history signals. A file is
+/// flagged at most once, in this precedence: high churn (many commits in the
+/// window) > young because this branch added it > young because it was added
+/// recently in base history. The branch's own new files rank above base-history
+/// additions so they are not buried under the cap.
 fn compute_risk(
     commits: &[Vec<String>],
-    added: &BTreeSet<String>,
+    base_added: &BTreeSet<String>,
+    branch_added: &BTreeSet<String>,
     changed: &[PathBuf],
 ) -> Vec<RiskHint> {
     let mut churn: BTreeMap<&str, usize> = BTreeMap::new();
@@ -259,35 +263,50 @@ fn compute_risk(
         }
     }
     let window = format!("last {DEFAULT_LOG_WINDOW_COMMITS} commits");
-    let mut hints: Vec<RiskHint> = Vec::new();
+    // (rank, hint): lower rank shown first, ties broken by path.
+    let mut ranked: Vec<(u8, RiskHint)> = Vec::new();
     for path in changed {
         let Some(key) = path.to_str() else {
             continue;
         };
         let count = churn.get(key).copied().unwrap_or(0);
-        if count >= HIGH_CHURN_THRESHOLD {
-            hints.push(RiskHint {
+        let (rank, kind, reason) = if count >= HIGH_CHURN_THRESHOLD {
+            (
+                0,
+                RiskKind::HighChurn,
+                format!("high churn — {count} commits in the {window}"),
+            )
+        } else if branch_added.contains(key) {
+            (
+                1,
+                RiskKind::YoungFile,
+                "added on this branch — new surface".to_string(),
+            )
+        } else if base_added.contains(key) {
+            (
+                2,
+                RiskKind::YoungFile,
+                "recently added — young surface".to_string(),
+            )
+        } else {
+            continue;
+        };
+        ranked.push((
+            rank,
+            RiskHint {
                 path: path.clone(),
-                kind: RiskKind::HighChurn,
-                reason: format!("high churn — {count} commits in the {window}"),
+                kind,
+                reason,
                 source: RelevanceSource::GitLog,
-            });
-        } else if added.contains(key) {
-            hints.push(RiskHint {
-                path: path.clone(),
-                kind: RiskKind::YoungFile,
-                reason: format!("added within the {window} — young surface"),
-                source: RelevanceSource::GitLog,
-            });
-        }
+            },
+        ));
     }
-    hints.sort_by(|a, b| {
-        risk_rank(a.kind)
-            .cmp(&risk_rank(b.kind))
-            .then(a.path.cmp(&b.path))
-    });
-    hints.truncate(MAX_RISK_HINTS);
-    hints
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.path.cmp(&b.1.path)));
+    ranked
+        .into_iter()
+        .take(MAX_RISK_HINTS)
+        .map(|(_, hint)| hint)
+        .collect()
 }
 
 /// Mine the last `window` non-merge commits as lists of changed file paths.
@@ -866,6 +885,7 @@ mod tests {
             &runner,
             Path::new("/repo"),
             &changed,
+            &[],
             RelevanceSource::MergeBaseDiff,
             Some("basesha"),
             true,
@@ -915,6 +935,7 @@ mod tests {
             &runner,
             Path::new("/repo"),
             &changed,
+            &[],
             RelevanceSource::MergeBaseDiff,
             Some("base"),
             true,
@@ -941,7 +962,7 @@ mod tests {
             PathBuf::from("calm.rs"),
             PathBuf::from("new.rs"),
         ];
-        let risk = compute_risk(&commits, &added, &changed);
+        let risk = compute_risk(&commits, &added, &BTreeSet::new(), &changed);
         let summary: Vec<(&str, RiskKind)> = risk
             .iter()
             .map(|hint| (hint.path.to_str().unwrap(), hint.kind))
@@ -960,9 +981,73 @@ mod tests {
     fn risk_prefers_churn_over_young() {
         let commits: Vec<Vec<String>> = (0..8).map(|_| vec!["both.rs".to_string()]).collect();
         let added: BTreeSet<String> = ["both.rs".to_string()].into_iter().collect();
-        let risk = compute_risk(&commits, &added, &[PathBuf::from("both.rs")]);
+        let risk = compute_risk(
+            &commits,
+            &added,
+            &BTreeSet::new(),
+            &[PathBuf::from("both.rs")],
+        );
         assert_eq!(risk.len(), 1);
         assert_eq!(risk[0].kind, RiskKind::HighChurn);
+    }
+
+    #[test]
+    fn branch_added_files_are_flagged_young() {
+        // Base history exists but never saw new.rs; the branch added it. It must
+        // still be flagged young, even though base-history mining cannot see it.
+        let runner = FakeRunner::default()
+            .with(
+                &[
+                    "log",
+                    "basesha",
+                    "--no-merges",
+                    "-n",
+                    "200",
+                    "--name-only",
+                    "--pretty=format:@@%H",
+                ],
+                "@@h1\nexisting.rs\n",
+            )
+            .with(
+                &[
+                    "log",
+                    "basesha",
+                    "--no-merges",
+                    "-n",
+                    "200",
+                    "--diff-filter=A",
+                    "--name-only",
+                    "--pretty=format:",
+                ],
+                "",
+            );
+        let changed = vec![PathBuf::from("new.rs"), PathBuf::from("existing.rs")];
+        let branch_added = vec![PathBuf::from("new.rs")];
+        let packet = compute_relevance(
+            &runner,
+            Path::new("/repo"),
+            &changed,
+            &branch_added,
+            RelevanceSource::MergeBaseDiff,
+            Some("basesha"),
+            true,
+        );
+        assert!(
+            packet
+                .risk
+                .iter()
+                .any(|hint| hint.path == PathBuf::from("new.rs")
+                    && hint.kind == RiskKind::YoungFile
+                    && hint.reason.contains("this branch")),
+            "branch-added file should be young with a branch reason: {:?}",
+            packet.risk
+        );
+        assert!(
+            !packet
+                .risk
+                .iter()
+                .any(|hint| hint.path == PathBuf::from("existing.rs"))
+        );
     }
 
     #[test]
