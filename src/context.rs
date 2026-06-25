@@ -107,7 +107,14 @@ pub fn build_context_packet(
         source = ?changed_surface_source,
         files = changed.len()
     );
-    let changed_surface = changed.iter().map(|file| file.path.clone()).collect();
+    let changed_surface: Vec<PathBuf> = changed.iter().map(|file| file.path.clone()).collect();
+    let relevance = crate::relevance::compute_relevance(
+        runner,
+        &git.repo_root,
+        &changed_surface,
+        git.merge_base.as_deref(),
+        git.head_oid.is_some(),
+    );
     let read_first = read_first(
         &git.repo_root,
         &config,
@@ -128,7 +135,7 @@ pub fn build_context_packet(
         warnings,
         for_diff,
         default_budget: Some(config.context.default_budget),
-        relevance: RelevancePacket::default(),
+        relevance,
     };
     debug!(
         event = "toimija.context.git_section.rendered",

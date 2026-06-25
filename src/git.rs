@@ -258,7 +258,9 @@ fn run_git_required(
     Ok(output.stdout)
 }
 
-fn run_git_ok(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> Option<String> {
+/// Run a git command, returning its stdout only on success. Shared with the
+/// relevance layer for bounded history mining.
+pub(crate) fn run_git_ok(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> Option<String> {
     let output = runner.run(cwd, "git", args).ok()?;
     (output.status == 0).then_some(output.stdout)
 }

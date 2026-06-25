@@ -3,6 +3,7 @@ use std::fmt::Write;
 use crate::config::InitReport;
 use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
+use crate::relevance::RelevanceSource;
 use crate::repo::{DoctorReport, DoctorStatus};
 use crate::validate::{ValidationPlan, ValidationSource};
 
@@ -219,6 +220,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     write_branch_intent(&mut output, packet);
     write_recent_commits(&mut output, packet);
+    write_scope(&mut output, packet);
 
     if packet.for_diff {
         write_diff_focus(&mut output, packet);
@@ -375,6 +377,47 @@ fn status_label(status: &ChangeStatus) -> &'static str {
         ChangeStatus::Copied => "copied",
         ChangeStatus::Untracked => "untracked",
         ChangeStatus::Unknown(_) => "unknown",
+    }
+}
+
+/// Render the Scope section: the areas this branch is touching versus the
+/// areas it leaves alone. Advisory, Git-derived; omitted when there is nothing
+/// to say.
+fn write_scope(output: &mut String, packet: &ContextPacket) {
+    let Some(scope) = &packet.relevance.scope else {
+        return;
+    };
+    if scope.in_play.is_empty() {
+        return;
+    }
+    write_h2(output, "Scope");
+    writeln!(output, "- source: {}", relevance_source_label(scope.source)).unwrap();
+    let in_play = scope
+        .in_play
+        .iter()
+        .map(|area| area.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(output, "- in play: {in_play}").unwrap();
+    if !scope.out_of_scope.is_empty() {
+        let out = scope
+            .out_of_scope
+            .iter()
+            .map(|area| area.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(output, "- out of scope this branch: {out}").unwrap();
+    }
+}
+
+fn relevance_source_label(source: RelevanceSource) -> &'static str {
+    match source {
+        RelevanceSource::MergeBaseDiff => "branch diff since merge-base",
+        RelevanceSource::WorkingTreeAndIndex => "working tree and index",
+        RelevanceSource::GitLog => "git log history",
+        RelevanceSource::GitBlame => "git blame",
+        RelevanceSource::Heuristic => "file-pattern heuristic",
+        RelevanceSource::Unavailable => "unavailable",
     }
 }
 
