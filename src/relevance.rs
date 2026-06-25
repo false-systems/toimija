@@ -122,11 +122,129 @@ pub fn compute_relevance(
     merge_base: Option<&str>,
     head_available: bool,
 ) -> RelevancePacket {
+    let scope = compute_scope(runner, repo_root, changed, merge_base, head_available);
+    let read_order = compute_read_order(changed);
+
+    // History mining is bounded to one `git log` call, reused for coupling (and
+    // risk, later). Shallow/empty history degrades to no hints plus one warning.
+    let history = mine_log_commits(runner, repo_root, DEFAULT_LOG_WINDOW_COMMITS);
+    let mut warnings = Vec::new();
+    let coupling = match &history {
+        Some(commits) if !commits.is_empty() => compute_coupling(commits, changed),
+        _ => Vec::new(),
+    };
+    if !changed.is_empty() && history.as_ref().is_none_or(|commits| commits.is_empty()) {
+        warnings.push(
+            "Relevance history unavailable: shallow or insufficient Git history.".to_string(),
+        );
+    }
+
     RelevancePacket {
-        scope: compute_scope(runner, repo_root, changed, merge_base, head_available),
-        read_order: compute_read_order(changed),
+        scope,
+        read_order,
+        coupling,
+        warnings,
         ..RelevancePacket::default()
     }
+}
+
+/// Default bounded history window for log mining. Conservative so the work stays
+/// cheap on large repos; overridable via config later.
+const DEFAULT_LOG_WINDOW_COMMITS: usize = 200;
+/// A pair must co-change at least this many times to be worth surfacing.
+const MIN_COUPLING_COUNT: usize = 2;
+/// Cap on emitted coupling hints.
+const MAX_COUPLING_HINTS: usize = 5;
+
+/// Mine the last `window` non-merge commits as lists of changed file paths.
+/// Returns `None` when `git log` fails, `Some(vec![])` when there is no history.
+/// The `@@` marker prefixes each commit hash so file paths (which never start
+/// with `@@`) parse unambiguously.
+fn mine_log_commits(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    window: usize,
+) -> Option<Vec<Vec<String>>> {
+    let limit = window.to_string();
+    let stdout = run_git_ok(
+        runner,
+        repo_root,
+        &[
+            "log",
+            "--no-merges",
+            "-n",
+            &limit,
+            "--name-only",
+            "--pretty=format:@@%H",
+        ],
+    )?;
+    let mut commits: Vec<Vec<String>> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut started = false;
+    for line in stdout.lines() {
+        if line.starts_with("@@") {
+            if started {
+                commits.push(std::mem::take(&mut current));
+            }
+            started = true;
+        } else {
+            let file = line.trim();
+            if !file.is_empty() {
+                current.push(file.to_string());
+            }
+        }
+    }
+    if started {
+        commits.push(current);
+    }
+    Some(commits)
+}
+
+/// Count how often each pair of *changed* files appeared together in the same
+/// commit across the mined window. Only pairs at or above [`MIN_COUPLING_COUNT`]
+/// are surfaced, ranked by count then path. Bounded by the changed-surface size.
+fn compute_coupling(commits: &[Vec<String>], changed: &[PathBuf]) -> Vec<CouplingHint> {
+    let changed_set: BTreeSet<&str> = changed.iter().filter_map(|path| path.to_str()).collect();
+    if changed_set.len() < 2 {
+        return Vec::new();
+    }
+    let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for files in commits {
+        let mut present: Vec<&str> = files
+            .iter()
+            .map(String::as_str)
+            .filter(|file| changed_set.contains(file))
+            .collect();
+        present.sort_unstable();
+        present.dedup();
+        for (i, left) in present.iter().enumerate() {
+            for right in &present[i + 1..] {
+                *pair_counts
+                    .entry((left.to_string(), right.to_string()))
+                    .or_default() += 1;
+            }
+        }
+    }
+    let window = format!("last {DEFAULT_LOG_WINDOW_COMMITS} commits");
+    let mut hints: Vec<CouplingHint> = pair_counts
+        .into_iter()
+        .filter(|(_, count)| *count >= MIN_COUPLING_COUNT)
+        .map(|((left, right), count)| CouplingHint {
+            left: PathBuf::from(left),
+            right: PathBuf::from(right),
+            count,
+            window: window.clone(),
+            source: RelevanceSource::GitLog,
+        })
+        .collect();
+    hints.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then(a.left.cmp(&b.left))
+            .then(a.right.cmp(&b.right))
+    });
+    hints.truncate(MAX_COUPLING_HINTS);
+    hints
 }
 
 /// Boring, file-pattern categories for read ordering. Order of the variants is
@@ -551,6 +669,69 @@ mod tests {
         assert_eq!(
             classify_path(Path::new("src/cold_scan.rs")),
             ReadCategory::Source
+        );
+    }
+
+    #[test]
+    fn mine_log_parses_marker_format() {
+        let runner = FakeRunner::default().with(
+            &[
+                "log",
+                "--no-merges",
+                "-n",
+                "200",
+                "--name-only",
+                "--pretty=format:@@%H",
+            ],
+            "@@hash1\nsrc/a.rs\nsrc/b.rs\n\n@@hash2\nsrc/a.rs\n",
+        );
+        let commits = mine_log_commits(&runner, Path::new("/repo"), 200).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0], vec!["src/a.rs", "src/b.rs"]);
+        assert_eq!(commits[1], vec!["src/a.rs"]);
+    }
+
+    #[test]
+    fn coupling_counts_pairs_among_changed_files() {
+        let commits = vec![
+            vec!["a.rs".to_string(), "b.rs".to_string(), "z.rs".to_string()],
+            vec!["a.rs".to_string(), "b.rs".to_string()],
+            vec!["a.rs".to_string(), "c.rs".to_string()],
+        ];
+        let changed = vec![
+            PathBuf::from("a.rs"),
+            PathBuf::from("b.rs"),
+            PathBuf::from("c.rs"),
+        ];
+        let hints = compute_coupling(&commits, &changed);
+        // a~b co-changed twice (kept); a~c once (below threshold); z not changed.
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].left, PathBuf::from("a.rs"));
+        assert_eq!(hints[0].right, PathBuf::from("b.rs"));
+        assert_eq!(hints[0].count, 2);
+        assert_eq!(hints[0].source, RelevanceSource::GitLog);
+    }
+
+    #[test]
+    fn coupling_empty_with_fewer_than_two_changed() {
+        let hints = compute_coupling(&[vec!["a.rs".to_string()]], &[PathBuf::from("a.rs")]);
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn relevance_warns_on_unavailable_history() {
+        // FakeRunner returns failure for every command, so log mining yields None.
+        let runner = FakeRunner::default();
+        let changed = vec![PathBuf::from("src/a.rs")];
+        let packet = compute_relevance(&runner, Path::new("/repo"), &changed, Some("base"), true);
+        assert!(packet.coupling.is_empty());
+        assert!(
+            packet
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Relevance history unavailable")),
+            "expected a history-unavailable warning, got {:?}",
+            packet.warnings
         );
     }
 

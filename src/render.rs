@@ -246,10 +246,36 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     output.push_str(&render_validation_plan(&packet.validation_plan));
 
+    write_coupling(&mut output, packet);
+
     write_h2(&mut output, "Warnings");
-    write_str_list(&mut output, &packet.warnings, "none");
+    // Relevance warnings (e.g. shallow history) render alongside Git warnings.
+    let mut warnings = packet.warnings.clone();
+    warnings.extend(packet.relevance.warnings.iter().cloned());
+    write_str_list(&mut output, &warnings, "none");
 
     truncate_to_budget(output, budget)
+}
+
+/// Render the Coupling section: pairs of changed files that historically change
+/// together within the mined window. Advisory; omitted when there is no signal.
+fn write_coupling(output: &mut String, packet: &ContextPacket) {
+    let coupling = &packet.relevance.coupling;
+    if coupling.is_empty() {
+        return;
+    }
+    write_h2(output, "Coupling");
+    for hint in coupling {
+        writeln!(
+            output,
+            "- {} ↔ {} — changed together {} times in the {}",
+            hint.left.display(),
+            hint.right.display(),
+            hint.count,
+            hint.window
+        )
+        .unwrap();
+    }
 }
 
 /// Render the merge-base as `<base> @ <oid>` when both are known, the bare oid
