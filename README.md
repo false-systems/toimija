@@ -136,8 +136,6 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 3. src/git.rs, src/render.rs — source files
 
 ## Read first
-- src/git.rs (changed)
-- tests/git_state.rs (changed)
 - README.md (important doc)
 
 ## Validation plan
@@ -182,11 +180,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 ## Changed surface
 - source: branch diff since merge-base
-- files:
-  - README.md
-  - src/git.rs
-  - src/render.rs
-  - tests/git_state.rs
+- 4 files — see Read order
 ```
 
 ## Config

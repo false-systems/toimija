@@ -227,13 +227,18 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     write_read_order(&mut output, packet);
 
     write_h2(&mut output, "Read first");
-    if packet.read_first.is_empty() {
+    let read_first: Vec<_> = packet
+        .read_first
+        .iter()
+        .filter(|entry| entry.reason == "repo config" || entry.reason == "important doc")
+        .collect();
+    if read_first.is_empty() {
         writeln!(&mut output, "- none").unwrap();
     } else {
-        for entry in packet.read_first.iter().take(MAX_LIST_SHOWN) {
+        for entry in read_first.iter().take(MAX_LIST_SHOWN) {
             writeln!(&mut output, "- {} ({})", entry.path.display(), entry.reason).unwrap();
         }
-        write_more_line(&mut output, packet.read_first.len(), MAX_LIST_SHOWN, "");
+        write_more_line(&mut output, read_first.len(), MAX_LIST_SHOWN, "");
     }
 
     output.push_str(&render_validation_plan(&packet.validation_plan));
@@ -379,11 +384,12 @@ fn write_changed_surface(output: &mut String, packet: &ContextPacket) {
     if packet.changed_surface.is_empty() {
         writeln!(output, "- files: none").unwrap();
     } else {
-        writeln!(output, "- files:").unwrap();
-        for item in packet.changed_surface.iter().take(MAX_LIST_SHOWN) {
-            writeln!(output, "  - {}", item.display()).unwrap();
-        }
-        write_more_line(output, packet.changed_surface.len(), MAX_LIST_SHOWN, "  ");
+        writeln!(
+            output,
+            "- {} files — see Read order",
+            packet.changed_surface.len()
+        )
+        .unwrap();
     }
 }
 
@@ -722,6 +728,43 @@ mod tests {
     }
 
     #[test]
+    fn markdown_consolidates_changed_file_views_without_changing_json() {
+        let mut packet = packet();
+        packet.changed_surface = vec![PathBuf::from("src/lib.rs"), PathBuf::from("tests/lib.rs")];
+        packet.read_first = vec![
+            crate::context::ReadFirstEntry {
+                path: PathBuf::from("src/lib.rs"),
+                reason: "changed".to_string(),
+            },
+            crate::context::ReadFirstEntry {
+                path: PathBuf::from("tests/lib.rs"),
+                reason: "matching test heuristic".to_string(),
+            },
+            crate::context::ReadFirstEntry {
+                path: PathBuf::from("docs/architecture.md"),
+                reason: "repo config".to_string(),
+            },
+            crate::context::ReadFirstEntry {
+                path: PathBuf::from("README.md"),
+                reason: "important doc".to_string(),
+            },
+        ];
+
+        let rendered = render_context_markdown(&packet, 4000);
+        assert!(rendered.contains("## Read first"));
+        assert!(rendered.contains("- docs/architecture.md (repo config)"));
+        assert!(rendered.contains("- README.md (important doc)"));
+        assert!(!rendered.contains("- src/lib.rs (changed)"));
+        assert!(!rendered.contains("- tests/lib.rs (matching test heuristic)"));
+        assert!(rendered.contains("- 2 files — see Read order"));
+        assert!(!rendered.contains("  - src/lib.rs"));
+
+        let json = serde_json::to_value(&packet).unwrap();
+        assert_eq!(json["changed_surface"].as_array().unwrap().len(), 2);
+        assert_eq!(json["read_first"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
     fn large_worktree_does_not_starve_later_sections_at_default_budget() {
         let mut packet = packet();
         packet.git.untracked_files = (0..500)
@@ -742,7 +785,6 @@ mod tests {
         assert!(rendered.contains("## Read first"));
         assert!(rendered.contains("## Validation plan"));
         assert!(rendered.contains("## Warnings"));
-        assert!(rendered.contains("  - ... and 475 more (truncated)"));
         assert!(rendered.contains("- ... and 475 more (truncated)"));
         assert!(!rendered.contains("Output truncated"));
     }
