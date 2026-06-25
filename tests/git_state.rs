@@ -77,29 +77,57 @@ fn init_creates_config_without_overwrite() {
 }
 
 #[test]
-fn init_seeds_safe_to_ignore_for_detected_kind() {
+fn build_artifacts_are_filtered_live_without_config() {
     if !git_available() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo(temp.path());
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    )
-    .unwrap();
+    // Create the Toimija config via `toimija init`.
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
         .arg("init")
         .assert()
         .success();
-    // Rust repo -> target/ seeded into safe_to_ignore so the obvious build
-    // noise is ignored without hand-tuning.
+    // A fresh config does not seed safe_to_ignore — build noise is filtered live.
     let config = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
     assert!(
-        config.contains("safe_to_ignore:") && config.contains("- target/"),
-        "expected target/ seeded; got:\n{config}"
+        config.contains("safe_to_ignore: []"),
+        "fresh config should not seed safe_to_ignore; got:\n{config}"
+    );
+    // Nested build output, no safe_to_ignore configured. The built-in artifact
+    // filter is applied live, so a nested `target/` is kept out of the changed
+    // surface regardless of repo kind.
+    fs::create_dir_all(temp.path().join("test_projects/rust_test/target")).unwrap();
+    fs::write(
+        temp.path().join("test_projects/rust_test/target/junk.o"),
+        "noise\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("real_source.txt"), "keep me\n").unwrap();
+
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let surface: Vec<String> = value["changed_surface"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        surface.iter().any(|p| p == "real_source.txt"),
+        "real source should be in the surface: {surface:?}"
+    );
+    assert!(
+        !surface.iter().any(|p| p.contains("target/")),
+        "nested target/ build artifacts must be filtered: {surface:?}"
     );
 }
 

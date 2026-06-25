@@ -93,7 +93,12 @@ pub fn build_context_packet(
         }
     }
     let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
-    let changed = filter_ignored(all_changed(&git), &safe_to_ignore);
+    // Effective ignore set = the repo's configured rules plus a small built-in
+    // set of build/vendor dirs. Applied live (derived each run), not seeded into
+    // repo.yaml, so it tracks the repo as it changes and never drifts. The
+    // rendered `safe_to_ignore` field stays the user's configured rules only.
+    let ignore_rules = effective_ignore_rules(&safe_to_ignore);
+    let changed = filter_ignored(all_changed(&git), &ignore_rules);
     let changed_surface_source = changed_surface_source(&git);
     debug!(
         event = "toimija.git.changed_surface.selected",
@@ -226,17 +231,47 @@ fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
-fn matches_safe_to_ignore(path: &Path, safe_to_ignore: &[PathBuf]) -> bool {
-    safe_to_ignore.iter().any(|rule| {
-        let normalized = trim_trailing_separator(rule);
-        !normalized.as_os_str().is_empty() && (path == normalized || path.starts_with(normalized))
-    })
+/// Build/vendor directories Toimija always treats as noise, matched as a path
+/// segment anywhere in the tree. Kept small and near-universal — these are build
+/// output or vendored deps, not product source. Applied live every run.
+const BUILTIN_ARTIFACT_DIRS: &[&str] = &["target", "_build", "deps", "node_modules"];
+
+fn effective_ignore_rules(configured: &[PathBuf]) -> Vec<PathBuf> {
+    let mut rules: Vec<PathBuf> = configured.to_vec();
+    rules.extend(BUILTIN_ARTIFACT_DIRS.iter().map(PathBuf::from));
+    rules
 }
 
-fn trim_trailing_separator(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    let trimmed = text.trim_end_matches(['/', '\\']);
-    PathBuf::from(trimmed)
+fn matches_safe_to_ignore(path: &Path, rules: &[PathBuf]) -> bool {
+    let path_segments = normal_segments(path);
+    rules
+        .iter()
+        .any(|rule| rule_matches_segments(&path_segments, rule))
+}
+
+/// A rule matches when its directory segments appear as a contiguous run of
+/// components anywhere in the path. So `target` matches `a/b/target/x` but not
+/// `targeted.rs` or `targets/`, and `deploy/container` matches only a real
+/// `deploy/container/...` sequence. Component-wise, never substring.
+fn rule_matches_segments(path_segments: &[&std::ffi::OsStr], rule: &Path) -> bool {
+    let rule_segments = normal_segments(rule);
+    if rule_segments.is_empty() {
+        return false;
+    }
+    path_segments
+        .windows(rule_segments.len())
+        .any(|window| window == rule_segments.as_slice())
+}
+
+/// Normal path components only — drops `/`, `.`, and `..` and any trailing
+/// separator, so `./target/` and `target` compare equal.
+fn normal_segments(path: &Path) -> Vec<&std::ffi::OsStr> {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(segment) => Some(segment),
+            _ => None,
+        })
+        .collect()
 }
 
 fn stable_strings(strings: Vec<String>) -> Vec<String> {
@@ -424,6 +459,59 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Path::new("src/lib.rs")]
         );
+    }
+
+    #[test]
+    fn ignore_matching_is_segment_aware_not_substring() {
+        let rules = [PathBuf::from("target/")];
+        // Nested anywhere in the tree is ignored.
+        assert!(matches_safe_to_ignore(
+            Path::new("test_projects/rust_test/target/debug/junk.o"),
+            &rules
+        ));
+        assert!(matches_safe_to_ignore(Path::new("target/x"), &rules));
+        // Substring / sibling names are NOT ignored — component match only.
+        assert!(!matches_safe_to_ignore(
+            Path::new("a/b/targeted.rs"),
+            &rules
+        ));
+        assert!(!matches_safe_to_ignore(Path::new("targets/x"), &rules));
+        assert!(!matches_safe_to_ignore(Path::new("src/lib.rs"), &rules));
+    }
+
+    #[test]
+    fn multi_segment_rules_match_contiguous_sequence() {
+        let rules = [PathBuf::from("deploy/container")];
+        assert!(matches_safe_to_ignore(
+            Path::new("deploy/container/ahti.toml"),
+            &rules
+        ));
+        // Only the full sequence matches; a partial tail does not.
+        assert!(!matches_safe_to_ignore(
+            Path::new("container/ahti.toml"),
+            &rules
+        ));
+    }
+
+    #[test]
+    fn builtin_artifact_dirs_are_filtered_even_with_empty_config() {
+        let rules = effective_ignore_rules(&[]);
+        // No configured rules, yet built-in build/vendor dirs are ignored live.
+        assert!(matches_safe_to_ignore(
+            Path::new("test_projects/rust_test/target/x"),
+            &rules
+        ));
+        assert!(matches_safe_to_ignore(
+            Path::new("apps/foo/_build/y"),
+            &rules
+        ));
+        assert!(matches_safe_to_ignore(Path::new("deps/grpc/z"), &rules));
+        assert!(matches_safe_to_ignore(
+            Path::new("web/node_modules/pkg/i.js"),
+            &rules
+        ));
+        // Real source survives.
+        assert!(!matches_safe_to_ignore(Path::new("lib/foo/bar.ex"), &rules));
     }
 
     #[test]
