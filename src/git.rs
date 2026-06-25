@@ -117,7 +117,7 @@ pub fn collect_git_state(
         }
     }
     let detached = parsed.detached || (branch.is_none() && head_oid.is_some());
-    let base = discover_base(runner, &repo_root, parsed.upstream.as_deref());
+    let base = discover_base(runner, &repo_root);
     let merge_base = if head_oid.is_some() {
         base.as_deref().and_then(|base| {
             run_git_ok(runner, &repo_root, &["merge-base", "HEAD", base])
@@ -214,14 +214,10 @@ pub fn collect_git_state(
     ))
 }
 
-fn discover_base(
-    runner: &impl CommandRunner,
-    repo_root: &Path,
-    upstream: Option<&str>,
-) -> Option<String> {
-    if let Some(upstream) = upstream {
-        return Some(upstream.to_string());
-    }
+fn discover_base(runner: &impl CommandRunner, repo_root: &Path) -> Option<String> {
+    // Branch intent compares against the integration trunk, not the branch's
+    // push/pull upstream. A pushed feature branch commonly tracks
+    // origin/<feature>, which would make merge-base collapse to HEAD.
     if let Some(default_remote) = run_git_ok(
         runner,
         repo_root,
@@ -516,10 +512,12 @@ R094\tsrc/old.rs\tsrc/renamed.rs
     }
 
     #[test]
-    fn base_discovery_prefers_upstream() {
-        let runner = FakeRunner::default();
-        let base = discover_base(&runner, Path::new("."), Some("origin/feature"));
-        assert_eq!(base.as_deref(), Some("origin/feature"));
+    fn base_discovery_ignores_feature_upstream_and_prefers_trunk() {
+        let runner = FakeRunner::default()
+            .with(&["rev-parse", "--verify", "origin/main"], 0, "abc\n")
+            .with(&["rev-parse", "--verify", "origin/feature"], 0, "def\n");
+        let base = discover_base(&runner, Path::new("."));
+        assert_eq!(base.as_deref(), Some("origin/main"));
     }
 
     #[test]
@@ -534,7 +532,7 @@ R094\tsrc/old.rs\tsrc/renamed.rs
             0,
             "origin/trunk\n",
         );
-        let base = discover_base(&runner, Path::new("."), None);
+        let base = discover_base(&runner, Path::new("."));
         assert_eq!(base.as_deref(), Some("origin/trunk"));
     }
 
@@ -544,7 +542,7 @@ R094\tsrc/old.rs\tsrc/renamed.rs
             .with(&["rev-parse", "--verify", "origin/main"], 1, "")
             .with(&["rev-parse", "--verify", "origin/master"], 1, "")
             .with(&["rev-parse", "--verify", "main"], 0, "abc\n");
-        let base = discover_base(&runner, Path::new("."), None);
+        let base = discover_base(&runner, Path::new("."));
         assert_eq!(base.as_deref(), Some("main"));
     }
 }
