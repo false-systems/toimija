@@ -15,4 +15,7 @@ pub trait LanguageAdapter {
     fn validation_plan(&self, repo_root: &Path, config: &RepoConfig) -> ValidationPlan;
     fn read_first_hints(&self, repo_root: &Path, changed: &[ChangedFile])
     -> Vec<(PathBuf, String)>;
+    fn companion_tests(&self, _repo_root: &Path, _path: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }

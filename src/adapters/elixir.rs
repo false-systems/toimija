@@ -29,16 +29,20 @@ impl LanguageAdapter for ElixirAdapter {
     ) -> Vec<(PathBuf, String)> {
         let mut hints = Vec::new();
         for file in changed {
-            let path = &file.path;
-            for candidate in elixir_test_candidates(path) {
-                if repo_root.join(&candidate).exists() {
-                    hints.push((candidate, "matching test heuristic".to_string()));
-                }
+            for candidate in self.companion_tests(repo_root, &file.path) {
+                hints.push((candidate, "matching test heuristic".to_string()));
             }
         }
         hints.sort_by(|left, right| left.0.cmp(&right.0));
         hints.dedup_by(|left, right| left.0 == right.0);
         hints
+    }
+
+    fn companion_tests(&self, repo_root: &Path, path: &Path) -> Vec<PathBuf> {
+        elixir_test_candidates(path)
+            .into_iter()
+            .filter(|candidate| repo_root.join(candidate).exists())
+            .collect()
     }
 }
 

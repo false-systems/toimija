@@ -136,8 +136,6 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 3. src/git.rs, src/render.rs — source files
 
 ## Read first
-- src/git.rs (changed)
-- tests/git_state.rs (changed)
 - README.md (important doc)
 
 ## Validation plan
@@ -160,11 +158,11 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - Working tree has unstaged changes.
 
 ## Coupling
-- src/git.rs ↔ src/render.rs — changed together 4 times in the last 200 commits
+- src/git.rs changed, but tests/git_state.rs was not — companion test exists but is not in this diff — confirm intentional
 
 ## Risk
-- src/render.rs — high churn — 9 commits in the last 200 commits
-- tests/git_state.rs — added on this branch — new surface
+- src/render.rs — high churn — 9 commits in the last 200 commits; hot file — keep the change small and well-tested
+- tests/git_state.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage
 
 ## Safe to ignore
 - target/
@@ -182,11 +180,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 ## Changed surface
 - source: branch diff since merge-base
-- files:
-  - README.md
-  - src/git.rs
-  - src/render.rs
-  - tests/git_state.rs
+- 4 files — see Read order
 ```
 
 ## Config
@@ -288,10 +282,10 @@ This is not semantic code understanding. It is relevance from Git:
 
 - changed areas since merge-base, and areas untouched by the branch (`Scope`)
 - changed files ranked by likely relevance with a short reason (`Read order`)
-- files that historically change together (`Coupling`)
-- files with high churn or young history (`Risk`)
+- companion files that are missing from the current diff (`Coupling`)
+- files with high churn, young surface, or stable/load-bearing history plus a concrete action hint (`Risk`)
 
-These hints are advisory. They come from `git ls-tree`, `git log`, and `git diff` (no source parsing, no network, no index), and every hint carries an honest source label. History mining is bounded: the last 200 non-merge commits. Coupling needs a pair to co-change at least twice; "high churn" means at least 8 commits touched the file in that window. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
+These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, and language adapter path heuristics (no source parsing, no network, no index), and every hint carries an honest source label. History mining is bounded: the last 200 non-merge commits, starting from the merge-base so the branch does not vote on its own relevance. Historical coupling needs a missing partner to co-change at least twice and in at least 60% of the changed file's edits; existing companion tests are surfaced through path heuristics. "High churn" means at least 8 commits touched the file in that window. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
 
 ## Future Drawer
 

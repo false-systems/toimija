@@ -242,6 +242,50 @@ fn branch_intent_uses_trunk_not_feature_upstream() {
 }
 
 #[test]
+fn context_surfaces_missing_companion_test_and_risk_action() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    run_git(temp.path(), &["branch", "-M", "main"]);
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(temp.path().join("tests")).unwrap();
+    fs::write(temp.path().join("tests/foo.rs"), "#[test]\nfn foo() {}\n").unwrap();
+    run_git(temp.path(), &["add", "Cargo.toml", "tests/foo.rs"]);
+    run_git(temp.path(), &["commit", "-m", "add rust test surface"]);
+
+    run_git(temp.path(), &["checkout", "-b", "feature"]);
+    fs::create_dir_all(temp.path().join("src")).unwrap();
+    fs::write(temp.path().join("src/foo.rs"), "pub fn foo() {}\n").unwrap();
+    run_git(temp.path(), &["add", "src/foo.rs"]);
+    run_git(temp.path(), &["commit", "-m", "add foo source"]);
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Coupling"))
+        .stdout(predicate::str::contains(
+            "src/foo.rs changed, but tests/foo.rs was not",
+        ))
+        .stdout(predicate::str::contains(
+            "companion test exists but is not in this diff",
+        ))
+        .stdout(predicate::str::contains("## Risk"))
+        .stdout(predicate::str::contains(
+            "src/foo.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage",
+        ))
+        .stdout(predicate::str::contains("↔").not());
+}
+
+#[test]
 fn unborn_branch_reports_head_and_merge_base_unavailable() {
     if !git_available() {
         return;
