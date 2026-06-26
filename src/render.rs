@@ -510,8 +510,18 @@ fn truncate_to_budget(mut output: String, budget: usize) -> String {
         return output;
     }
     let marker = "\n\nOutput truncated to fit approximate budget.\n";
-    let keep = budget.saturating_sub(marker.len()).max(1);
-    output.truncate(keep);
+    let keep = budget.saturating_sub(marker.len());
+    // Cut on a line boundary at or before `keep`, never mid-line: a half-path
+    // fragment reads like a real file to an agent, and a cut inside a multi-byte
+    // char (—, ↔) would panic in String::truncate. '\n' is a single byte that
+    // never appears inside a multi-byte UTF-8 sequence, so scanning raw bytes is
+    // safe and the resulting index is always a char boundary.
+    let upper = keep.min(output.len());
+    let cut = output.as_bytes()[..upper]
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |index| index + 1);
+    output.truncate(cut);
     output.push_str(marker);
     output
 }
@@ -675,6 +685,24 @@ mod tests {
             rendered.contains("## Risk"),
             "risk must survive the default budget"
         );
+    }
+
+    #[test]
+    fn budget_truncation_cuts_on_line_boundary_without_splitting_chars() {
+        const MARKER: &str = "\n\nOutput truncated to fit approximate budget.\n";
+        // The fixture contains multi-byte chars (the em dash in the unset hint,
+        // the apostrophe in "Git’s state machine"). Sweeping budgets across them
+        // exercises cuts that a raw byte truncate would split (and panic on).
+        let packet = packet();
+        for budget in 30..600 {
+            let rendered = render_context_markdown(&packet, budget);
+            if let Some(kept) = rendered.strip_suffix(MARKER) {
+                assert!(
+                    kept.is_empty() || kept.ends_with('\n'),
+                    "kept content must end on a line boundary (no half-path) at budget {budget}"
+                );
+            }
+        }
     }
 
     #[test]
