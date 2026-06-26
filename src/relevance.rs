@@ -232,6 +232,9 @@ const MIN_COUPLING_CONFIDENCE_NUMERATOR: usize = 3;
 const MIN_COUPLING_CONFIDENCE_DENOMINATOR: usize = 5;
 /// Cap on emitted coupling hints.
 const MAX_COUPLING_HINTS: usize = 5;
+/// Cap on missing companions surfaced per changed file, so one hub file (e.g. a
+/// CI workflow with many co-change partners) cannot fill every coupling slot.
+const MAX_COUPLING_PER_FILE: usize = 2;
 /// A file touched by at least this many commits in the window is "high churn".
 const HIGH_CHURN_THRESHOLD: usize = 8;
 /// Cap on emitted risk hints.
@@ -545,22 +548,47 @@ fn compute_coupling(
             ))
         })
         .collect();
-    let mut history_hints = history_hints;
-    history_hints.sort_by(|a, b| {
-        b.0.cmp(&a.0)
+    // Rank candidates so the caps keep the strongest signal, not the
+    // alphabetically-first: test-mapping companions (a real test exists) first,
+    // then history partners by confidence. Dedup by (changed, missing) — the
+    // test-mapping hint wins.
+    // (rank, support): rank 0 = test-mapping companions first, then history by
+    // co-change support (count) descending. Confidence is the gate applied
+    // above; among gated candidates, more co-changes is the stronger "you
+    // usually touch this too" signal (9/11 beats a coincidental 2/2).
+    let mut ranked: Vec<(u8, usize, CouplingHint)> = Vec::new();
+    let mut seen: BTreeSet<(PathBuf, PathBuf)> = BTreeSet::new();
+    for (key, hint) in hints {
+        seen.insert(key);
+        ranked.push((0, usize::MAX, hint));
+    }
+    for (count, _edits, hint) in history_hints {
+        if !seen.insert((hint.changed.clone(), hint.missing.clone())) {
+            continue;
+        }
+        ranked.push((1, count, hint));
+    }
+    ranked.sort_by(|a, b| {
+        a.0.cmp(&b.0)
             .then(b.1.cmp(&a.1))
             .then(a.2.changed.cmp(&b.2.changed))
             .then(a.2.missing.cmp(&b.2.missing))
     });
-    for (_, _, hint) in history_hints {
-        hints
-            .entry((hint.changed.clone(), hint.missing.clone()))
-            .or_insert(hint);
-        if hints.len() >= MAX_COUPLING_HINTS {
+
+    let mut per_file: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    let mut result = Vec::new();
+    for (_, _, hint) in ranked {
+        let used = per_file.entry(hint.changed.clone()).or_default();
+        if *used >= MAX_COUPLING_PER_FILE {
+            continue;
+        }
+        *used += 1;
+        result.push(hint);
+        if result.len() >= MAX_COUPLING_HINTS {
             break;
         }
     }
-    hints.into_values().take(MAX_COUPLING_HINTS).collect()
+    result
 }
 
 fn changed_set(changed: &[PathBuf]) -> BTreeSet<&Path> {
@@ -1127,6 +1155,45 @@ mod tests {
         let hints = compute_coupling(&commits, &changed, &BTreeMap::new());
 
         assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn coupling_caps_per_file_and_keeps_high_confidence() {
+        let mut commits: Vec<Vec<String>> = Vec::new();
+        // hub.yml co-changes with three partners in 3 of its 5 edits (3/5).
+        for _ in 0..3 {
+            commits.push(vec![
+                "hub.yml".to_string(),
+                "a.yml".to_string(),
+                "b.yml".to_string(),
+                "c.yml".to_string(),
+            ]);
+        }
+        for _ in 0..2 {
+            commits.push(vec!["hub.yml".to_string()]);
+        }
+        // important.rs co-changes with critical.rs every time (confidence 1).
+        for _ in 0..4 {
+            commits.push(vec!["important.rs".to_string(), "critical.rs".to_string()]);
+        }
+        let changed = vec![PathBuf::from("hub.yml"), PathBuf::from("important.rs")];
+        let hints = compute_coupling(&commits, &changed, &BTreeMap::new());
+
+        // The high-confidence companion is not crowded out by the noisy hub file.
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.changed == Path::new("important.rs")
+                    && hint.missing == Path::new("critical.rs")),
+            "high-confidence companion must survive the cap: {hints:?}"
+        );
+        // The hub file is capped per changed file.
+        let hub = hints
+            .iter()
+            .filter(|hint| hint.changed == Path::new("hub.yml"))
+            .count();
+        assert!(hub <= MAX_COUPLING_PER_FILE, "hub file not capped: {hub}");
+        assert!(hints.len() <= MAX_COUPLING_HINTS);
     }
 
     #[test]
