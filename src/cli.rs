@@ -176,6 +176,10 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
     let config = RepoConfig::load_optional(&repo_root)?
         .unwrap_or_else(|| RepoConfig::default_for(&repo_root));
     let kind = repo::detect_repo_kind(&repo_root);
+    // Intentionally surface-independent: `validate --plan` answers "what does
+    // this repo's validation look like?", so it renders the static plan only.
+    // The `Focused (from changed surface)` tier is a property of a diff and is
+    // enriched in `context::build_context_packet`; it is absent here by design.
     let plan = validate::validation_plan(&repo_root, &config, kind);
     println!("{}", render::render_validation_plan(&plan));
     Ok(())
