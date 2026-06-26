@@ -140,6 +140,9 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 ## Validation plan
 - source: inferred
+### Focused (from changed surface)
+- derived from the changed surface — a fast first pass, not a substitute for the full run
+- cargo test -p toimija
 ### Fast
 - cargo test --workspace
 ### Strict
@@ -221,6 +224,8 @@ boundaries:
   - Keep the core as a single Rust crate for v0.0.
   - Do not add MCP, LSP, SCIP, Tree-sitter, background tasks, or network calls yet.
 ```
+
+The `Focused (from changed surface)` tier is derived, not configured: for a Rust repo it maps changed `.rs` files to their owning crate (the nearest enclosing `Cargo.toml`) and emits `cargo test -p <crate>` for a fast first pass, deduped per crate and rendered above the authoritative `Fast` tier. It is advisory and additive — never a substitute for the full run. When only manifests or docs change, or a change spans more crates than the cap, the tier is omitted and the whole-repo command stands.
 
 `context.read_first` adds repo-specific files to the Read first section when they exist.
 `context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
