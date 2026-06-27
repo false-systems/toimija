@@ -80,6 +80,7 @@ toimija context --for-diff
 toimija context --budget 4000
 toimija snippet preflight
 toimija snippet script
+toimija landed --base origin/main
 toimija validate --plan
 ```
 
@@ -169,6 +170,39 @@ Wire it into the same gate that runs your other checks:
 ```bash
 toimija doctor --strict
 ```
+
+## Did the work land? (`toimija landed`)
+
+"Did my branch land?" is a **content** question, not an ancestry question. Under
+squash merges this matters: a squash-merge synthesizes a fresh commit with no
+edge back to your branch tip, so `git merge-base --is-ancestor <tip> origin/main`
+reports `false` even when every line landed. Patch-id checks (`git cherry`) fail
+too, because squash fuses commits. Only tree/content comparison survives both.
+
+`toimija landed` answers by comparing your branch's touched surface against a
+base ref (default `origin/main`):
+
+```bash
+git fetch                         # re-validate against live state first
+toimija landed --base origin/main
+```
+
+```text
+Toimija landed
+
+- base: origin/main
+- branch: feat/doctor-strict-drift-guard (a13296a)
+- status: landed
+- reason: all 7 touched path(s) are reflected in `origin/main`
+- reflected: 7/7
+```
+
+Status is `landed` (no touched path differs from base), `not landed` (all
+differ), `partially landed` (some reflected, some not — the unreflected paths are
+listed), or `unknown` (no merge-base — unrelated histories or an unfetched base).
+It is read-only and `--json` is available for scripting. Useful for stacked PRs:
+after a parent merges via squash, check a child with `toimija landed` rather than
+trusting ancestry.
 
 ## Example Context Output
 

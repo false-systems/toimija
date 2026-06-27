@@ -19,6 +19,9 @@ fn top_level_help_describes_every_subcommand() {
         ))
         .stdout(predicate::str::contains("Agent entry"))
         .stdout(predicate::str::contains("Print suggested preflight text"))
+        .stdout(predicate::str::contains(
+            "Check whether this branch's work has landed",
+        ))
         .stdout(predicate::str::contains("Print the validation plan"));
 }
 

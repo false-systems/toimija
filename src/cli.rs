@@ -8,6 +8,7 @@ use crate::command::ProcessCommandRunner;
 use crate::config::{self, RepoConfig};
 use crate::context;
 use crate::git;
+use crate::landed;
 use crate::logging::LogFormat;
 use crate::render;
 use crate::repo;
@@ -52,6 +53,12 @@ pub enum Command {
     Enter(ContextArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     Snippet(SnippetArgs),
+    /// Check whether this branch's work has landed in a base ref by content.
+    ///
+    /// Answers "did this land?" as a content question, not an ancestry one —
+    /// squash merges sever the commit DAG but preserve the tree, so a landed
+    /// branch is often not an ancestor of main. Read-only.
+    Landed(LandedArgs),
     /// Print the validation plan. Does not run any commands.
     Validate(ValidateArgs),
 }
@@ -67,6 +74,16 @@ pub struct ContextArgs {
     /// Approximate output cap in characters; long lists are truncated.
     #[arg(long)]
     pub budget: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct LandedArgs {
+    /// Ref the work lands in; the branch surface is compared against it.
+    #[arg(long, default_value = "origin/main")]
+    pub base: String,
+    /// Emit the report as JSON instead of text.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -116,6 +133,7 @@ pub fn run(cli: Cli) -> Result<()> {
     let command_name = cli.command.name();
     let output_format = match &cli.command {
         Command::Context(args) | Command::Enter(args) if args.json => "json",
+        Command::Landed(args) if args.json => "json",
         _ => "text",
     };
     let span = info_span!(
@@ -133,6 +151,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Context(args) => run_context(args),
         Command::Enter(args) => run_context(args),
         Command::Snippet(args) => run_snippet(args),
+        Command::Landed(args) => run_landed(args),
         Command::Validate(args) => run_validate(args),
     };
 
@@ -159,6 +178,7 @@ impl Command {
             Command::Context(_) => "context",
             Command::Enter(_) => "enter",
             Command::Snippet(_) => "snippet",
+            Command::Landed(_) => "landed",
             Command::Validate(_) => "validate",
         }
     }
@@ -207,6 +227,19 @@ fn run_context(args: ContextArgs) -> Result<()> {
             .or(packet.config_default_budget())
             .unwrap_or(config::DEFAULT_BUDGET);
         println!("{}", render::render_context_markdown(&packet, budget));
+    }
+    Ok(())
+}
+
+fn run_landed(args: LandedArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let report = landed::assess_landing(&runner, &repo_root, &args.base);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{}", render::render_landed_report(&report));
     }
     Ok(())
 }

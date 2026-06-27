@@ -5,6 +5,7 @@ pub mod config;
 pub mod context;
 pub mod error;
 pub mod git;
+pub mod landed;
 pub mod logging;
 pub mod relevance;
 pub mod render;

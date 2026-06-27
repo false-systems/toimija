@@ -3,6 +3,7 @@ use std::fmt::Write;
 use crate::config::InitReport;
 use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
+use crate::landed::{LandedReport, LandedStatus};
 use crate::relevance::RelevanceSource;
 use crate::repo::{DoctorReport, DoctorStatus};
 use crate::validate::{ValidationPlan, ValidationSource};
@@ -53,6 +54,45 @@ pub fn render_doctor_report(report: &DoctorReport) -> String {
             check.name, check.message
         )
         .unwrap();
+    }
+    output
+}
+
+/// Cap on differing paths listed in the landed report before summarizing the
+/// remainder — keeps the output scannable on a wide branch.
+const MAX_DIFFERING_SHOWN: usize = 25;
+
+pub fn render_landed_report(report: &LandedReport) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "Toimija landed\n").unwrap();
+    let status = match report.status {
+        LandedStatus::Landed => "landed",
+        LandedStatus::NotLanded => "not landed",
+        LandedStatus::Partial => "partially landed",
+        LandedStatus::Unknown => "unknown",
+    };
+    writeln!(&mut output, "- base: {}", report.base).unwrap();
+    let head = report.head.as_deref().unwrap_or("unknown");
+    writeln!(&mut output, "- branch: {} ({head})", report.branch).unwrap();
+    writeln!(&mut output, "- status: {status}").unwrap();
+    writeln!(&mut output, "- reason: {}", report.reason).unwrap();
+    if report.touched > 0 {
+        writeln!(
+            &mut output,
+            "- reflected: {}/{}",
+            report.reflected, report.touched
+        )
+        .unwrap();
+    }
+    if !report.differing.is_empty() {
+        writeln!(&mut output, "\nNot yet reflected:").unwrap();
+        for path in report.differing.iter().take(MAX_DIFFERING_SHOWN) {
+            writeln!(&mut output, "- {path}").unwrap();
+        }
+        let remaining = report.differing.len().saturating_sub(MAX_DIFFERING_SHOWN);
+        if remaining > 0 {
+            writeln!(&mut output, "- … +{remaining} more").unwrap();
+        }
     }
     output
 }
