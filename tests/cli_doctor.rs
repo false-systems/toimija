@@ -183,7 +183,7 @@ fn doctor_reports_drift_as_advisory_by_default() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "warn: preflight mention - no agent doc mentions the `toimija context` preflight",
+            "warn: preflight mention - no agent doc mentions the `toimija enter` preflight",
         ))
         .stdout(predicate::str::contains("warn: boundaries mirrored -"));
 }
@@ -224,7 +224,7 @@ fn doctor_strict_ready_repo_succeeds() {
         .success()
         .stdout(predicate::str::contains("Toimija doctor (strict)"))
         .stdout(predicate::str::contains(
-            "ok: preflight mention - agent docs point at `toimija context`",
+            "ok: preflight mention - agent docs point at the `toimija enter` preflight",
         ))
         .stdout(predicate::str::contains(
             "ok: boundaries mirrored - boundaries appear in the agent docs",
@@ -248,7 +248,7 @@ fn doctor_strict_escalates_drift_to_failure() {
         .assert()
         .failure()
         .stdout(predicate::str::contains(
-            "fail: preflight mention - no agent doc mentions the `toimija context` preflight",
+            "fail: preflight mention - no agent doc mentions the `toimija enter` preflight",
         ))
         .stdout(predicate::str::contains("fail: boundaries mirrored -"));
 }

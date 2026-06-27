@@ -69,11 +69,26 @@ fn init_creates_config_without_overwrite() {
     let second = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
     assert_eq!(first, second);
 
-    // init also seeds agent guidance files; CLAUDE.md must reference AGENTS.md
-    // so `doctor` does not flag a freshly initialized repo.
-    assert!(temp.path().join("AGENTS.md").exists());
-    let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
-    assert!(claude.contains("AGENTS.md"));
+    // Toimija owns `.toimija/`, not root agent policy. init must not create
+    // AGENTS.md or CLAUDE.md — it only suggests preflight text via `snippet`.
+    assert!(!temp.path().join("AGENTS.md").exists());
+    assert!(!temp.path().join("CLAUDE.md").exists());
+}
+
+#[test]
+fn init_points_at_the_snippet_for_agent_docs() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("toimija snippet preflight"));
 }
 
 #[test]

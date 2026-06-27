@@ -9,4 +9,5 @@ pub mod logging;
 pub mod relevance;
 pub mod render;
 pub mod repo;
+pub mod snippet;
 pub mod validate;

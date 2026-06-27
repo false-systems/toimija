@@ -11,6 +11,7 @@ use crate::git;
 use crate::logging::LogFormat;
 use crate::render;
 use crate::repo;
+use crate::snippet;
 use crate::validate;
 
 #[derive(Debug, Parser)]
@@ -44,6 +45,13 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Compile the current Git work state into a context packet.
     Context(ContextArgs),
+    /// Agent entry: print the current context packet before starting work.
+    ///
+    /// The recommended preflight. Read-only; the same compact packet as
+    /// `context`, framed as the command an agent runs on entering the repo.
+    Enter(ContextArgs),
+    /// Print suggested preflight text or an entry script. Writes no files.
+    Snippet(SnippetArgs),
     /// Print the validation plan. Does not run any commands.
     Validate(ValidateArgs),
 }
@@ -59,6 +67,21 @@ pub struct ContextArgs {
     /// Approximate output cap in characters; long lists are truncated.
     #[arg(long)]
     pub budget: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct SnippetArgs {
+    /// Which snippet to print.
+    #[arg(value_enum)]
+    pub kind: SnippetKind,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SnippetKind {
+    /// Agent preflight text to paste into AGENTS.md/CLAUDE.md or a task prompt.
+    Preflight,
+    /// A `scripts/agent-enter` bash stub a human may save and run.
+    Script,
 }
 
 #[derive(Debug, Args)]
@@ -92,7 +115,7 @@ pub fn run(cli: Cli) -> Result<()> {
     let started = Instant::now();
     let command_name = cli.command.name();
     let output_format = match &cli.command {
-        Command::Context(args) if args.json => "json",
+        Command::Context(args) | Command::Enter(args) if args.json => "json",
         _ => "text",
     };
     let span = info_span!(
@@ -108,6 +131,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Init => run_init(),
         Command::Doctor(args) => run_doctor(args),
         Command::Context(args) => run_context(args),
+        Command::Enter(args) => run_context(args),
+        Command::Snippet(args) => run_snippet(args),
         Command::Validate(args) => run_validate(args),
     };
 
@@ -132,6 +157,8 @@ impl Command {
             Command::Init => "init",
             Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
+            Command::Enter(_) => "enter",
+            Command::Snippet(_) => "snippet",
             Command::Validate(_) => "validate",
         }
     }
@@ -181,6 +208,16 @@ fn run_context(args: ContextArgs) -> Result<()> {
             .unwrap_or(config::DEFAULT_BUDGET);
         println!("{}", render::render_context_markdown(&packet, budget));
     }
+    Ok(())
+}
+
+fn run_snippet(args: SnippetArgs) -> Result<()> {
+    let snippet = match args.kind {
+        SnippetKind::Preflight => snippet::Snippet::Preflight,
+        SnippetKind::Script => snippet::Snippet::Script,
+    };
+    // The text already ends in a newline; print it verbatim so it pastes clean.
+    print!("{}", snippet.text());
     Ok(())
 }
 

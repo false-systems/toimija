@@ -159,70 +159,17 @@ pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
             "Fill role, not, and boundaries in .toimija/repo.yaml so the packet can orient an agent."
                 .to_string(),
         );
-    }
-
-    let agents_path = repo_root.join("AGENTS.md");
-    if agents_path.exists() {
-        report.existing.push(agents_path);
-    } else {
-        fs::write(&agents_path, AGENTS_TEMPLATE).map_err(|source| ToimijaError::WriteFile {
-            path: agents_path.clone(),
-            source,
-        })?;
-        report.created.push(agents_path);
-    }
-
-    let claude_path = repo_root.join("CLAUDE.md");
-    if claude_path.exists() {
-        report.existing.push(claude_path);
-    } else {
-        fs::write(&claude_path, CLAUDE_TEMPLATE).map_err(|source| ToimijaError::WriteFile {
-            path: claude_path.clone(),
-            source,
-        })?;
-        report.created.push(claude_path);
+        // Toimija owns `.toimija/`, not root agent policy. It suggests preflight
+        // text for AGENTS.md/CLAUDE.md via `toimija snippet`, but never writes
+        // those human-owned files itself.
+        report.guidance.push(
+            "Run `toimija snippet preflight` and paste it into your AGENTS.md/CLAUDE.md so agents run `toimija enter` first."
+                .to_string(),
+        );
     }
 
     Ok(report)
 }
-
-pub const AGENTS_TEMPLATE: &str = r#"# Agent guide
-
-This repo supports Toimija.
-
-Before making changes, run:
-
-```bash
-toimija context --for-diff --budget 4000
-```
-
-Before claiming completion, run:
-
-```bash
-toimija validate --plan
-```
-
-Use `.toimija/repo.yaml` for repo boundaries and validation hints.
-
-If you change repo boundaries, validation commands, major docs, or project
-structure, update `.toimija/repo.yaml` to match, then run:
-
-```bash
-toimija doctor --strict
-```
-
-`doctor --strict` is the drift guard: it fails when the config and these docs
-fall out of sync. Wire it into CI or a pre-commit gate.
-"#;
-
-pub const CLAUDE_TEMPLATE: &str = r#"@AGENTS.md
-
-## Claude Code notes
-
-Work in small changes.
-Do not add MCP, Tree-sitter, LSP, SCIP, Sykli, Vaisto, Kerto, or Terraform support unless a human explicitly moves it into scope.
-Run formatting, tests, and clippy before claiming completion.
-"#;
 
 #[cfg(test)]
 mod tests {

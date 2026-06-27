@@ -237,17 +237,20 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
     // boundaries, the contract has silently rotted even though every file still
     // parses. These checks are advisory by default and gate under `--strict`.
     let docs_text = read_canonical_docs(&repo_root, &config);
+    let has_preflight = PREFLIGHT_MARKERS
+        .iter()
+        .any(|marker| docs_text.contains(marker));
     checks.push(check(
         "preflight mention",
-        if docs_text.contains(PREFLIGHT_MARKER) {
+        if has_preflight {
             DoctorStatus::Ok
         } else {
             DoctorStatus::Warning
         },
-        if docs_text.contains(PREFLIGHT_MARKER) {
-            "agent docs point at `toimija context`"
+        if has_preflight {
+            "agent docs point at the `toimija enter` preflight"
         } else {
-            "no agent doc mentions the `toimija context` preflight"
+            "no agent doc mentions the `toimija enter` preflight"
         },
     ));
 
@@ -321,10 +324,11 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
     }
 }
 
-/// Substring the agent docs must contain to prove they still route work through
-/// the context preflight. Deliberately the command stem, not a full sentence, so
-/// wording around it can vary.
-const PREFLIGHT_MARKER: &str = "toimija context";
+/// Substrings the agent docs may contain to prove they still route work through
+/// a Toimija preflight. `enter` is the recommended entry command; `context` is
+/// the underlying one it shares — either satisfies the guard. Deliberately the
+/// command stem, not a full sentence, so wording around it can vary.
+const PREFLIGHT_MARKERS: [&str; 2] = ["toimija enter", "toimija context"];
 
 /// Concatenated bodies of the docs that form the agent contract: AGENTS.md,
 /// CLAUDE.md, and whatever `important_docs` nominates as load-bearing. Unreadable
