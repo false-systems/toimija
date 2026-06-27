@@ -125,6 +125,15 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
     let mut output = String::new();
     write_h2(&mut output, "Validation plan");
     writeln!(&mut output, "- source: {}", source_label(&plan.source)).unwrap();
+    if !plan.focused.is_empty() {
+        write_h3(&mut output, "Focused (from changed surface)");
+        writeln!(
+            &mut output,
+            "- derived from the changed surface — a fast first pass, not a substitute for the full run"
+        )
+        .unwrap();
+        write_str_list(&mut output, &plan.focused, "none");
+    }
     write_h3(&mut output, "Fast");
     write_str_list(&mut output, &plan.fast, "none");
     write_h3(&mut output, "Strict");
@@ -964,6 +973,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
   "safe_to_ignore": [],
   "validation_plan": {
     "source": "Inferred",
+    "focused": [],
     "fast": [
       "cargo test --workspace"
     ],

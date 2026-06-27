@@ -88,7 +88,7 @@ pub fn build_context_packet(
         );
     }
     let adapter = adapter_for(repo_kind);
-    let validation_plan = adapter.validation_plan(&git.repo_root, &config);
+    let mut validation_plan = adapter.validation_plan(&git.repo_root, &config);
     for note in &validation_plan.notes {
         if note.contains("inferred") {
             warnings.push(note.clone());
@@ -108,6 +108,10 @@ pub fn build_context_packet(
         files = changed.len()
     );
     let changed_surface: Vec<PathBuf> = changed.iter().map(|file| file.path.clone()).collect();
+    // Enrich the plan with a focused tier now that the changed surface is known.
+    // The base plan (config- or kind-derived) is whole-repo; this adds advisory
+    // commands scoped to what actually changed, rendered above the Fast tier.
+    validation_plan.focused = adapter.focused_validation(&git.repo_root, &changed_surface);
     // Files this branch added (status A in the merge-base..HEAD diff): the
     // youngest possible surface, which base-history mining cannot see.
     let branch_added: Vec<PathBuf> = git

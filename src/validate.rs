@@ -9,6 +9,12 @@ use crate::repo::RepoKind;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ValidationPlan {
     pub source: ValidationSource,
+    /// Commands derived from the changed surface (e.g. `cargo test -p <crate>`
+    /// for the crates that actually changed). Advisory and additive — a fast
+    /// first pass, never a substitute for the authoritative tiers below. Always
+    /// empty when `validation_plan` is built, then enriched once the changed
+    /// surface is known (see `context::build_context_packet`).
+    pub focused: Vec<String>,
     pub fast: Vec<String>,
     pub strict: Vec<String>,
     pub full: Vec<String>,
@@ -27,6 +33,7 @@ pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -
     if config.has_validation() {
         return ValidationPlan {
             source: ValidationSource::RepoConfig,
+            focused: Vec::new(),
             fast: config.validation.fast.clone(),
             strict: config.validation.strict.clone(),
             full: config.validation.full.clone(),
@@ -39,6 +46,7 @@ pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -
             info!(event = "toimija.validation.inferred", repo_kind = "rust");
             ValidationPlan {
                 source: ValidationSource::Inferred,
+                focused: Vec::new(),
                 fast: vec!["cargo test --workspace".to_string()],
                 strict: vec![
                     "cargo fmt --check".to_string(),
@@ -55,6 +63,7 @@ pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -
             info!(event = "toimija.validation.inferred", repo_kind = "elixir");
             ValidationPlan {
                 source: ValidationSource::Inferred,
+                focused: Vec::new(),
                 fast: vec!["mix test".to_string()],
                 strict: vec!["mix format --check-formatted".to_string()],
                 full: vec!["mix test".to_string()],
@@ -66,6 +75,7 @@ pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -
         }
         RepoKind::Generic => ValidationPlan {
             source: ValidationSource::Unknown,
+            focused: Vec::new(),
             fast: Vec::new(),
             strict: Vec::new(),
             full: Vec::new(),
