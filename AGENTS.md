@@ -8,6 +8,15 @@ Keep changes small and reviewable. Preserve the v0.0 scope: Git-aware local cont
 
 Do not add MCP, Tree-sitter, LSP, SCIP, Kythe, Sykli delegation, Vaisto integration, Kerto integration, background tasks, network calls, or a plugin system yet.
 
+## Boundaries
+
+These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if
+they drift apart. Edit both together.
+
+- Keep v0.0 as one Rust crate.
+- Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Sykli, Vaisto, or Kerto integration yet.
+- Do not add network calls or background tasks.
+
 Before claiming completion, run:
 
 ```bash

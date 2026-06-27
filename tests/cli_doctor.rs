@@ -189,6 +189,25 @@ fn doctor_reports_drift_as_advisory_by_default() {
 }
 
 #[test]
+fn doctor_strict_passes_on_this_repo() {
+    // Dogfood: the README tells people to run `toimija doctor --strict` as the
+    // PR/CI gate, so this repo must pass its own gate. Guards against boundary
+    // wording in .toimija/repo.yaml drifting from AGENTS.md/CLAUDE.md.
+    if !git_available() {
+        return;
+    }
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["doctor", "--strict"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ok: boundaries mirrored - boundaries appear in the agent docs",
+        ));
+}
+
+#[test]
 fn doctor_strict_ready_repo_succeeds() {
     if !git_available() {
         return;
