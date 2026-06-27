@@ -219,7 +219,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     if packet.for_diff {
         writeln!(
             &mut output,
-            "\nMode: for-diff. Impact analysis: unavailable in v0.0."
+            "\nMode: for-diff. Impact analysis: not yet available."
         )
         .unwrap();
     }
