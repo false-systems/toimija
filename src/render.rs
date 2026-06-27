@@ -69,6 +69,7 @@ pub fn render_landed_report(report: &LandedReport) -> String {
         LandedStatus::Landed => "landed",
         LandedStatus::NotLanded => "not landed",
         LandedStatus::Partial => "partially landed",
+        LandedStatus::Ambiguous => "ambiguous",
         LandedStatus::Unknown => "unknown",
     };
     writeln!(&mut output, "- base: {}", report.base).unwrap();
@@ -90,6 +91,26 @@ pub fn render_landed_report(report: &LandedReport) -> String {
             writeln!(&mut output, "- {path}").unwrap();
         }
         let remaining = report.differing.len().saturating_sub(MAX_DIFFERING_SHOWN);
+        if remaining > 0 {
+            writeln!(&mut output, "- … +{remaining} more").unwrap();
+        }
+    }
+    if !report.ambiguous.is_empty() {
+        writeln!(
+            &mut output,
+            "\nAmbiguous (Git could not prove the branch patch is reflected):"
+        )
+        .unwrap();
+        for entry in report.ambiguous.iter().take(MAX_DIFFERING_SHOWN) {
+            // The heuristic is reported as evidence, never as a landed decision.
+            let evidence = if entry.line_containment {
+                "added lines appear present and removed lines appear absent (textual heuristic)"
+            } else {
+                "added lines are not all present in base (textual heuristic)"
+            };
+            writeln!(&mut output, "- {} — {evidence}", entry.path).unwrap();
+        }
+        let remaining = report.ambiguous.len().saturating_sub(MAX_DIFFERING_SHOWN);
         if remaining > 0 {
             writeln!(&mut output, "- … +{remaining} more").unwrap();
         }

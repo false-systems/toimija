@@ -8,11 +8,12 @@
 //!
 //! 1. the change applies cleanly forward onto base → still absent → not reflected;
 //! 2. it reverse-applies cleanly → exactly present → reflected;
-//! 3. base diverged on the file (neither applies) → fall back to line
-//!    containment: reflected iff every line the branch added is present in base
-//!    and every line it removed is absent. This recognizes a change that was
-//!    squash-landed and then edited further — the case a plain tree or merge
-//!    comparison misreports as "not landed".
+//! 3. base diverged on the file (neither applies) → **ambiguous**. We do not
+//!    decide landing from a textual heuristic. We do record a line-containment
+//!    signal — are the lines the branch added present in base, and the lines it
+//!    removed absent? — but only as *evidence* on the ambiguous report. A false
+//!    "landed" is the dangerous direction for branch cleanup, so the default
+//!    never claims landed without a clean forward/reverse apply proof.
 //!
 //! All checks run against a scratch index seeded from `base`, so the real index
 //! and working tree are never touched.
@@ -31,14 +32,28 @@ use crate::git::run_git_ok;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LandedStatus {
-    /// Every path the branch touched is already reflected in the base tree.
+    /// Every touched path's change is proven present in `base`.
     Landed,
-    /// None of the touched paths are reflected — the work is still outstanding.
+    /// Every touched path's change is proven still absent.
     NotLanded,
-    /// Some touched paths are reflected, some are not.
+    /// Touched paths split cleanly into reflected and not — none ambiguous.
     Partial,
+    /// At least one touched path could not be proven either way (base diverged on
+    /// it). The conservative default: never claim landed without a clean proof.
+    Ambiguous,
     /// Cannot tell: no merge-base with the base, or the branch changed nothing.
     Unknown,
+}
+
+/// A touched path whose change could be neither cleanly applied nor reverse-
+/// applied to `base` (base diverged on it). The heuristic is evidence only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AmbiguousPath {
+    pub path: String,
+    /// Line-containment heuristic: every line the branch added appears in base and
+    /// every line it removed is absent. Reported as evidence; it never decides
+    /// landing. Gate a future `--heuristic`/`--allow-line-containment` on this.
+    pub line_containment: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,10 +68,12 @@ pub struct LandedReport {
     pub reason: String,
     /// Number of paths the branch changed relative to its merge-base with `base`.
     pub touched: usize,
-    /// How many of those touched paths are already reflected in `base`.
+    /// How many of those touched paths are proven present in `base`.
     pub reflected: usize,
-    /// Touched paths whose change is not yet present in `base` (the unlanded work).
+    /// Touched paths proven not yet present in `base` (the unlanded work).
     pub differing: Vec<String>,
+    /// Touched paths where base diverged and landing could not be proven.
+    pub ambiguous: Vec<AmbiguousPath>,
 }
 
 /// Assess whether the current `HEAD`'s branch surface is reflected in `base`.
@@ -77,58 +94,53 @@ pub fn assess_landing(runner: &impl CommandRunner, repo_root: &Path, base: &str)
 
     let Some(merge_base) = merge_base else {
         info!(event = "toimija.landed.no_merge_base", base);
-        return LandedReport {
-            base: base.to_string(),
+        return unknown_report(
+            base,
             branch,
             head,
-            status: LandedStatus::Unknown,
-            reason: format!(
+            0,
+            format!(
                 "no merge-base with `{base}` — unrelated histories, or `{base}` is not fetched (try `git fetch`)"
             ),
-            touched: 0,
-            reflected: 0,
-            differing: Vec::new(),
-        };
+        );
     };
 
     // The branch's own surface: paths it changed relative to its fork point.
     let touched = name_only(runner, repo_root, &merge_base, "HEAD");
 
-    // Which of those paths carry a change that is NOT yet present in `base`? See
-    // the module docs for the per-path forward/reverse/containment decision —
-    // robust to `base` editing the same file after the branch's change landed,
-    // which a plain tree or merge comparison misreports as "not landed".
-    let Some(unreflected) = unreflected_paths(runner, repo_root, base, &merge_base, &touched)
-    else {
-        return LandedReport {
-            base: base.to_string(),
+    // Per-path: is the branch's change present, absent, or unprovable? See the
+    // module docs for the forward/reverse/ambiguous decision.
+    let Some(assessment) = assess_paths(runner, repo_root, base, &merge_base, &touched) else {
+        return unknown_report(
+            base,
             branch,
             head,
-            status: LandedStatus::Unknown,
-            reason: format!(
-                "could not stage `{base}` to test whether the branch's change is present"
-            ),
-            touched: touched.len(),
-            reflected: 0,
-            differing: Vec::new(),
-        };
+            touched.len(),
+            format!("could not stage `{base}` to test whether the branch's change is present"),
+        );
     };
-    let differing: Vec<String> = touched
-        .iter()
-        .filter(|path| unreflected.contains(*path))
-        .cloned()
-        .collect();
 
-    let status = classify(touched.len(), differing.len());
-    let reflected = touched.len() - differing.len();
-    let reason = reason_for(status, &touched, reflected, base);
+    let touched_count = touched.len();
+    let status = classify(
+        assessment.reflected,
+        assessment.unreflected.len(),
+        assessment.ambiguous.len(),
+    );
+    let reason = reason_for(
+        status,
+        touched_count,
+        assessment.reflected,
+        assessment.ambiguous.len(),
+        base,
+    );
 
     info!(
         event = "toimija.landed.assessed",
         base,
         status = ?status,
-        touched = touched.len(),
-        reflected
+        touched = touched_count,
+        reflected = assessment.reflected,
+        ambiguous = assessment.ambiguous.len()
     );
 
     LandedReport {
@@ -137,9 +149,30 @@ pub fn assess_landing(runner: &impl CommandRunner, repo_root: &Path, base: &str)
         head,
         status,
         reason,
-        touched: touched.len(),
-        reflected,
-        differing,
+        touched: touched_count,
+        reflected: assessment.reflected,
+        differing: assessment.unreflected,
+        ambiguous: assessment.ambiguous,
+    }
+}
+
+fn unknown_report(
+    base: &str,
+    branch: String,
+    head: Option<String>,
+    touched: usize,
+    reason: String,
+) -> LandedReport {
+    LandedReport {
+        base: base.to_string(),
+        branch,
+        head,
+        status: LandedStatus::Unknown,
+        reason,
+        touched,
+        reflected: 0,
+        differing: Vec::new(),
+        ambiguous: Vec::new(),
     }
 }
 
@@ -163,22 +196,30 @@ fn name_only(
         .unwrap_or_default()
 }
 
-/// Of the branch's `touched` paths, which are NOT yet reflected in `base`?
-///
-/// For each path we ask: is the branch's own change to it (its `merge_base ->
-/// HEAD` diff) already present in `base`? This is decided against a scratch index
-/// seeded from `base` (via `GIT_INDEX_FILE`), so the real index and working tree
-/// are never touched. `None` if that scratch index could not be staged (surfaced
-/// as `Unknown`).
-fn unreflected_paths(
+struct PathAssessment {
+    reflected: usize,
+    unreflected: Vec<String>,
+    ambiguous: Vec<AmbiguousPath>,
+}
+
+/// Bucket the branch's `touched` paths into reflected / unreflected / ambiguous,
+/// each verdict decided against a scratch index seeded from `base` (via
+/// `GIT_INDEX_FILE`), so the real index and working tree are never touched.
+/// `None` if that scratch index could not be staged (surfaced as `Unknown`).
+fn assess_paths(
     runner: &impl CommandRunner,
     repo_root: &Path,
     base: &str,
     merge_base: &str,
     touched: &BTreeSet<String>,
-) -> Option<BTreeSet<String>> {
+) -> Option<PathAssessment> {
+    let mut assessment = PathAssessment {
+        reflected: 0,
+        unreflected: Vec::new(),
+        ambiguous: Vec::new(),
+    };
     if touched.is_empty() {
-        return Some(BTreeSet::new());
+        return Some(assessment);
     }
 
     let index_path =
@@ -197,36 +238,43 @@ fn unreflected_paths(
         return None;
     }
 
-    let mut unreflected = BTreeSet::new();
     for path in touched {
-        if !path_reflected(runner, repo_root, &index_path, base, merge_base, path) {
-            unreflected.insert(path.clone());
+        match path_verdict(runner, repo_root, &index_path, base, merge_base, path) {
+            PathVerdict::Reflected => assessment.reflected += 1,
+            PathVerdict::Unreflected => assessment.unreflected.push(path.clone()),
+            PathVerdict::Ambiguous { line_containment } => {
+                assessment.ambiguous.push(AmbiguousPath {
+                    path: path.clone(),
+                    line_containment,
+                });
+            }
         }
     }
 
     let _ = std::fs::remove_file(&index_path);
-    Some(unreflected)
+    Some(assessment)
 }
 
-/// Is the branch's change to `path` already present in `base`?
-///
-/// Two sound, git-decided cases first, then a content tiebreaker:
-/// 1. the change applies cleanly forward onto base → base is still at the
-///    pre-change state → NOT reflected;
-/// 2. the change applies cleanly in reverse → it is exactly present → reflected;
-/// 3. otherwise base has diverged on this file (neither applies), so fall back to
-///    line containment: reflected iff every line the branch *added* is present in
-///    base and every line it *removed* is absent. This is what recognizes a
-///    squash-landing that base later edited further — the case a tree or merge
-///    comparison reports as a false "not landed".
-fn path_reflected(
+enum PathVerdict {
+    Reflected,
+    Unreflected,
+    Ambiguous { line_containment: bool },
+}
+
+/// Is the branch's change to `path` present in `base`? Two sound, git-decided
+/// cases, then ambiguity:
+/// 1. applies cleanly forward → base is still at the pre-change state → absent;
+/// 2. reverse-applies cleanly → exactly present → reflected;
+/// 3. otherwise base diverged here → ambiguous, carrying the line-containment
+///    heuristic as evidence (never as a landed decision).
+fn path_verdict(
     runner: &impl CommandRunner,
     repo_root: &Path,
     index_path: &Path,
     base: &str,
     merge_base: &str,
     path: &str,
-) -> bool {
+) -> PathVerdict {
     // `--binary` so binary changes round-trip; apply needs the full patch.
     let patch = run_git_ok(
         runner,
@@ -235,15 +283,17 @@ fn path_reflected(
     )
     .unwrap_or_default();
     if patch.trim().is_empty() {
-        return true; // the branch changed nothing here
+        return PathVerdict::Reflected; // the branch changed nothing here
     }
     if applies(repo_root, index_path, &patch, Direction::Forward) {
-        return false; // cleanly addable → absent from base
+        return PathVerdict::Unreflected; // cleanly addable → absent from base
     }
     if applies(repo_root, index_path, &patch, Direction::Reverse) {
-        return true; // cleanly removable → present in base
+        return PathVerdict::Reflected; // cleanly removable → present in base
     }
-    line_contained(runner, repo_root, base, merge_base, path)
+    PathVerdict::Ambiguous {
+        line_containment: line_contained(runner, repo_root, base, merge_base, path),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -278,12 +328,12 @@ fn applies(repo_root: &Path, index_path: &Path, patch: &str, direction: Directio
     child.wait().map(|status| status.success()).unwrap_or(false)
 }
 
-/// Content tiebreaker for a path where base has diverged: is the branch's change
-/// substantively present? Reflected iff every line the branch added (relative to
-/// `merge_base`) appears in `base` and every line it removed does not. Compares
-/// line multisets, so it is position-independent (robust to the added line no
-/// longer being at end-of-file). Heuristic, but only reached once both clean
-/// apply checks have failed, which bounds its blast radius.
+/// Line-containment evidence for a diverged path: does base appear to contain the
+/// branch's change? True iff every line the branch added (relative to
+/// `merge_base`) appears in `base` and every line it removed does not. Position-
+/// independent (line multisets), so robust to the added line no longer being at
+/// end-of-file. A heuristic — reported as evidence on an ambiguous verdict, never
+/// used to decide landing.
 fn line_contained(
     runner: &impl CommandRunner,
     repo_root: &Path,
@@ -326,34 +376,41 @@ fn multiset_difference(a: &[String], b: &[String]) -> Vec<String> {
     surplus
 }
 
-/// Pure classification — the heart of the command, kept free of git so it is
-/// directly testable. `touched` is the branch's surface size; `differing` is how
-/// many of those paths are not yet reflected in the base.
-fn classify(touched: usize, differing: usize) -> LandedStatus {
-    match (touched, differing) {
-        (0, _) => LandedStatus::Unknown,
-        (_, 0) => LandedStatus::Landed,
-        (t, d) if d == t => LandedStatus::NotLanded,
+/// Pure classification — kept free of git so it is directly testable. Ambiguity
+/// dominates: any unprovable path means we cannot certify `Landed`.
+fn classify(reflected: usize, unreflected: usize, ambiguous: usize) -> LandedStatus {
+    match (reflected, unreflected, ambiguous) {
+        (0, 0, 0) => LandedStatus::Unknown,
+        (_, _, a) if a > 0 => LandedStatus::Ambiguous,
+        (_, 0, 0) => LandedStatus::Landed,
+        (0, _, 0) => LandedStatus::NotLanded,
         _ => LandedStatus::Partial,
     }
 }
 
 fn reason_for(
     status: LandedStatus,
-    touched: &BTreeSet<String>,
+    touched: usize,
     reflected: usize,
+    ambiguous: usize,
     base: &str,
 ) -> String {
-    let n = touched.len();
     match status {
         LandedStatus::Landed => {
-            format!("all {n} touched path(s) are reflected in `{base}`")
+            format!("all {touched} touched path(s) are reflected in `{base}`")
         }
         LandedStatus::NotLanded => {
-            format!("none of the {n} touched path(s) are reflected in `{base}` yet")
+            format!("none of the {touched} touched path(s) are reflected in `{base}` yet")
         }
         LandedStatus::Partial => {
-            format!("{reflected}/{n} touched path(s) reflected in `{base}`; the rest are not yet")
+            format!(
+                "{reflected}/{touched} touched path(s) reflected in `{base}`; the rest are not yet"
+            )
+        }
+        LandedStatus::Ambiguous => {
+            format!(
+                "git could not prove {ambiguous} of {touched} touched path(s) are reflected in `{base}` — base diverged there; see the ambiguous list"
+            )
         }
         LandedStatus::Unknown => "branch introduced no changes versus its merge-base".to_string(),
     }
@@ -364,19 +421,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_covers_every_quadrant() {
-        assert_eq!(classify(0, 0), LandedStatus::Unknown);
-        assert_eq!(classify(5, 0), LandedStatus::Landed);
-        assert_eq!(classify(5, 5), LandedStatus::NotLanded);
-        assert_eq!(classify(5, 2), LandedStatus::Partial);
+    fn classify_covers_each_outcome() {
+        assert_eq!(classify(0, 0, 0), LandedStatus::Unknown);
+        assert_eq!(classify(5, 0, 0), LandedStatus::Landed);
+        assert_eq!(classify(0, 5, 0), LandedStatus::NotLanded);
+        assert_eq!(classify(3, 2, 0), LandedStatus::Partial);
+        // Any ambiguous path prevents a confident verdict.
+        assert_eq!(classify(4, 0, 1), LandedStatus::Ambiguous);
+        assert_eq!(classify(0, 0, 3), LandedStatus::Ambiguous);
+        assert_eq!(classify(2, 2, 1), LandedStatus::Ambiguous);
     }
 
     #[test]
     fn reason_names_the_base_and_counts() {
-        let touched: BTreeSet<String> = ["a", "b", "c"].iter().map(ToString::to_string).collect();
-        let reason = reason_for(LandedStatus::Partial, &touched, 1, "origin/main");
+        let reason = reason_for(LandedStatus::Partial, 3, 1, 0, "origin/main");
         assert!(reason.contains("1/3"));
         assert!(reason.contains("origin/main"));
+    }
+
+    #[test]
+    fn ambiguous_reason_reports_the_unprovable_count() {
+        let reason = reason_for(LandedStatus::Ambiguous, 4, 1, 2, "origin/main");
+        assert!(reason.contains("2 of 4"));
+        assert!(reason.contains("diverged"));
     }
 
     #[test]

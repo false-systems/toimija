@@ -107,18 +107,17 @@ fn landed_sees_squash_landing_that_ancestry_would_miss() {
 }
 
 #[test]
-fn landed_when_base_edits_the_file_after_squash_landing() {
-    // Regression: branch edits a.txt, trunk squash-lands that exact edit, then
-    // trunk edits a.txt further. The branch's change is still present, so this
-    // must read as landed — a plain tree/merge comparison reports a false
-    // "not landed" here.
+fn landed_is_ambiguous_when_base_edits_the_file_after_landing() {
+    // Branch edits a.txt, trunk squash-lands that exact edit, then trunk edits
+    // a.txt further. Neither forward nor reverse apply is clean, so the verdict is
+    // ambiguous by default — never landed without proof. The line-containment
+    // heuristic (added lines present) rides along as evidence only.
     if !git_available() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
     setup(temp.path());
     land_a_onto_trunk(temp.path());
-    // trunk appends another line to the same file after landing.
     run_git(temp.path(), &["checkout", "-q", "trunk"]);
     fs::write(temp.path().join("a.txt"), "alpha\nbeta\n").unwrap();
     run_git(temp.path(), &["add", "."]);
@@ -134,13 +133,17 @@ fn landed_when_base_edits_the_file_after_squash_landing() {
         .args(["landed", "--base", "trunk"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("status: landed"));
+        .stdout(predicate::str::contains("status: ambiguous"))
+        .stdout(predicate::str::contains(
+            "a.txt — added lines appear present and removed lines appear absent",
+        ));
 }
 
 #[test]
-fn landed_stays_not_landed_when_base_diverges_without_the_change() {
-    // False-positive guard: the branch's change is genuinely absent from trunk,
-    // which diverged on the same file differently. Must NOT report landed.
+fn landed_ambiguous_evidence_points_away_when_change_is_absent() {
+    // The branch's change is genuinely absent from trunk, which diverged on the
+    // same file differently. Still ambiguous by default (Git could not prove it),
+    // but the heuristic evidence points away from landed.
     if !git_available() {
         return;
     }
@@ -158,7 +161,10 @@ fn landed_stays_not_landed_when_base_diverges_without_the_change() {
         .args(["landed", "--base", "trunk"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("status: not landed"));
+        .stdout(predicate::str::contains("status: ambiguous"))
+        .stdout(predicate::str::contains(
+            "a.txt — added lines are not all present in base",
+        ));
 }
 
 #[test]
