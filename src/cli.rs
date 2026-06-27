@@ -40,7 +40,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Create .toimija/repo.yaml (and AGENTS.md/CLAUDE.md if missing).
+    /// Create .toimija/repo.yaml. Agent docs (AGENTS.md/CLAUDE.md) stay yours;
+    /// run `toimija snippet preflight` to seed them.
     Init,
     /// Check Toimija setup: git, config, repo kind, and agent docs.
     Doctor(DoctorArgs),
