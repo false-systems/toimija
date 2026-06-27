@@ -80,6 +80,7 @@ toimija context --for-diff
 toimija context --budget 4000
 toimija snippet preflight
 toimija snippet script
+toimija landed --base origin/main
 toimija validate --plan
 ```
 
@@ -169,6 +170,50 @@ Wire it into the same gate that runs your other checks:
 ```bash
 toimija doctor --strict
 ```
+
+## Did the work land? (`toimija landed`)
+
+"Did my branch land?" is a **content** question, not an ancestry question. Under
+squash merges this matters: a squash-merge synthesizes a fresh commit with no
+edge back to your branch tip, so `git merge-base --is-ancestor <tip> origin/main`
+reports `false` even when every line landed. Patch-id checks (`git cherry`) fail
+too, because squash fuses commits. Only tree/content comparison survives both.
+
+`toimija landed` answers per touched path: is the branch's *own change* to it
+already present in the base ref (default `origin/main`)? For each path it asks git
+whether the branch's change applies cleanly forward onto base (so it is still
+absent → not reflected), reverse-applies (so it is exactly present → reflected),
+or neither — meaning base has diverged on that file. The diverged case is
+reported as **ambiguous**, never silently as landed: a false "landed" is the
+dangerous direction for branch cleanup. A line-containment heuristic (are the
+lines the branch added present, and the lines it removed gone?) rides along as
+*evidence* on the ambiguous entry, but does not decide the verdict.
+
+```bash
+git fetch                         # re-validate against live state first
+toimija landed --base origin/main
+```
+
+```text
+Toimija landed
+
+- base: origin/main
+- branch: feat/doctor-strict-drift-guard (a13296a)
+- status: landed
+- reason: all 7 touched path(s) are reflected in `origin/main`
+- reflected: 7/7
+```
+
+Status is `landed` (every touched path's change is proven present), `not landed`
+(all proven absent), `partially landed` (a clean split of reflected and not),
+`ambiguous` (base diverged on at least one path, so landing could not be proven —
+the paths and their heuristic evidence are listed), or `unknown` (no merge-base —
+unrelated histories or an unfetched base). The check runs against a scratch index
+seeded from the base, so it never touches your index or working tree; `--json` is
+available for scripting. Useful for stacked PRs: after a parent merges via squash,
+check a child with `toimija landed` rather than trusting ancestry. (A future
+`--heuristic` flag could opt into treating positive line-containment evidence as
+landed; today the heuristic is evidence only.)
 
 ## Example Context Output
 
