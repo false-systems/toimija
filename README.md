@@ -73,12 +73,19 @@ after editing `xtask`.
 toimija init
 toimija doctor
 toimija doctor --strict
+toimija enter --for-diff --budget 4000
 toimija context
 toimija context --json
 toimija context --for-diff
 toimija context --budget 4000
+toimija snippet preflight
+toimija snippet script
 toimija validate --plan
 ```
+
+`enter` is the recommended agent preflight: it prints the same compact packet as
+`context`, framed as the one command an agent runs on entering the repo. It is
+read-only.
 
 Global options:
 
@@ -91,27 +98,50 @@ Global options:
 
 Logs go to stderr. Command output goes to stdout.
 
-## The repo ritual
+## Ownership: `.toimija/` is Toimija's, root files are yours
 
-Toimija only helps if the repo opts into a fixed loop. The contract lives in
-`.toimija/repo.yaml`, mirrored into `AGENTS.md` / `CLAUDE.md`, and is enforced —
-not trusted — by `doctor --strict`.
+Toimija should not own agent policy; it should make agent work cheaper by
+keeping a live, repo-aware context layer an agent asks for before it works.
+
+```text
+.toimija/        owned by Toimija   repo.yaml (boundary + validation hints)
+AGENTS.md        owned by you       agent policy — Toimija only suggests text
+CLAUDE.md        owned by you       agent policy — Toimija only suggests text
+scripts/         owned by you       e.g. agent-enter — Toimija only suggests text
+```
+
+`toimija init` writes `.toimija/repo.yaml` and nothing else. It does **not**
+create `AGENTS.md` or `CLAUDE.md` — those are human-owned policy. To seed them,
+run `toimija snippet preflight` and paste the output into whichever doc your
+agents read; `toimija snippet script` prints a `scripts/agent-enter` stub.
+
+## The repo ritual
 
 ```text
 Repo setup (once):
-  toimija init                     # writes repo.yaml + AGENTS.md + CLAUDE.md
+  toimija init                     # writes .toimija/repo.yaml only
   fill in role / not / boundaries  # only a human can supply these
-  commit all three
+  toimija snippet preflight >> AGENTS.md   # paste the preflight into your docs
 
 Agent starts:
-  toimija context --for-diff --budget 4000   # preflight; the working truth
+  toimija enter --for-diff --budget 4000   # the working truth; read-only
 
 Agent finishes:
   toimija validate --plan          # print the plan, then run the commands
   report the exact commands and output
 
-PR / CI gate:
+PR / CI gate (optional):
   toimija doctor --strict          # boring drift guard; non-zero on drift
+```
+
+Every agent prompt then stays short — the command carries the context, not the
+prompt:
+
+```text
+Before editing, run `toimija enter --for-diff --budget 4000`.
+Use its output as the working state. Do not broad-crawl the repo unless the
+packet is insufficient. If the packet contradicts the task, stop and report.
+Do not claim completion without `toimija validate --plan`.
 ```
 
 If you change repo boundaries, validation commands, major docs, or project
@@ -238,7 +268,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 ## Config
 
-`toimija init` creates `.toimija/repo.yaml` if missing and refuses to overwrite existing files.
+`toimija init` creates `.toimija/repo.yaml` if missing and refuses to overwrite it. It writes nothing outside `.toimija/` — `AGENTS.md` and `CLAUDE.md` are human-owned policy, so `init` only points you at `toimija snippet preflight` to seed them yourself.
 
 On a fresh config it prints a **Next steps** line pointing at the identity fields (`role`, `not`, `boundaries`) you still need to fill — Git supplies the work state, but only you can supply the repo's purpose and boundaries. Until those are set, `toimija context` renders them as `(unset — add to .toimija/repo.yaml)` rather than pretending they are unavailable.
 
