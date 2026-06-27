@@ -72,6 +72,7 @@ after editing `xtask`.
 ```bash
 toimija init
 toimija doctor
+toimija doctor --strict
 toimija context
 toimija context --json
 toimija context --for-diff
@@ -89,6 +90,55 @@ Global options:
 ```
 
 Logs go to stderr. Command output goes to stdout.
+
+## The repo ritual
+
+Toimija only helps if the repo opts into a fixed loop. The contract lives in
+`.toimija/repo.yaml`, mirrored into `AGENTS.md` / `CLAUDE.md`, and is enforced —
+not trusted — by `doctor --strict`.
+
+```text
+Repo setup (once):
+  toimija init                     # writes repo.yaml + AGENTS.md + CLAUDE.md
+  fill in role / not / boundaries  # only a human can supply these
+  commit all three
+
+Agent starts:
+  toimija context --for-diff --budget 4000   # preflight; the working truth
+
+Agent finishes:
+  toimija validate --plan          # print the plan, then run the commands
+  report the exact commands and output
+
+PR / CI gate:
+  toimija doctor --strict          # boring drift guard; non-zero on drift
+```
+
+If you change repo boundaries, validation commands, major docs, or project
+structure, check whether `.toimija/repo.yaml` must change too, then run
+`toimija doctor --strict`.
+
+### `doctor --strict` — the drift guard
+
+Plain `toimija doctor` is advisory: it reports setup gaps as warnings and exits
+`0`. `toimija doctor --strict` escalates every actionable warning to a failure
+and exits non-zero, so a CI step or pre-commit hook can block drift. It is a
+lexical drift guard — no AI, no semantic comparison. It checks:
+
+- `.toimija/repo.yaml` exists and parses
+- `repo.name`, `repo.role`, and `boundaries` are non-empty
+- a validation plan exists (configured or inferable from the repo kind)
+- every `context.important_docs` path exists on disk
+- an agent doc still routes work through the `toimija context` preflight
+- each boundary sentence still appears in the agent docs
+  (`AGENTS.md` / `CLAUDE.md` / `important_docs`), matched case- and
+  whitespace-insensitively so re-wrapping a line does not trip the gate
+
+Wire it into the same gate that runs your other checks:
+
+```bash
+toimija doctor --strict
+```
 
 ## Example Context Output
 

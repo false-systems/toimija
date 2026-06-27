@@ -35,7 +35,12 @@ pub fn render_init_report(report: &InitReport) -> String {
 
 pub fn render_doctor_report(report: &DoctorReport) -> String {
     let mut output = String::new();
-    writeln!(&mut output, "Toimija doctor\n").unwrap();
+    let header = if report.strict {
+        "Toimija doctor (strict)"
+    } else {
+        "Toimija doctor"
+    };
+    writeln!(&mut output, "{header}\n").unwrap();
     for check in &report.checks {
         let status = match check.status {
             DoctorStatus::Ok => "ok",

@@ -31,6 +31,11 @@ snapshot).
 
 Update README.md when CLI behavior changes.
 
+If you change repo boundaries, validation commands, major docs, or project
+structure, update `.toimija/repo.yaml` to match, then run `toimija doctor
+--strict` — the drift guard fails when the config and the agent docs fall out of
+sync.
+
 ## Working with other agents
 
 Several agents may work this repo at once and fast. Coordinate through Git and

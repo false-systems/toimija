@@ -41,7 +41,7 @@ pub enum Command {
     /// Create .toimija/repo.yaml (and AGENTS.md/CLAUDE.md if missing).
     Init,
     /// Check Toimija setup: git, config, repo kind, and agent docs.
-    Doctor,
+    Doctor(DoctorArgs),
     /// Compile the current Git work state into a context packet.
     Context(ContextArgs),
     /// Print the validation plan. Does not run any commands.
@@ -59,6 +59,14 @@ pub struct ContextArgs {
     /// Approximate output cap in characters; long lists are truncated.
     #[arg(long)]
     pub budget: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Escalate every actionable warning to a failure (non-zero exit). Use as a
+    /// CI or pre-commit gate so config/doc drift blocks the change.
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(Debug, Args)]
@@ -98,7 +106,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
     let result = match cli.command {
         Command::Init => run_init(),
-        Command::Doctor => run_doctor(),
+        Command::Doctor(args) => run_doctor(args),
         Command::Context(args) => run_context(args),
         Command::Validate(args) => run_validate(args),
     };
@@ -122,7 +130,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Init => "init",
-            Command::Doctor => "doctor",
+            Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
             Command::Validate(_) => "validate",
         }
@@ -138,13 +146,23 @@ fn run_init() -> Result<()> {
     Ok(())
 }
 
-fn run_doctor() -> Result<()> {
+fn run_doctor(args: DoctorArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let report = repo::doctor(&runner, &cwd);
+    let mode = if args.strict {
+        repo::DoctorMode::Strict
+    } else {
+        repo::DoctorMode::Default
+    };
+    let report = repo::doctor(&runner, &cwd, mode);
     println!("{}", render::render_doctor_report(&report));
     if report.serious {
-        anyhow::bail!("doctor found serious setup failures");
+        let reason = if report.strict {
+            "doctor --strict found config or doc drift"
+        } else {
+            "doctor found serious setup failures"
+        };
+        anyhow::bail!("{reason}");
     }
     Ok(())
 }
