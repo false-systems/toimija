@@ -49,7 +49,7 @@ fn validate_without_plan_is_rejected() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "v0.0 only supports `toimija validate --plan`",
+            "`toimija validate` only supports `--plan`",
         ));
 }
 

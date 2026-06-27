@@ -257,7 +257,7 @@ fn run_snippet(args: SnippetArgs) -> Result<()> {
 
 fn run_validate(args: ValidateArgs) -> Result<()> {
     if !args.plan {
-        anyhow::bail!("v0.0 only supports `toimija validate --plan`");
+        anyhow::bail!("`toimija validate` only supports `--plan`; it never runs validation");
     }
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
