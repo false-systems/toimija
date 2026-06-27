@@ -179,8 +179,13 @@ edge back to your branch tip, so `git merge-base --is-ancestor <tip> origin/main
 reports `false` even when every line landed. Patch-id checks (`git cherry`) fail
 too, because squash fuses commits. Only tree/content comparison survives both.
 
-`toimija landed` answers by comparing your branch's touched surface against a
-base ref (default `origin/main`):
+`toimija landed` answers per touched path: is the branch's *own change* to it
+already present in the base ref (default `origin/main`)? For each path it asks
+git whether the branch's change applies cleanly forward onto base (so it is still
+absent), reverse-applies (so it is exactly present), or — when base has diverged
+on that file — whether the lines the branch added are present and the lines it
+removed are gone. That last step is what recognizes a change that was squash-
+landed and then edited further, which a plain tree comparison misreports.
 
 ```bash
 git fetch                         # re-validate against live state first
@@ -197,10 +202,11 @@ Toimija landed
 - reflected: 7/7
 ```
 
-Status is `landed` (no touched path differs from base), `not landed` (all
-differ), `partially landed` (some reflected, some not — the unreflected paths are
-listed), or `unknown` (no merge-base — unrelated histories or an unfetched base).
-It is read-only and `--json` is available for scripting. Useful for stacked PRs:
+Status is `landed` (every touched path's change is present), `not landed` (none
+are), `partially landed` (some are, some not — the unreflected paths are listed),
+or `unknown` (no merge-base — unrelated histories or an unfetched base). The check
+runs against a scratch index seeded from the base, so it never touches your index
+or working tree; `--json` is available for scripting. Useful for stacked PRs:
 after a parent merges via squash, check a child with `toimija landed` rather than
 trusting ancestry.
 

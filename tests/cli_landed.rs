@@ -107,6 +107,61 @@ fn landed_sees_squash_landing_that_ancestry_would_miss() {
 }
 
 #[test]
+fn landed_when_base_edits_the_file_after_squash_landing() {
+    // Regression: branch edits a.txt, trunk squash-lands that exact edit, then
+    // trunk edits a.txt further. The branch's change is still present, so this
+    // must read as landed — a plain tree/merge comparison reports a false
+    // "not landed" here.
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    setup(temp.path());
+    land_a_onto_trunk(temp.path());
+    // trunk appends another line to the same file after landing.
+    run_git(temp.path(), &["checkout", "-q", "trunk"]);
+    fs::write(temp.path().join("a.txt"), "alpha\nbeta\n").unwrap();
+    run_git(temp.path(), &["add", "."]);
+    run_git(
+        temp.path(),
+        &["commit", "-q", "-m", "trunk edits a.txt further"],
+    );
+    run_git(temp.path(), &["checkout", "-q", "work"]);
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["landed", "--base", "trunk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("status: landed"));
+}
+
+#[test]
+fn landed_stays_not_landed_when_base_diverges_without_the_change() {
+    // False-positive guard: the branch's change is genuinely absent from trunk,
+    // which diverged on the same file differently. Must NOT report landed.
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    setup(temp.path()); // work sets a.txt = "alpha\n"
+    run_git(temp.path(), &["checkout", "-q", "trunk"]);
+    fs::write(temp.path().join("a.txt"), "different\n").unwrap();
+    run_git(temp.path(), &["add", "."]);
+    run_git(temp.path(), &["commit", "-q", "-m", "trunk diverges"]);
+    run_git(temp.path(), &["checkout", "-q", "work"]);
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["landed", "--base", "trunk"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("status: not landed"));
+}
+
+#[test]
 fn landed_reports_partial_when_some_paths_remain() {
     if !git_available() {
         return;
