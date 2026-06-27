@@ -203,6 +203,16 @@ toimija validate --plan
 ```
 
 Use `.toimija/repo.yaml` for repo boundaries and validation hints.
+
+If you change repo boundaries, validation commands, major docs, or project
+structure, update `.toimija/repo.yaml` to match, then run:
+
+```bash
+toimija doctor --strict
+```
+
+`doctor --strict` is the drift guard: it fails when the config and these docs
+fall out of sync. Wire it into CI or a pre-commit gate.
 "#;
 
 pub const CLAUDE_TEMPLATE: &str = r#"@AGENTS.md
