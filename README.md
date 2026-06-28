@@ -1,12 +1,35 @@
 # Toimija
 
-Toimija is an internal False Systems CLI.
+**Toimija is the live entrance for agents into a repo.**
 
-It is a Git-aware local context compiler for coding agents. It gives an agent a compact packet about the current repository state before the agent edits code.
+Instead of running `codex` directly, run `toimija run -- codex`.
+Instead of running `claude` directly, run `toimija run -- claude`.
 
-Core line:
+Toimija refreshes the repo context, writes `.toimija/current.md` and
+`.toimija/current.json`, starts a watcher, launches the agent, keeps the packet
+fresh while the agent works, and exits with the wrapped command's status.
 
-> Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
+> We do not ask the model to understand the repo first. We ask Git what state the repo is in.
+
+## What Toimija is
+
+Toimija is a Git-aware local context compiler and live entrypoint for coding
+agents.
+
+It combines:
+
+- durable repo meaning from `.toimija/repo.yaml`
+- live Git state
+- Git-derived relevance
+- language adapter hints
+- validation plans
+
+into:
+
+- `.toimija/current.md` — the readable live packet
+- `.toimija/current.json` — the machine-readable live packet
+
+Agents should work from those files instead of reading the repo cold.
 
 ## Git as the starting point
 
@@ -16,182 +39,184 @@ Toimija starts from the one truth database every repo already has: Git. HEAD, re
 
 Toimija reads that state machine first, then compiles it into a small context packet: what changed, what is risky, what to read, what to ignore, and what validation can honestly prove.
 
-Git is not a save button here.
+Git is not a save button here. Git is the substrate.
 
-Git is the substrate.
+> Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
 
-> We do not ask the model to understand the repo first. We ask Git what state the repo is in.
-
-`toimija context` makes that state explicit: the `Git:` block (HEAD, branch, detached, upstream, merge-base, dirty, and staged/unstaged/untracked/conflict counts), a `Branch intent:` section (what the whole branch changed since the merge-base, distinct from dirty state), Git-derived relevance sections (`Scope`, `Read order`, `Coupling`, `Risk`), and a `Changed surface:` whose `source:` line names whether it came from the branch diff or only the working tree and index.
-
-## What It Is Not
-
-Toimija v0.0 is not a platform, dashboard, dispatcher, queue, graph database, Tree-sitter indexer, LSP client, MCP server, or replacement for Git, Sykli, Vaisto, Kerto, or BaseMind.
-
-Default posture is advisory. It warns and explains. It does not block humans.
-
-## Build From Source
+## The normal workflow
 
 ```bash
-cargo build
+cd /path/to/repo
+toimija run -- codex
 ```
-
-Run locally:
 
 ```bash
-cargo run -- context
+cd /path/to/repo
+toimija run -- claude
 ```
 
-Or install the binary from this checkout:
+`run` is the recommended agent entrypoint. It runs `enter`, starts `watch`,
+launches the agent command, stops watching when the agent exits, and returns the
+agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
+143).
 
-```bash
-cargo install --path .
-```
+While the agent works, `.toimija/current.md` and `.toimija/current.json` stay
+fresh: every relevant filesystem or Git-state change re-runs the refresh after a
+short debounce. The watcher is foreground-only and stops the moment the agent
+exits — no daemon survives the command.
 
-Release artifacts are built by GitHub Actions when a `v*` tag is pushed. The v0.0 workflow runs on False Systems ARC/Hetzner ARM64 runners and uploads a Linux aarch64 binary as a workflow artifact; it does not publish a GitHub Release yet.
-
-### Pre-commit hook
-
-A `xtask` crate provides a git pre-commit hook via
-[`devx-pre-commit`](https://docs.rs/devx-pre-commit). It is dev-only and kept
-out of the shipped binary by `default-members = ["."]` in the workspace, so
-bare `cargo build`/`test`/`clippy` and the release build never compile it.
-Install the hook once per clone:
-
-```bash
-cargo xtask install-pre-commit-hook
-```
-
-The hook formats the staged Rust crates, re-stages the result, then runs
-`cargo clippy --all-targets -- -D warnings` followed by `cargo test`, blocking
-the commit if either fails — the same gates CI enforces. Re-run the command
-after editing `xtask`.
-
-## Commands
+## One-time repo setup
 
 ```bash
 toimija init
-toimija doctor
-toimija doctor --strict
-toimija refresh --for-diff --budget 4000
-toimija enter --for-diff --budget 4000
-toimija watch
-toimija run -- <agent command>
-toimija context
+```
+
+`init` creates Toimija-owned files only:
+
+- `.toimija/repo.yaml` — the durable repo manifest. Fill in `role`, `not`, and
+  `boundaries`; only a human can supply the repo's purpose and limits.
+- `.toimija/current.md` / `.toimija/current.json` — generated on every run. Add
+  them to `.gitignore`; they are not committed.
+
+Toimija does not own root agent policy files by default. To seed
+`AGENTS.md`/`CLAUDE.md`, run `toimija snippet preflight` and paste the output into
+whichever doc your agents read; `toimija snippet script` prints a
+`scripts/agent-enter` stub.
+
+> repo.yaml gives durable meaning. Git gives live work state. Toimija compiles both into current context.
+
+## Current context
+
+`.toimija/current.md` is the readable live packet. `.toimija/current.json` is the
+machine-readable live packet. Both are regenerated by `refresh`, `enter`, `watch`,
+and `run`, and are git-ignored.
+
+The packet includes:
+
+- branch / HEAD / dirty state
+- staged / unstaged / untracked files
+- changed surface
+- scope
+- read order
+- coupling
+- risk
+- validation plan
+- warnings
+
+See **Example context output** below for a full rendering.
+
+## Commands
+
+Ordered by workflow:
+
+```bash
+toimija run -- codex       # agent entrypoint
+toimija run -- claude
+toimija enter              # refresh + print the packet as agent preflight
+toimija refresh            # recompute current.md/current.json
+toimija watch              # keep current.* fresh on Git/filesystem changes
+toimija context            # print the packet without wrapping an agent
 toimija context --json
-toimija context --for-diff
-toimija context --budget 4000
-toimija snippet preflight
-toimija snippet script
-toimija landed --base origin/main
-toimija validate --plan
+toimija validate --plan    # print the validation plan; never runs it
+toimija doctor             # check Toimija setup
+toimija init               # create .toimija/repo.yaml if missing
 ```
 
-`enter` is the recommended agent preflight: it **refreshes the live packet** and
-prints it, framed as the one command an agent runs on entering the repo. `refresh`
-does the write without printing — both recompute the packet and write it to
-`.toimija/current.md` (budgeted Markdown) and `.toimija/current.json` (full
-machine-readable packet). They are read-only except for those two files: no
-network, no validation execution. These live files are Toimija's, regenerated on
-each run and never committed (they are git-ignored).
+| Command | What it does |
+|---|---|
+| `run -- <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. |
+| `enter` | Refresh and print the current packet as agent preflight. |
+| `refresh` | Recompute `current.md`/`current.json`. |
+| `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
+| `context` | Print the context packet without wrapping an agent. |
+| `validate --plan` | Print the validation plan; never runs validation. |
+| `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
+| `landed` | Report whether a branch's work is present in a base ref, by content. |
+| `init` | Create `.toimija/repo.yaml` if missing. |
+| `snippet preflight\|script` | Print suggested preflight text / entry script; writes no files. |
 
-`watch` keeps them fresh while you work: it is a **foreground** command (not a
-daemon) that watches the repo for filesystem and Git-state changes and re-runs
-`refresh` after a short debounce, until you stop it (Ctrl-C). It ignores
-build/vendor directories and its own writes, makes no network calls, and runs no
-validation.
+`--for-diff` and `--budget` tune the packet; `--json` switches the print commands
+(`context`, `enter`, `refresh`) to JSON. Global options: `-v/--verbose`,
+`-q/--quiet`, `--log-format text|json`, `--no-color`. Logs go to stderr; command
+output goes to stdout.
 
-`run` wraps an agent invocation in that loop:
+## Boundaries / non-goals
 
-```bash
-toimija run -- claude   # or codex, or any agent command
-```
+Toimija does not:
 
-It enters (refresh + print the packet), starts `watch` in the background so the
-live files stay fresh while the agent works, launches the command, stops the
-watcher when the command exits, and exits with the command's status. It never
-executes the validation plan — `validate --plan` only ever prints.
+- run validation commands (`validate --plan` only prints them)
+- auto-commit or auto-stash
+- fetch from the network
+- run as a hidden daemon (`watch`/`run` are foreground-only and explicitly invoked)
+- own `AGENTS.md` / `CLAUDE.md` by default
+- parse code with Tree-sitter
+- use LSP / SCIP / Kythe / MCP in the current workflow
 
-Global options:
-
-```bash
--v / --verbose
--q / --quiet
---log-format text|json
---no-color
-```
-
-Logs go to stderr. Command output goes to stdout.
+Default posture is advisory: it warns and explains; it does not block humans. The
+one opt-in gate is `doctor --strict`.
 
 ## Ownership: `.toimija/` is Toimija's, root files are yours
 
-Toimija should not own agent policy; it should make agent work cheaper by
-keeping a live, repo-aware context layer an agent asks for before it works.
+Toimija should not own agent policy; it should make agent work cheaper by keeping
+a live, repo-aware context layer an agent asks for before it works.
 
 ```text
 .toimija/repo.yaml      owned by you        durable repo meaning (boundary + validation hints)
-.toimija/current.md     owned by Toimija     live agent packet (regenerated, git-ignored)
-.toimija/current.json   owned by Toimija     live machine-readable packet (regenerated, git-ignored)
-AGENTS.md               owned by you         agent policy — Toimija only suggests text
-CLAUDE.md               owned by you         agent policy — Toimija only suggests text
-scripts/                owned by you         e.g. agent-enter — Toimija only suggests text
+.toimija/current.md     owned by Toimija    live agent packet (regenerated, git-ignored)
+.toimija/current.json   owned by Toimija    live machine-readable packet (regenerated, git-ignored)
+AGENTS.md               owned by you        agent policy — Toimija only suggests text
+CLAUDE.md               owned by you        agent policy — Toimija only suggests text
+scripts/                owned by you        e.g. agent-enter — Toimija only suggests text
 ```
 
 `toimija init` writes `.toimija/repo.yaml` and nothing else. It does **not**
-create `AGENTS.md` or `CLAUDE.md` — those are human-owned policy. To seed them,
-run `toimija snippet preflight` and paste the output into whichever doc your
-agents read; `toimija snippet script` prints a `scripts/agent-enter` stub.
+create `AGENTS.md` or `CLAUDE.md` — those are human-owned policy. On a fresh
+config it prints a **Next steps** line pointing at the identity fields you still
+need to fill, and at `toimija snippet preflight` to seed your agent docs.
 
-## The repo ritual
+## Git-derived relevance
 
-```text
-Repo setup (once):
-  toimija init                     # writes .toimija/repo.yaml only
-  fill in role / not / boundaries  # only a human can supply these
-  toimija snippet preflight >> AGENTS.md   # paste the preflight into your docs
+Toimija does not only report Git state. It also uses bounded Git history to help
+an agent decide what to read first and what to ignore:
 
-Agent starts:
-  toimija enter --for-diff --budget 4000   # the working truth; read-only
+- changed areas since merge-base, and areas untouched by the branch (`Scope`)
+- changed files ranked by likely relevance with a short reason (`Read order`)
+- companion files that are missing from the current diff (`Coupling`)
+- files with high churn, young surface, or stable/load-bearing history, plus a
+  concrete action hint (`Risk`)
 
-Agent finishes:
-  toimija validate --plan          # print the plan, then run the commands
-  report the exact commands and output
+> This is not semantic code understanding. It is Git-derived work relevance.
 
-PR / CI gate (optional):
-  toimija doctor --strict          # boring drift guard; non-zero on drift
-```
+> Tree-sitter can help after you know where to look. Toimija uses Git to decide where looking is worth it.
 
-Every agent prompt then stays short — the command carries the context, not the
-prompt:
+These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, and language adapter path heuristics (no source parsing, no network, no index), and every hint carries an honest source label. History mining is bounded: the last 200 non-merge commits, starting from the merge-base so the branch does not vote on its own relevance. Historical coupling needs a missing partner to co-change at least twice and in at least 60% of the changed file's edits; existing companion tests are surfaced through path heuristics. "High churn" means at least 8 commits touched the file in that window. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
 
-```text
-Before editing, run `toimija enter --for-diff --budget 4000`.
-Use its output as the working state. Do not broad-crawl the repo unless the
-packet is insufficient. If the packet contradicts the task, stop and report.
-Do not claim completion without `toimija validate --plan`.
-```
+## Validation
 
-If you change repo boundaries, validation commands, major docs, or project
-structure, check whether `.toimija/repo.yaml` must change too, then run
-`toimija doctor --strict`.
+`toimija validate --plan` prints commands. It never runs them.
 
-### `doctor --strict` — the drift guard
+The plan has tiers — `Focused` (derived from the changed surface), `Fast`,
+`Strict`, `Full`, and `Privileged` — drawn from `.toimija/repo.yaml`'s
+`validation` section, or inferred from the repo kind (Rust/Elixir) when the config
+leaves them empty. The agent runs the commands itself and reports the exact output.
+
+The `Focused (from changed surface)` tier is derived, not configured: for a Rust repo it maps changed `.rs` files to their owning crate (the nearest enclosing `Cargo.toml`) and emits `cargo test -p <crate>` for a fast first pass, deduped per crate and rendered above the authoritative `Fast` tier. For an Elixir umbrella it maps changed `.ex`/`.exs` files to their owning app (`apps/<name>/`) and emits `mix test apps/<name>/test`; a single-app mix repo gets no focused tier, since `mix test` already is the whole run. It is advisory and additive — never a substitute for the full run. When only manifests or docs change, or a change spans more units than the cap, the tier is omitted and the whole-repo command stands.
+
+## `doctor --strict` — the drift guard
 
 Plain `toimija doctor` is advisory: it reports setup gaps as warnings and exits
-`0`. `toimija doctor --strict` escalates every actionable warning to a failure
-and exits non-zero, so a CI step or pre-commit hook can block drift. It is a
-lexical drift guard — no AI, no semantic comparison. It checks:
+`0`. `toimija doctor --strict` escalates every actionable warning to a failure and
+exits non-zero, so a CI step or pre-commit hook can block drift. It is a lexical
+drift guard — no AI, no semantic comparison. It checks:
 
 - `.toimija/repo.yaml` exists and parses
 - `repo.name`, `repo.role`, and `boundaries` are non-empty
 - a validation plan exists (configured or inferable from the repo kind)
 - every `context.important_docs` path exists on disk
-- an agent doc still routes work through the `toimija context` preflight
+- an agent doc still routes work through the `toimija enter` preflight
 - each boundary sentence still appears in the agent docs
   (`AGENTS.md` / `CLAUDE.md` / `important_docs`), matched case- and
   whitespace-insensitively so re-wrapping a line does not trip the gate
-
-Wire it into the same gate that runs your other checks:
 
 ```bash
 toimija doctor --strict
@@ -200,20 +225,20 @@ toimija doctor --strict
 ## Did the work land? (`toimija landed`)
 
 "Did my branch land?" is a **content** question, not an ancestry question. Under
-squash merges this matters: a squash-merge synthesizes a fresh commit with no
-edge back to your branch tip, so `git merge-base --is-ancestor <tip> origin/main`
+squash merges this matters: a squash-merge synthesizes a fresh commit with no edge
+back to your branch tip, so `git merge-base --is-ancestor <tip> origin/main`
 reports `false` even when every line landed. Patch-id checks (`git cherry`) fail
 too, because squash fuses commits. Only tree/content comparison survives both.
 
 `toimija landed` answers per touched path: is the branch's *own change* to it
 already present in the base ref (default `origin/main`)? For each path it asks git
 whether the branch's change applies cleanly forward onto base (so it is still
-absent → not reflected), reverse-applies (so it is exactly present → reflected),
-or neither — meaning base has diverged on that file. The diverged case is
-reported as **ambiguous**, never silently as landed: a false "landed" is the
-dangerous direction for branch cleanup. A line-containment heuristic (are the
-lines the branch added present, and the lines it removed gone?) rides along as
-*evidence* on the ambiguous entry, but does not decide the verdict.
+absent → not reflected), reverse-applies (so it is exactly present → reflected), or
+neither — meaning base has diverged on that file. The diverged case is reported as
+**ambiguous**, never silently as landed: a false "landed" is the dangerous
+direction for branch cleanup. A line-containment heuristic (are the lines the
+branch added present, and the lines it removed gone?) rides along as *evidence* on
+the ambiguous entry, but does not decide the verdict.
 
 ```bash
 git fetch                         # re-validate against live state first
@@ -235,13 +260,14 @@ Status is `landed` (every touched path's change is proven present), `not landed`
 `ambiguous` (base diverged on at least one path, so landing could not be proven —
 the paths and their heuristic evidence are listed), or `unknown` (no merge-base —
 unrelated histories or an unfetched base). The check runs against a scratch index
-seeded from the base, so it never touches your index or working tree; `--json` is
-available for scripting. Useful for stacked PRs: after a parent merges via squash,
-check a child with `toimija landed` rather than trusting ancestry. (A future
-`--heuristic` flag could opt into treating positive line-containment evidence as
-landed; today the heuristic is evidence only.)
+seeded from the base, so it never touches your index or working tree. Useful for
+stacked PRs: after a parent merges via squash, check a child with `toimija landed`
+rather than trusting ancestry.
 
-## Example Context Output
+## Example context output
+
+`toimija context` (and the `.toimija/current.md` written by `refresh`/`enter`)
+renders like this:
 
 ```text
 # Toimija Context
@@ -339,11 +365,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 ## Config
 
-`toimija init` creates `.toimija/repo.yaml` if missing and refuses to overwrite it. It writes nothing outside `.toimija/` — `AGENTS.md` and `CLAUDE.md` are human-owned policy, so `init` only points you at `toimija snippet preflight` to seed them yourself.
-
-On a fresh config it prints a **Next steps** line pointing at the identity fields (`role`, `not`, `boundaries`) you still need to fill — Git supplies the work state, but only you can supply the repo's purpose and boundaries. Until those are set, `toimija context` renders them as `(unset — add to .toimija/repo.yaml)` rather than pretending they are unavailable.
-
-Build and vendor directories (`target`, `_build`, `deps`, `node_modules`) are filtered from the changed surface automatically, matched as a path segment anywhere in the tree (so nested `test_projects/app/target/` is caught too). This is applied live each run — not written into `repo.yaml` — so it tracks the repo as its kind changes. `context.safe_to_ignore` is for your own additional rules on top.
+`.toimija/repo.yaml` is the durable repo manifest. Build and vendor directories (`target`, `_build`, `deps`, `node_modules`) are filtered from the changed surface automatically, matched as a path segment anywhere in the tree (so nested `test_projects/app/target/` is caught too). This is applied live each run — not written into `repo.yaml` — so it tracks the repo as its kind changes. `context.safe_to_ignore` is for your own additional rules on top.
 
 ```yaml
 repo:
@@ -372,26 +394,61 @@ validation:
   privileged: []
 
 boundaries:
-  - Keep the core as a single Rust crate for v0.0.
-  - Do not add MCP, LSP, SCIP, Tree-sitter, background tasks, or network calls yet.
+  - Keep the core as a single Rust crate.
+  - Do not add MCP, LSP, SCIP, Tree-sitter, network calls, or background daemons yet.
 ```
-
-The `Focused (from changed surface)` tier is derived, not configured: for a Rust repo it maps changed `.rs` files to their owning crate (the nearest enclosing `Cargo.toml`) and emits `cargo test -p <crate>` for a fast first pass, deduped per crate and rendered above the authoritative `Fast` tier. For an Elixir umbrella it maps changed `.ex`/`.exs` files to their owning app (`apps/<name>/`) and emits `mix test apps/<name>/test`; a single-app mix repo gets no focused tier, since `mix test` already is the whole run. It is advisory and additive — never a substitute for the full run. When only manifests or docs change, or a change spans more units than the cap, the tier is omitted and the whole-repo command stands.
 
 `context.read_first` adds repo-specific files to the Read first section when they exist.
 `context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
 
-## v0.0 Limitations
+## Build from source & development
+
+```bash
+cargo build
+cargo run -- context        # run locally
+cargo install --path .      # install the binary from this checkout
+```
+
+Release artifacts are built by GitHub Actions when a `v*` tag is pushed. The
+workflow runs on False Systems ARC/Hetzner ARM64 runners and uploads a Linux
+aarch64 binary as a workflow artifact.
+
+Run the standard gate before claiming completion:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+### Pre-commit hook
+
+A `xtask` crate provides a git pre-commit hook via
+[`devx-pre-commit`](https://docs.rs/devx-pre-commit). It is dev-only and kept out
+of the shipped binary by `default-members = ["."]` in the workspace, so bare
+`cargo build`/`test`/`clippy` and the release build never compile it. Install the
+hook once per clone:
+
+```bash
+cargo xtask install-pre-commit-hook
+```
+
+The hook formats the staged Rust crates, re-stages the result, then runs
+`cargo clippy --all-targets -- -D warnings` followed by `cargo test`, blocking the
+commit if either fails — the same gates CI enforces. Re-run the command after
+editing `xtask`.
+
+## Current limitations
 
 - Git state is collected through the Git CLI, not Git internals.
 - Merge-base is attempted against the selected base candidate.
 - Validation plans are rendered only; commands are not executed.
 - Rust and Elixir detection use simple marker files.
 - Context budgets are approximate character caps, not token counts.
-- Impact analysis is unavailable in v0.0.
+- Impact analysis is not yet available.
 - Upstream and merge-base may be unavailable in shallow, unborn, detached, or local-only repos.
 
-## Output Stability
+## Output stability
 
 Context packets use explicit ordering rules so agents can diff and consume them predictably:
 
@@ -405,17 +462,11 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
 - Markdown and pretty JSON output have exact regression tests
 
-`toimija context --for-diff` adds a diff-focused Markdown section that separates:
+`toimija context --for-diff` adds a diff-focused Markdown section that separates committed files changed since the selected merge-base, staged, unstaged, untracked, and conflicted files.
 
-- committed files changed since the selected merge-base
-- staged files
-- unstaged files
-- untracked files
-- conflicted files
+## Read-first heuristics
 
-## Read-First Heuristics
-
-Read-first hints are bounded and path-derived. Toimija does not scan the whole repo or parse source code in v0.0.
+Read-first hints are bounded and path-derived. Toimija does not scan the whole repo or parse source code.
 
 Rust:
 
@@ -430,22 +481,9 @@ Elixir:
 - `lib/foo/bar.ex` may point to `test/foo/bar_test.exs` if present
 - `mix.exs` may point to `test/test_helper.exs` if present
 
-## Git-derived relevance
+## Future drawer
 
-Toimija does not only report Git state. It also uses bounded Git history to help an agent decide what to read first and what to ignore.
-
-This is not semantic code understanding. It is relevance from Git:
-
-- changed areas since merge-base, and areas untouched by the branch (`Scope`)
-- changed files ranked by likely relevance with a short reason (`Read order`)
-- companion files that are missing from the current diff (`Coupling`)
-- files with high churn, young surface, or stable/load-bearing history plus a concrete action hint (`Risk`)
-
-These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, and language adapter path heuristics (no source parsing, no network, no index), and every hint carries an honest source label. History mining is bounded: the last 200 non-merge commits, starting from the merge-base so the branch does not vote on its own relevance. Historical coupling needs a missing partner to co-change at least twice and in at least 60% of the changed file's edits; existing companion tests are surfaced through path heuristics. "High churn" means at least 8 commits touched the file in that window. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
-
-## Future Drawer
-
-These are intentionally not implemented in v0.0:
+These are intentionally not implemented:
 
 - MCP server
 - Tree-sitter, LSP, SCIP, Kythe
@@ -453,4 +491,4 @@ These are intentionally not implemented in v0.0:
 - session fleet, handoff, checkpoint, worktree management
 - dynamic plugins
 - graph database
-- background tasks
+- background daemons
