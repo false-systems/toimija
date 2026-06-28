@@ -75,6 +75,7 @@ toimija doctor
 toimija doctor --strict
 toimija refresh --for-diff --budget 4000
 toimija enter --for-diff --budget 4000
+toimija watch
 toimija context
 toimija context --json
 toimija context --for-diff
@@ -92,6 +93,12 @@ does the write without printing — both recompute the packet and write it to
 machine-readable packet). They are read-only except for those two files: no
 network, no validation execution. These live files are Toimija's, regenerated on
 each run and never committed (they are git-ignored).
+
+`watch` keeps them fresh while you work: it is a **foreground** command (not a
+daemon) that watches the repo for filesystem and Git-state changes and re-runs
+`refresh` after a short debounce, until you stop it (Ctrl-C). It ignores
+build/vendor directories and its own writes, makes no network calls, and runs no
+validation.
 
 Global options:
 

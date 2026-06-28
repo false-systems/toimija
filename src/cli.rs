@@ -15,6 +15,7 @@ use crate::render;
 use crate::repo;
 use crate::snippet;
 use crate::validate;
+use crate::watch;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -57,6 +58,11 @@ pub enum Command {
     /// The recommended command an agent runs on entering the repo: it refreshes
     /// `.toimija/current.*` and prints the same compact packet as `context`.
     Enter(ContextArgs),
+    /// Watch the repo and refresh .toimija/current.* on change (foreground).
+    ///
+    /// Debounced; ignores build dirs and its own writes. No daemon, no network,
+    /// no validation execution. Runs until stopped (Ctrl-C).
+    Watch(ContextArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     Snippet(SnippetArgs),
     /// Check whether this branch's work has landed in a base ref by content.
@@ -159,6 +165,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Context(args) => run_context(args),
         Command::Refresh(args) => run_refresh(args),
         Command::Enter(args) => run_enter(args),
+        Command::Watch(args) => run_watch(args),
         Command::Snippet(args) => run_snippet(args),
         Command::Landed(args) => run_landed(args),
         Command::Validate(args) => run_validate(args),
@@ -187,6 +194,7 @@ impl Command {
             Command::Context(_) => "context",
             Command::Refresh(_) => "refresh",
             Command::Enter(_) => "enter",
+            Command::Watch(_) => "watch",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Validate(_) => "validate",
@@ -274,6 +282,35 @@ fn run_enter(args: ContextArgs) -> Result<()> {
         );
         println!("{}", refreshed.markdown);
     }
+    Ok(())
+}
+
+fn run_watch(args: ContextArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    // Status goes to stderr so stdout stays clean for any piping.
+    eprintln!(
+        "toimija watch: refreshing {} on change (Ctrl-C to stop)",
+        refresh::CURRENT_MD
+    );
+    // Standalone watch runs until the process is signalled; the flag is the
+    // stop hook `run` will drive in PR 3.
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    watch::watch(
+        &runner,
+        &repo_root,
+        args.for_diff,
+        args.budget,
+        &stop,
+        || {
+            eprintln!(
+                "refreshed {} / {}",
+                refresh::CURRENT_MD,
+                refresh::CURRENT_JSON
+            );
+        },
+    )?;
     Ok(())
 }
 

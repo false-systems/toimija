@@ -13,3 +13,4 @@ pub mod render;
 pub mod repo;
 pub mod snippet;
 pub mod validate;
+pub mod watch;
