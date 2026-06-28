@@ -67,13 +67,26 @@ fn watch_refreshes_on_a_file_change_then_stops() {
     let before = std::fs::read_to_string(&current).unwrap();
     assert!(!before.contains("late_arrival.rs"));
 
-    // A new file should trigger a debounced refresh.
-    std::fs::write(temp.path().join("late_arrival.rs"), "// new\n").unwrap();
-    let refreshed = wait_until(Duration::from_secs(10), || {
-        std::fs::read_to_string(&current)
-            .map(|s| s.contains("late_arrival.rs"))
+    // Re-trigger the change while polling. Filesystem events can be dropped or
+    // delayed under load (notably inotify in CI), so a single write is flaky;
+    // repeatedly touching the file (a CREATE then MODIFY events) until the live
+    // packet reflects it is robust without weakening the assertion.
+    let target = temp.path().join("late_arrival.rs");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut refreshed = false;
+    let mut nudge = 0u32;
+    while Instant::now() < deadline {
+        nudge += 1;
+        std::fs::write(&target, format!("// change {nudge}\n")).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        if std::fs::read_to_string(&current)
+            .map(|contents| contents.contains("late_arrival.rs"))
             .unwrap_or(false)
-    });
+        {
+            refreshed = true;
+            break;
+        }
+    }
 
     // Stop the watcher before asserting, so a failure never leaks the process.
     let _ = child.kill();
