@@ -16,6 +16,7 @@ they drift apart. Edit both together.
 - Keep v0.0 as one Rust crate.
 - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Sykli, Vaisto, or Kerto integration yet.
 - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
+- Agent coordination — per-session live packets, sibling-session awareness, and session handoff records — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
 
 Before claiming completion, run:
 
@@ -67,5 +68,8 @@ GitHub primitives, not assumptions:
   — a stale local binary lies about the code.
 
 Coordination state — who is doing what right now — lives in issue assignments,
-draft PRs, and labels, not in Git. Toimija reports Git work state; it does not
-coordinate agents, and should not be made to.
+draft PRs, and labels, not in Git. Toimija reports Git work state, surfaces live
+sibling sessions, and can record a session handoff (see
+`docs/proposals/0001-sessions-awareness-handoff.md`). It still does not
+*coordinate* agents — no dispatch, no assignment, no orchestration. Claiming work
+stays in GitHub issues, draft PRs, and labels; the human remains the orchestrator.
