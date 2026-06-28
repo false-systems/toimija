@@ -57,6 +57,25 @@ fn run_exits_with_the_wrapped_command_status() {
         .code(0);
 }
 
+#[cfg(unix)]
+#[test]
+fn run_preserves_signal_termination_as_128_plus_signal() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    // A child killed by SIGTERM (15) should surface as 128 + 15 = 143, so
+    // termination is distinguishable from a generic failure (exit 1).
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["run", "--", "sh", "-c", "kill -TERM $$"])
+        .assert()
+        .code(143);
+}
+
 #[test]
 fn run_enters_then_launches_the_command() {
     if !git_available() {

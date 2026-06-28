@@ -360,9 +360,27 @@ fn run_run(args: RunArgs) -> Result<()> {
         Err(_) => eprintln!("toimija run: watcher thread panicked"),
     }
 
-    // 6. Exit with the wrapped command's status.
+    // 6. Exit with the wrapped command's status — preserving signal semantics so
+    //    a cancelled/terminated child is distinguishable from a generic failure.
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
-    std::process::exit(status.code().unwrap_or(1));
+    std::process::exit(wrapped_exit_code(status));
+}
+
+/// The exit code a transparent wrapper should adopt for a finished child. On
+/// Unix a signal-terminated child has no exit code; follow the shell convention
+/// of `128 + signal` (e.g. SIGTERM → 143) so termination is not flattened to 1.
+#[cfg(unix)]
+fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .unwrap_or(1)
+}
+
+#[cfg(not(unix))]
+fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
 }
 
 fn run_watch(args: ContextArgs) -> Result<()> {
