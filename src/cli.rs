@@ -63,6 +63,12 @@ pub enum Command {
     /// Debounced; ignores build dirs and its own writes. No daemon, no network,
     /// no validation execution. Runs until stopped (Ctrl-C).
     Watch(ContextArgs),
+    /// Enter, watch while an agent command runs, then exit with its status.
+    ///
+    /// `toimija run [--for-diff] [--budget N] -- <command...>`: refreshes and
+    /// prints the packet, keeps `.toimija/current.*` fresh while the command
+    /// runs, and stops watching when it exits. No watcher survives the command.
+    Run(RunArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     Snippet(SnippetArgs),
     /// Check whether this branch's work has landed in a base ref by content.
@@ -96,6 +102,19 @@ pub struct LandedArgs {
     /// Emit the report as JSON instead of text.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Diff-focused packet, forwarded to the entry/watch refresh.
+    #[arg(long)]
+    pub for_diff: bool,
+    /// Output budget for the Markdown packet.
+    #[arg(long)]
+    pub budget: Option<usize>,
+    /// The agent command to run, after `--` (e.g. `-- claude ...`).
+    #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -166,6 +185,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Refresh(args) => run_refresh(args),
         Command::Enter(args) => run_enter(args),
         Command::Watch(args) => run_watch(args),
+        Command::Run(args) => run_run(args),
         Command::Snippet(args) => run_snippet(args),
         Command::Landed(args) => run_landed(args),
         Command::Validate(args) => run_validate(args),
@@ -195,6 +215,7 @@ impl Command {
             Command::Refresh(_) => "refresh",
             Command::Enter(_) => "enter",
             Command::Watch(_) => "watch",
+            Command::Run(_) => "run",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Validate(_) => "validate",
@@ -276,13 +297,61 @@ fn run_enter(args: ContextArgs) -> Result<()> {
     if args.json {
         println!("{}", refreshed.json);
     } else {
-        println!(
-            "Toimija agent entry — working state below (also written to {}):\n",
-            refresh::CURRENT_MD
-        );
-        println!("{}", refreshed.markdown);
+        print_agent_entry(&refreshed);
     }
     Ok(())
+}
+
+/// Frame the refreshed packet as the agent's work preflight.
+fn print_agent_entry(refreshed: &refresh::Refreshed) {
+    println!(
+        "Toimija agent entry — working state below (also written to {}):\n",
+        refresh::CURRENT_MD
+    );
+    println!("{}", refreshed.markdown);
+}
+
+fn run_run(args: RunArgs) -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+
+    // 1. Enter: refresh and print the packet as the work preflight.
+    let refreshed = refresh::refresh(&runner, &repo_root, args.for_diff, args.budget)?;
+    print_agent_entry(&refreshed);
+
+    // 2. Watch in the background, keeping `.toimija/current.*` fresh while the
+    //    agent works. The stop flag is flipped once the command exits.
+    let stop = Arc::new(AtomicBool::new(false));
+    let watcher_stop = Arc::clone(&stop);
+    let watch_root = repo_root.clone();
+    let (for_diff, budget) = (args.for_diff, args.budget);
+    let watcher = std::thread::spawn(move || {
+        let runner = ProcessCommandRunner;
+        let _ = watch::watch(&runner, &watch_root, for_diff, budget, &watcher_stop, || {});
+    });
+
+    // 3. Launch the agent command, inheriting the terminal.
+    let (program, rest) = args
+        .command
+        .split_first()
+        .expect("clap `required = true` guarantees at least one argument");
+    eprintln!("toimija run: launching `{program}` (watching for changes)");
+    let launched = std::process::Command::new(program)
+        .args(rest)
+        .current_dir(&cwd)
+        .status();
+
+    // 4. Stop the watcher and join, whatever happened to the command.
+    stop.store(true, Ordering::Relaxed);
+    let _ = watcher.join();
+
+    // 5. Exit with the wrapped command's status.
+    let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn run_watch(args: ContextArgs) -> Result<()> {
