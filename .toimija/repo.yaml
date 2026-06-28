@@ -27,3 +27,4 @@ boundaries:
   - Keep v0.0 as one Rust crate.
   - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Sykli, Vaisto, or Kerto integration yet.
   - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
+  - Agent coordination — per-session live packets, sibling-session awareness, and session handoff records — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
