@@ -53,14 +53,14 @@ pub fn start(repo_root: &Path) -> Result<Session> {
 }
 
 impl Session {
-    /// Refresh the live packet on every relevant change until `stop` is set.
-    /// `on_refresh` is called after each refresh (for status logging).
+    /// Refresh the live packet on every relevant change until `stop` is set. The
+    /// `plan` decides what is written (per-session vs. repo-level). `on_refresh`
+    /// is called after each refresh (for status logging).
     pub fn run(
         self,
         runner: &impl CommandRunner,
         repo_root: &Path,
-        for_diff: bool,
-        budget: Option<usize>,
+        plan: &refresh::Plan,
         stop: &AtomicBool,
         mut on_refresh: impl FnMut(),
     ) -> Result<()> {
@@ -71,7 +71,7 @@ impl Session {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    refresh::refresh(runner, repo_root, for_diff, budget)?;
+                    plan.run(runner, repo_root)?;
                     on_refresh();
                 }
                 // Irrelevant event, or a watcher-side error: keep watching.
@@ -91,15 +91,14 @@ impl Session {
 pub fn watch(
     runner: &impl CommandRunner,
     repo_root: &Path,
-    for_diff: bool,
-    budget: Option<usize>,
+    plan: &refresh::Plan,
     stop: &AtomicBool,
     on_refresh: impl FnMut(),
 ) -> Result<()> {
     // Baseline so the live packet exists immediately, before any event.
-    refresh::refresh(runner, repo_root, for_diff, budget)?;
+    plan.run(runner, repo_root)?;
     let session = start(repo_root)?;
-    session.run(runner, repo_root, for_diff, budget, stop, on_refresh)
+    session.run(runner, repo_root, plan, stop, on_refresh)
 }
 
 /// Swallow the rest of an event burst: keep receiving until the channel is quiet
@@ -112,16 +111,33 @@ fn relevant(event: &Event) -> bool {
     event.paths.iter().any(|path| !is_ignored(path))
 }
 
-/// Ignore the live files (so our own writes never re-trigger) and anything under
-/// a build/vendor directory. Matched on path tails/components so it is robust to
-/// the absolute, possibly symlink-resolved paths notify reports.
+/// Ignore the live files and per-session output (so our own writes never
+/// re-trigger) and anything under a build/vendor directory. Matched on path
+/// tails/components so it is robust to the absolute, possibly symlink-resolved
+/// paths notify reports.
 fn is_ignored(path: &Path) -> bool {
-    if is_live_file(path) {
+    if is_live_file(path) || is_in_sessions(path) {
         return true;
     }
     path.components().any(|component| {
         matches!(component, Component::Normal(name) if IGNORED_DIRS.iter().any(|dir| name == *dir))
     })
+}
+
+/// Anything under `.toimija/sessions/` is Toimija's own per-session output;
+/// refreshing a session packet must not re-trigger the watch. Matched on the
+/// contiguous `.toimija/sessions` component pair so it survives absolute paths.
+fn is_in_sessions(path: &Path) -> bool {
+    let names: Vec<&str> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .collect();
+    names
+        .windows(2)
+        .any(|pair| pair == [".toimija", "sessions"])
 }
 
 fn is_live_file(path: &Path) -> bool {
@@ -144,6 +160,19 @@ mod tests {
         assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.md")));
         assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.json")));
         // repo.yaml under .toimija is NOT a live file — changes to it matter.
+        assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
+    }
+
+    #[test]
+    fn per_session_output_is_ignored_but_repo_yaml_is_not() {
+        // The watcher writes per-session packets; those writes must not re-trigger.
+        assert!(is_ignored(&PathBuf::from(
+            "/repo/.toimija/sessions/1782608449-66987/current.md"
+        )));
+        assert!(is_ignored(&PathBuf::from(
+            "/repo/.toimija/sessions/1782608449-66987/session.json"
+        )));
+        // Config under .toimija still matters and must NOT be ignored.
         assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
     }
 

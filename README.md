@@ -60,23 +60,34 @@ launches the agent command, stops watching when the agent exits, and returns the
 agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
 143).
 
-While the agent works, `.toimija/current.md` and `.toimija/current.json` stay
-fresh: every relevant filesystem or Git-state change re-runs the refresh after a
-short debounce. The watcher is foreground-only and stops the moment the agent
-exits — no daemon survives the command.
+Each `run` opens a **session** with its own live packet under
+`.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
+shared file. While the agent works, that session packet stays fresh: every
+relevant filesystem or Git-state change re-runs the refresh after a short
+debounce. The watcher is foreground-only and stops the moment the agent exits —
+no daemon survives the command. The repo-level `.toimija/current.*` is kept too,
+demoted to a last-writer-wins "latest" summary for sessionless readers.
 
-So the wrapped agent can *find* that live packet, `run` hands it a small
-environment handshake — the only signal `run` injects into the child:
+So the wrapped agent can *find* its live packet, `run` hands it an environment
+handshake — the only signal `run` injects into the child:
 
 | Variable | Meaning |
 | --- | --- |
 | `TOIMIJA_RUN=1` | The agent is under `run`; a watcher is keeping the packet fresh. |
-| `TOIMIJA_LIVE` | Absolute path to the live `current.md`. |
-| `TOIMIJA_LIVE_JSON` | Absolute path to the live `current.json`. |
+| `TOIMIJA_SESSION` | This session's id (`<unix-secs>-<pid>`). |
+| `TOIMIJA_LIVE` | Absolute path to this session's live `current.md` (authoritative). |
+| `TOIMIJA_LIVE_JSON` | Absolute path to this session's live `current.json`. |
+| `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
 
 An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after Git-state
 changes instead of re-running `enter`. `toimija snippet preflight` already tells
 agents to do this.
+
+Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
+agent argv, branch, timestamps, status) that `run` auto-closes on exit. The
+marker is the foundation for `toimija sessions` awareness and `toimija handoff`,
+designed in `docs/proposals/0001-sessions-awareness-handoff.md` but not yet
+built.
 
 When the agent exits, `run` prints a one-glance session summary to stderr —
 diffing the Git state from entry to exit so you see what the session actually
