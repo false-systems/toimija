@@ -65,6 +65,34 @@ fresh: every relevant filesystem or Git-state change re-runs the refresh after a
 short debounce. The watcher is foreground-only and stops the moment the agent
 exits — no daemon survives the command.
 
+So the wrapped agent can *find* that live packet, `run` hands it a small
+environment handshake — the only signal `run` injects into the child:
+
+| Variable | Meaning |
+| --- | --- |
+| `TOIMIJA_RUN=1` | The agent is under `run`; a watcher is keeping the packet fresh. |
+| `TOIMIJA_LIVE` | Absolute path to the live `current.md`. |
+| `TOIMIJA_LIVE_JSON` | Absolute path to the live `current.json`. |
+
+An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after Git-state
+changes instead of re-running `enter`. `toimija snippet preflight` already tells
+agents to do this.
+
+When the agent exits, `run` prints a one-glance session summary to stderr —
+diffing the Git state from entry to exit so you see what the session actually
+did: a switched branch, a moved HEAD (commits landed), the working tree it
+leaves behind, branch scope since the merge-base, and how many times the live
+packet refreshed:
+
+```
+toimija run: session summary
+  branch:    main → feature/login
+  HEAD:      a1b2c3d → e4f5a6b (moved)
+  worktree:  2 staged, 1 unstaged, 0 untracked
+  scope:     4 file(s) changed on this branch since merge-base
+  refreshed: 12 time(s) while you worked
+```
+
 ## One-time repo setup
 
 ```bash
