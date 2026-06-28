@@ -76,6 +76,7 @@ toimija doctor --strict
 toimija refresh --for-diff --budget 4000
 toimija enter --for-diff --budget 4000
 toimija watch
+toimija run -- <agent command>
 toimija context
 toimija context --json
 toimija context --for-diff
@@ -99,6 +100,17 @@ daemon) that watches the repo for filesystem and Git-state changes and re-runs
 `refresh` after a short debounce, until you stop it (Ctrl-C). It ignores
 build/vendor directories and its own writes, makes no network calls, and runs no
 validation.
+
+`run` wraps an agent invocation in that loop:
+
+```bash
+toimija run -- claude   # or codex, or any agent command
+```
+
+It enters (refresh + print the packet), starts `watch` in the background so the
+live files stay fresh while the agent works, launches the command, stops the
+watcher when the command exits, and exits with the command's status. It never
+executes the validation plan — `validate --plan` only ever prints.
 
 Global options:
 
