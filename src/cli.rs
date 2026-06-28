@@ -13,6 +13,7 @@ use crate::logging::LogFormat;
 use crate::refresh;
 use crate::render;
 use crate::repo;
+use crate::session;
 use crate::snippet;
 use crate::validate;
 use crate::watch;
@@ -65,9 +66,9 @@ pub enum Command {
     Watch(ContextArgs),
     /// Enter, watch while an agent command runs, then exit with its status.
     ///
-    /// `toimija run [--for-diff] [--budget N] -- <command...>`: refreshes and
-    /// prints the packet, keeps `.toimija/current.*` fresh while the command
-    /// runs, and stops watching when it exits. No watcher survives the command.
+    /// `toimija run [--for-diff] [--budget N] -- <command...>`: opens a
+    /// per-session packet, prints it, keeps it fresh while the command runs,
+    /// mirrors `.toimija/current.*`, and stops watching when it exits.
     Run(RunArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     Snippet(SnippetArgs),
@@ -319,16 +320,46 @@ fn run_run(args: RunArgs) -> Result<()> {
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
 
-    // 1. Enter: refresh and print the packet as the work preflight.
-    let refreshed = refresh::refresh(&runner, &repo_root, args.for_diff, args.budget)?;
-    print_agent_entry(&refreshed);
+    // 1. Open a session: its own packet directory + marker, so concurrent
+    //    wrapped agents do not race on the single repo-level packet.
+    let mut session = session::Session::open(&repo_root, &args.command)
+        .context("failed to open the toimija session")?;
 
-    // 2. Start watching synchronously, so a watcher startup failure is reported
+    // 2. Enter: refresh the session packet (authoritative for the agent, and
+    //    mirrored to the repo-level summary) and print it as the work preflight.
+    //    The plan (session-targeted) is reused by the watch loop and the exit.
+    let plan = refresh::Plan {
+        for_diff: args.for_diff,
+        budget: args.budget,
+        session_dir: Some(session.dir.clone()),
+    };
+    let entry = match plan.run(&runner, &repo_root) {
+        Ok(entry) => entry,
+        Err(error) => {
+            close_session_after_startup_failure(&mut session);
+            return Err(error);
+        }
+    };
+    print_agent_entry(&entry);
+    // The branch is known once the packet is built; record it on the marker.
+    if let Err(error) = session.set_branch(entry.packet.git.branch.clone()) {
+        close_session_after_startup_failure(&mut session);
+        return Err(error);
+    }
+
+    // 3. Start watching synchronously, so a watcher startup failure is reported
     //    here — before launching the command — instead of being silently lost.
-    let session = watch::start(&repo_root)
-        .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")?;
+    let watch_session = match watch::start(&repo_root)
+        .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")
+    {
+        Ok(watch_session) => watch_session,
+        Err(error) => {
+            close_session_after_startup_failure(&mut session);
+            return Err(error);
+        }
+    };
 
-    // 3. Run the watch loop in the background, keeping `.toimija/current.*` fresh
+    // 4. Run the watch loop in the background, refreshing the SESSION packet
     //    while the agent works. The stop flag is flipped once the command exits.
     let stop = Arc::new(AtomicBool::new(false));
     let watcher_stop = Arc::clone(&stop);
@@ -339,37 +370,33 @@ fn run_run(args: RunArgs) -> Result<()> {
     let refreshes = Arc::new(AtomicUsize::new(0));
     let watcher_refreshes = Arc::clone(&refreshes);
     let watch_root = repo_root.clone();
-    let (for_diff, budget) = (args.for_diff, args.budget);
+    let watch_plan = plan.clone();
     let watcher = std::thread::spawn(move || {
         let runner = ProcessCommandRunner;
-        session.run(
-            &runner,
-            &watch_root,
-            for_diff,
-            budget,
-            &watcher_stop,
-            || {
-                watcher_refreshes.fetch_add(1, Ordering::Relaxed);
-            },
-        )
+        watch_session.run(&runner, &watch_root, &watch_plan, &watcher_stop, || {
+            watcher_refreshes.fetch_add(1, Ordering::Relaxed);
+        })
     });
 
-    // 4. Launch the agent command, inheriting the terminal. The child also
-    //    inherits the live-packet handshake (`TOIMIJA_RUN` + `TOIMIJA_LIVE*`),
-    //    so a wrapped agent can *discover* the continuously-refreshed packet
-    //    instead of hardcoding its path — the only signal `run` gives the agent.
+    // 5. Launch the agent command, inheriting the terminal. The child also
+    //    inherits the per-session handshake (`TOIMIJA_RUN`, `TOIMIJA_SESSION`,
+    //    `TOIMIJA_LIVE*`, `TOIMIJA_REPO_LIVE`), so a wrapped agent can *discover*
+    //    its own continuously-refreshed packet instead of hardcoding a path.
     let (program, rest) = args
         .command
         .split_first()
         .expect("clap `required = true` guarantees at least one argument");
-    eprintln!("toimija run: launching `{program}` (watching for changes)");
+    eprintln!(
+        "toimija run: launching `{program}` (session {}, watching for changes)",
+        session.id
+    );
     let launched = std::process::Command::new(program)
         .args(rest)
         .current_dir(&cwd)
-        .envs(live_env(&repo_root))
+        .envs(session.env(&repo_root))
         .status();
 
-    // 5. Stop the watcher and join, whatever happened to the command. A loop
+    // 6. Stop the watcher and join, whatever happened to the command. A loop
     //    error (e.g. a mid-run refresh failure) is reported, but the wrapped
     //    command's status still wins the exit code — the child has already run.
     stop.store(true, Ordering::Relaxed);
@@ -379,49 +406,44 @@ fn run_run(args: RunArgs) -> Result<()> {
         Err(_) => eprintln!("toimija run: watcher thread panicked"),
     }
 
-    // 6. Bookend the session: recompute the packet one last time (which also
-    //    leaves `.toimija/current.*` in its final, post-session state) and print
-    //    a summary diffing the Git state from entry to exit. A failure here is
-    //    non-fatal — the wrapped command already ran; we just skip the summary.
-    match refresh::refresh(&runner, &repo_root, args.for_diff, args.budget) {
-        Ok(exit) => eprint!(
-            "\n{}",
-            render_run_summary(
-                &refreshed.packet.git,
-                &exit.packet.git,
-                refreshes.load(Ordering::Relaxed),
-            )
-        ),
-        Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
+    // 7. Close the session marker (auto-close on exit), then bookend the session:
+    //    recompute the packet one last time (leaving both the session and
+    //    repo-level packets in their final state) and print a summary diffing the
+    //    Git state from entry to exit. Failures here are non-fatal — the wrapped
+    //    command already ran; we just skip that step.
+    if let Err(error) = session.close() {
+        eprintln!(
+            "toimija run: could not close the session marker; it stays 'active' on disk \
+             and may show as a live session. Remove {}: {error:#}",
+            session.dir.join("session.json").display(),
+        );
+    }
+    // Skip the exit summary if the command never launched — there is nothing to
+    // summarize, and the launch error is surfaced below.
+    if launched.is_ok() {
+        match plan.run(&runner, &repo_root) {
+            Ok(exit) => eprint!(
+                "\n{}",
+                render_run_summary(
+                    &entry.packet.git,
+                    &exit.packet.git,
+                    refreshes.load(Ordering::Relaxed),
+                )
+            ),
+            Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
+        }
     }
 
-    // 7. Exit with the wrapped command's status — preserving signal semantics so
+    // 8. Exit with the wrapped command's status — preserving signal semantics so
     //    a cancelled/terminated child is distinguishable from a generic failure.
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     std::process::exit(wrapped_exit_code(status));
 }
 
-/// The live-packet handshake a `run` child inherits, so the wrapped agent can
-/// discover the continuously-refreshed packet without a hardcoded path:
-/// - `TOIMIJA_RUN=1` marks that a watcher is keeping the packet fresh (vs. a
-///   one-shot `enter`, where it is not).
-/// - `TOIMIJA_LIVE` / `TOIMIJA_LIVE_JSON` are absolute paths to the live packet.
-///
-/// Absolute (built from the discovered `repo_root`) so the value survives the
-/// agent changing directory mid-session.
-fn live_env(repo_root: &std::path::Path) -> [(&'static str, std::ffi::OsString); 3] {
-    use std::ffi::OsString;
-    [
-        ("TOIMIJA_RUN", OsString::from("1")),
-        (
-            "TOIMIJA_LIVE",
-            repo_root.join(refresh::CURRENT_MD).into_os_string(),
-        ),
-        (
-            "TOIMIJA_LIVE_JSON",
-            repo_root.join(refresh::CURRENT_JSON).into_os_string(),
-        ),
-    ]
+fn close_session_after_startup_failure(session: &mut session::Session) {
+    if let Err(error) = session.close() {
+        eprintln!("toimija run: could not close the failed session marker: {error:#}");
+    }
 }
 
 /// Bookend a `run` session: a compact, stderr-bound summary of what the wrapped
@@ -513,23 +535,23 @@ fn run_watch(args: ContextArgs) -> Result<()> {
         "toimija watch: refreshing {} on change (Ctrl-C to stop)",
         refresh::CURRENT_MD
     );
-    // Standalone watch runs until the process is signalled; the flag is the
-    // stop hook `run` will drive in PR 3.
+    // Standalone watch runs until the process is signalled (Ctrl-C). The flag
+    // exists to satisfy the shared `watch` signature and is never set here;
+    // `run` drives its own stop flag, not this one.
     let stop = std::sync::atomic::AtomicBool::new(false);
-    watch::watch(
-        &runner,
-        &repo_root,
-        args.for_diff,
-        args.budget,
-        &stop,
-        || {
-            eprintln!(
-                "refreshed {} / {}",
-                refresh::CURRENT_MD,
-                refresh::CURRENT_JSON
-            );
-        },
-    )?;
+    // Standalone watch is sessionless: it refreshes only the repo-level packet.
+    let plan = refresh::Plan {
+        for_diff: args.for_diff,
+        budget: args.budget,
+        session_dir: None,
+    };
+    watch::watch(&runner, &repo_root, &plan, &stop, || {
+        eprintln!(
+            "refreshed {} / {}",
+            refresh::CURRENT_MD,
+            refresh::CURRENT_JSON
+        );
+    })?;
     Ok(())
 }
 
@@ -626,20 +648,6 @@ mod tests {
             out.contains("worktree:  0 staged, 0 unstaged, 0 untracked"),
             "{out}"
         );
-    }
-
-    #[test]
-    fn live_env_points_at_absolute_packet_paths() {
-        let env = live_env(&PathBuf::from("/repo"));
-        let lookup = |key: &str| {
-            env.iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| v.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        };
-        assert_eq!(lookup("TOIMIJA_RUN"), "1");
-        assert_eq!(lookup("TOIMIJA_LIVE"), "/repo/.toimija/current.md");
-        assert_eq!(lookup("TOIMIJA_LIVE_JSON"), "/repo/.toimija/current.json");
     }
 
     #[test]
