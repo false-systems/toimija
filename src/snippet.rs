@@ -29,6 +29,9 @@ pub const PREFLIGHT: &str = "\
 Before editing, run `toimija enter --for-diff --budget 4000`.
 Use its output as the working state: current Git state, changed surface, scope,
 read order, coupling, risk, validation plan, repo boundaries, and safe-to-ignore.
+If `$TOIMIJA_LIVE` is set, you are running under `toimija run`: that file is your
+continuously-refreshed packet — re-read it after Git-state changes instead of
+re-running `enter`.
 Do not broad-crawl the repo unless the packet is insufficient.
 If the packet contradicts the task, stop and report.
 Do not claim completion without running `toimija validate --plan`.
@@ -54,6 +57,14 @@ mod tests {
         let text = Snippet::Preflight.text();
         assert!(text.contains("toimija enter --for-diff --budget 4000"));
         assert!(text.contains("toimija validate --plan"));
+    }
+
+    #[test]
+    fn preflight_points_a_wrapped_agent_at_the_live_packet() {
+        // Under `toimija run`, the handshake env var is the agent's cue to re-read
+        // the live packet rather than re-run `enter`.
+        let text = Snippet::Preflight.text();
+        assert!(text.contains("$TOIMIJA_LIVE"));
     }
 
     #[test]

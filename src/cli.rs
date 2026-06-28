@@ -313,7 +313,7 @@ fn print_agent_entry(refreshed: &refresh::Refreshed) {
 
 fn run_run(args: RunArgs) -> Result<()> {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
@@ -332,14 +332,32 @@ fn run_run(args: RunArgs) -> Result<()> {
     //    while the agent works. The stop flag is flipped once the command exits.
     let stop = Arc::new(AtomicBool::new(false));
     let watcher_stop = Arc::clone(&stop);
+    // Count how many times the packet refreshed while the agent worked, so the
+    // exit summary can report it. The closure is the only place `run` reacts to
+    // a refresh — it stays silent on screen (the wrapped command owns the
+    // terminal) and just bumps the counter.
+    let refreshes = Arc::new(AtomicUsize::new(0));
+    let watcher_refreshes = Arc::clone(&refreshes);
     let watch_root = repo_root.clone();
     let (for_diff, budget) = (args.for_diff, args.budget);
     let watcher = std::thread::spawn(move || {
         let runner = ProcessCommandRunner;
-        session.run(&runner, &watch_root, for_diff, budget, &watcher_stop, || {})
+        session.run(
+            &runner,
+            &watch_root,
+            for_diff,
+            budget,
+            &watcher_stop,
+            || {
+                watcher_refreshes.fetch_add(1, Ordering::Relaxed);
+            },
+        )
     });
 
-    // 4. Launch the agent command, inheriting the terminal.
+    // 4. Launch the agent command, inheriting the terminal. The child also
+    //    inherits the live-packet handshake (`TOIMIJA_RUN` + `TOIMIJA_LIVE*`),
+    //    so a wrapped agent can *discover* the continuously-refreshed packet
+    //    instead of hardcoding its path — the only signal `run` gives the agent.
     let (program, rest) = args
         .command
         .split_first()
@@ -348,6 +366,7 @@ fn run_run(args: RunArgs) -> Result<()> {
     let launched = std::process::Command::new(program)
         .args(rest)
         .current_dir(&cwd)
+        .envs(live_env(&repo_root))
         .status();
 
     // 5. Stop the watcher and join, whatever happened to the command. A loop
@@ -360,10 +379,112 @@ fn run_run(args: RunArgs) -> Result<()> {
         Err(_) => eprintln!("toimija run: watcher thread panicked"),
     }
 
-    // 6. Exit with the wrapped command's status — preserving signal semantics so
+    // 6. Bookend the session: recompute the packet one last time (which also
+    //    leaves `.toimija/current.*` in its final, post-session state) and print
+    //    a summary diffing the Git state from entry to exit. A failure here is
+    //    non-fatal — the wrapped command already ran; we just skip the summary.
+    match refresh::refresh(&runner, &repo_root, args.for_diff, args.budget) {
+        Ok(exit) => eprint!(
+            "\n{}",
+            render_run_summary(
+                &refreshed.packet.git,
+                &exit.packet.git,
+                refreshes.load(Ordering::Relaxed),
+            )
+        ),
+        Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
+    }
+
+    // 7. Exit with the wrapped command's status — preserving signal semantics so
     //    a cancelled/terminated child is distinguishable from a generic failure.
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     std::process::exit(wrapped_exit_code(status));
+}
+
+/// The live-packet handshake a `run` child inherits, so the wrapped agent can
+/// discover the continuously-refreshed packet without a hardcoded path:
+/// - `TOIMIJA_RUN=1` marks that a watcher is keeping the packet fresh (vs. a
+///   one-shot `enter`, where it is not).
+/// - `TOIMIJA_LIVE` / `TOIMIJA_LIVE_JSON` are absolute paths to the live packet.
+///
+/// Absolute (built from the discovered `repo_root`) so the value survives the
+/// agent changing directory mid-session.
+fn live_env(repo_root: &std::path::Path) -> [(&'static str, std::ffi::OsString); 3] {
+    use std::ffi::OsString;
+    [
+        ("TOIMIJA_RUN", OsString::from("1")),
+        (
+            "TOIMIJA_LIVE",
+            repo_root.join(refresh::CURRENT_MD).into_os_string(),
+        ),
+        (
+            "TOIMIJA_LIVE_JSON",
+            repo_root.join(refresh::CURRENT_JSON).into_os_string(),
+        ),
+    ]
+}
+
+/// Bookend a `run` session: a compact, stderr-bound summary of what the wrapped
+/// command did to the repo, by diffing the Git state captured on entry against
+/// the state at exit. Only the deltas worth a glance are shown — a switched
+/// branch, a moved HEAD (commits made), the working tree at exit, branch scope
+/// since the merge-base, and how many times the live packet refreshed.
+fn render_run_summary(entry: &git::GitState, exit: &git::GitState, refreshes: usize) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "toimija run: session summary");
+
+    // Branch — flag a switch, since `run` happily wraps a session that checks
+    // out a different branch midway.
+    match (&entry.branch, &exit.branch) {
+        (Some(before), Some(after)) if before != after => {
+            let _ = writeln!(out, "  branch:    {before} → {after}");
+        }
+        (_, Some(now)) => {
+            let _ = writeln!(out, "  branch:    {now}");
+        }
+        _ => {}
+    }
+
+    // HEAD — did commits land while the session ran?
+    if let (Some(before), Some(after)) = (&entry.head_oid, &exit.head_oid)
+        && before != after
+    {
+        let _ = writeln!(
+            out,
+            "  HEAD:      {} → {} (moved)",
+            short_oid(before),
+            short_oid(after)
+        );
+    }
+
+    // Working tree as the session leaves it.
+    let conflicts = if exit.conflicted_files.is_empty() {
+        String::new()
+    } else {
+        format!(", {} conflicted", exit.conflicted_files.len())
+    };
+    let _ = writeln!(
+        out,
+        "  worktree:  {} staged, {} unstaged, {} untracked{conflicts}",
+        exit.staged_files.len(),
+        exit.unstaged_files.len(),
+        exit.untracked_files.len(),
+    );
+
+    let _ = writeln!(
+        out,
+        "  scope:     {} file(s) changed on this branch since merge-base",
+        exit.branch_files.len(),
+    );
+    let _ = writeln!(out, "  refreshed: {refreshes} time(s) while you worked");
+    out
+}
+
+/// Short form of a Git OID for display, robust to already-short or empty input.
+fn short_oid(oid: &str) -> &str {
+    &oid[..oid.len().min(7)]
 }
 
 /// The exit code a transparent wrapper should adopt for a finished child. On
@@ -452,4 +573,79 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
     let plan = validate::validation_plan(&repo_root, &config, kind);
     println!("{}", render::render_validation_plan(&plan));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::GitState;
+    use std::path::PathBuf;
+
+    /// A minimal `GitState` for summary tests: clean tree on `branch` at `head`.
+    fn state(branch: &str, head: &str) -> GitState {
+        GitState {
+            repo_root: PathBuf::from("/repo"),
+            git_dir: None,
+            branch: Some(branch.to_string()),
+            head_oid: Some(head.to_string()),
+            upstream: None,
+            base: None,
+            merge_base: None,
+            detached: false,
+            dirty: false,
+            staged_files: Vec::new(),
+            unstaged_files: Vec::new(),
+            untracked_files: Vec::new(),
+            conflicted_files: Vec::new(),
+            branch_files: Vec::new(),
+            recent_commits: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn summary_flags_a_moved_head_and_branch_switch() {
+        let entry = state("main", "aaaaaaaaaa");
+        let exit = state("feature", "bbbbbbbbbb");
+        let out = render_run_summary(&entry, &exit, 3);
+        assert!(out.contains("branch:    main → feature"), "{out}");
+        assert!(
+            out.contains("HEAD:      aaaaaaa → bbbbbbb (moved)"),
+            "{out}"
+        );
+        assert!(out.contains("refreshed: 3 time(s)"), "{out}");
+    }
+
+    #[test]
+    fn summary_omits_head_line_when_head_is_unchanged() {
+        let unchanged = state("main", "abc1234");
+        let out = render_run_summary(&unchanged, &unchanged, 0);
+        // No commits landed → no HEAD line, and no spurious "→" on the branch.
+        assert!(!out.contains("HEAD:"), "{out}");
+        assert!(out.contains("branch:    main\n"), "{out}");
+        assert!(
+            out.contains("worktree:  0 staged, 0 unstaged, 0 untracked"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn live_env_points_at_absolute_packet_paths() {
+        let env = live_env(&PathBuf::from("/repo"));
+        let lookup = |key: &str| {
+            env.iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        assert_eq!(lookup("TOIMIJA_RUN"), "1");
+        assert_eq!(lookup("TOIMIJA_LIVE"), "/repo/.toimija/current.md");
+        assert_eq!(lookup("TOIMIJA_LIVE_JSON"), "/repo/.toimija/current.json");
+    }
+
+    #[test]
+    fn short_oid_is_safe_for_short_input() {
+        assert_eq!(short_oid("abc"), "abc");
+        assert_eq!(short_oid(""), "");
+        assert_eq!(short_oid("0123456789"), "0123456");
+    }
 }
