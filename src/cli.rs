@@ -113,6 +113,14 @@ pub struct RunArgs {
     /// Output budget for the Markdown packet.
     #[arg(long)]
     pub budget: Option<usize>,
+    /// Free-text declaration of why this session is here, surfaced to sibling
+    /// sessions by `toimija sessions`. Advisory only — never an assignment.
+    #[arg(long)]
+    pub intent: Option<String>,
+    /// A path this session expects to touch (repeatable). Advisory only — never a
+    /// lock. Absence renders as `unknown`.
+    #[arg(long = "scope", value_name = "PATH")]
+    pub scope: Vec<String>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
@@ -322,8 +330,13 @@ fn run_run(args: RunArgs) -> Result<()> {
 
     // 1. Open a session: its own packet directory + marker, so concurrent
     //    wrapped agents do not race on the single repo-level packet.
-    let mut session = session::Session::open(&repo_root, &args.command)
-        .context("failed to open the toimija session")?;
+    let mut session = session::Session::open(
+        &repo_root,
+        &args.command,
+        args.intent.clone(),
+        args.scope.clone(),
+    )
+    .context("failed to open the toimija session")?;
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
@@ -341,8 +354,11 @@ fn run_run(args: RunArgs) -> Result<()> {
         }
     };
     print_agent_entry(&entry);
-    // The branch is known once the packet is built; record it on the marker.
-    if let Err(error) = session.set_branch(entry.packet.git.branch.clone()) {
+    // The branch and HEAD are known once the packet is built; record them.
+    if let Err(error) = session.record_git(
+        entry.packet.git.branch.clone(),
+        entry.packet.git.head_oid.clone(),
+    ) {
         close_session_after_startup_failure(&mut session);
         return Err(error);
     }
@@ -411,7 +427,13 @@ fn run_run(args: RunArgs) -> Result<()> {
     //    repo-level packets in their final state) and print a summary diffing the
     //    Git state from entry to exit. Failures here are non-fatal — the wrapped
     //    command already ran; we just skip that step.
-    if let Err(error) = session.close() {
+    // Record the wrapped command's exit code on the marker when it launched;
+    // peeked (not consumed) so the final `?` below still owns the status.
+    let exit_status = launched
+        .as_ref()
+        .ok()
+        .map(|status| wrapped_exit_code(*status));
+    if let Err(error) = session.close(exit_status) {
         eprintln!(
             "toimija run: could not close the session marker; it stays 'active' on disk \
              and may show as a live session. Remove {}: {error:#}",
@@ -441,7 +463,8 @@ fn run_run(args: RunArgs) -> Result<()> {
 }
 
 fn close_session_after_startup_failure(session: &mut session::Session) {
-    if let Err(error) = session.close() {
+    // The wrapped command never launched, so there is no exit status to record.
+    if let Err(error) = session.close(None) {
         eprintln!("toimija run: could not close the failed session marker: {error:#}");
     }
 }
