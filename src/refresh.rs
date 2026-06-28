@@ -1,11 +1,12 @@
-//! `.toimija/current.*` — the live agent packet Toimija owns.
+//! Live packet writers for repo-level and per-session context.
 //!
 //! `refresh` recomputes the context packet and writes it to two files:
 //! `.toimija/current.md` (budgeted Markdown for humans/agents) and
-//! `.toimija/current.json` (the full machine-readable packet). These are the
-//! ONLY paths it mutates — Toimija owns live context under `.toimija/`, never
-//! repo policy files. The recomputation itself is read-only and runs no
-//! validation commands and makes no network calls.
+//! `.toimija/current.json` (the full machine-readable packet). `refresh_session`
+//! writes the same packet under `.toimija/sessions/<id>/` and mirrors it to the
+//! repo-level summary. Toimija owns live context under `.toimija/`, never repo
+//! policy files. The recomputation itself is read-only and runs no validation
+//! commands and makes no network calls.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -89,14 +90,21 @@ pub fn refresh_session(
     let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override)?;
     let md_path = session_dir.join("current.md");
     let json_path = session_dir.join("current.json");
+    // The session packet is authoritative for the agent — its failure is fatal.
     write_packet(&md_path, &json_path, &markdown, &json)?;
-    // Repo-level latest summary, kept for sessionless readers (last writer wins).
-    write_packet(
+    // The repo-level summary is demoted (last-writer-wins) and best-effort: a
+    // failure mirroring it must not abort the already-written session packet, or
+    // a transient summary write error would freeze the agent's live context.
+    if let Err(error) = write_packet(
         &repo_root.join(CURRENT_MD),
         &repo_root.join(CURRENT_JSON),
         &markdown,
         &json,
-    )?;
+    ) {
+        eprintln!(
+            "toimija: could not update the repo-level summary (session packet is fresh): {error:#}"
+        );
+    }
     Ok(Refreshed {
         packet,
         markdown,

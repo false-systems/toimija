@@ -66,9 +66,9 @@ pub enum Command {
     Watch(ContextArgs),
     /// Enter, watch while an agent command runs, then exit with its status.
     ///
-    /// `toimija run [--for-diff] [--budget N] -- <command...>`: refreshes and
-    /// prints the packet, keeps `.toimija/current.*` fresh while the command
-    /// runs, and stops watching when it exits. No watcher survives the command.
+    /// `toimija run [--for-diff] [--budget N] -- <command...>`: opens a
+    /// per-session packet, prints it, keeps it fresh while the command runs,
+    /// mirrors `.toimija/current.*`, and stops watching when it exits.
     Run(RunArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     Snippet(SnippetArgs),
@@ -333,15 +333,31 @@ fn run_run(args: RunArgs) -> Result<()> {
         budget: args.budget,
         session_dir: Some(session.dir.clone()),
     };
-    let entry = plan.run(&runner, &repo_root)?;
+    let entry = match plan.run(&runner, &repo_root) {
+        Ok(entry) => entry,
+        Err(error) => {
+            close_session_after_startup_failure(&mut session);
+            return Err(error);
+        }
+    };
     print_agent_entry(&entry);
     // The branch is known once the packet is built; record it on the marker.
-    session.set_branch(entry.packet.git.branch.clone())?;
+    if let Err(error) = session.set_branch(entry.packet.git.branch.clone()) {
+        close_session_after_startup_failure(&mut session);
+        return Err(error);
+    }
 
     // 3. Start watching synchronously, so a watcher startup failure is reported
     //    here — before launching the command — instead of being silently lost.
-    let watch_session = watch::start(&repo_root)
-        .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")?;
+    let watch_session = match watch::start(&repo_root)
+        .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")
+    {
+        Ok(watch_session) => watch_session,
+        Err(error) => {
+            close_session_after_startup_failure(&mut session);
+            return Err(error);
+        }
+    };
 
     // 4. Run the watch loop in the background, refreshing the SESSION packet
     //    while the agent works. The stop flag is flipped once the command exits.
@@ -396,24 +412,38 @@ fn run_run(args: RunArgs) -> Result<()> {
     //    Git state from entry to exit. Failures here are non-fatal — the wrapped
     //    command already ran; we just skip that step.
     if let Err(error) = session.close() {
-        eprintln!("toimija run: could not close the session marker: {error:#}");
+        eprintln!(
+            "toimija run: could not close the session marker; it stays 'active' on disk \
+             and may show as a live session. Remove {}: {error:#}",
+            session.dir.join("session.json").display(),
+        );
     }
-    match plan.run(&runner, &repo_root) {
-        Ok(exit) => eprint!(
-            "\n{}",
-            render_run_summary(
-                &entry.packet.git,
-                &exit.packet.git,
-                refreshes.load(Ordering::Relaxed),
-            )
-        ),
-        Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
+    // Skip the exit summary if the command never launched — there is nothing to
+    // summarize, and the launch error is surfaced below.
+    if launched.is_ok() {
+        match plan.run(&runner, &repo_root) {
+            Ok(exit) => eprint!(
+                "\n{}",
+                render_run_summary(
+                    &entry.packet.git,
+                    &exit.packet.git,
+                    refreshes.load(Ordering::Relaxed),
+                )
+            ),
+            Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
+        }
     }
 
     // 8. Exit with the wrapped command's status — preserving signal semantics so
     //    a cancelled/terminated child is distinguishable from a generic failure.
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     std::process::exit(wrapped_exit_code(status));
+}
+
+fn close_session_after_startup_failure(session: &mut session::Session) {
+    if let Err(error) = session.close() {
+        eprintln!("toimija run: could not close the failed session marker: {error:#}");
+    }
 }
 
 /// Bookend a `run` session: a compact, stderr-bound summary of what the wrapped
@@ -505,8 +535,9 @@ fn run_watch(args: ContextArgs) -> Result<()> {
         "toimija watch: refreshing {} on change (Ctrl-C to stop)",
         refresh::CURRENT_MD
     );
-    // Standalone watch runs until the process is signalled; the flag is the
-    // stop hook `run` will drive in PR 3.
+    // Standalone watch runs until the process is signalled (Ctrl-C). The flag
+    // exists to satisfy the shared `watch` signature and is never set here;
+    // `run` drives its own stop flag, not this one.
     let stop = std::sync::atomic::AtomicBool::new(false);
     // Standalone watch is sessionless: it refreshes only the repo-level packet.
     let plan = refresh::Plan {

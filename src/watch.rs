@@ -1,11 +1,12 @@
-//! `toimija watch` — keep `.toimija/current.*` fresh while you work.
+//! `toimija watch` — keep the live packet fresh while you work.
 //!
 //! A foreground command (NOT a daemon): it watches the repo for filesystem and
-//! Git-state changes and re-runs [`refresh`](crate::refresh) after a debounce
-//! window, until it is stopped (Ctrl-C on the process, or the `stop` flag that
-//! `run` sets). No network, no validation execution. Events under build/vendor
-//! directories and the live files themselves are ignored, so writing
-//! `.toimija/current.*` never re-triggers a refresh.
+//! Git-state changes and re-runs a [`refresh::Plan`](crate::refresh::Plan) after
+//! a debounce window, until it is stopped (Ctrl-C on the process, or the `stop`
+//! flag that `run` drives). No network, no validation execution. Events under
+//! build/vendor directories and Toimija's own live output are ignored, so writing
+//! the live packet — `.toimija/current.*`, or a per-session
+//! `.toimija/sessions/<id>/current.*` under `run` — never re-triggers a refresh.
 
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -71,11 +72,23 @@ impl Session {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    plan.run(runner, repo_root)?;
-                    on_refresh();
+                    // A transient refresh failure must not kill live updates for
+                    // the rest of the session: warn and keep watching, so the
+                    // packet recovers on the next change rather than freezing.
+                    match plan.run(runner, repo_root) {
+                        Ok(_) => on_refresh(),
+                        Err(error) => {
+                            eprintln!("toimija: refresh failed (packet may be stale): {error:#}");
+                        }
+                    }
                 }
-                // Irrelevant event, or a watcher-side error: keep watching.
-                Ok(_) => {}
+                // A watcher-backend error (dropped or rescan-required events):
+                // surface it, since the packet may now be stale, then keep going.
+                Ok(Err(error)) => {
+                    eprintln!("toimija: file watcher error (packet may be stale): {error}");
+                }
+                // Irrelevant event: keep watching.
+                Ok(Ok(_)) => {}
                 // Woke to re-check `stop`.
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 // Watcher dropped its sender — nothing more will arrive.

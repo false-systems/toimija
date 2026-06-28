@@ -201,8 +201,9 @@ a live, repo-aware context layer an agent asks for before it works.
 
 ```text
 .toimija/repo.yaml      owned by you        durable repo meaning (boundary + validation hints)
-.toimija/current.md     owned by Toimija    live agent packet (regenerated, git-ignored)
-.toimija/current.json   owned by Toimija    live machine-readable packet (regenerated, git-ignored)
+.toimija/current.md     owned by Toimija    repo-level live packet / latest summary (regenerated, git-ignored)
+.toimija/current.json   owned by Toimija    repo-level machine-readable packet (regenerated, git-ignored)
+.toimija/sessions/      owned by Toimija    per-session live packets + markers from `run` (regenerated, git-ignored)
 AGENTS.md               owned by you        agent policy — Toimija only suggests text
 CLAUDE.md               owned by you        agent policy — Toimija only suggests text
 scripts/                owned by you        e.g. agent-enter — Toimija only suggests text
@@ -527,7 +528,8 @@ These are intentionally not implemented:
 - MCP server
 - Tree-sitter, LSP, SCIP, Kythe
 - Sykli, Vaisto, or Kerto integration
-- session fleet, handoff, checkpoint, worktree management
+- checkpoint and worktree management
+- cross-repo / multi-repo coordination
 - dynamic plugins
 - graph database
 - background daemons

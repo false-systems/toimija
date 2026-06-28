@@ -163,7 +163,7 @@ fn run_hands_the_child_a_per_session_handshake() {
             "--",
             "sh",
             "-c",
-            "printf '%s\\n%s\\n%s' \"$TOIMIJA_RUN\" \"$TOIMIJA_SESSION\" \"$TOIMIJA_LIVE\" > env.txt",
+            "printf '%s\\n%s\\n%s\\n%s\\n%s' \"$TOIMIJA_RUN\" \"$TOIMIJA_SESSION\" \"$TOIMIJA_LIVE\" \"$TOIMIJA_LIVE_JSON\" \"$TOIMIJA_REPO_LIVE\" > env.txt",
         ])
         .assert()
         .success();
@@ -179,6 +179,45 @@ fn run_hands_the_child_a_per_session_handshake() {
     assert!(
         live.contains(".toimija/sessions/") && live.ends_with("current.md"),
         "TOIMIJA_LIVE should point at the per-session packet: {live}"
+    );
+    let live_json = lines.next().unwrap_or_default();
+    assert!(
+        live_json.contains(".toimija/sessions/") && live_json.ends_with("current.json"),
+        "TOIMIJA_LIVE_JSON should point at the per-session packet: {live_json}"
+    );
+    let repo_live = lines.next().unwrap_or_default();
+    assert!(
+        repo_live.ends_with(".toimija/current.md"),
+        "TOIMIJA_REPO_LIVE should point at the repo-level summary: {repo_live}"
+    );
+}
+
+#[test]
+fn run_closes_the_session_marker_when_the_child_fails_to_launch() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["run", "--", "__definitely_not_a_toimija_test_command__"])
+        .assert()
+        .failure();
+
+    let sessions = temp.path().join(".toimija/sessions");
+    let dirs: Vec<_> = fs::read_dir(&sessions)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+    assert_eq!(dirs.len(), 1, "exactly one session dir expected");
+    let marker = fs::read_to_string(dirs[0].join("session.json")).unwrap();
+    assert!(
+        marker.contains("\"status\": \"closed\""),
+        "failed launch should still auto-close the session marker: {marker}"
     );
 }
 
