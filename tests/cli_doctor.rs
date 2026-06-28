@@ -235,6 +235,40 @@ fn doctor_strict_escalates_drift_to_failure() {
 }
 
 #[test]
+fn doctor_accepts_boundaries_sourced_by_reference() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // The agent docs point at the manifest instead of mirroring the boundary
+    // verbatim — a single source of truth, so doctor must accept it rather than
+    // demand duplication.
+    fs::write(
+        temp.path().join("AGENTS.md"),
+        "# Agent guide\nBoundaries are defined in .toimija/repo.yaml; read them there.\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: demo\n  role: test fixture\nboundaries:\n  - a very specific boundary line not copied into the docs\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ok: boundaries mirrored - boundaries sourced by reference to .toimija/repo.yaml",
+        ));
+}
+
+#[test]
 fn doctor_strict_flags_missing_important_doc() {
     if !git_available() {
         return;
