@@ -26,4 +26,4 @@ validation:
 boundaries:
   - Keep v0.0 as one Rust crate.
   - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Sykli, Vaisto, or Kerto integration yet.
-  - Do not add network calls or background tasks.
+  - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.

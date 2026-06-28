@@ -3,9 +3,10 @@ use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
 
-// `enter` is the recommended agent preflight. It shares the `context` code path,
-// so these lock in that it renders the same packet in both Markdown and JSON and
-// stays read-only.
+// `enter` is the recommended agent preflight: it refreshes the live packet
+// (`.toimija/current.*`) and prints it, framed as agent entry. These lock in the
+// packet rendering, the JSON form, and that it writes only the live files — never
+// agent policy docs.
 
 fn git_available() -> bool {
     std::process::Command::new("git")
@@ -81,7 +82,7 @@ fn enter_json_is_valid() {
 }
 
 #[test]
-fn enter_does_not_write_agent_docs() {
+fn enter_writes_the_live_packet_but_not_agent_docs() {
     if !git_available() {
         return;
     }
@@ -93,10 +94,13 @@ fn enter_does_not_write_agent_docs() {
         .current_dir(temp.path())
         .arg("enter")
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("Toimija agent entry"));
 
-    // Read-only: enter must not create AGENTS.md/CLAUDE.md or a .toimija dir.
+    // enter refreshes the live packet ...
+    assert!(temp.path().join(".toimija/current.md").exists());
+    assert!(temp.path().join(".toimija/current.json").exists());
+    // ... but never writes human-owned agent policy.
     assert!(!temp.path().join("AGENTS.md").exists());
     assert!(!temp.path().join("CLAUDE.md").exists());
-    assert!(!temp.path().join(".toimija").exists());
 }

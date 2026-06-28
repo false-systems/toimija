@@ -73,6 +73,7 @@ after editing `xtask`.
 toimija init
 toimija doctor
 toimija doctor --strict
+toimija refresh --for-diff --budget 4000
 toimija enter --for-diff --budget 4000
 toimija context
 toimija context --json
@@ -84,9 +85,13 @@ toimija landed --base origin/main
 toimija validate --plan
 ```
 
-`enter` is the recommended agent preflight: it prints the same compact packet as
-`context`, framed as the one command an agent runs on entering the repo. It is
-read-only.
+`enter` is the recommended agent preflight: it **refreshes the live packet** and
+prints it, framed as the one command an agent runs on entering the repo. `refresh`
+does the write without printing — both recompute the packet and write it to
+`.toimija/current.md` (budgeted Markdown) and `.toimija/current.json` (full
+machine-readable packet). They are read-only except for those two files: no
+network, no validation execution. These live files are Toimija's, regenerated on
+each run and never committed (they are git-ignored).
 
 Global options:
 
@@ -105,10 +110,12 @@ Toimija should not own agent policy; it should make agent work cheaper by
 keeping a live, repo-aware context layer an agent asks for before it works.
 
 ```text
-.toimija/        owned by Toimija   repo.yaml (boundary + validation hints)
-AGENTS.md        owned by you       agent policy — Toimija only suggests text
-CLAUDE.md        owned by you       agent policy — Toimija only suggests text
-scripts/         owned by you       e.g. agent-enter — Toimija only suggests text
+.toimija/repo.yaml      owned by you        durable repo meaning (boundary + validation hints)
+.toimija/current.md     owned by Toimija     live agent packet (regenerated, git-ignored)
+.toimija/current.json   owned by Toimija     live machine-readable packet (regenerated, git-ignored)
+AGENTS.md               owned by you         agent policy — Toimija only suggests text
+CLAUDE.md               owned by you         agent policy — Toimija only suggests text
+scripts/                owned by you         e.g. agent-enter — Toimija only suggests text
 ```
 
 `toimija init` writes `.toimija/repo.yaml` and nothing else. It does **not**
