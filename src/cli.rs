@@ -323,18 +323,23 @@ fn run_run(args: RunArgs) -> Result<()> {
     let refreshed = refresh::refresh(&runner, &repo_root, args.for_diff, args.budget)?;
     print_agent_entry(&refreshed);
 
-    // 2. Watch in the background, keeping `.toimija/current.*` fresh while the
-    //    agent works. The stop flag is flipped once the command exits.
+    // 2. Start watching synchronously, so a watcher startup failure is reported
+    //    here — before launching the command — instead of being silently lost.
+    let session = watch::start(&repo_root)
+        .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")?;
+
+    // 3. Run the watch loop in the background, keeping `.toimija/current.*` fresh
+    //    while the agent works. The stop flag is flipped once the command exits.
     let stop = Arc::new(AtomicBool::new(false));
     let watcher_stop = Arc::clone(&stop);
     let watch_root = repo_root.clone();
     let (for_diff, budget) = (args.for_diff, args.budget);
     let watcher = std::thread::spawn(move || {
         let runner = ProcessCommandRunner;
-        let _ = watch::watch(&runner, &watch_root, for_diff, budget, &watcher_stop, || {});
+        session.run(&runner, &watch_root, for_diff, budget, &watcher_stop, || {})
     });
 
-    // 3. Launch the agent command, inheriting the terminal.
+    // 4. Launch the agent command, inheriting the terminal.
     let (program, rest) = args
         .command
         .split_first()
@@ -345,11 +350,17 @@ fn run_run(args: RunArgs) -> Result<()> {
         .current_dir(&cwd)
         .status();
 
-    // 4. Stop the watcher and join, whatever happened to the command.
+    // 5. Stop the watcher and join, whatever happened to the command. A loop
+    //    error (e.g. a mid-run refresh failure) is reported, but the wrapped
+    //    command's status still wins the exit code — the child has already run.
     stop.store(true, Ordering::Relaxed);
-    let _ = watcher.join();
+    match watcher.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("toimija run: watcher stopped on error: {error:#}"),
+        Err(_) => eprintln!("toimija run: watcher thread panicked"),
+    }
 
-    // 5. Exit with the wrapped command's status.
+    // 6. Exit with the wrapped command's status.
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     std::process::exit(status.code().unwrap_or(1));
 }
