@@ -6,7 +6,7 @@ Before inspecting files broadly, run `toimija enter --for-diff --budget 4000` (t
 
 Keep changes small and reviewable. Preserve the v0.0 scope: Git-aware local context compilation, config, repo detection, validation plan rendering, observability, and tests.
 
-Do not add MCP, Tree-sitter, LSP, SCIP, Kythe, Sykli delegation, Vaisto integration, Kerto integration, background tasks, network calls, or a plugin system yet.
+Do not add MCP, Tree-sitter, LSP, SCIP, Kythe, Sykli delegation, Vaisto integration, Kerto integration, background daemons, network calls, or a plugin system yet. (The `watch`/`run` commands are foreground-only and run solely while explicitly invoked.)
 
 ## Boundaries
 
@@ -15,7 +15,7 @@ they drift apart. Edit both together.
 
 - Keep v0.0 as one Rust crate.
 - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Sykli, Vaisto, or Kerto integration yet.
-- Do not add network calls or background tasks.
+- Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
 
 Before claiming completion, run:
 

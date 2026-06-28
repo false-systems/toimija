@@ -17,6 +17,7 @@ fn top_level_help_describes_every_subcommand() {
         .stdout(predicate::str::contains(
             "Compile the current Git work state",
         ))
+        .stdout(predicate::str::contains("Recompute the live packet"))
         .stdout(predicate::str::contains("Agent entry"))
         .stdout(predicate::str::contains("Print suggested preflight text"))
         .stdout(predicate::str::contains(

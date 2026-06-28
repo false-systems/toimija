@@ -10,6 +10,7 @@ use crate::context;
 use crate::git;
 use crate::landed;
 use crate::logging::LogFormat;
+use crate::refresh;
 use crate::render;
 use crate::repo;
 use crate::snippet;
@@ -47,10 +48,14 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Compile the current Git work state into a context packet.
     Context(ContextArgs),
-    /// Agent entry: print the current context packet before starting work.
+    /// Recompute the live packet and write .toimija/current.md + current.json.
     ///
-    /// The recommended preflight. Read-only; the same compact packet as
-    /// `context`, framed as the command an agent runs on entering the repo.
+    /// Read-only except for those two files. Runs no validation, no network.
+    Refresh(ContextArgs),
+    /// Agent entry: write the live packet, then print it as the work preflight.
+    ///
+    /// The recommended command an agent runs on entering the repo: it refreshes
+    /// `.toimija/current.*` and prints the same compact packet as `context`.
     Enter(ContextArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     Snippet(SnippetArgs),
@@ -133,7 +138,9 @@ pub fn run(cli: Cli) -> Result<()> {
     let started = Instant::now();
     let command_name = cli.command.name();
     let output_format = match &cli.command {
-        Command::Context(args) | Command::Enter(args) if args.json => "json",
+        Command::Context(args) | Command::Enter(args) | Command::Refresh(args) if args.json => {
+            "json"
+        }
         Command::Landed(args) if args.json => "json",
         _ => "text",
     };
@@ -150,7 +157,8 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Init => run_init(),
         Command::Doctor(args) => run_doctor(args),
         Command::Context(args) => run_context(args),
-        Command::Enter(args) => run_context(args),
+        Command::Refresh(args) => run_refresh(args),
+        Command::Enter(args) => run_enter(args),
         Command::Snippet(args) => run_snippet(args),
         Command::Landed(args) => run_landed(args),
         Command::Validate(args) => run_validate(args),
@@ -177,6 +185,7 @@ impl Command {
             Command::Init => "init",
             Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
+            Command::Refresh(_) => "refresh",
             Command::Enter(_) => "enter",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
@@ -228,6 +237,42 @@ fn run_context(args: ContextArgs) -> Result<()> {
             .or(packet.config_default_budget())
             .unwrap_or(config::DEFAULT_BUDGET);
         println!("{}", render::render_context_markdown(&packet, budget));
+    }
+    Ok(())
+}
+
+fn run_refresh(args: ContextArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let refreshed = refresh::refresh(&runner, &repo_root, args.for_diff, args.budget)?;
+    if args.json {
+        println!("{}", refreshed.json);
+    } else {
+        println!(
+            "Refreshed {} and {}",
+            refresh::CURRENT_MD,
+            refresh::CURRENT_JSON
+        );
+    }
+    Ok(())
+}
+
+fn run_enter(args: ContextArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    // Enter is refresh + print: it writes the live packet, then frames it as the
+    // work preflight an agent reads on entering the repo.
+    let refreshed = refresh::refresh(&runner, &repo_root, args.for_diff, args.budget)?;
+    if args.json {
+        println!("{}", refreshed.json);
+    } else {
+        println!(
+            "Toimija agent entry — working state below (also written to {}):\n",
+            refresh::CURRENT_MD
+        );
+        println!("{}", refreshed.markdown);
     }
     Ok(())
 }

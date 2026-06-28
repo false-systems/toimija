@@ -7,6 +7,7 @@ pub mod error;
 pub mod git;
 pub mod landed;
 pub mod logging;
+pub mod refresh;
 pub mod relevance;
 pub mod render;
 pub mod repo;
