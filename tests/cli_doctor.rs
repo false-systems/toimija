@@ -170,6 +170,34 @@ fn doctor_reports_drift_as_advisory_by_default() {
 }
 
 #[test]
+fn doctor_boundaries_satisfied_by_repo_yaml_reference() {
+    // Boundaries need not be mirrored verbatim: an agent doc that points at
+    // `.toimija/repo.yaml` is single-sourced and therefore drift-free, so the
+    // check passes without duplicating the boundary text.
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    write_ready_rust_repo(temp.path());
+    fs::write(
+        temp.path().join("AGENTS.md"),
+        "# Agent guide\n\nBoundaries live in `.toimija/repo.yaml`; run `toimija context` to load them.\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ok: boundaries mirrored - boundaries sourced by reference to .toimija/repo.yaml",
+        ));
+}
+
+#[test]
 fn doctor_strict_passes_on_this_repo() {
     // Dogfood: the README tells people to run `toimija doctor --strict` as the
     // PR/CI gate, so this repo must pass its own gate. Guards against boundary
