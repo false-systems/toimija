@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod cli;
 pub mod command;
 pub mod config;
+pub mod consistency;
 pub mod context;
 pub mod error;
 pub mod git;
