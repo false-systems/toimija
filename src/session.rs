@@ -38,23 +38,34 @@ pub struct SessionMarker {
     /// Absolute path of the worktree the session runs in. Distinguishes sessions
     /// that share a repo but check out separate worktrees — the preferred
     /// isolation for parallel agents (same codebase, separate sessions).
+    ///
+    /// `#[serde(default)]` (here and on the fields below) keeps the *reader*
+    /// tolerant of markers written before these fields existed: a missing field
+    /// reads as its default rather than failing the whole record. Additivity has
+    /// two directions — old readers ignore new fields; new readers must not choke
+    /// on old records.
+    #[serde(default)]
     pub worktree: String,
     pub branch: Option<String>,
     /// HEAD commit at the latest refresh. Known after the first packet build,
     /// like `branch`; `None` until then.
+    #[serde(default)]
     pub head: Option<String>,
     /// Free-text declaration of *why* the session is here. `None` renders as
     /// `unknown` — never an error, but awareness may warn when an unknown-intent
     /// session shares a branch with another. Advisory, not an assignment.
+    #[serde(default)]
     pub intent: Option<String>,
     /// Zero or more declared paths the session expects to touch — *what* it might
     /// touch. Advisory only: never a lock, never ownership. Empty renders as
     /// `unknown`.
+    #[serde(default)]
     pub scope: Vec<String>,
     pub started_at: u64,
     pub status: SessionStatus,
     pub closed_at: Option<u64>,
     /// Wrapped command's exit code, recorded on close when known.
+    #[serde(default)]
     pub exit_status: Option<i32>,
 }
 
@@ -215,6 +226,26 @@ mod tests {
         assert_eq!(closed.head.as_deref(), Some("abc123"));
         assert_eq!(closed.exit_status, Some(0));
         assert!(closed.closed_at.is_some());
+    }
+
+    #[test]
+    fn reads_an_old_marker_that_predates_the_added_fields() {
+        // A Layer 1 marker, before worktree/head/intent/scope/exit_status existed.
+        let old = r#"{
+            "id": "1-2",
+            "pid": 2,
+            "agent": ["codex"],
+            "branch": "feat/x",
+            "started_at": 100,
+            "status": "active",
+            "closed_at": null
+        }"#;
+        let marker: SessionMarker = serde_json::from_str(old).unwrap();
+        assert_eq!(marker.agent, vec!["codex"]);
+        assert_eq!(marker.worktree, "");
+        assert_eq!(marker.intent, None);
+        assert!(marker.scope.is_empty());
+        assert_eq!(marker.exit_status, None);
     }
 
     #[test]
