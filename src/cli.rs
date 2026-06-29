@@ -6,6 +6,7 @@ use tracing::{info, info_span, warn};
 
 use crate::command::ProcessCommandRunner;
 use crate::config::{self, RepoConfig};
+use crate::consistency::{Consistency, Verdict};
 use crate::context;
 use crate::git;
 use crate::landed;
@@ -86,6 +87,12 @@ pub enum Command {
     Sessions(SessionsArgs),
     /// Print the validation plan. Does not run any commands.
     Validate(ValidateArgs),
+    /// Verify `.toimija/current.json` still matches the live repo state.
+    ///
+    /// The verify-before-read gate: checks the packet's consistency fingerprint
+    /// against the working tree. Exits non-zero (with reasons) when the packet is
+    /// stale, so a caller refreshes before trusting it. Read-only; no network.
+    Verify(VerifyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -135,6 +142,13 @@ pub struct RunArgs {
 #[derive(Debug, Args)]
 pub struct SessionsArgs {
     /// Emit the report as JSON instead of the human-readable listing.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct VerifyArgs {
+    /// Emit the verdict as JSON (`{ "consistent": bool, "reasons": [...] }`).
     #[arg(long)]
     pub json: bool,
 }
@@ -212,6 +226,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Landed(args) => run_landed(args),
         Command::Sessions(args) => run_sessions(args),
         Command::Validate(args) => run_validate(args),
+        Command::Verify(args) => run_verify(args),
     };
 
     match &result {
@@ -243,6 +258,7 @@ impl Command {
             Command::Landed(_) => "landed",
             Command::Sessions(_) => "sessions",
             Command::Validate(_) => "validate",
+            Command::Verify(_) => "verify",
         }
     }
 }
@@ -604,6 +620,87 @@ fn run_landed(args: LandedArgs) -> Result<()> {
         println!("{}", render::render_landed_report(&report));
     }
     Ok(())
+}
+
+fn run_verify(args: VerifyArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+
+    // Recompute the live fingerprint through the exact same path the packet build
+    // uses (collect -> normalize), so an unchanged repo verifies as consistent.
+    let (mut live, _warnings) = git::collect_git_state(&runner, &cwd)?;
+    context::normalize_git_state(&mut live);
+
+    // Compare the stored block against the live state. A missing or
+    // pre-consistency packet is itself a reason to refresh, not an error.
+    let verdict = match load_stored_consistency(&repo_root)? {
+        Some(stored) => stored.verify(&live),
+        None => Verdict::Stale {
+            reasons: vec![format!(
+                "no verifiable packet at {}; run `toimija refresh`",
+                refresh::CURRENT_JSON
+            )],
+        },
+    };
+
+    let consistent = verdict.is_consistent();
+    if args.json {
+        let reasons = match &verdict {
+            Verdict::Consistent => Vec::new(),
+            Verdict::Stale { reasons } => reasons.clone(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "consistent": consistent,
+                "reasons": reasons,
+            }))?
+        );
+    } else {
+        match &verdict {
+            Verdict::Consistent => println!("consistent: packet matches the live repo"),
+            Verdict::Stale { reasons } => {
+                eprintln!("stale: packet does not match the live repo");
+                for reason in reasons {
+                    eprintln!("  - {reason}");
+                }
+            }
+        }
+    }
+
+    // Exit non-zero on staleness so a caller can gate on the packet before
+    // trusting it (the verify-before-read contract). Flush first: `process::exit`
+    // skips destructors, so a buffered (piped) stdout would otherwise be lost.
+    if !consistent {
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        std::io::stderr().flush().ok();
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Read the consistency block stored in `.toimija/current.json`. Missing file or
+/// a packet that predates the block both yield `None` — "refresh first", not an
+/// error.
+fn load_stored_consistency(repo_root: &std::path::Path) -> Result<Option<Consistency>> {
+    #[derive(serde::Deserialize)]
+    struct Stored {
+        #[serde(default)]
+        consistency: Option<Consistency>,
+    }
+    let path = repo_root.join(refresh::CURRENT_JSON);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let stored: Stored = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(stored.consistency)
 }
 
 fn run_sessions(args: SessionsArgs) -> Result<()> {

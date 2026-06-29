@@ -243,7 +243,7 @@ fn filter_ignored(files: Vec<ChangedFile>, safe_to_ignore: &[PathBuf]) -> Vec<Ch
         .collect()
 }
 
-fn normalize_git_state(git: &mut GitState) {
+pub(crate) fn normalize_git_state(git: &mut GitState) {
     sort_changed_files(&mut git.staged_files);
     sort_changed_files(&mut git.unstaged_files);
     sort_changed_files(&mut git.branch_files);

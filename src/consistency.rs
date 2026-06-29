@@ -12,6 +12,7 @@
 //! `current.json` snapshot tests stable.
 
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -31,8 +32,8 @@ pub struct Consistency {
     pub branch: Option<String>,
     pub merge_base: Option<String>,
     /// Hex digest over the working-tree + index state (staged / unstaged /
-    /// untracked / conflicted / dirty). Changes whenever the tree the packet
-    /// describes changes.
+    /// untracked / conflicted), excluding Toimija's own generated output.
+    /// Changes whenever the tree the packet describes changes.
     pub worktree_digest: String,
 }
 
@@ -111,6 +112,9 @@ impl Verdict {
 fn worktree_digest(git: &GitState) -> String {
     let mut lines: Vec<String> = Vec::new();
     for file in &git.staged_files {
+        if is_generated_output(&file.path) {
+            continue;
+        }
         lines.push(format!(
             "staged\t{:?}\t{}",
             file.status,
@@ -118,6 +122,9 @@ fn worktree_digest(git: &GitState) -> String {
         ));
     }
     for file in &git.unstaged_files {
+        if is_generated_output(&file.path) {
+            continue;
+        }
         lines.push(format!(
             "unstaged\t{:?}\t{}",
             file.status,
@@ -125,12 +132,17 @@ fn worktree_digest(git: &GitState) -> String {
         ));
     }
     for path in &git.untracked_files {
+        if is_generated_output(path) {
+            continue;
+        }
         lines.push(format!("untracked\t{}", path.display()));
     }
     for path in &git.conflicted_files {
+        if is_generated_output(path) {
+            continue;
+        }
         lines.push(format!("conflicted\t{}", path.display()));
     }
-    lines.push(format!("dirty\t{}", git.dirty));
     lines.sort();
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -138,6 +150,22 @@ fn worktree_digest(git: &GitState) -> String {
         line.hash(&mut hasher);
     }
     format!("{:016x}", hasher.finish())
+}
+
+/// Whether a repo-relative path is one of Toimija's own generated artifacts
+/// (`.toimija/current.*`, `.toimija/sessions/…`). These are excluded from the
+/// digest: a `refresh` writing them must not make the packet appear stale. The
+/// tracked manifest `.toimija/repo.yaml` is deliberately NOT generated — a change
+/// to it is a real change the packet should reflect.
+fn is_generated_output(path: &Path) -> bool {
+    let mut components = path.components().map(|c| c.as_os_str().to_str());
+    if components.next() != Some(Some(".toimija")) {
+        return false;
+    }
+    matches!(
+        components.next(),
+        Some(Some("current.md")) | Some(Some("current.json")) | Some(Some("sessions"))
+    )
 }
 
 /// First 7 chars of an oid for messages; "none" when absent.
@@ -224,6 +252,34 @@ mod tests {
             }
             Verdict::Consistent => panic!("expected stale"),
         }
+    }
+
+    #[test]
+    fn toimija_generated_output_does_not_make_a_packet_stale() {
+        // A refresh writes .toimija/current.* (and sessions/) as untracked files;
+        // those must not invalidate the very packet that wrote them.
+        let stored = Consistency::fingerprint(&git_state());
+        let mut live = git_state();
+        live.untracked_files
+            .push(PathBuf::from(".toimija/current.json"));
+        live.untracked_files
+            .push(PathBuf::from(".toimija/current.md"));
+        live.untracked_files
+            .push(PathBuf::from(".toimija/sessions/1-1/session.json"));
+        assert!(stored.verify(&live).is_consistent());
+    }
+
+    #[test]
+    fn a_repo_yaml_change_is_still_a_real_change() {
+        // repo.yaml is a tracked manifest, not generated output — a change to it
+        // must invalidate the packet.
+        let stored = Consistency::fingerprint(&git_state());
+        let mut live = git_state();
+        live.unstaged_files.push(ChangedFile {
+            path: PathBuf::from(".toimija/repo.yaml"),
+            status: ChangeStatus::Modified,
+        });
+        assert!(!stored.verify(&live).is_consistent());
     }
 
     #[test]
