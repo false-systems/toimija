@@ -394,6 +394,24 @@ fn run_run(args: RunArgs) -> Result<()> {
         return Err(error);
     }
 
+    // Verify-before-launch: the wrapped agent must enter against a packet that
+    // matches the repo. The entry refresh just ran, so this is consistent by
+    // construction; we re-collect once and confirm, surfacing the verdict so a
+    // startup race (the repo moving between refresh and launch) is not silent.
+    if let Ok((mut live, _warnings)) = git::collect_git_state(&runner, &cwd) {
+        context::normalize_git_state(&mut live);
+        match entry.packet.consistency.verify(&live) {
+            Verdict::Consistent => {
+                info!(event = "toimija.run.packet_verified", session = %session.id)
+            }
+            Verdict::Stale { reasons } => warn!(
+                event = "toimija.run.packet_raced",
+                session = %session.id,
+                reasons = ?reasons,
+            ),
+        }
+    }
+
     // 3. Start watching synchronously, so a watcher startup failure is reported
     //    here — before launching the command — instead of being silently lost.
     let watch_session = match watch::start(&repo_root)
