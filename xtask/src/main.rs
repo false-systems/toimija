@@ -48,9 +48,30 @@ fn run_tests() -> Result<()> {
     run_gate(&["test"], "tests failed")
 }
 
-/// Run a `cargo` subcommand and abort the commit if it exits non-zero.
+/// Git environment variables that redirect git at a specific repo, index, or
+/// worktree. Git exports these when it invokes a hook; if they leak into the
+/// gates' `cargo` process, the integration tests' `git` calls and the
+/// `toimija`-under-test both act on the real repo instead of their tempdirs —
+/// once observed flipping `core.bare = true` and bricking a sibling worktree.
+const REDIRECTING_GIT_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_CEILING_DIRECTORIES",
+];
+
+/// Run a `cargo` subcommand and abort the commit if it exits non-zero. The git
+/// redirection env is scrubbed so the gates run hermetically against tempdirs.
 fn run_gate(args: &[&str], what: &str) -> Result<()> {
-    let status = Command::new(cargo()).args(args).status()?;
+    let mut command = Command::new(cargo());
+    command.args(args);
+    for var in REDIRECTING_GIT_ENV {
+        command.env_remove(var);
+    }
+    let status = command.status()?;
     if !status.success() {
         bail!("{what}; commit aborted. Fix the problem and commit again.");
     }

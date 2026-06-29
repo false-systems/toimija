@@ -6,22 +6,8 @@ use std::path::Path;
 // `run -- <command>` enters (refresh + print), watches while the command runs,
 // then exits with the command's status. It never executes the validation plan.
 
-fn git_available() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn run_git(path: &Path, args: &[&str]) {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?} failed");
-}
+mod common;
+use common::{git_available, run_git};
 
 fn init_git_repo(path: &Path) {
     run_git(path, &["init"]);

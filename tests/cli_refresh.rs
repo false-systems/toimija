@@ -6,27 +6,8 @@ use std::path::Path;
 // `refresh` recomputes the live packet and writes `.toimija/current.md` +
 // `.toimija/current.json`. It is read-only except for those two files.
 
-fn git_available() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-fn run_git(path: &Path, args: &[&str]) {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+mod common;
+use common::{git_available, run_git};
 
 fn init_git_repo(path: &Path) {
     run_git(path, &["init"]);

@@ -6,22 +6,8 @@ use std::time::{Duration, Instant};
 // This drives it end-to-end: start it, confirm the baseline refresh, change a
 // file, confirm a debounced refresh picked it up, then stop the process.
 
-fn git_available() -> bool {
-    Command::new("git")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn run_git(path: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?} failed");
-}
+mod common;
+use common::{git_available, run_git};
 
 fn init_git_repo(path: &Path) {
     run_git(path, &["init"]);

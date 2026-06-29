@@ -3,13 +3,8 @@ use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
 
-fn git_available() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
+mod common;
+use common::{git_available, run_git};
 
 fn init_git_repo(path: &Path) {
     if !git_available() {
@@ -22,20 +17,6 @@ fn init_git_repo(path: &Path) {
     fs::write(path.join("README.md"), "# Demo\n").unwrap();
     run_git(path, &["add", "README.md"]);
     run_git(path, &["commit", "-m", "initial"]);
-}
-
-fn run_git(path: &Path, args: &[&str]) {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]
