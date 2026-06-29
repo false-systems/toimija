@@ -248,8 +248,13 @@ fn overlap_warnings(sessions: &[SessionView]) -> Vec<Warning> {
     }
 
     // Multiple live sessions in the very same worktree — sharing one working
-    // tree, where edits are unattributable, not merely a branch name.
-    for (worktree, group) in group_live_by(&live, |view| Some(view.marker.worktree.clone())) {
+    // tree, where edits are unattributable, not merely a branch name. Markers
+    // written before the `worktree` field default to "" — skip those rather than
+    // group every old marker together as a false "same worktree" overlap.
+    for (worktree, group) in group_live_by(&live, |view| {
+        let worktree = view.marker.worktree.trim();
+        (!worktree.is_empty()).then(|| worktree.to_string())
+    }) {
         if group.len() >= 2 {
             warnings.push(Warning {
                 severity: Severity::Warning,
@@ -262,21 +267,17 @@ fn overlap_warnings(sessions: &[SessionView]) -> Vec<Warning> {
         }
     }
 
-    // Live sessions whose declared scopes intersect (pairwise).
+    // Live sessions whose declared scopes intersect — exactly or by nesting
+    // (`src` and `src/lib.rs` overlap). Component-aware, so `src` does not match
+    // `src2`.
     for (index, first) in live.iter().enumerate() {
         for second in live.iter().skip(index + 1) {
-            let shared: Vec<&str> = first
-                .marker
-                .scope
-                .iter()
-                .filter(|path| second.marker.scope.contains(path))
-                .map(String::as_str)
-                .collect();
+            let shared = overlapping_scopes(&first.marker.scope, &second.marker.scope);
             if !shared.is_empty() {
                 warnings.push(Warning {
                     severity: Severity::Warning,
                     message: format!(
-                        "{} and {} both declare scope {}",
+                        "{} and {} declare overlapping scope: {}",
                         session_label(first),
                         session_label(second),
                         shared.join(", ")
@@ -334,6 +335,39 @@ fn group_live_by<'a>(
         }
     }
     groups
+}
+
+/// Declared-scope pairs that intersect, as readable strings: equal paths as
+/// themselves, nested paths as "broad ⊃ narrow". Uses `Path::starts_with` (both
+/// directions) so matching is component-aware — `src` overlaps `src/lib.rs` but
+/// not `src2` — and returns an order-stable, de-duplicated set.
+fn overlapping_scopes(first: &[String], second: &[String]) -> Vec<String> {
+    let mut shared = std::collections::BTreeSet::new();
+    for a in first {
+        for b in second {
+            let (na, nb) = (normalize_scope(a), normalize_scope(b));
+            let (pa, pb) = (Path::new(&na), Path::new(&nb));
+            if na == nb {
+                shared.insert(na);
+            } else if pa.starts_with(pb) {
+                // `a` is the deeper path; `b` (nb) is the broader one.
+                shared.insert(format!("{nb} ⊃ {na}"));
+            } else if pb.starts_with(pa) {
+                shared.insert(format!("{na} ⊃ {nb}"));
+            }
+        }
+    }
+    shared.into_iter().collect()
+}
+
+/// Light scope normalization for comparison: trim, drop a leading `./` and any
+/// trailing slash. Not canonicalization — declared scopes are advisory paths,
+/// not resolved filesystem locations.
+fn normalize_scope(path: &str) -> String {
+    path.trim()
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// "agent (id)" — how a session is named inside a warning message.
@@ -584,7 +618,76 @@ mod tests {
             ),
         ];
         let warnings = overlap_warnings(&views);
-        assert!(has_message(&warnings, "both declare scope src/b.rs"));
+        assert!(has_message(
+            &warnings,
+            "declare overlapping scope: src/b.rs"
+        ));
+    }
+
+    #[test]
+    fn nested_scope_paths_overlap() {
+        // `src` and `src/lib.rs` intersect even though neither string contains
+        // the other exactly.
+        let views = [
+            view(
+                "1-1",
+                "claude",
+                "feat/x",
+                Liveness::Active,
+                Some("a"),
+                &["src"],
+            ),
+            view(
+                "2-2",
+                "codex",
+                "feat/y",
+                Liveness::Active,
+                Some("b"),
+                &["src/lib.rs"],
+            ),
+        ];
+        let warnings = overlap_warnings(&views);
+        assert!(has_message(
+            &warnings,
+            "overlapping scope: src ⊃ src/lib.rs"
+        ));
+    }
+
+    #[test]
+    fn sibling_prefix_paths_do_not_falsely_overlap() {
+        // `src` must not match `src2` — component-aware, not string-prefix.
+        let views = [
+            view(
+                "1-1",
+                "claude",
+                "feat/x",
+                Liveness::Active,
+                Some("a"),
+                &["src"],
+            ),
+            view(
+                "2-2",
+                "codex",
+                "feat/y",
+                Liveness::Active,
+                Some("b"),
+                &["src2"],
+            ),
+        ];
+        let warnings = overlap_warnings(&views);
+        assert!(!has_message(&warnings, "overlapping scope"));
+    }
+
+    #[test]
+    fn empty_worktrees_are_not_grouped_as_shared() {
+        // Old Layer 1 markers default `worktree` to ""; they must not be reported
+        // as sharing a worktree just because both are blank.
+        let mut a = view("1-1", "claude", "feat/x", Liveness::Active, Some("a"), &[]);
+        let mut b = view("2-2", "codex", "feat/y", Liveness::Active, Some("b"), &[]);
+        a.marker.worktree = String::new();
+        b.marker.worktree = String::new();
+        let warnings = overlap_warnings(&[a, b]);
+        assert!(!has_message(&warnings, "share worktree"));
     }
 
     #[test]
