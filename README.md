@@ -183,6 +183,16 @@ The packet includes:
 - risk
 - validation plan
 - warnings
+- a **consistency** block — a verifiable fingerprint (head, branch, merge-base,
+  and a digest of the working tree) of the Git state the packet was compiled
+  from
+
+`toimija verify` checks that fingerprint against the live repo and exits
+non-zero, with reasons, when the packet is stale. It is the *verify-before-read*
+gate: a consumer confirms the packet still matches the repo before trusting it,
+instead of re-deriving repo state itself. Toimija's own generated output
+(`current.*`, `sessions/`) is excluded from the fingerprint, so a refresh never
+invalidates itself.
 
 See **Example context output** below for a full rendering.
 
@@ -200,6 +210,7 @@ toimija refresh            # recompute current.md/current.json
 toimija watch              # keep current.* fresh on Git/filesystem changes
 toimija context            # print the packet without wrapping an agent
 toimija context --json
+toimija verify             # is current.json still consistent with the live repo?
 toimija validate --plan    # print the validation plan; never runs it
 toimija doctor             # check Toimija setup
 toimija init               # create .toimija/repo.yaml if missing
@@ -213,6 +224,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `refresh` | Recompute `current.md`/`current.json`. |
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
 | `context` | Print the context packet without wrapping an agent. |
+| `verify` | Check that `current.json` still matches the live repo; exits non-zero with reasons when stale. `--json` for machine output. |
 | `validate --plan` | Print the validation plan; never runs validation. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |

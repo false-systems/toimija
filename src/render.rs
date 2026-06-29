@@ -660,6 +660,13 @@ mod tests {
             for_diff: false,
             default_budget: Some(4000),
             relevance: RelevancePacket::default(),
+            consistency: crate::consistency::Consistency {
+                schema: crate::consistency::CONSISTENCY_SCHEMA,
+                head: Some("abc".to_string()),
+                branch: Some("main".to_string()),
+                merge_base: None,
+                worktree_digest: "0000000000000000".to_string(),
+            },
         }
     }
 
@@ -1066,6 +1073,13 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "coupling": [],
     "risk": [],
     "warnings": []
+  },
+  "consistency": {
+    "schema": 1,
+    "head": "abc",
+    "branch": "main",
+    "merge_base": null,
+    "worktree_digest": "0000000000000000"
   }
 }"#;
         assert_eq!(rendered, expected);
