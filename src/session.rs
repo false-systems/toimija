@@ -35,10 +35,38 @@ pub struct SessionMarker {
     pub id: String,
     pub pid: u32,
     pub agent: Vec<String>,
+    /// Absolute path of the worktree the session runs in. Distinguishes sessions
+    /// that share a repo but check out separate worktrees — the preferred
+    /// isolation for parallel agents (same codebase, separate sessions).
+    ///
+    /// `#[serde(default)]` (here and on the fields below) keeps the *reader*
+    /// tolerant of markers written before these fields existed: a missing field
+    /// reads as its default rather than failing the whole record. Additivity has
+    /// two directions — old readers ignore new fields; new readers must not choke
+    /// on old records.
+    #[serde(default)]
+    pub worktree: String,
     pub branch: Option<String>,
+    /// HEAD commit at the latest refresh. Known after the first packet build,
+    /// like `branch`; `None` until then.
+    #[serde(default)]
+    pub head: Option<String>,
+    /// Free-text declaration of *why* the session is here. `None` renders as
+    /// `unknown` — never an error, but awareness may warn when an unknown-intent
+    /// session shares a branch with another. Advisory, not an assignment.
+    #[serde(default)]
+    pub intent: Option<String>,
+    /// Zero or more declared paths the session expects to touch — *what* it might
+    /// touch. Advisory only: never a lock, never ownership. Empty renders as
+    /// `unknown`.
+    #[serde(default)]
+    pub scope: Vec<String>,
     pub started_at: u64,
     pub status: SessionStatus,
     pub closed_at: Option<u64>,
+    /// Wrapped command's exit code, recorded on close when known.
+    #[serde(default)]
+    pub exit_status: Option<i32>,
 }
 
 /// Compose a session id as `<unix-secs>-<pid>` (decision D1). Roughly sortable by
@@ -59,9 +87,15 @@ pub struct Session {
 }
 
 impl Session {
-    /// Open a new session under `repo_root` for the wrapped `agent` argv. Creates
-    /// the session directory and writes the marker (status: active).
-    pub fn open(repo_root: &Path, agent: &[String]) -> Result<Session> {
+    /// Open a new session under `repo_root` for the wrapped `agent` argv,
+    /// carrying the optional `intent` and declared `scope`. Creates the session
+    /// directory and writes the marker (status: active).
+    pub fn open(
+        repo_root: &Path,
+        agent: &[String],
+        intent: Option<String>,
+        scope: Vec<String>,
+    ) -> Result<Session> {
         let started_at = now_secs();
         let pid = std::process::id();
         let id = session_id(started_at, pid);
@@ -72,10 +106,15 @@ impl Session {
             id: id.clone(),
             pid,
             agent: agent.to_vec(),
+            worktree: repo_root.display().to_string(),
             branch: None,
+            head: None,
+            intent,
+            scope,
             started_at,
             status: SessionStatus::Active,
             closed_at: None,
+            exit_status: None,
         };
         let session = Session {
             id,
@@ -89,18 +128,21 @@ impl Session {
         Ok(session)
     }
 
-    /// Record the branch the session is working on (known after the first
-    /// refresh), and rewrite the marker.
-    pub fn set_branch(&mut self, branch: Option<String>) -> Result<()> {
+    /// Record the branch and HEAD the session is working on (both known after the
+    /// first refresh), and rewrite the marker.
+    pub fn record_git(&mut self, branch: Option<String>, head: Option<String>) -> Result<()> {
         self.marker.branch = branch;
+        self.marker.head = head;
         self.write_marker()
     }
 
-    /// Close the session: status -> closed, stamp `closed_at`, rewrite the marker.
-    /// `run` calls this when the wrapped command exits (decision D4).
-    pub fn close(&mut self) -> Result<()> {
+    /// Close the session: status -> closed, stamp `closed_at` and the wrapped
+    /// command's `exit_status` (when known), rewrite the marker. `run` calls this
+    /// when the wrapped command exits (decision D4).
+    pub fn close(&mut self, exit_status: Option<i32>) -> Result<()> {
         self.marker.status = SessionStatus::Closed;
         self.marker.closed_at = Some(now_secs());
+        self.marker.exit_status = exit_status;
         self.write_marker()
     }
 
@@ -149,32 +191,67 @@ mod tests {
     #[test]
     fn open_writes_an_active_marker_then_close_marks_it_closed() {
         let temp = tempfile::tempdir().unwrap();
-        let mut session =
-            Session::open(temp.path(), &["claude".to_string(), "--flag".to_string()]).unwrap();
+        let mut session = Session::open(
+            temp.path(),
+            &["claude".to_string(), "--flag".to_string()],
+            Some("add sessions".to_string()),
+            vec!["src/session.rs".to_string()],
+        )
+        .unwrap();
 
-        // The directory and marker exist, recording the agent argv as active.
+        // The directory and marker exist, recording the agent argv as active,
+        // along with the declared intent and scope and the worktree path.
         assert!(session.dir.is_dir());
         let raw = fs::read_to_string(session.dir.join("session.json")).unwrap();
         let opened: SessionMarker = serde_json::from_str(&raw).unwrap();
         assert_eq!(opened.status, SessionStatus::Active);
         assert_eq!(opened.agent, vec!["claude", "--flag"]);
         assert_eq!(opened.branch, None);
+        assert_eq!(opened.head, None);
+        assert_eq!(opened.intent.as_deref(), Some("add sessions"));
+        assert_eq!(opened.scope, vec!["src/session.rs"]);
+        assert_eq!(opened.worktree, temp.path().display().to_string());
         assert!(opened.closed_at.is_none());
+        assert!(opened.exit_status.is_none());
 
-        session.set_branch(Some("feature".to_string())).unwrap();
-        session.close().unwrap();
+        session
+            .record_git(Some("feature".to_string()), Some("abc123".to_string()))
+            .unwrap();
+        session.close(Some(0)).unwrap();
 
         let raw = fs::read_to_string(session.dir.join("session.json")).unwrap();
         let closed: SessionMarker = serde_json::from_str(&raw).unwrap();
         assert_eq!(closed.status, SessionStatus::Closed);
         assert_eq!(closed.branch.as_deref(), Some("feature"));
+        assert_eq!(closed.head.as_deref(), Some("abc123"));
+        assert_eq!(closed.exit_status, Some(0));
         assert!(closed.closed_at.is_some());
+    }
+
+    #[test]
+    fn reads_an_old_marker_that_predates_the_added_fields() {
+        // A Layer 1 marker, before worktree/head/intent/scope/exit_status existed.
+        let old = r#"{
+            "id": "1-2",
+            "pid": 2,
+            "agent": ["codex"],
+            "branch": "feat/x",
+            "started_at": 100,
+            "status": "active",
+            "closed_at": null
+        }"#;
+        let marker: SessionMarker = serde_json::from_str(old).unwrap();
+        assert_eq!(marker.agent, vec!["codex"]);
+        assert_eq!(marker.worktree, "");
+        assert_eq!(marker.intent, None);
+        assert!(marker.scope.is_empty());
+        assert_eq!(marker.exit_status, None);
     }
 
     #[test]
     fn env_points_live_at_the_session_packet_and_repo_live_at_the_summary() {
         let temp = tempfile::tempdir().unwrap();
-        let session = Session::open(temp.path(), &["codex".to_string()]).unwrap();
+        let session = Session::open(temp.path(), &["codex".to_string()], None, Vec::new()).unwrap();
         let env = session.env(temp.path());
         let get = |key: &str| {
             env.iter()

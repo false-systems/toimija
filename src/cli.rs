@@ -14,6 +14,7 @@ use crate::refresh;
 use crate::render;
 use crate::repo;
 use crate::session;
+use crate::sessions;
 use crate::snippet;
 use crate::validate;
 use crate::watch;
@@ -78,6 +79,11 @@ pub enum Command {
     /// squash merges sever the commit DAG but preserve the tree, so a landed
     /// branch is often not an ancestor of main. Read-only.
     Landed(LandedArgs),
+    /// List sibling sessions live in this repo: who is here, on which branch and
+    /// worktree, with what intent and scope, and where overlap warrants care.
+    ///
+    /// Read-only. Reports presence; assigns nothing, signals nothing, no network.
+    Sessions(SessionsArgs),
     /// Print the validation plan. Does not run any commands.
     Validate(ValidateArgs),
 }
@@ -113,9 +119,24 @@ pub struct RunArgs {
     /// Output budget for the Markdown packet.
     #[arg(long)]
     pub budget: Option<usize>,
+    /// Free-text declaration of why this session is here, surfaced to sibling
+    /// sessions by `toimija sessions`. Advisory only — never an assignment.
+    #[arg(long)]
+    pub intent: Option<String>,
+    /// A path this session expects to touch (repeatable). Advisory only — never a
+    /// lock. Absence renders as `unknown`.
+    #[arg(long = "scope", value_name = "PATH")]
+    pub scope: Vec<String>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionsArgs {
+    /// Emit the report as JSON instead of the human-readable listing.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -189,6 +210,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Run(args) => run_run(args),
         Command::Snippet(args) => run_snippet(args),
         Command::Landed(args) => run_landed(args),
+        Command::Sessions(args) => run_sessions(args),
         Command::Validate(args) => run_validate(args),
     };
 
@@ -219,6 +241,7 @@ impl Command {
             Command::Run(_) => "run",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
+            Command::Sessions(_) => "sessions",
             Command::Validate(_) => "validate",
         }
     }
@@ -322,8 +345,13 @@ fn run_run(args: RunArgs) -> Result<()> {
 
     // 1. Open a session: its own packet directory + marker, so concurrent
     //    wrapped agents do not race on the single repo-level packet.
-    let mut session = session::Session::open(&repo_root, &args.command)
-        .context("failed to open the toimija session")?;
+    let mut session = session::Session::open(
+        &repo_root,
+        &args.command,
+        args.intent.clone(),
+        args.scope.clone(),
+    )
+    .context("failed to open the toimija session")?;
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
@@ -341,8 +369,11 @@ fn run_run(args: RunArgs) -> Result<()> {
         }
     };
     print_agent_entry(&entry);
-    // The branch is known once the packet is built; record it on the marker.
-    if let Err(error) = session.set_branch(entry.packet.git.branch.clone()) {
+    // The branch and HEAD are known once the packet is built; record them.
+    if let Err(error) = session.record_git(
+        entry.packet.git.branch.clone(),
+        entry.packet.git.head_oid.clone(),
+    ) {
         close_session_after_startup_failure(&mut session);
         return Err(error);
     }
@@ -411,7 +442,13 @@ fn run_run(args: RunArgs) -> Result<()> {
     //    repo-level packets in their final state) and print a summary diffing the
     //    Git state from entry to exit. Failures here are non-fatal — the wrapped
     //    command already ran; we just skip that step.
-    if let Err(error) = session.close() {
+    // Record the wrapped command's exit code on the marker when it launched;
+    // peeked (not consumed) so the final `?` below still owns the status.
+    let exit_status = launched
+        .as_ref()
+        .ok()
+        .map(|status| wrapped_exit_code(*status));
+    if let Err(error) = session.close(exit_status) {
         eprintln!(
             "toimija run: could not close the session marker; it stays 'active' on disk \
              and may show as a live session. Remove {}: {error:#}",
@@ -441,7 +478,8 @@ fn run_run(args: RunArgs) -> Result<()> {
 }
 
 fn close_session_after_startup_failure(session: &mut session::Session) {
-    if let Err(error) = session.close() {
+    // The wrapped command never launched, so there is no exit status to record.
+    if let Err(error) = session.close(None) {
         eprintln!("toimija run: could not close the failed session marker: {error:#}");
     }
 }
@@ -564,6 +602,19 @@ fn run_landed(args: LandedArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{}", render::render_landed_report(&report));
+    }
+    Ok(())
+}
+
+fn run_sessions(args: SessionsArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let report = sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", sessions::render_text(&report));
     }
     Ok(())
 }

@@ -84,10 +84,52 @@ changes instead of re-running `enter`. `toimija snippet preflight` already tells
 agents to do this.
 
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
-agent argv, branch, timestamps, status) that `run` auto-closes on exit. The
-marker is the foundation for `toimija sessions` awareness and `toimija handoff`,
-designed in `docs/proposals/0001-sessions-awareness-handoff.md` but not yet
-built.
+agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
+auto-closes on exit. The marker is what `toimija sessions` reads (below) and the
+foundation for the `toimija handoff` record designed in
+`docs/proposals/0001-sessions-awareness-handoff.md`.
+
+## Multi-agent sessions
+
+Several agents can work one repo at once without trampling each other's context.
+Each wrapped agent gets its **own** session packet, and `toimija sessions` makes
+the others visible.
+
+Declare why you're here (and optionally what you'll touch) when you launch — it's
+advisory, never an assignment or a lock:
+
+```bash
+toimija run --intent "add sessions command" --scope src/sessions.rs -- codex
+```
+
+Then, from anywhere in the repo, see who else is live:
+
+```bash
+toimija sessions          # human listing: LIVE / STALE / CLOSED + warnings
+toimija sessions --json   # same, machine-readable
+```
+
+```
+LIVE
+  claude  1782675584-99172
+    branch: feat/sessions-awareness
+    worktree: /Users/yair/projects/toimija
+    intent: add sessions command
+    scope: src/sessions.rs
+    started: 12m ago
+    packet: .toimija/sessions/1782675584-99172/current.md
+
+WARNINGS
+  - 2 live sessions on branch feat/sessions-awareness: claude (…), codex (…)
+```
+
+`sessions` is read-only and local: it reports presence, resolves best-effort
+liveness (`active` / `stale` / `closed`), and warns when sessions overlap (same
+branch, same worktree, intersecting declared scope, unknown intent, …). The
+warnings are **descriptive, never prescriptive** — Toimija coordinates
+visibility, not decisions. It never assigns work, signals or kills an agent, or
+touches the network. The human remains the orchestrator. Prefer separate
+worktrees for true isolation: same codebase, separate sessions.
 
 When the agent exits, `run` prints a one-glance session summary to stderr —
 diffing the Git state from entry to exit so you see what the session actually
@@ -151,6 +193,8 @@ Ordered by workflow:
 ```bash
 toimija run -- codex       # agent entrypoint
 toimija run -- claude
+toimija run --intent "..." --scope src/x.rs -- codex  # declare why / what (advisory)
+toimija sessions           # who else is live in this repo (read-only awareness)
 toimija enter              # refresh + print the packet as agent preflight
 toimija refresh            # recompute current.md/current.json
 toimija watch              # keep current.* fresh on Git/filesystem changes
@@ -163,7 +207,8 @@ toimija init               # create .toimija/repo.yaml if missing
 
 | Command | What it does |
 |---|---|
-| `run -- <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. |
+| `run -- <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent`/`--scope` declare why/what (advisory). |
+| `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output. |
 | `enter` | Refresh and print the current packet as agent preflight. |
 | `refresh` | Recompute `current.md`/`current.json`. |
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
