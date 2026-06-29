@@ -7,22 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // resolves best-effort liveness, and reports. These tests drive the real binary
 // against markers written to disk.
 
-fn git_available() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-fn run_git(path: &Path, args: &[&str]) {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?} failed");
-}
+mod common;
+use common::{git_available, run_git};
 
 fn init_git_repo(path: &Path) {
     run_git(path, &["init"]);
