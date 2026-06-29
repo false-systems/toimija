@@ -10,6 +10,7 @@ use crate::adapters::generic::GenericAdapter;
 use crate::adapters::rust::RustAdapter;
 use crate::command::CommandRunner;
 use crate::config::RepoConfig;
+use crate::consistency::Consistency;
 use crate::git::{self, ChangedFile, GitState};
 use crate::relevance::{RelevanceInput, RelevancePacket, RelevanceSource};
 use crate::repo::{self, RepoInfo, RepoKind};
@@ -29,6 +30,10 @@ pub struct ContextPacket {
     pub for_diff: bool,
     pub default_budget: Option<usize>,
     pub relevance: RelevancePacket,
+    /// Verifiable fingerprint of the Git state this packet was compiled from. A
+    /// reader (e.g. the harness) checks it against the live repo before trusting
+    /// the packet, instead of re-deriving repo state itself.
+    pub consistency: Consistency,
 }
 
 /// Where the changed surface came from. Named honestly: the surface either
@@ -140,6 +145,9 @@ pub fn build_context_packet(
         &mut warnings,
     );
     warnings = stable_strings(warnings);
+    // Fingerprint the Git state this packet is compiled from, before it moves
+    // into the packet, so a reader can verify the packet against the live repo.
+    let consistency = Consistency::fingerprint(&git);
     let packet = ContextPacket {
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
@@ -153,6 +161,7 @@ pub fn build_context_packet(
         for_diff,
         default_budget: Some(config.context.default_budget),
         relevance,
+        consistency,
     };
     debug!(
         event = "toimija.context.git_section.rendered",
@@ -396,6 +405,7 @@ mod tests {
             branch_files: Vec::new(),
             recent_commits: Vec::new(),
         };
+        let consistency = Consistency::fingerprint(&git);
         let packet = ContextPacket {
             repo: RepoInfo {
                 name: "repo".to_string(),
@@ -419,6 +429,7 @@ mod tests {
             for_diff: false,
             default_budget: Some(4000),
             relevance: RelevancePacket::default(),
+            consistency,
         };
         let json = serde_json::to_string(&packet).unwrap();
         assert!(json.contains("\"repo\""));

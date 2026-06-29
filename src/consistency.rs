@@ -111,7 +111,11 @@ impl Verdict {
 fn worktree_digest(git: &GitState) -> String {
     let mut lines: Vec<String> = Vec::new();
     for file in &git.staged_files {
-        lines.push(format!("staged\t{:?}\t{}", file.status, file.path.display()));
+        lines.push(format!(
+            "staged\t{:?}\t{}",
+            file.status,
+            file.path.display()
+        ));
     }
     for file in &git.unstaged_files {
         lines.push(format!(
@@ -173,7 +177,10 @@ mod tests {
     #[test]
     fn fingerprint_is_deterministic() {
         let git = git_state();
-        assert_eq!(Consistency::fingerprint(&git), Consistency::fingerprint(&git));
+        assert_eq!(
+            Consistency::fingerprint(&git),
+            Consistency::fingerprint(&git)
+        );
     }
 
     #[test]
@@ -190,7 +197,10 @@ mod tests {
         live.head_oid = Some("ffffffff".to_string());
         match stored.verify(&live) {
             Verdict::Stale { reasons } => {
-                assert!(reasons.iter().any(|r| r.contains("HEAD moved")), "{reasons:?}");
+                assert!(
+                    reasons.iter().any(|r| r.contains("HEAD moved")),
+                    "{reasons:?}"
+                );
             }
             Verdict::Consistent => panic!("expected stale"),
         }
@@ -207,7 +217,10 @@ mod tests {
         });
         match stored.verify(&live) {
             Verdict::Stale { reasons } => {
-                assert!(reasons.iter().any(|r| r.contains("working tree")), "{reasons:?}");
+                assert!(
+                    reasons.iter().any(|r| r.contains("working tree")),
+                    "{reasons:?}"
+                );
             }
             Verdict::Consistent => panic!("expected stale"),
         }
