@@ -14,6 +14,7 @@ use crate::refresh;
 use crate::render;
 use crate::repo;
 use crate::session;
+use crate::sessions;
 use crate::snippet;
 use crate::validate;
 use crate::watch;
@@ -78,6 +79,11 @@ pub enum Command {
     /// squash merges sever the commit DAG but preserve the tree, so a landed
     /// branch is often not an ancestor of main. Read-only.
     Landed(LandedArgs),
+    /// List sibling sessions live in this repo: who is here, on which branch and
+    /// worktree, with what intent and scope, and where overlap warrants care.
+    ///
+    /// Read-only. Reports presence; assigns nothing, signals nothing, no network.
+    Sessions(SessionsArgs),
     /// Print the validation plan. Does not run any commands.
     Validate(ValidateArgs),
 }
@@ -124,6 +130,13 @@ pub struct RunArgs {
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionsArgs {
+    /// Emit the report as JSON instead of the human-readable listing.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -197,6 +210,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Run(args) => run_run(args),
         Command::Snippet(args) => run_snippet(args),
         Command::Landed(args) => run_landed(args),
+        Command::Sessions(args) => run_sessions(args),
         Command::Validate(args) => run_validate(args),
     };
 
@@ -227,6 +241,7 @@ impl Command {
             Command::Run(_) => "run",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
+            Command::Sessions(_) => "sessions",
             Command::Validate(_) => "validate",
         }
     }
@@ -587,6 +602,19 @@ fn run_landed(args: LandedArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{}", render::render_landed_report(&report));
+    }
+    Ok(())
+}
+
+fn run_sessions(args: SessionsArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let report = sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", sessions::render_text(&report));
     }
     Ok(())
 }
