@@ -16,7 +16,7 @@ prompts, apply model patches, or run model-requested validation.
 ```json
 {
   "consistency": {
-    "algorithm": "toimija-consistency-v1",
+    "algorithm": "toimija-consistency-v2",
     "head": { "kind": "normal", "branch": "main", "oid": "..." },
     "index_fingerprint": "sha256:...",
     "worktree_fingerprint": "sha256:...",
@@ -29,10 +29,14 @@ prompts, apply model patches, or run model-requested validation.
 ```
 
 The token proves freshness of the packet against the current Git working state.
-It is not a cryptographic proof of every file byte. v1 uses deterministic Git
-status classes, normalized paths, file type, file mode, file size, and mtime for
-changed and untracked paths. Ignored files and Toimija-generated packet files do
-not affect the token.
+v2 uses deterministic Git status classes, normalized paths, file type, file
+mode, and a **SHA-256 content hash** of each changed and untracked file
+(symlinks fingerprint their target). Content-based, not time-based: the same
+bytes always fingerprint the same regardless of mtime, and different bytes
+always differ — so a bare `touch` does not falsely invalidate the token, and a
+same-size edit cannot slip through. (v1 used file size + mtime and is rejected
+with `unsupported_consistency_algorithm`.) Ignored files and Toimija-generated
+packet files do not affect the token.
 
 ## Commands
 

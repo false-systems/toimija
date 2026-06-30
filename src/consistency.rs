@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::git::{ChangeStatus, ChangedFile, GitState};
 
-pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v1";
+pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Consistency {
@@ -224,29 +224,50 @@ fn hash_lines(mut lines: Vec<String>) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+/// Fingerprint one path by **content**, not by mtime/size. The same bytes
+/// fingerprint identically no matter when the file was touched (no false
+/// "changed" from a bare `touch`), and different bytes always differ (no false
+/// "unchanged" from a same-size, same-mtime edit). This is what makes the token
+/// a trustworthy version key rather than a staleness heuristic.
+///
+/// `mode` is kept (a `chmod +x` is a real change). Symlinks fingerprint their
+/// target, never the file they point at. A directory entry here is a
+/// gitlink/submodule — classified, not recursed. Only changed/untracked paths
+/// reach this, so the content reads are bounded.
 fn metadata(repo_root: &Path, path: &Path) -> String {
     let normalized = normalize_path(path);
-    match fs::symlink_metadata(repo_root.join(path)) {
+    let absolute = repo_root.join(path);
+    match fs::symlink_metadata(&absolute) {
         Ok(meta) => {
-            let kind = if meta.file_type().is_symlink() {
-                "symlink"
-            } else if meta.is_dir() {
-                "dir"
-            } else {
-                "file"
-            };
             let mode = mode(&meta);
-            let len = meta.len();
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(0);
-            format!("{normalized}\t{kind}\t{mode:o}\t{len}\t{mtime}")
+            if meta.file_type().is_symlink() {
+                let target = fs::read_link(&absolute)
+                    .map(|target| normalize_path(&target))
+                    .unwrap_or_default();
+                format!(
+                    "{normalized}\tsymlink\t{mode:o}\t{}",
+                    hash_bytes(target.as_bytes())
+                )
+            } else if meta.is_dir() {
+                format!("{normalized}\tdir\t{mode:o}")
+            } else {
+                let content = match fs::read(&absolute) {
+                    Ok(bytes) => hash_bytes(&bytes),
+                    Err(_) => "unreadable".to_string(),
+                };
+                format!("{normalized}\tfile\t{mode:o}\t{content}")
+            }
         }
         Err(_) => format!("{normalized}\tmissing"),
     }
+}
+
+/// `sha256:<hex>` over raw bytes — the content address of a file (or a symlink
+/// target). Toimija's own digest, so it need not match git's blob hashing.
+fn hash_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 #[cfg(unix)]
@@ -492,6 +513,39 @@ mod tests {
         assert_eq!(
             Consistency::fingerprint(&a).index_fingerprint,
             Consistency::fingerprint(&b).index_fingerprint
+        );
+    }
+
+    #[test]
+    fn metadata_is_content_based_not_mtime_or_size() {
+        use std::time::{Duration, SystemTime};
+
+        let dir = tempfile::tempdir().unwrap();
+        let rel = Path::new("f.txt");
+        let abs = dir.path().join(rel);
+
+        std::fs::write(&abs, b"hello").unwrap();
+        let original = metadata(dir.path(), rel);
+
+        // A bare touch (mtime moves, bytes identical) must NOT change the
+        // fingerprint — the old mtime basis would have.
+        let handle = std::fs::OpenOptions::new().write(true).open(&abs).unwrap();
+        handle
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            original,
+            metadata(dir.path(), rel),
+            "a touch with identical content must not change the fingerprint"
+        );
+
+        // A same-length edit ("hello" -> "world", both 5 bytes) MUST change it —
+        // a size+mtime basis could miss this.
+        std::fs::write(&abs, b"world").unwrap();
+        assert_ne!(
+            original,
+            metadata(dir.path(), rel),
+            "a same-size content change must change the fingerprint"
         );
     }
 }

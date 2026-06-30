@@ -46,7 +46,7 @@ fn fresh_packet_verifies_consistent_then_a_change_makes_it_stale() {
         .clone();
     let ok: serde_json::Value = serde_json::from_slice(&ok).unwrap();
     assert_eq!(ok["status"], "verified");
-    assert_eq!(ok["algorithm"], "toimija-consistency-v1");
+    assert_eq!(ok["algorithm"], "toimija-consistency-v2");
     assert!(ok["token"].as_str().unwrap().starts_with("sha256:"));
 
     // Touch the working tree -> stale, exit non-zero, with a reason in JSON.

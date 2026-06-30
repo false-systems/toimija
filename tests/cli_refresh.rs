@@ -44,7 +44,7 @@ fn refresh_writes_current_md_and_json() {
     let value: serde_json::Value =
         serde_json::from_str(&json).expect("current.json must be valid JSON");
     assert!(value.is_object());
-    assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v1");
+    assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v2");
     assert!(
         value["consistency"]["index_fingerprint"]
             .as_str()

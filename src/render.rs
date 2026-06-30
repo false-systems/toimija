@@ -1085,7 +1085,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "warnings": []
   },
   "consistency": {
-    "algorithm": "toimija-consistency-v1",
+    "algorithm": "toimija-consistency-v2",
     "head": {
       "kind": "normal",
       "branch": "main",
@@ -1101,7 +1101,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
       "has_conflicts": false,
       "files": []
     },
-    "token": "sha256:04cef523078992904e24b055703f75f7bc4fcece8553f9854d4b07addffa9371"
+    "token": "sha256:ff717383e0b3578065c61acfa64c8b384670f92ecddfff5f7719cbdeffedf616"
   }
 }"#;
         assert_eq!(rendered, expected);
