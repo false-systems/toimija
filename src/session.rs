@@ -156,6 +156,13 @@ impl Session {
             ("TOIMIJA_SESSION", OsString::from(&self.id)),
             ("TOIMIJA_LIVE", self.md_path.clone().into_os_string()),
             ("TOIMIJA_LIVE_JSON", self.json_path.clone().into_os_string()),
+            ("TOIMIJA_CURRENT_MD", self.md_path.clone().into_os_string()),
+            (
+                "TOIMIJA_CURRENT_JSON",
+                self.json_path.clone().into_os_string(),
+            ),
+            ("TOIMIJA_REPO_ROOT", repo_root.as_os_str().to_os_string()),
+            ("TOIMIJA_RUN_ID", OsString::from(&self.id)),
             (
                 "TOIMIJA_REPO_LIVE",
                 repo_root.join(refresh::CURRENT_MD).into_os_string(),

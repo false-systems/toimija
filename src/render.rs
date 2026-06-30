@@ -660,13 +660,23 @@ mod tests {
             for_diff: false,
             default_budget: Some(4000),
             relevance: RelevancePacket::default(),
-            consistency: crate::consistency::Consistency {
-                schema: crate::consistency::CONSISTENCY_SCHEMA,
-                head: Some("abc".to_string()),
+            consistency: crate::consistency::Consistency::fingerprint(&GitState {
+                repo_root: PathBuf::from("/repo"),
+                git_dir: Some(PathBuf::from("/repo/.git")),
                 branch: Some("main".to_string()),
+                head_oid: Some("abc".to_string()),
+                upstream: None,
+                base: None,
                 merge_base: None,
-                worktree_digest: "0000000000000000".to_string(),
-            },
+                detached: false,
+                dirty: false,
+                staged_files: Vec::new(),
+                unstaged_files: Vec::new(),
+                untracked_files: Vec::new(),
+                conflicted_files: Vec::new(),
+                branch_files: Vec::new(),
+                recent_commits: Vec::new(),
+            }),
         }
     }
 
@@ -1075,11 +1085,23 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "warnings": []
   },
   "consistency": {
-    "schema": 1,
-    "head": "abc",
-    "branch": "main",
-    "merge_base": null,
-    "worktree_digest": "0000000000000000"
+    "algorithm": "toimija-consistency-v1",
+    "head": {
+      "kind": "normal",
+      "branch": "main",
+      "oid": "abc"
+    },
+    "index_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "worktree_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "git_operation": {
+      "kind": "none"
+    },
+    "conflict_state": {
+      "has_conflicts": false,
+      "files": []
+    },
+    "token": "sha256:04cef523078992904e24b055703f75f7bc4fcece8553f9854d4b07addffa9371"
   }
 }"#;
         assert_eq!(rendered, expected);

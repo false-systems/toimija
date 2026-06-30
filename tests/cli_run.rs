@@ -149,7 +149,7 @@ fn run_hands_the_child_a_per_session_handshake() {
             "--",
             "sh",
             "-c",
-            "printf '%s\\n%s\\n%s\\n%s\\n%s' \"$TOIMIJA_RUN\" \"$TOIMIJA_SESSION\" \"$TOIMIJA_LIVE\" \"$TOIMIJA_LIVE_JSON\" \"$TOIMIJA_REPO_LIVE\" > env.txt",
+            "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s' \"$TOIMIJA_RUN\" \"$TOIMIJA_SESSION\" \"$TOIMIJA_LIVE\" \"$TOIMIJA_LIVE_JSON\" \"$TOIMIJA_REPO_LIVE\" \"$TOIMIJA_CURRENT_MD\" \"$TOIMIJA_CURRENT_JSON\" \"$TOIMIJA_REPO_ROOT\" \"$TOIMIJA_RUN_ID\" > env.txt",
         ])
         .assert()
         .success();
@@ -176,6 +176,11 @@ fn run_hands_the_child_a_per_session_handshake() {
         repo_live.ends_with(".toimija/current.md"),
         "TOIMIJA_REPO_LIVE should point at the repo-level summary: {repo_live}"
     );
+    assert_eq!(lines.next(), Some(live));
+    assert_eq!(lines.next(), Some(live_json));
+    let repo_root = std::fs::canonicalize(lines.next().unwrap()).unwrap();
+    assert_eq!(repo_root, std::fs::canonicalize(temp.path()).unwrap());
+    assert_eq!(lines.next(), captured.lines().nth(1));
 }
 
 #[test]

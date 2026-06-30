@@ -1,101 +1,115 @@
-//! Packet consistency — a verifiable fingerprint of the Git state a packet was
-//! compiled from, so a reader can confirm the packet still matches the repo
-//! *before* trusting it, without re-deriving repo state itself.
-//!
-//! This is the primitive the provider-neutral False Systems harness depends on:
-//! it must not read repo state until the Toimija packet can be verified. The
-//! fingerprint is the thing it verifies.
-//!
-//! State-based, not time-based. Every field derives purely from `GitState`
-//! (already in the packet), so the block stays deterministic — a stale packet is
-//! caught by a changed digest, not by a clock. Determinism also keeps the
-//! `current.json` snapshot tests stable.
+//! Packet consistency — a versioned freshness token over the Git state a packet
+//! was compiled from.
 
-use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::git::GitState;
+use crate::git::{ChangeStatus, ChangedFile, GitState};
 
-/// Schema version of the consistency block. Bump when the fingerprint inputs
-/// change, so a reader can refuse a packet it would verify differently.
-pub const CONSISTENCY_SCHEMA: u32 = 1;
+pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v1";
 
-/// A verifiable fingerprint of the repo state a packet was compiled from.
-/// Embedded in `.toimija/current.json`. Deterministic: derived entirely from
-/// `GitState`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Consistency {
-    pub schema: u32,
-    pub head: Option<String>,
-    pub branch: Option<String>,
-    pub merge_base: Option<String>,
-    /// Hex digest over the working-tree + index state (staged / unstaged /
-    /// untracked / conflicted), excluding Toimija's own generated output.
-    /// Changes whenever the tree the packet describes changes.
-    pub worktree_digest: String,
+    pub algorithm: String,
+    pub head: HeadState,
+    pub index_fingerprint: String,
+    pub worktree_fingerprint: String,
+    pub untracked_fingerprint: String,
+    pub git_operation: GitOperationState,
+    pub conflict_state: ConflictState,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HeadState {
+    Normal { branch: String, oid: String },
+    Detached { oid: String },
+    Unborn { branch: Option<String> },
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictState {
+    pub has_conflicts: bool,
+    pub files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GitOperationState {
+    None,
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+    Bisect,
+    Unverifiable { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    Consistent,
+    Stale {
+        packet_token: String,
+        current_token: String,
+    },
+    UnsupportedConsistencyAlgorithm(String),
+    UnsafeGitOperation(GitOperationState),
 }
 
 impl Consistency {
-    /// Fingerprint the state a packet was built from.
     pub fn fingerprint(git: &GitState) -> Consistency {
+        let head = head_state(git);
+        let git_operation = git_operation_state(git);
+        let conflict_state = ConflictState {
+            has_conflicts: !git.conflicted_files.is_empty(),
+            files: stable_paths(git.conflicted_files.clone()),
+        };
+        let index_fingerprint = fingerprint_changed("index", &git.repo_root, &git.staged_files);
+        let worktree_fingerprint =
+            fingerprint_changed("worktree", &git.repo_root, &git.unstaged_files);
+        let untracked_fingerprint =
+            fingerprint_paths("untracked", &git.repo_root, &git.untracked_files);
+        let token = token(
+            &head,
+            &index_fingerprint,
+            &worktree_fingerprint,
+            &untracked_fingerprint,
+            &git_operation,
+            &conflict_state,
+        );
         Consistency {
-            schema: CONSISTENCY_SCHEMA,
-            head: git.head_oid.clone(),
-            branch: git.branch.clone(),
-            merge_base: git.merge_base.clone(),
-            worktree_digest: worktree_digest(git),
+            algorithm: CONSISTENCY_ALGORITHM.to_string(),
+            head,
+            index_fingerprint,
+            worktree_fingerprint,
+            untracked_fingerprint,
+            git_operation,
+            conflict_state,
+            token,
         }
     }
 
-    /// Verify this stored fingerprint against the live repo state, reporting the
-    /// specific reasons a packet is stale — so a caller can say *why* a refresh is
-    /// needed, not merely that one is.
     pub fn verify(&self, live: &GitState) -> Verdict {
+        if self.algorithm != CONSISTENCY_ALGORITHM {
+            return Verdict::UnsupportedConsistencyAlgorithm(self.algorithm.clone());
+        }
         let fresh = Consistency::fingerprint(live);
-        let mut reasons = Vec::new();
-        if self.schema != fresh.schema {
-            reasons.push(format!(
-                "consistency schema changed ({} -> {})",
-                self.schema, fresh.schema
-            ));
-        }
-        if self.head != fresh.head {
-            reasons.push(format!(
-                "HEAD moved ({} -> {})",
-                short(&self.head),
-                short(&fresh.head)
-            ));
-        }
-        if self.branch != fresh.branch {
-            reasons.push(format!(
-                "branch changed ({} -> {})",
-                self.branch.as_deref().unwrap_or("none"),
-                fresh.branch.as_deref().unwrap_or("none")
-            ));
-        }
-        if self.merge_base != fresh.merge_base {
-            reasons.push("merge-base moved".to_string());
-        }
-        if self.worktree_digest != fresh.worktree_digest {
-            reasons.push("working tree changed (staged/unstaged/untracked)".to_string());
-        }
-        if reasons.is_empty() {
+        if fresh.git_operation != GitOperationState::None || fresh.conflict_state.has_conflicts {
+            Verdict::UnsafeGitOperation(fresh.git_operation)
+        } else if self.token == fresh.token {
             Verdict::Consistent
         } else {
-            Verdict::Stale { reasons }
+            Verdict::Stale {
+                packet_token: self.token.clone(),
+                current_token: fresh.token,
+            }
         }
     }
-}
-
-/// The outcome of verifying a packet's fingerprint against the live repo.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Verdict {
-    /// The packet matches the current repo state; safe to trust.
-    Consistent,
-    /// The repo moved since the packet was built; it must be refreshed first.
-    Stale { reasons: Vec<String> },
 }
 
 impl Verdict {
@@ -104,52 +118,165 @@ impl Verdict {
     }
 }
 
-/// Stable hex digest over the working-tree + index state. Lines are sorted so
-/// git's ordering cannot affect the result, and `DefaultHasher` has a fixed seed
-/// so the digest is reproducible across runs and machines. This is staleness
-/// detection, not adversarial defense, so a 64-bit non-cryptographic hash (and
-/// zero new dependencies) is the right tool.
-fn worktree_digest(git: &GitState) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    for file in &git.staged_files {
-        if is_generated_output(&file.path) {
-            continue;
-        }
-        lines.push(format!(
-            "staged\t{:?}\t{}",
-            file.status,
-            file.path.display()
-        ));
+fn head_state(git: &GitState) -> HeadState {
+    match (&git.branch, &git.head_oid, git.detached) {
+        (_, Some(oid), true) => HeadState::Detached { oid: oid.clone() },
+        (Some(branch), Some(oid), false) => HeadState::Normal {
+            branch: branch.clone(),
+            oid: oid.clone(),
+        },
+        (branch, None, _) => HeadState::Unborn {
+            branch: branch.clone(),
+        },
+        _ => HeadState::Unknown,
     }
-    for file in &git.unstaged_files {
-        if is_generated_output(&file.path) {
-            continue;
-        }
-        lines.push(format!(
-            "unstaged\t{:?}\t{}",
-            file.status,
-            file.path.display()
-        ));
-    }
-    for path in &git.untracked_files {
-        if is_generated_output(path) {
-            continue;
-        }
-        lines.push(format!("untracked\t{}", path.display()));
-    }
-    for path in &git.conflicted_files {
-        if is_generated_output(path) {
-            continue;
-        }
-        lines.push(format!("conflicted\t{}", path.display()));
-    }
-    lines.sort();
+}
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for line in &lines {
-        line.hash(&mut hasher);
+fn git_operation_state(git: &GitState) -> GitOperationState {
+    let Some(git_dir) = git_dir_path(git) else {
+        return GitOperationState::Unverifiable {
+            reason: "git_dir_unavailable".to_string(),
+        };
+    };
+    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        GitOperationState::Rebase
+    } else if git_dir.join("MERGE_HEAD").exists() {
+        GitOperationState::Merge
+    } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        GitOperationState::CherryPick
+    } else if git_dir.join("REVERT_HEAD").exists() {
+        GitOperationState::Revert
+    } else if git_dir.join("BISECT_LOG").exists() {
+        GitOperationState::Bisect
+    } else {
+        GitOperationState::None
     }
-    format!("{:016x}", hasher.finish())
+}
+
+fn git_dir_path(git: &GitState) -> Option<PathBuf> {
+    let git_dir = git.git_dir.as_ref()?;
+    if git_dir.is_absolute() {
+        Some(git_dir.clone())
+    } else {
+        Some(git.repo_root.join(git_dir))
+    }
+}
+
+fn fingerprint_changed(kind: &str, repo_root: &Path, files: &[ChangedFile]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for file in files {
+        if is_generated_output(&file.path) {
+            continue;
+        }
+        lines.push(format!(
+            "{kind}\t{}\t{}",
+            status(&file.status),
+            metadata(repo_root, &file.path)
+        ));
+    }
+    hash_lines(lines)
+}
+
+fn fingerprint_paths(kind: &str, repo_root: &Path, paths: &[PathBuf]) -> String {
+    let mut lines = Vec::new();
+    for path in paths {
+        if is_generated_output(path) {
+            continue;
+        }
+        lines.push(format!("{kind}\t{}", metadata(repo_root, path)));
+    }
+    hash_lines(lines)
+}
+
+fn token(
+    head: &HeadState,
+    index: &str,
+    worktree: &str,
+    untracked: &str,
+    operation: &GitOperationState,
+    conflicts: &ConflictState,
+) -> String {
+    let lines = vec![
+        format!("algorithm\t{CONSISTENCY_ALGORITHM}"),
+        format!("head\t{}", serde_json::to_string(head).unwrap_or_default()),
+        format!("index\t{index}"),
+        format!("worktree\t{worktree}"),
+        format!("untracked\t{untracked}"),
+        format!(
+            "operation\t{}",
+            serde_json::to_string(operation).unwrap_or_default()
+        ),
+        format!(
+            "conflicts\t{}",
+            serde_json::to_string(conflicts).unwrap_or_default()
+        ),
+    ];
+    hash_lines(lines)
+}
+
+fn hash_lines(mut lines: Vec<String>) -> String {
+    lines.sort();
+    let mut hasher = Sha256::new();
+    for line in lines {
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn metadata(repo_root: &Path, path: &Path) -> String {
+    let normalized = normalize_path(path);
+    match fs::symlink_metadata(repo_root.join(path)) {
+        Ok(meta) => {
+            let kind = if meta.file_type().is_symlink() {
+                "symlink"
+            } else if meta.is_dir() {
+                "dir"
+            } else {
+                "file"
+            };
+            let mode = mode(&meta);
+            let len = meta.len();
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            format!("{normalized}\t{kind}\t{mode:o}\t{len}\t{mtime}")
+        }
+        Err(_) => format!("{normalized}\tmissing"),
+    }
+}
+
+#[cfg(unix)]
+fn mode(meta: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o7777
+}
+
+#[cfg(not(unix))]
+fn mode(_meta: &fs::Metadata) -> u32 {
+    0
+}
+
+fn normalize_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn status(status: &ChangeStatus) -> String {
+    match status {
+        ChangeStatus::Added => "added".to_string(),
+        ChangeStatus::Modified => "modified".to_string(),
+        ChangeStatus::Deleted => "deleted".to_string(),
+        ChangeStatus::Renamed => "renamed".to_string(),
+        ChangeStatus::Copied => "copied".to_string(),
+        ChangeStatus::Untracked => "untracked".to_string(),
+        ChangeStatus::Unknown(value) => format!("unknown:{value}"),
+    }
 }
 
 /// Whether a repo-relative path is one of Toimija's own generated artifacts
@@ -168,12 +295,11 @@ fn is_generated_output(path: &Path) -> bool {
     )
 }
 
-/// First 7 chars of an oid for messages; "none" when absent.
-fn short(oid: &Option<String>) -> String {
-    match oid {
-        Some(oid) => oid.chars().take(7).collect(),
-        None => "none".to_string(),
-    }
+fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut paths = paths;
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 #[cfg(test)]
@@ -185,7 +311,7 @@ mod tests {
     fn git_state() -> GitState {
         GitState {
             repo_root: PathBuf::from("/repo"),
-            git_dir: None,
+            git_dir: Some(PathBuf::from("/repo/.git")),
             branch: Some("feat/x".to_string()),
             head_oid: Some("a1b2c3d4e5".to_string()),
             upstream: None,
@@ -200,6 +326,13 @@ mod tests {
             branch_files: Vec::new(),
             recent_commits: Vec::new(),
         }
+    }
+
+    fn git_state_in(repo: &Path) -> GitState {
+        let mut git = git_state();
+        git.repo_root = repo.to_path_buf();
+        git.git_dir = Some(repo.join(".git"));
+        git
     }
 
     #[test]
@@ -219,18 +352,67 @@ mod tests {
     }
 
     #[test]
+    fn head_states_are_explicit() {
+        let mut normal = git_state();
+        assert!(matches!(
+            Consistency::fingerprint(&normal).head,
+            HeadState::Normal { .. }
+        ));
+        normal.detached = true;
+        normal.branch = None;
+        assert!(matches!(
+            Consistency::fingerprint(&normal).head,
+            HeadState::Detached { .. }
+        ));
+        normal.head_oid = None;
+        normal.branch = Some("main".to_string());
+        normal.detached = false;
+        assert!(matches!(
+            Consistency::fingerprint(&normal).head,
+            HeadState::Unborn { .. }
+        ));
+    }
+
+    #[test]
+    fn git_operations_are_explicit() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join(".git")).unwrap();
+        for (marker, expected) in [
+            ("MERGE_HEAD", GitOperationState::Merge),
+            ("CHERRY_PICK_HEAD", GitOperationState::CherryPick),
+            ("REVERT_HEAD", GitOperationState::Revert),
+            ("BISECT_LOG", GitOperationState::Bisect),
+        ] {
+            let git_dir = temp.path().join(".git");
+            let marker_path = git_dir.join(marker);
+            std::fs::write(&marker_path, "").unwrap();
+            assert_eq!(
+                Consistency::fingerprint(&git_state_in(temp.path())).git_operation,
+                expected
+            );
+            std::fs::remove_file(marker_path).unwrap();
+        }
+        std::fs::create_dir(temp.path().join(".git/rebase-merge")).unwrap();
+        assert_eq!(
+            Consistency::fingerprint(&git_state_in(temp.path())).git_operation,
+            GitOperationState::Rebase
+        );
+    }
+
+    #[test]
     fn a_moved_head_is_stale_with_a_reason() {
         let stored = Consistency::fingerprint(&git_state());
         let mut live = git_state();
         live.head_oid = Some("ffffffff".to_string());
         match stored.verify(&live) {
-            Verdict::Stale { reasons } => {
-                assert!(
-                    reasons.iter().any(|r| r.contains("HEAD moved")),
-                    "{reasons:?}"
-                );
+            Verdict::Stale {
+                packet_token,
+                current_token,
+            } => {
+                assert_ne!(packet_token, current_token);
             }
             Verdict::Consistent => panic!("expected stale"),
+            other => panic!("unexpected verdict: {other:?}"),
         }
     }
 
@@ -244,13 +426,14 @@ mod tests {
             status: ChangeStatus::Modified,
         });
         match stored.verify(&live) {
-            Verdict::Stale { reasons } => {
-                assert!(
-                    reasons.iter().any(|r| r.contains("working tree")),
-                    "{reasons:?}"
-                );
+            Verdict::Stale {
+                packet_token,
+                current_token,
+            } => {
+                assert_ne!(packet_token, current_token);
             }
             Verdict::Consistent => panic!("expected stale"),
+            other => panic!("unexpected verdict: {other:?}"),
         }
     }
 
@@ -283,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_digest_is_order_independent() {
+    fn index_fingerprint_is_order_independent() {
         let mut a = git_state();
         a.staged_files = vec![
             ChangedFile {
@@ -306,6 +489,9 @@ mod tests {
                 status: ChangeStatus::Added,
             },
         ];
-        assert_eq!(worktree_digest(&a), worktree_digest(&b));
+        assert_eq!(
+            Consistency::fingerprint(&a).index_fingerprint,
+            Consistency::fingerprint(&b).index_fingerprint
+        );
     }
 }
