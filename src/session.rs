@@ -265,6 +265,9 @@ pub fn declare_intent(
             marker.scope.push(path);
         }
     }
+    // Declaring intent is evidence of life: stamp the heartbeat too, so a
+    // session that speaks is never simultaneously reported stale.
+    marker.last_seen_at = Some(now_secs());
     let json = serde_json::to_string_pretty(&marker)?;
     fs::write(&marker_path, format!("{json}\n"))
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
@@ -318,6 +321,17 @@ mod tests {
         )
         .unwrap();
 
+        // Simulate a pre-0002 marker (no heartbeat) so the stamp is provable.
+        let marker_path = temp
+            .path()
+            .join(SESSIONS_SUBDIR)
+            .join(&session.id)
+            .join("session.json");
+        let mut stale: SessionMarker =
+            serde_json::from_str(&fs::read_to_string(&marker_path).unwrap()).unwrap();
+        stale.last_seen_at = None;
+        fs::write(&marker_path, serde_json::to_string_pretty(&stale).unwrap()).unwrap();
+
         let marker = declare_intent(
             temp.path(),
             &session.id,
@@ -328,6 +342,8 @@ mod tests {
         assert_eq!(marker.intent.as_deref(), Some("closing tracker issues"));
         // Scope appends without duplicating the launch-time declaration.
         assert_eq!(marker.scope, vec!["src/a.rs", "src/b.rs"]);
+        // Declaring intent is evidence of life: the heartbeat is stamped.
+        assert!(marker.last_seen_at.unwrap() >= marker.started_at);
     }
 
     #[test]
