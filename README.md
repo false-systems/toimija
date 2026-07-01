@@ -200,6 +200,7 @@ LIVE
     intent: add sessions command
     scope: src/sessions.rs
     started: 12m ago
+    seen: 8s ago
     packet: .toimija/sessions/1782675584-99172/current.md
 
 WARNINGS
@@ -208,7 +209,12 @@ WARNINGS
 
 `sessions` is read-only and local: it reports presence, resolves best-effort
 liveness (`active` / `stale` / `closed`), and warns when sessions overlap (same
-branch, same worktree, intersecting declared scope, unknown intent, …). The
+branch, same worktree, intersecting declared scope, unknown intent, …).
+Staleness measures **inactivity, not lifetime**: `run`'s watcher stamps a
+`last_seen_at` heartbeat on the marker at every packet refresh, and a session
+is stale when its process is gone or it has shown no activity for 90 minutes —
+so a day-long working session stays `LIVE`, while a frozen one decays honestly
+(see `docs/proposals/0002-heartbeat-staleness.md`). The
 warnings are **descriptive, never prescriptive** — Toimija coordinates
 visibility, not decisions. It never assigns work, signals or kills an agent, or
 touches the network. The human remains the orchestrator. Prefer separate

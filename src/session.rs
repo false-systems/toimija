@@ -62,6 +62,12 @@ pub struct SessionMarker {
     #[serde(default)]
     pub scope: Vec<String>,
     pub started_at: u64,
+    /// Unix seconds of the last observed activity — stamped by `run`'s watcher
+    /// on each packet refresh (proposal 0002). Staleness measures inactivity
+    /// from here, not lifetime from `started_at`. `None` (a marker written
+    /// before the field existed) falls back to `started_at`.
+    #[serde(default)]
+    pub last_seen_at: Option<u64>,
     pub status: SessionStatus,
     pub closed_at: Option<u64>,
     /// Wrapped command's exit code, recorded on close when known.
@@ -112,6 +118,7 @@ impl Session {
             intent,
             scope,
             started_at,
+            last_seen_at: Some(started_at),
             status: SessionStatus::Active,
             closed_at: None,
             exit_status: None,
@@ -176,6 +183,34 @@ impl Session {
             .with_context(|| format!("failed to write {}", self.marker_path.display()))?;
         Ok(())
     }
+}
+
+/// Best-effort activity heartbeat (proposal 0002): stamp `last_seen_at = now`
+/// on an open marker. Called by `run`'s watcher after each packet refresh —
+/// an event worth a refresh is worth a heartbeat, and nothing else is. A
+/// closed or unreadable marker is left alone: the heartbeat must never fight
+/// the close path or interrupt the watch loop.
+pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
+    let marker_path = repo_root
+        .join(SESSIONS_SUBDIR)
+        .join(id)
+        .join("session.json");
+    let raw = match fs::read_to_string(&marker_path) {
+        Ok(raw) => raw,
+        Err(_) => return Ok(()), // marker gone (pruned, closed early) — nothing to stamp
+    };
+    let mut marker: SessionMarker = match serde_json::from_str(&raw) {
+        Ok(marker) => marker,
+        Err(_) => return Ok(()),
+    };
+    if marker.status != SessionStatus::Active {
+        return Ok(());
+    }
+    marker.last_seen_at = Some(now_secs());
+    let json = serde_json::to_string_pretty(&marker)?;
+    fs::write(&marker_path, format!("{json}\n"))
+        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    Ok(())
 }
 
 /// Whether `id` has the `<unix-secs>-<pid>` shape `run` mints (decision D1).
@@ -293,6 +328,39 @@ mod tests {
         assert_eq!(marker.intent.as_deref(), Some("closing tracker issues"));
         // Scope appends without duplicating the launch-time declaration.
         assert_eq!(marker.scope, vec!["src/a.rs", "src/b.rs"]);
+    }
+
+    #[test]
+    fn touch_stamps_last_seen_on_a_live_marker_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut session =
+            Session::open(temp.path(), &["claude".to_string()], None, Vec::new()).unwrap();
+        let read_marker = |id: &str| -> SessionMarker {
+            let raw = fs::read_to_string(
+                temp.path()
+                    .join(SESSIONS_SUBDIR)
+                    .join(id)
+                    .join("session.json"),
+            )
+            .unwrap();
+            serde_json::from_str(&raw).unwrap()
+        };
+
+        // Open marker: heartbeat stamps (>= the open-time stamp; the clock
+        // may not tick between open and touch).
+        touch(temp.path(), &session.id).unwrap();
+        let stamped = read_marker(&session.id);
+        assert!(stamped.last_seen_at.unwrap() >= stamped.started_at);
+
+        // Closed marker: heartbeat leaves it alone (the watcher may fire
+        // around the close; it must not fight the close path).
+        session.close(Some(0)).unwrap();
+        let closed = read_marker(&session.id);
+        touch(temp.path(), &session.id).unwrap();
+        assert_eq!(read_marker(&session.id), closed);
+
+        // Missing marker: quietly Ok — never interrupts the watch loop.
+        touch(temp.path(), "999-999").unwrap();
     }
 
     #[test]

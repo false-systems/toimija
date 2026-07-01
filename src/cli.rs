@@ -662,10 +662,17 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let watcher_refreshes = Arc::clone(&refreshes);
     let watch_root = repo_root.clone();
     let watch_plan = plan.clone();
+    let heartbeat_id = session.id.clone();
     let watcher = std::thread::spawn(move || {
         let runner = ProcessCommandRunner;
         watch_session.run(&runner, &watch_root, &watch_plan, &watcher_stop, || {
             watcher_refreshes.fetch_add(1, Ordering::Relaxed);
+            // Heartbeat (proposal 0002): an event worth a refresh is worth a
+            // `last_seen_at` stamp, so staleness measures inactivity rather
+            // than lifetime. Best-effort — never interrupts the watch loop.
+            if let Err(error) = session::touch(&watch_root, &heartbeat_id) {
+                warn!(event = "toimija.session.heartbeat_failed", error = %error);
+            }
         })
     });
 
