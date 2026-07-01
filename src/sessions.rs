@@ -25,6 +25,11 @@ use crate::session::{SESSIONS_SUBDIR, SessionMarker, SessionStatus};
 /// 90 minutes (decision: start simple; config can come later, not a project).
 pub const DEFAULT_STALE_AFTER_SECS: u64 = 90 * 60;
 
+/// Closed or stale sessions older than this are removed by `prune`. 7 days —
+/// long enough that recent history stays visible in listings, short enough that
+/// a busy repo does not accumulate session directories without bound.
+pub const DEFAULT_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Resolved liveness of a session, derived from its marker plus a best-effort
 /// process check — never stored, always recomputed when listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -93,7 +98,7 @@ pub fn report(
 ) -> Result<SessionsReport> {
     let now = now_secs();
     let mut sessions = Vec::new();
-    for marker in read_markers(repo_root)? {
+    for (_dir, marker) in read_markers(repo_root)? {
         let alive = pid_is_alive(runner, repo_root, marker.pid);
         let liveness = liveness(&marker, now, alive, stale_after_secs);
         debug!(
@@ -133,8 +138,9 @@ pub fn report(
     Ok(SessionsReport { sessions, warnings })
 }
 
-/// Read and parse all `session.json` markers. Missing directory → empty list.
-fn read_markers(repo_root: &Path) -> Result<Vec<SessionMarker>> {
+/// Read and parse all `session.json` markers, each with the session directory
+/// it was found in. Missing directory → empty list.
+fn read_markers(repo_root: &Path) -> Result<Vec<(PathBuf, SessionMarker)>> {
     let dir = repo_root.join(SESSIONS_SUBDIR);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -152,7 +158,7 @@ fn read_markers(repo_root: &Path) -> Result<Vec<SessionMarker>> {
             Err(_) => continue, // no marker in this dir; skip quietly
         };
         match serde_json::from_str::<SessionMarker>(&raw) {
-            Ok(marker) => markers.push(marker),
+            Ok(marker) => markers.push((entry.path(), marker)),
             Err(error) => debug!(
                 event = "toimija.session.marker_unreadable",
                 path = %marker_path.display(),
@@ -183,6 +189,65 @@ pub fn liveness(
             }
         }
     }
+}
+
+/// The result of a prune pass: which session ids were removed, how many stayed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PruneReport {
+    pub removed: Vec<String>,
+    pub kept: usize,
+}
+
+/// Remove closed or stale session directories older than the retention window.
+/// Live sessions are never touched; a session must *both* be past liveness and
+/// past retention to go. Synchronous, local, and only during an explicitly
+/// invoked command — this is a cleanup pass, not a daemon.
+pub fn prune(
+    runner: &dyn CommandRunner,
+    repo_root: &Path,
+    stale_after_secs: u64,
+    retention_secs: u64,
+) -> Result<PruneReport> {
+    let now = now_secs();
+    let mut removed = Vec::new();
+    let mut kept = 0;
+    for (dir, marker) in read_markers(repo_root)? {
+        let alive = pid_is_alive(runner, repo_root, marker.pid);
+        let liveness = liveness(&marker, now, alive, stale_after_secs);
+        if prunable(liveness, &marker, now, retention_secs) {
+            fs::remove_dir_all(&dir)
+                .with_context(|| format!("failed to remove {}", dir.display()))?;
+            removed.push(marker.id);
+        } else {
+            kept += 1;
+        }
+    }
+    // read_dir order is platform-arbitrary; sort so output is deterministic.
+    removed.sort();
+    info!(
+        event = "toimija.sessions.pruned",
+        removed = removed.len(),
+        kept
+    );
+    Ok(PruneReport { removed, kept })
+}
+
+/// Whether a session directory may be removed. Pure, so the retention decision
+/// is unit-tested without a filesystem or clock. Age is measured from the most
+/// honest timestamp available: `closed_at` for a clean close, `started_at` for
+/// a stale marker that never closed.
+pub fn prunable(
+    liveness: Liveness,
+    marker: &SessionMarker,
+    now_secs: u64,
+    retention_secs: u64,
+) -> bool {
+    let reference = match liveness {
+        Liveness::Active => return false,
+        Liveness::Closed => marker.closed_at.unwrap_or(marker.started_at),
+        Liveness::Stale => marker.started_at,
+    };
+    now_secs.saturating_sub(reference) > retention_secs
 }
 
 /// Best-effort process liveness via `kill -0 <pid>` (exit 0 = the process
@@ -688,6 +753,57 @@ mod tests {
         b.marker.worktree = String::new();
         let warnings = overlap_warnings(&[a, b]);
         assert!(!has_message(&warnings, "share worktree"));
+    }
+
+    #[test]
+    fn active_sessions_are_never_prunable() {
+        let m = marker("a", SessionStatus::Active, 0);
+        // Even at an absurd age, Active means hands off.
+        assert!(!prunable(Liveness::Active, &m, u64::MAX, 0));
+    }
+
+    #[test]
+    fn closed_session_is_prunable_only_past_retention() {
+        let mut m = marker("a", SessionStatus::Closed, 1_000);
+        m.closed_at = Some(2_000);
+        let retention = DEFAULT_RETENTION_SECS;
+        assert!(!prunable(
+            Liveness::Closed,
+            &m,
+            2_000 + retention,
+            retention
+        ));
+        assert!(prunable(
+            Liveness::Closed,
+            &m,
+            2_000 + retention + 1,
+            retention
+        ));
+    }
+
+    #[test]
+    fn closed_session_without_closed_at_ages_from_start() {
+        // Old markers predate `closed_at`; fall back to started_at.
+        let m = marker("a", SessionStatus::Closed, 1_000);
+        assert!(prunable(
+            Liveness::Closed,
+            &m,
+            1_000 + DEFAULT_RETENTION_SECS + 1,
+            DEFAULT_RETENTION_SECS
+        ));
+    }
+
+    #[test]
+    fn stale_session_ages_from_start() {
+        let m = marker("a", SessionStatus::Active, 1_000);
+        let retention = DEFAULT_RETENTION_SECS;
+        assert!(!prunable(Liveness::Stale, &m, 1_000 + retention, retention));
+        assert!(prunable(
+            Liveness::Stale,
+            &m,
+            1_000 + retention + 1,
+            retention
+        ));
     }
 
     #[test]
