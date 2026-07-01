@@ -550,7 +550,13 @@ fn run_run(args: RunArgs) -> Result<i32> {
     match watcher.join() {
         Ok(Ok(())) => {}
         Ok(Err(error)) => eprintln!("toimija run: watcher stopped on error: {error:#}"),
-        Err(_) => eprintln!("toimija run: watcher thread panicked"),
+        // The default panic hook already printed message+location from inside
+        // the thread; still, include the payload here so the join site is not
+        // silent about *what* panicked.
+        Err(payload) => eprintln!(
+            "toimija run: watcher thread panicked: {}",
+            panic_message(payload.as_ref())
+        ),
     }
 
     // 7. Close the session marker (auto-close on exit), then bookend the session:
@@ -679,6 +685,17 @@ fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
 #[cfg(not(unix))]
 fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
+}
+
+/// Best-effort human message from a joined thread's panic payload. `panic!`
+/// with a literal carries `&str`; with a formatted message, `String`; anything
+/// else is opaque.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>")
 }
 
 fn run_watch(args: ContextArgs) -> Result<()> {
@@ -1085,6 +1102,18 @@ mod tests {
     use super::*;
     use crate::git::GitState;
     use std::path::PathBuf;
+
+    #[test]
+    fn panic_message_recovers_str_and_string_payloads() {
+        let literal = std::panic::catch_unwind(|| panic!("literal payload")).unwrap_err();
+        assert_eq!(panic_message(literal.as_ref()), "literal payload");
+
+        let formatted = std::panic::catch_unwind(|| panic!("formatted {}", "payload")).unwrap_err();
+        assert_eq!(panic_message(formatted.as_ref()), "formatted payload");
+
+        let opaque = std::panic::catch_unwind(|| std::panic::panic_any(42_u8)).unwrap_err();
+        assert_eq!(panic_message(opaque.as_ref()), "<non-string panic payload>");
+    }
 
     /// A minimal `GitState` for summary tests: clean tree on `branch` at `head`.
     fn state(branch: &str, head: &str) -> GitState {

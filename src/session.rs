@@ -179,11 +179,19 @@ impl Session {
 }
 
 /// Seconds since the Unix epoch; 0 if the system clock is before the epoch.
+/// The fallback is warned about, not silent — a `0` here becomes a `0-<pid>`
+/// session id and `started_at: 0`, which would otherwise read as mystery data.
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0)
+        .unwrap_or_else(|error| {
+            eprintln!(
+                "toimija: system clock is before the Unix epoch ({error}); \
+                 session timestamps fall back to 0"
+            );
+            0
+        })
 }
 
 #[cfg(test)]
