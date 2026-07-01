@@ -291,7 +291,13 @@ Toimija does not only report Git state. It also uses bounded Git history to help
 an agent decide what to read first and what to ignore:
 
 - changed areas since merge-base, and areas untouched by the branch (`Scope`)
-- changed files ranked by likely relevance with a short reason (`Read order`)
+- changed files ranked by likely relevance with a short reason (`Read order`);
+  source churn corroborated as dependency-bump fallout (a changed manifest whose
+  ecosystem lockfile changed in the same diff, e.g. `Cargo.toml` + `Cargo.lock`)
+  is tagged `mechanical ripple` and ranked dead last — read the intent, skip the
+  ripple unless it fails to compile. Conservative by design: a manifest or
+  lockfile edit alone tags nothing, and files the branch itself added are always
+  authored intent, never ripple.
 - companion files that are missing from the current diff (`Coupling`)
 - files with high churn, young surface, or stable/load-bearing history, plus a
   concrete action hint (`Risk`)

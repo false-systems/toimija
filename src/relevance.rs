@@ -146,7 +146,7 @@ pub fn compute_relevance(
         in_play = scope.as_ref().map_or(0, |scope| scope.in_play.len()),
         out_of_scope = scope.as_ref().map_or(0, |scope| scope.out_of_scope.len())
     );
-    let read_order = compute_read_order(changed);
+    let read_order = compute_read_order(changed, input.branch_added);
     debug!(
         event = "toimija.relevance.read_order.computed",
         entries = read_order.len()
@@ -607,6 +607,11 @@ enum ReadCategory {
     Source,
     Lockfile,
     Generated,
+    /// Source churn corroborated as dependency-bump fallout: the file sits
+    /// under a changed manifest whose ecosystem lockfile changed in the same
+    /// diff. Ranked dead last — reading the ripple is exactly the expensive
+    /// grepping the relevance layer exists to cut.
+    MechanicalRipple,
 }
 
 impl ReadCategory {
@@ -620,6 +625,7 @@ impl ReadCategory {
             ReadCategory::Source => 5,
             ReadCategory::Lockfile => 6,
             ReadCategory::Generated => 7,
+            ReadCategory::MechanicalRipple => 8,
         }
     }
 
@@ -632,6 +638,10 @@ impl ReadCategory {
             ReadCategory::Source => "source files",
             ReadCategory::Lockfile => "lockfile — dependency ripple, read after the manifest",
             ReadCategory::Generated => "generated or unknown",
+            ReadCategory::MechanicalRipple => {
+                "mechanical ripple — source under a manifest whose lockfile changed in the \
+                 same diff (dependency bump); read last, skip unless it fails to compile"
+            }
         }
     }
 }
@@ -739,13 +749,85 @@ fn classify_path(path: &Path) -> ReadCategory {
     ReadCategory::Source
 }
 
+/// The dependency ecosystem a manifest file name belongs to, used to pair a
+/// manifest change with its lockfile in the same diff. Names are lowercased.
+fn manifest_ecosystem(name: &str) -> Option<&'static str> {
+    match name {
+        "cargo.toml" => Some("cargo"),
+        "mix.exs" => Some("mix"),
+        "package.json" => Some("npm"),
+        "go.mod" => Some("go"),
+        "pyproject.toml" => Some("python"),
+        "gemfile" => Some("ruby"),
+        "composer.json" => Some("php"),
+        _ => None,
+    }
+}
+
+/// The dependency ecosystem a lockfile name belongs to. Counterpart of
+/// [`manifest_ecosystem`]; only ecosystems with both halves can corroborate.
+fn lockfile_ecosystem(name: &str) -> Option<&'static str> {
+    match name {
+        "cargo.lock" => Some("cargo"),
+        "mix.lock" => Some("mix"),
+        "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml" => Some("npm"),
+        "go.sum" => Some("go"),
+        "poetry.lock" => Some("python"),
+        "gemfile.lock" => Some("ruby"),
+        "composer.lock" => Some("php"),
+        _ => None,
+    }
+}
+
+fn file_name_lower(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// Directories whose source churn is a dependency-bump ripple candidate: the
+/// parents of changed manifests whose ecosystem lockfile *also* changed in this
+/// diff. Conservative by corroboration — a manifest edit alone (feature work)
+/// or a lockfile edit alone never tags anything; a false `mechanical` tag
+/// (telling the agent to skip authored intent) is worse than no tag.
+fn ripple_roots(changed: &[PathBuf]) -> Vec<PathBuf> {
+    let locked: BTreeSet<&'static str> = changed
+        .iter()
+        .filter_map(|path| lockfile_ecosystem(&file_name_lower(path)))
+        .collect();
+    if locked.is_empty() {
+        return Vec::new();
+    }
+    changed
+        .iter()
+        .filter(|path| {
+            manifest_ecosystem(&file_name_lower(path))
+                .is_some_and(|ecosystem| locked.contains(ecosystem))
+        })
+        .map(|path| path.parent().unwrap_or(Path::new("")).to_path_buf())
+        .collect()
+}
+
 /// Group the changed surface into read-order categories, one entry per present
 /// category, ranked by [`ReadCategory::priority`]. Deterministic: paths within
 /// an entry are sorted.
-fn compute_read_order(changed: &[PathBuf]) -> Vec<ReadOrderEntry> {
+///
+/// Source files under a corroborated dependency bump (see [`ripple_roots`]) are
+/// re-tagged `MechanicalRipple` and ranked last — except files this branch
+/// itself added: new files are authored intent, never dep-bump fallout.
+fn compute_read_order(changed: &[PathBuf], branch_added: &[PathBuf]) -> Vec<ReadOrderEntry> {
+    let ripple_roots = ripple_roots(changed);
+    let branch_added: BTreeSet<&Path> = branch_added.iter().map(PathBuf::as_path).collect();
     let mut grouped: BTreeMap<u8, (ReadCategory, Vec<PathBuf>)> = BTreeMap::new();
     for path in changed {
-        let category = classify_path(path);
+        let mut category = classify_path(path);
+        if category == ReadCategory::Source
+            && !branch_added.contains(path.as_path())
+            && ripple_roots.iter().any(|root| path.starts_with(root))
+        {
+            category = ReadCategory::MechanicalRipple;
+        }
         grouped
             .entry(category.priority())
             .or_insert_with(|| (category, Vec::new()))
@@ -1375,9 +1457,11 @@ mod tests {
             PathBuf::from("Dockerfile"),
             PathBuf::from("docs/ops.md"),
         ];
-        let order = compute_read_order(&changed);
+        let order = compute_read_order(&changed, &[]);
         let reasons: Vec<&str> = order.iter().map(|entry| entry.reason.as_str()).collect();
         // packaging, docs, manifest, source, lockfile — manifest before its ripple.
+        // (src/cold_scan.rs is outside ahti-query/, the bumped manifest's
+        // subtree, so it is ordinary source, not a mechanical ripple.)
         assert_eq!(
             reasons,
             vec![
@@ -1391,5 +1475,106 @@ mod tests {
         // priorities are strictly increasing.
         let priorities: Vec<u8> = order.iter().map(|entry| entry.priority).collect();
         assert!(priorities.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    /// The read-order group holding a path, by reason substring.
+    fn group_of<'a>(order: &'a [ReadOrderEntry], path: &str) -> &'a str {
+        order
+            .iter()
+            .find(|entry| entry.paths.iter().any(|p| p == Path::new(path)))
+            .map(|entry| entry.reason.as_str())
+            .unwrap_or_else(|| panic!("{path} missing from read order"))
+    }
+
+    #[test]
+    fn dep_bump_ripple_is_tagged_and_ranked_last() {
+        // The #12/#29 motivating shape: manifest bump + lockfile + source churn.
+        let changed = vec![
+            PathBuf::from("Cargo.toml"),
+            PathBuf::from("Cargo.lock"),
+            PathBuf::from("src/query.rs"),
+            PathBuf::from("src/scan.rs"),
+            PathBuf::from("README.md"),
+        ];
+        let order = compute_read_order(&changed, &[]);
+        assert!(group_of(&order, "src/query.rs").contains("mechanical ripple"));
+        assert!(group_of(&order, "src/scan.rs").contains("mechanical ripple"));
+        // The ripple group is dead last, after even the lockfile.
+        let last = order.last().unwrap();
+        assert!(last.reason.contains("mechanical ripple"));
+        assert_eq!(last.paths.len(), 2);
+    }
+
+    #[test]
+    fn manifest_change_without_lockfile_never_tags_a_ripple() {
+        // Editing Cargo.toml alone (a feature flag, metadata) is authored
+        // intent; without the lockfile corroboration nothing is mechanical.
+        let changed = vec![PathBuf::from("Cargo.toml"), PathBuf::from("src/query.rs")];
+        let order = compute_read_order(&changed, &[]);
+        assert_eq!(group_of(&order, "src/query.rs"), "source files");
+    }
+
+    #[test]
+    fn lockfile_change_without_manifest_never_tags_a_ripple() {
+        // A lone `cargo update` gives no governed subtree to corroborate.
+        let changed = vec![PathBuf::from("Cargo.lock"), PathBuf::from("src/query.rs")];
+        let order = compute_read_order(&changed, &[]);
+        assert_eq!(group_of(&order, "src/query.rs"), "source files");
+    }
+
+    #[test]
+    fn ripple_is_scoped_to_the_bumped_manifest_subtree() {
+        let changed = vec![
+            PathBuf::from("Cargo.lock"),
+            PathBuf::from("crates/foo/Cargo.toml"),
+            PathBuf::from("crates/foo/src/lib.rs"),
+            PathBuf::from("crates/bar/src/lib.rs"),
+        ];
+        let order = compute_read_order(&changed, &[]);
+        assert!(group_of(&order, "crates/foo/src/lib.rs").contains("mechanical ripple"));
+        assert_eq!(group_of(&order, "crates/bar/src/lib.rs"), "source files");
+    }
+
+    #[test]
+    fn branch_added_files_are_never_a_ripple() {
+        // Adding a dependency for new feature code is the classic false
+        // positive: manifest + lockfile + new source. New files are authored.
+        let changed = vec![
+            PathBuf::from("Cargo.toml"),
+            PathBuf::from("Cargo.lock"),
+            PathBuf::from("src/new_feature.rs"),
+            PathBuf::from("src/query.rs"),
+        ];
+        let branch_added = vec![PathBuf::from("src/new_feature.rs")];
+        let order = compute_read_order(&changed, &branch_added);
+        assert_eq!(group_of(&order, "src/new_feature.rs"), "source files");
+        assert!(group_of(&order, "src/query.rs").contains("mechanical ripple"));
+    }
+
+    #[test]
+    fn cross_ecosystem_lockfile_does_not_corroborate() {
+        // A changed mix.lock must not make a Cargo.toml edit look like a bump.
+        let changed = vec![
+            PathBuf::from("mix.lock"),
+            PathBuf::from("Cargo.toml"),
+            PathBuf::from("src/query.rs"),
+        ];
+        let order = compute_read_order(&changed, &[]);
+        assert_eq!(group_of(&order, "src/query.rs"), "source files");
+    }
+
+    #[test]
+    fn tests_and_docs_are_never_tagged_as_ripple() {
+        // Only Source-category churn is eligible: tests and docs keep their
+        // groups even inside a bumped subtree.
+        let changed = vec![
+            PathBuf::from("Cargo.toml"),
+            PathBuf::from("Cargo.lock"),
+            PathBuf::from("tests/query.rs"),
+            PathBuf::from("docs/query.md"),
+        ];
+        let order = compute_read_order(&changed, &[]);
+        assert_eq!(group_of(&order, "tests/query.rs"), "tests");
+        assert_eq!(group_of(&order, "docs/query.md"), "changed docs");
     }
 }
