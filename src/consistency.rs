@@ -169,8 +169,9 @@ fn fingerprint_changed(kind: &str, repo_root: &Path, files: &[ChangedFile]) -> S
             continue;
         }
         lines.push(format!(
-            "{kind}\t{}\t{}",
+            "{kind}\t{}\t{}\t{}",
             status(&file.status),
+            file.index_entry.as_deref().unwrap_or("worktree"),
             metadata(repo_root, &file.path)
         ));
     }
@@ -445,6 +446,7 @@ mod tests {
         live.unstaged_files.push(ChangedFile {
             path: PathBuf::from("src/lib.rs"),
             status: ChangeStatus::Modified,
+            index_entry: None,
         });
         match stored.verify(&live) {
             Verdict::Stale {
@@ -482,6 +484,7 @@ mod tests {
         live.unstaged_files.push(ChangedFile {
             path: PathBuf::from(".toimija/repo.yaml"),
             status: ChangeStatus::Modified,
+            index_entry: None,
         });
         assert!(!stored.verify(&live).is_consistent());
     }
@@ -493,10 +496,12 @@ mod tests {
             ChangedFile {
                 path: PathBuf::from("a.rs"),
                 status: ChangeStatus::Added,
+                index_entry: None,
             },
             ChangedFile {
                 path: PathBuf::from("b.rs"),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             },
         ];
         let mut b = git_state();
@@ -504,10 +509,12 @@ mod tests {
             ChangedFile {
                 path: PathBuf::from("b.rs"),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             },
             ChangedFile {
                 path: PathBuf::from("a.rs"),
                 status: ChangeStatus::Added,
+                index_entry: None,
             },
         ];
         assert_eq!(

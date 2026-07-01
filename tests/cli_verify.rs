@@ -7,7 +7,7 @@ use std::path::Path;
 // stale. Read-only; runs no validation, touches no network.
 
 mod common;
-use common::{git_available, run_git};
+use common::{git_at, git_available, run_git};
 
 fn init_repo_with_commit(path: &Path) {
     run_git(path, &["init"]);
@@ -156,6 +156,51 @@ fn staged_and_deleted_and_renamed_changes_are_stale() {
 }
 
 #[test]
+fn staged_index_content_change_is_stale_even_when_worktree_bytes_do_not_change() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let blobs = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+
+    fs::write(temp.path().join("a.txt"), "ONE\n\nTWO\n").unwrap();
+    fs::write(blobs.path().join("index1.txt"), "x\n\nTWO\n").unwrap();
+    let index1 = git_stdout(
+        temp.path(),
+        &[
+            "hash-object",
+            "-w",
+            blobs.path().join("index1.txt").to_str().unwrap(),
+        ],
+    );
+    run_git(
+        temp.path(),
+        &["update-index", "--cacheinfo", "100644", &index1, "a.txt"],
+    );
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+
+    fs::write(blobs.path().join("index2.txt"), "ONE\n\nx\n").unwrap();
+    let index2 = git_stdout(
+        temp.path(),
+        &[
+            "hash-object",
+            "-w",
+            blobs.path().join("index2.txt").to_str().unwrap(),
+        ],
+    );
+    run_git(
+        temp.path(),
+        &["update-index", "--cacheinfo", "100644", &index2, "a.txt"],
+    );
+
+    assert_stale(temp.path());
+}
+
+#[test]
 fn ignored_file_does_not_change_token() {
     if !git_available() {
         return;
@@ -175,6 +220,17 @@ fn ignored_file_does_not_change_token() {
         .args(["current", "--verify", "--json"])
         .assert()
         .success();
+}
+
+fn git_stdout(path: &Path, args: &[&str]) -> String {
+    let output = git_at(path).args(args).output().unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
 fn assert_stale(path: &Path) {

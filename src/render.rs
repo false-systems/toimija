@@ -698,6 +698,7 @@ mod tests {
             .map(|i| ChangedFile {
                 path: PathBuf::from(format!("src/some/deep/module_{i:02}.rs")),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             })
             .collect();
         packet.changed_surface = (0..40)
@@ -764,6 +765,7 @@ mod tests {
             .map(|i| ChangedFile {
                 path: PathBuf::from(format!("apps/core/lib/some/deep/path/module_{i:02}.ex")),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             })
             .collect();
 
@@ -923,14 +925,17 @@ mod tests {
         packet.git.branch_files = vec![ChangedFile {
             path: PathBuf::from("src/committed.rs"),
             status: ChangeStatus::Modified,
+            index_entry: None,
         }];
         packet.git.staged_files = vec![ChangedFile {
             path: PathBuf::from("src/staged.rs"),
             status: ChangeStatus::Added,
+            index_entry: None,
         }];
         packet.git.unstaged_files = vec![ChangedFile {
             path: PathBuf::from("src/unstaged.rs"),
             status: ChangeStatus::Deleted,
+            index_entry: None,
         }];
         packet.git.untracked_files = vec![PathBuf::from("notes.txt")];
         packet.git.conflicted_files = vec![PathBuf::from("src/conflict.rs")];
