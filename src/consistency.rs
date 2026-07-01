@@ -313,7 +313,10 @@ fn is_generated_output(path: &Path) -> bool {
     }
     matches!(
         components.next(),
-        Some(Some("current.md")) | Some(Some("current.json")) | Some(Some("sessions"))
+        Some(Some("current.md"))
+            | Some(Some("current.json"))
+            | Some(Some("sessions"))
+            | Some(Some("snapshots"))
     )
 }
 

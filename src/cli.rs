@@ -16,6 +16,7 @@ use crate::render;
 use crate::repo;
 use crate::session;
 use crate::sessions;
+use crate::snapshot;
 use crate::snippet;
 use crate::validate;
 use crate::watch;
@@ -95,6 +96,13 @@ pub enum Command {
     /// against the working tree. Exits non-zero (with reasons) when the packet is
     /// stale, so a caller refreshes before trusting it. Read-only; no network.
     Verify(VerifyArgs),
+    /// Materialize the working tree as an immutable git tree object.
+    ///
+    /// Freezes the full working state (content-addressed) so a reader can read
+    /// files *at a version* via `git cat-file` instead of live disk. Prints the
+    /// tree oid and the consistency token. Refuses in an unsafe git state. Writes
+    /// git objects (gc-reclaimable); no network.
+    Snapshot(SnapshotArgs),
 }
 
 #[derive(Debug, Args)]
@@ -166,6 +174,23 @@ pub struct VerifyArgs {
     /// Emit the verdict as JSON (`{ "consistent": bool, "reasons": [...] }`).
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SnapshotArgs {
+    /// Emit JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Pin the snapshot with a lease (a git ref) so it survives `git gc` until
+    /// released. Uses the current session id when run under `toimija run`.
+    #[arg(long, conflicts_with_all = ["release", "list"])]
+    pub lease: bool,
+    /// Release a held snapshot lease by id.
+    #[arg(long, value_name = "ID", conflicts_with_all = ["lease", "list"])]
+    pub release: Option<String>,
+    /// List held snapshot leases.
+    #[arg(long, conflicts_with_all = ["lease", "release"])]
+    pub list: bool,
 }
 
 #[derive(Debug, Args)]
@@ -244,6 +269,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Sessions(args) => run_sessions(args),
         Command::Validate(args) => run_validate(args),
         Command::Verify(args) => run_verify(args),
+        Command::Snapshot(args) => run_snapshot(args),
     };
 
     match &result {
@@ -277,6 +303,7 @@ impl Command {
             Command::Sessions(_) => "sessions",
             Command::Validate(_) => "validate",
             Command::Verify(_) => "verify",
+            Command::Snapshot(_) => "snapshot",
         }
     }
 }
@@ -682,6 +709,113 @@ fn run_landed(args: LandedArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{}", render::render_landed_report(&report));
+    }
+    Ok(())
+}
+
+fn run_snapshot(args: SnapshotArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+
+    // List held leases.
+    if args.list {
+        let leases = snapshot::list_leases(&repo_root)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&leases)?);
+        } else if leases.is_empty() {
+            println!("no snapshot leases");
+        } else {
+            for lease in &leases {
+                println!(
+                    "{}  tree {}  {}  pid {}",
+                    lease.id,
+                    short_oid(&lease.tree),
+                    lease.token,
+                    lease.pid
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    // Release a held lease.
+    if let Some(id) = &args.release {
+        snapshot::release_lease(&repo_root, id)?;
+        println!("released snapshot lease {id}");
+        return Ok(());
+    }
+
+    // Materialize only a *safe* state: `write-tree` should never freeze a
+    // half-finished merge/rebase or a conflicted tree. Same gate as verify.
+    let (mut live, _warnings) = git::collect_git_state(&runner, &cwd)?;
+    context::normalize_git_state(&mut live);
+    let consistency = Consistency::fingerprint(&live);
+    if consistency.git_operation != GitOperationState::None {
+        anyhow::bail!(
+            "refusing to snapshot: repository is in an unsafe git operation ({:?}); finish or abort it first",
+            consistency.git_operation
+        );
+    }
+    if consistency.conflict_state.has_conflicts {
+        anyhow::bail!("refusing to snapshot: repository has unresolved conflicts");
+    }
+    // A path that is both staged and modified in the worktree has different
+    // content in the index (staged) than on disk (worktree). A single tree can
+    // hold only one, so "the snapshot at this token" would be ambiguous — the
+    // token fingerprints both index and worktree, the tree cannot. Refuse.
+    let staged: std::collections::HashSet<&std::path::PathBuf> =
+        live.staged_files.iter().map(|file| &file.path).collect();
+    let mixed: Vec<String> = live
+        .unstaged_files
+        .iter()
+        .filter(|file| staged.contains(&file.path))
+        .map(|file| file.path.display().to_string())
+        .collect();
+    if !mixed.is_empty() {
+        anyhow::bail!(
+            "refusing to snapshot: {} path(s) are both staged and modified in the worktree ({}); stage or discard the worktree changes so one tree can represent the state",
+            mixed.len(),
+            mixed.join(", ")
+        );
+    }
+    let tree = snapshot::materialize(&repo_root)?;
+
+    if args.lease {
+        // Tie the lease to the session when wrapped by `toimija run`; otherwise
+        // mint a standalone id.
+        let id = std::env::var("TOIMIJA_SESSION")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs())
+                    .unwrap_or(0);
+                format!("{secs}-{}", std::process::id())
+            });
+        let lease = snapshot::acquire_lease(&repo_root, &id, &tree, &consistency.token)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&lease)?);
+        } else {
+            println!("leased snapshot {}", lease.id);
+            println!("  tree:  {}", lease.tree);
+            println!("  token: {}", lease.token);
+            println!("  ref:   {}", snapshot::lease_ref(&lease.id));
+        }
+    } else if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "tree": tree,
+                "token": consistency.token,
+                "algorithm": consistency.algorithm,
+                "head": consistency.head,
+            }))?
+        );
+    } else {
+        println!("snapshot tree: {tree}");
+        println!("token: {}", consistency.token);
     }
     Ok(())
 }
