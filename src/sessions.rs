@@ -214,7 +214,7 @@ pub fn prune(
     for (dir, marker) in read_markers(repo_root)? {
         let alive = pid_is_alive(runner, repo_root, marker.pid);
         let liveness = liveness(&marker, now, alive, stale_after_secs);
-        if prunable(liveness, &marker, now, retention_secs) {
+        if prunable(liveness, &marker, alive, now, retention_secs) {
             fs::remove_dir_all(&dir)
                 .with_context(|| format!("failed to remove {}", dir.display()))?;
             removed.push(marker.id);
@@ -236,15 +236,25 @@ pub fn prune(
 /// is unit-tested without a filesystem or clock. Age is measured from the most
 /// honest timestamp available: `closed_at` for a clean close, `started_at` for
 /// a stale marker that never closed.
+///
+/// Stale-by-TTL is a *display* judgment ("looks abandoned"); deletion demands
+/// the certain signal. A marker can be reported stale purely because it has
+/// been open past the TTL while its process — a long interactive session — is
+/// alive and mid-work; removing its directory would pull the live packet out
+/// from under a running watcher. So a stale marker is prunable only when its
+/// pid is gone. `Closed` is an explicit end-of-life record and ages out
+/// regardless of `pid_alive`, which by then may point at a recycled pid.
 pub fn prunable(
     liveness: Liveness,
     marker: &SessionMarker,
+    pid_alive: bool,
     now_secs: u64,
     retention_secs: u64,
 ) -> bool {
     let reference = match liveness {
         Liveness::Active => return false,
         Liveness::Closed => marker.closed_at.unwrap_or(marker.started_at),
+        Liveness::Stale if pid_alive => return false,
         Liveness::Stale => marker.started_at,
     };
     now_secs.saturating_sub(reference) > retention_secs
@@ -759,7 +769,17 @@ mod tests {
     fn active_sessions_are_never_prunable() {
         let m = marker("a", SessionStatus::Active, 0);
         // Even at an absurd age, Active means hands off.
-        assert!(!prunable(Liveness::Active, &m, u64::MAX, 0));
+        assert!(!prunable(Liveness::Active, &m, true, u64::MAX, 0));
+    }
+
+    #[test]
+    fn stale_by_ttl_with_a_live_pid_is_never_prunable() {
+        // The long-interactive-session case: open past the TTL (reported
+        // stale) but the process is alive and mid-work. Deleting its directory
+        // would pull the live packet out from under a running watcher — never,
+        // at any age.
+        let m = marker("a", SessionStatus::Active, 1_000);
+        assert!(!prunable(Liveness::Stale, &m, true, u64::MAX, 0));
     }
 
     #[test]
@@ -770,14 +790,31 @@ mod tests {
         assert!(!prunable(
             Liveness::Closed,
             &m,
+            false,
             2_000 + retention,
             retention
         ));
         assert!(prunable(
             Liveness::Closed,
             &m,
+            false,
             2_000 + retention + 1,
             retention
+        ));
+    }
+
+    #[test]
+    fn closed_session_ages_out_even_if_its_pid_was_recycled() {
+        // Closed is an explicit end-of-life record; a recycled pid that
+        // happens to be alive must not keep the directory forever.
+        let mut m = marker("a", SessionStatus::Closed, 1_000);
+        m.closed_at = Some(2_000);
+        assert!(prunable(
+            Liveness::Closed,
+            &m,
+            true,
+            2_000 + DEFAULT_RETENTION_SECS + 1,
+            DEFAULT_RETENTION_SECS
         ));
     }
 
@@ -788,19 +825,27 @@ mod tests {
         assert!(prunable(
             Liveness::Closed,
             &m,
+            false,
             1_000 + DEFAULT_RETENTION_SECS + 1,
             DEFAULT_RETENTION_SECS
         ));
     }
 
     #[test]
-    fn stale_session_ages_from_start() {
+    fn stale_session_with_a_dead_pid_ages_from_start() {
         let m = marker("a", SessionStatus::Active, 1_000);
         let retention = DEFAULT_RETENTION_SECS;
-        assert!(!prunable(Liveness::Stale, &m, 1_000 + retention, retention));
+        assert!(!prunable(
+            Liveness::Stale,
+            &m,
+            false,
+            1_000 + retention,
+            retention
+        ));
         assert!(prunable(
             Liveness::Stale,
             &m,
+            false,
             1_000 + retention + 1,
             retention
         ));
