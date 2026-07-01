@@ -1,6 +1,15 @@
 # Toimija
 
-**Toimija is the live entrance for agents into a repo.**
+**The live entrance for agents into a repo.**
+
+![Rust](https://img.shields.io/badge/rust-single_crate-orange)
+![daemons](https://img.shields.io/badge/daemons-zero-success)
+![network](https://img.shields.io/badge/network-never-success)
+![posture](https://img.shields.io/badge/posture-advisory-blue)
+![source of truth](https://img.shields.io/badge/source_of_truth-git-8b5cf6)
+
+*Toimija* is Finnish for "the one who acts" — an actor, an agent, an operative.
+This Toimija is the layer between a repo and the agents acting on it.
 
 Instead of running `codex` directly, run `toimija run -- codex`.
 Instead of running `claude` directly, run `toimija run -- claude`.
@@ -10,6 +19,56 @@ Toimija refreshes the repo context, writes `.toimija/current.md` and
 fresh while the agent works, and exits with the wrapped command's status.
 
 > We do not ask the model to understand the repo first. We ask Git what state the repo is in.
+
+## Toimija in 30 seconds
+
+```bash
+cargo install --path .          # or grab the release artifact
+cd /path/to/repo
+toimija init                    # once per repo: seed .toimija/repo.yaml
+toimija run -- claude           # every time: wrap the agent
+```
+
+```text
+                ┌───────────────────────────────────────────────┐
+                │                     Git                       │
+                │  HEAD · index · merge-base · branch · history │
+                └──────────────────────┬────────────────────────┘
+                                       │ read (git CLI, bounded)
+                                       ▼
+  .toimija/repo.yaml  ──────►   toimija compile   ◄────── language adapters
+  (durable meaning:                    │                  (path heuristics,
+   role, boundaries)                   │                   no parsing)
+                                       ▼
+                ┌───────────────────────────────────────────────┐
+                │     .toimija/current.md  /  current.json      │
+                │   scope · read order · coupling · risk ·      │
+                │   validation plan · consistency token         │
+                └──────────────────────┬────────────────────────┘
+                                       │ verify-before-read
+                                       ▼
+                        the agent (claude, codex, …)
+```
+
+## Why
+
+Every coding agent enters a repo the same way: glob, grep, read, guess. That
+cold crawl is slow, costs tokens, and is wrong the moment the repo moves. Yet
+every repo already ships a database that knows exactly what is going on — Git.
+Toimija reads it once, compiles it into a small packet, keeps that packet
+provably fresh, and hands it to the agent. The agent starts oriented instead of
+archaeologizing.
+
+What you get:
+
+| | |
+|---|---|
+| **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed on every relevant change while the agent works. |
+| **Git-derived relevance** | What to read first, what co-changes, what is risky, what is mechanical dep-bump ripple to skip. No parsing, no index — just Git, used well. |
+| **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
+| **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, 7-day GC. Visibility, never orchestration. |
+| **Honest validation** | `validate --plan` prints the repo's real gates (including a focused tier derived from the diff). Toimija never runs them for you. |
+| **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
 
 ## What Toimija is
 
@@ -59,6 +118,18 @@ toimija run -- claude
 launches the agent command, stops watching when the agent exits, and returns the
 agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
 143).
+
+```text
+toimija run --intent "fix #51" -- codex
+ │
+ ├─ 0  GC     prune closed/stale sessions past the 7-day retention (best-effort)
+ ├─ 1  enter  open .toimija/sessions/<id>/ · write the session packet + marker
+ ├─ 2  gate   verify the entry packet against the live repo before launch
+ ├─ 3  watch  refresh the packet on every relevant Git/fs change (foreground)
+ ├─ 4  exec   codex, with the TOIMIJA_* handshake in its environment
+ └─ 5  exit   close the marker · print a Git entry→exit summary · adopt codex's
+              exit code (128+signal preserved)
+```
 
 Each `run` opens a **session** with its own live packet under
 `.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
@@ -190,19 +261,42 @@ The packet includes:
 - risk
 - validation plan
 - warnings
-- a **consistency** block — a versioned `toimija-consistency-v1` freshness token
+- a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state
 
-`toimija current --verify --json` checks that token against the live repo and
-exits non-zero with a structured status when the packet is stale, missing,
-unsupported, unsafe, or unverifiable. It is the *verify-before-read* gate: a
-consumer confirms the packet still matches the repo before trusting it, instead
-of re-deriving repo state itself. Toimija's own generated output (`current.*`,
-`sessions/`) is excluded from the fingerprint, so a refresh never invalidates
-itself.
+See **Verify before read** for what that token buys you, and **Example context
+output** below for a full rendering.
 
-See **Example context output** below for a full rendering.
+## Verify before read — the packet is a claim, not a hope
+
+A context packet is only useful while it still matches the repo. A map an agent
+trusts *after* the territory moved is worse than no map. So Toimija makes
+freshness checkable instead of assumed, in three escalating moves:
+
+1. **Fingerprint.** Every packet embeds a `toimija-consistency-v2` token — a
+   deterministic, content-based fingerprint of the repo's work state (HEAD,
+   index, unstaged tracked content, untracked content, conflicts, in-flight Git
+   operations). No clocks, no mtimes, no file sizes: same content, same token.
+   Toimija's own output (`current.*`, `sessions/`) is excluded, so a refresh
+   never invalidates itself.
+2. **Gate.** `toimija verify` (or `toimija current --verify --json` for
+   machines) recomputes the fingerprint against the live repo and exits
+   non-zero, with reasons, when the packet is stale, missing, unsupported,
+   unsafe, or unverifiable. A harness calls this before *every* packet read:
+   pass → trust the packet; fail → refresh first. `run` performs the same check
+   on its own entry packet before launching the agent, so a startup race is
+   surfaced, never silent.
+3. **Freeze.** When "fresh right now" is not enough — a reader that must see
+   one coherent version while the worktree keeps moving — `toimija snapshot`
+   materializes the working tree (untracked included) as an immutable,
+   content-addressed git tree object. Files are then readable *at that version*
+   via `git cat-file`, and `--lease` pins the snapshot against `git gc` until
+   released.
+
+The token is a transaction version, not a timestamp: verify tells you whether
+the world changed, snapshot gives you a world that cannot change. Either way,
+nothing reads repo state on faith.
 
 ## Commands
 
@@ -251,6 +345,11 @@ toimija init               # create .toimija/repo.yaml if missing
 output goes to stdout.
 
 ## Boundaries / non-goals
+
+The boundaries are the feature: Toimija stays fast, predictable, and safe to
+wrap around anything because of what it refuses to do. They are structural, not
+aspirational — `doctor --strict` fails the build when the config and the agent
+docs drift apart on them.
 
 Toimija does not:
 
