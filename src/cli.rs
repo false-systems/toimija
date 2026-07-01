@@ -760,6 +760,25 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
     if consistency.conflict_state.has_conflicts {
         anyhow::bail!("refusing to snapshot: repository has unresolved conflicts");
     }
+    // A path that is both staged and modified in the worktree has different
+    // content in the index (staged) than on disk (worktree). A single tree can
+    // hold only one, so "the snapshot at this token" would be ambiguous — the
+    // token fingerprints both index and worktree, the tree cannot. Refuse.
+    let staged: std::collections::HashSet<&std::path::PathBuf> =
+        live.staged_files.iter().map(|file| &file.path).collect();
+    let mixed: Vec<String> = live
+        .unstaged_files
+        .iter()
+        .filter(|file| staged.contains(&file.path))
+        .map(|file| file.path.display().to_string())
+        .collect();
+    if !mixed.is_empty() {
+        anyhow::bail!(
+            "refusing to snapshot: {} path(s) are both staged and modified in the worktree ({}); stage or discard the worktree changes so one tree can represent the state",
+            mixed.len(),
+            mixed.join(", ")
+        );
+    }
     let tree = snapshot::materialize(&repo_root)?;
 
     if args.lease {

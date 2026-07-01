@@ -33,31 +33,44 @@ const GENERATED_DIRS: &[&str] = &[".toimija/sessions", ".toimija/snapshots"];
 /// index, so the real index is untouched. Toimija's generated output is excluded
 /// so the tree matches what the consistency token fingerprints.
 pub fn materialize(repo_root: &Path) -> Result<String> {
-    let index = git_dir(repo_root)?.join("toimija-snapshot.index");
-    // Start from a clean throwaway index every time.
-    let _ = std::fs::remove_file(&index);
+    // A *unique* throwaway index per run: concurrent `toimija snapshot`
+    // invocations in one repo must not clobber or delete each other's index.
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let index = git_dir(repo_root)?.join(format!(
+        "toimija-snapshot-{}-{nanos}.index",
+        std::process::id()
+    ));
 
+    let tree = materialize_into(repo_root, &index);
+    // Always remove the throwaway index — on success and on failure.
+    let _ = std::fs::remove_file(&index);
+    tree
+}
+
+fn materialize_into(repo_root: &Path, index: &Path) -> Result<String> {
     // Stage the entire worktree, then drop generated output. `--ignore-unmatch`
     // keeps `rm` quiet when the path is gitignored or absent.
-    run_git(repo_root, &index, &["add", "-A"])?;
+    run_git(repo_root, index, &["add", "-A"])?;
     for file in GENERATED_FILES {
         let _ = run_git(
             repo_root,
-            &index,
+            index,
             &["rm", "--cached", "--ignore-unmatch", file],
         );
     }
     for dir in GENERATED_DIRS {
         let _ = run_git(
             repo_root,
-            &index,
+            index,
             &["rm", "--cached", "-r", "--ignore-unmatch", dir],
         );
     }
-
-    let tree = run_git(repo_root, &index, &["write-tree"])?;
-    let _ = std::fs::remove_file(&index);
-    Ok(tree.trim().to_string())
+    Ok(run_git(repo_root, index, &["write-tree"])?
+        .trim()
+        .to_string())
 }
 
 /// Directory, relative to the repo root, holding snapshot-lease markers.

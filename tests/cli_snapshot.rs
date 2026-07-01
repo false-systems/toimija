@@ -132,3 +132,19 @@ fn a_leased_snapshot_survives_gc_and_release_lets_it_go() {
         "released snapshot tree should be reclaimable"
     );
 }
+
+#[test]
+fn refuses_when_a_path_is_both_staged_and_worktree_modified() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    // Stage new content, then modify the worktree on top: the index and the disk
+    // now disagree, so a single tree cannot represent the token unambiguously.
+    fs::write(temp.path().join("a.txt"), "staged\n").unwrap();
+    run_git(temp.path(), &["add", "a.txt"]);
+    fs::write(temp.path().join("a.txt"), "worktree\n").unwrap();
+
+    toimija(temp.path(), &["snapshot"]).failure();
+}
