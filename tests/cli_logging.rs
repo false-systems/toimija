@@ -57,6 +57,40 @@ fn verbose_json_logs_go_to_stderr_and_keep_stdout_parseable() {
 }
 
 #[test]
+fn run_emits_the_command_finish_bookend_with_the_wrapped_exit_code() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+
+    // `run` adopts the wrapped command's exit code, which historically bypassed
+    // the finish event via `process::exit` (issue #51). Both must hold at once.
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "-v",
+            "--log-format",
+            "json",
+            "run",
+            "--",
+            "sh",
+            "-c",
+            "exit 7",
+        ])
+        .assert()
+        .code(7);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+
+    let finish = log_lines(&stderr)
+        .into_iter()
+        .find(|line| line["fields"]["event"] == "toimija.command.finish")
+        .expect("run should emit toimija.command.finish");
+    assert_eq!(finish["fields"]["exit_code"].as_i64(), Some(7));
+}
+
+#[test]
 fn quiet_mode_suppresses_logs_without_suppressing_stdout() {
     if !git_available() {
         return;
@@ -79,9 +113,16 @@ fn quiet_mode_suppresses_logs_without_suppressing_stdout() {
 }
 
 fn log_events(stderr: &str) -> Vec<String> {
+    log_lines(stderr)
+        .into_iter()
+        .map(|value| value["fields"]["event"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn log_lines(stderr: &str) -> Vec<serde_json::Value> {
     stderr
         .lines()
+        .filter(|line| line.starts_with('{'))
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .map(|value| value["fields"]["event"].as_str().unwrap().to_string())
         .collect()
 }

@@ -235,7 +235,12 @@ impl Cli {
     }
 }
 
-pub fn run(cli: Cli) -> Result<()> {
+/// Dispatch the parsed command and return the process exit code. Commands that
+/// wrap or gate something (`run`, `verify`) pick their own code; everything
+/// else maps success to 0. Returning the code — instead of calling
+/// `process::exit` inside a handler — keeps the `toimija.command.finish`
+/// bookend and the span guard on every exit path.
+pub fn run(cli: Cli) -> Result<i32> {
     let started = Instant::now();
     let command_name = cli.command.name();
     let output_format = match &cli.command {
@@ -256,26 +261,27 @@ pub fn run(cli: Cli) -> Result<()> {
     info!(event = "toimija.command.start");
 
     let result = match cli.command {
-        Command::Init => run_init(),
-        Command::Doctor(args) => run_doctor(args),
-        Command::Context(args) => run_context(args),
+        Command::Init => run_init().map(|()| 0),
+        Command::Doctor(args) => run_doctor(args).map(|()| 0),
+        Command::Context(args) => run_context(args).map(|()| 0),
         Command::Current(args) => run_current(args),
-        Command::Refresh(args) => run_refresh(args),
-        Command::Enter(args) => run_enter(args),
-        Command::Watch(args) => run_watch(args),
+        Command::Refresh(args) => run_refresh(args).map(|()| 0),
+        Command::Enter(args) => run_enter(args).map(|()| 0),
+        Command::Watch(args) => run_watch(args).map(|()| 0),
         Command::Run(args) => run_run(args),
-        Command::Snippet(args) => run_snippet(args),
-        Command::Landed(args) => run_landed(args),
-        Command::Sessions(args) => run_sessions(args),
-        Command::Validate(args) => run_validate(args),
+        Command::Snippet(args) => run_snippet(args).map(|()| 0),
+        Command::Landed(args) => run_landed(args).map(|()| 0),
+        Command::Sessions(args) => run_sessions(args).map(|()| 0),
+        Command::Validate(args) => run_validate(args).map(|()| 0),
         Command::Verify(args) => run_verify(args),
-        Command::Snapshot(args) => run_snapshot(args),
+        Command::Snapshot(args) => run_snapshot(args).map(|()| 0),
     };
 
     match &result {
-        Ok(()) => info!(
+        Ok(exit_code) => info!(
             event = "toimija.command.finish",
-            duration_ms = started.elapsed().as_millis() as u64
+            duration_ms = started.elapsed().as_millis() as u64,
+            exit_code
         ),
         Err(error) => warn!(
             event = "toimija.command.finish",
@@ -355,15 +361,18 @@ fn run_context(args: ContextArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_current(args: CurrentArgs) -> Result<()> {
+fn run_current(args: CurrentArgs) -> Result<i32> {
     if args.write {
         return run_refresh(ContextArgs {
             json: args.json,
             for_diff: false,
             budget: None,
-        });
+        })
+        .map(|()| 0);
     }
     if args.verify {
+        // Delegates to `verify`, exit code included — harness verifiers gate
+        // on it (the verify-before-read contract).
         return run_verify(VerifyArgs { json: args.json });
     }
     anyhow::bail!("use `toimija current --write` or `toimija current --verify`")
@@ -410,7 +419,7 @@ fn print_agent_entry(refreshed: &refresh::Refreshed) {
     println!("{}", refreshed.markdown);
 }
 
-fn run_run(args: RunArgs) -> Result<()> {
+fn run_run(args: RunArgs) -> Result<i32> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -580,8 +589,9 @@ fn run_run(args: RunArgs) -> Result<()> {
 
     // 8. Exit with the wrapped command's status — preserving signal semantics so
     //    a cancelled/terminated child is distinguishable from a generic failure.
+    //    Returned (not `process::exit`) so the command.finish bookend still runs.
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
-    std::process::exit(wrapped_exit_code(status));
+    Ok(wrapped_exit_code(status))
 }
 
 fn close_session_after_startup_failure(session: &mut session::Session) {
@@ -820,7 +830,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_verify(args: VerifyArgs) -> Result<()> {
+fn run_verify(args: VerifyArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let status = compute_verify_status(&runner, &cwd);
@@ -835,15 +845,8 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
     }
 
     // Exit non-zero on staleness so a caller can gate on the packet before
-    // trusting it (the verify-before-read contract). Flush first: `process::exit`
-    // skips destructors, so a buffered (piped) stdout would otherwise be lost.
-    if !verified {
-        use std::io::Write;
-        std::io::stdout().flush().ok();
-        std::io::stderr().flush().ok();
-        std::process::exit(1);
-    }
-    Ok(())
+    // trusting it (the verify-before-read contract).
+    Ok(if verified { 0 } else { 1 })
 }
 
 /// Collect the live Git state and resolve a verify status. A repository that
