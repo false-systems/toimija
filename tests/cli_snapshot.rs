@@ -148,3 +148,27 @@ fn refuses_when_a_path_is_both_staged_and_worktree_modified() {
 
     toimija(temp.path(), &["snapshot"]).failure();
 }
+
+#[test]
+fn a_tracked_file_that_matches_gitignore_stays_in_the_tree() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    // Commit a file, then start ignoring its pattern: it is now tracked AND
+    // gitignore-matched. It must still appear in the materialized tree.
+    fs::write(temp.path().join("kept.log"), "keep me\n").unwrap();
+    run_git(temp.path(), &["add", "kept.log"]);
+    run_git(temp.path(), &["commit", "-m", "add kept.log"]);
+    fs::write(temp.path().join(".gitignore"), "*.log\n").unwrap();
+    run_git(temp.path(), &["add", ".gitignore"]);
+    run_git(temp.path(), &["commit", "-m", "ignore logs"]);
+
+    let tree = snapshot_tree(temp.path());
+    let listing = git_stdout(temp.path(), &["cat-file", "-p", &tree]);
+    assert!(
+        listing.contains("kept.log"),
+        "tracked-but-ignored file was dropped from the tree: {listing}"
+    );
+}

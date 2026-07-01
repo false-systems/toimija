@@ -51,8 +51,14 @@ pub fn materialize(repo_root: &Path) -> Result<String> {
 }
 
 fn materialize_into(repo_root: &Path, index: &Path) -> Result<String> {
-    // Stage the entire worktree, then drop generated output. `--ignore-unmatch`
-    // keeps `rm` quiet when the path is gitignored or absent.
+    // Seed the scratch index from HEAD first, so *tracked* files are present even
+    // when they match `.gitignore` — then overlay the worktree with `add -A`.
+    // Into an empty index, `add -A` treats every path as untracked and applies
+    // `.gitignore`, which would drop committed-but-ignored content from the tree.
+    // `read-tree` errors harmlessly on an unborn HEAD (no tracked files yet).
+    let _ = run_git(repo_root, index, &["read-tree", "HEAD"]);
+    // Overlay worktree changes (modifications, additions, deletions), then drop
+    // generated output. `--ignore-unmatch` keeps `rm` quiet when absent.
     run_git(repo_root, index, &["add", "-A"])?;
     for file in GENERATED_FILES {
         let _ = run_git(
