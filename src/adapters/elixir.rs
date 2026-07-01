@@ -145,6 +145,7 @@ mod tests {
         let changed = vec![ChangedFile {
             path: PathBuf::from("lib/foo/bar.ex"),
             status: ChangeStatus::Modified,
+            index_entry: None,
         }];
         let hints = ElixirAdapter.read_first_hints(temp.path(), &changed);
         assert_eq!(hints[0].0, PathBuf::from("test/foo/bar_test.exs"));
@@ -223,6 +224,7 @@ mod tests {
         let changed = vec![ChangedFile {
             path: PathBuf::from("mix.exs"),
             status: ChangeStatus::Modified,
+            index_entry: None,
         }];
         let hints = ElixirAdapter.read_first_hints(temp.path(), &changed);
         assert_eq!(hints[0].0, PathBuf::from("test/test_helper.exs"));

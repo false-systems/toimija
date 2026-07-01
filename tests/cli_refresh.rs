@@ -44,6 +44,34 @@ fn refresh_writes_current_md_and_json() {
     let value: serde_json::Value =
         serde_json::from_str(&json).expect("current.json must be valid JSON");
     assert!(value.is_object());
+    assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v2");
+    assert!(
+        value["consistency"]["index_fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        value["consistency"]["worktree_fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        value["consistency"]["untracked_fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        value["consistency"]["token"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(value["consistency"]["head"]["kind"].is_string());
+    assert!(value["consistency"]["git_operation"]["kind"].is_string());
+    assert!(value["consistency"]["conflict_state"]["has_conflicts"].is_boolean());
 }
 
 #[test]

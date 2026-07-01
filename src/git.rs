@@ -34,6 +34,8 @@ pub struct GitState {
 pub struct ChangedFile {
     pub path: PathBuf,
     pub status: ChangeStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_entry: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -299,19 +301,27 @@ pub fn parse_porcelain_v2(text: &str) -> ParsedStatus {
 }
 
 fn parse_changed_line(line: &str, parsed: &mut ParsedStatus) {
-    let (xy, path) = if line.starts_with("2 ") {
+    let (xy, index_entry, path) = if line.starts_with("2 ") {
         let parts: Vec<&str> = line.splitn(10, ' ').collect();
         if parts.len() < 10 {
             return;
         }
         let path = parts[9].split_once('\t').map_or(parts[9], |(path, _)| path);
-        (parts[1], PathBuf::from(path))
+        (
+            parts[1],
+            Some(format!("{} {}", parts[4], parts[7])),
+            PathBuf::from(path),
+        )
     } else {
         let parts: Vec<&str> = line.splitn(9, ' ').collect();
         if parts.len() < 9 {
             return;
         }
-        (parts[1], PathBuf::from(parts[8]))
+        (
+            parts[1],
+            Some(format!("{} {}", parts[4], parts[7])),
+            PathBuf::from(parts[8]),
+        )
     };
     let mut chars = xy.chars();
     let staged = chars.next().unwrap_or('.');
@@ -320,12 +330,14 @@ fn parse_changed_line(line: &str, parsed: &mut ParsedStatus) {
         parsed.staged_files.push(ChangedFile {
             path: path.clone(),
             status: status_from_char(staged),
+            index_entry: index_entry.clone(),
         });
     }
     if unstaged != '.' {
         parsed.unstaged_files.push(ChangedFile {
             path,
             status: status_from_char(unstaged),
+            index_entry: None,
         });
     }
 }
@@ -364,6 +376,7 @@ pub fn parse_name_status(text: &str) -> Vec<ChangedFile> {
         files.push(ChangedFile {
             path: PathBuf::from(path),
             status: status_from_char(code),
+            index_entry: None,
         });
     }
     files
@@ -450,7 +463,12 @@ mod tests {
         assert_eq!(parsed.branch.as_deref(), Some("main"));
         assert_eq!(parsed.upstream.as_deref(), Some("origin/main"));
         assert_eq!(parsed.staged_files[0].path, PathBuf::from("src/lib.rs"));
+        assert_eq!(
+            parsed.staged_files[0].index_entry.as_deref(),
+            Some("100644 b")
+        );
         assert_eq!(parsed.unstaged_files[0].path, PathBuf::from("README.md"));
+        assert_eq!(parsed.unstaged_files[0].index_entry, None);
         assert_eq!(parsed.untracked_files[0], PathBuf::from("notes.txt"));
     }
 
@@ -496,18 +514,22 @@ R094\tsrc/old.rs\tsrc/renamed.rs
                 ChangedFile {
                     path: PathBuf::from("src/lib.rs"),
                     status: ChangeStatus::Modified,
+                    index_entry: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/new.rs"),
                     status: ChangeStatus::Added,
+                    index_entry: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/gone.rs"),
                     status: ChangeStatus::Deleted,
+                    index_entry: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/renamed.rs"),
                     status: ChangeStatus::Renamed,
+                    index_entry: None,
                 },
             ]
         );

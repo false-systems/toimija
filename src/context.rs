@@ -226,6 +226,7 @@ fn all_changed(git: &GitState) -> Vec<ChangedFile> {
         .chain(git.untracked_files.iter().cloned().map(|path| ChangedFile {
             path,
             status: git::ChangeStatus::Untracked,
+            index_entry: None,
         }))
     {
         if seen.insert(file.path.clone()) {
@@ -444,6 +445,7 @@ mod tests {
         let changed = vec![ChangedFile {
             path: PathBuf::from("src/lib.rs"),
             status: ChangeStatus::Modified,
+            index_entry: None,
         }];
         let mut warnings = Vec::new();
         let entries = read_first(
@@ -491,14 +493,17 @@ mod tests {
             ChangedFile {
                 path: PathBuf::from("src/lib.rs"),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             },
             ChangedFile {
                 path: PathBuf::from("target/debug/build.log"),
                 status: ChangeStatus::Untracked,
+                index_entry: None,
             },
             ChangedFile {
                 path: PathBuf::from("_build/dev/app.beam"),
                 status: ChangeStatus::Untracked,
+                index_entry: None,
             },
         ];
 
@@ -582,15 +587,18 @@ mod tests {
                 ChangedFile {
                     path: PathBuf::from("src/z.rs"),
                     status: ChangeStatus::Modified,
+                    index_entry: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/a.rs"),
                     status: ChangeStatus::Added,
+                    index_entry: None,
                 },
             ],
             unstaged_files: vec![ChangedFile {
                 path: PathBuf::from("src/a.rs"),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             }],
             untracked_files: vec![PathBuf::from("notes.md"), PathBuf::from("notes.md")],
             conflicted_files: vec![PathBuf::from("b.txt"), PathBuf::from("a.txt")],
@@ -598,10 +606,12 @@ mod tests {
                 ChangedFile {
                     path: PathBuf::from("src/z.rs"),
                     status: ChangeStatus::Modified,
+                    index_entry: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/a.rs"),
                     status: ChangeStatus::Added,
+                    index_entry: None,
                 },
             ],
             recent_commits: Vec::new(),

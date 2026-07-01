@@ -6,7 +6,7 @@ use tracing::{info, info_span, warn};
 
 use crate::command::ProcessCommandRunner;
 use crate::config::{self, RepoConfig};
-use crate::consistency::{Consistency, Verdict};
+use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency, GitOperationState, Verdict};
 use crate::context;
 use crate::git;
 use crate::landed;
@@ -52,6 +52,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Compile the current Git work state into a context packet.
     Context(ContextArgs),
+    /// Joskus-facing current packet contract: write or verify `.toimija/current.*`.
+    Current(CurrentArgs),
     /// Recompute the live packet and write .toimija/current.md + current.json.
     ///
     /// Read-only except for those two files. Runs no validation, no network.
@@ -106,6 +108,19 @@ pub struct ContextArgs {
     /// Approximate output cap in characters; long lists are truncated.
     #[arg(long)]
     pub budget: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct CurrentArgs {
+    /// Synchronously write `.toimija/current.md` and `.toimija/current.json`.
+    #[arg(long, conflicts_with = "verify")]
+    pub write: bool,
+    /// Verify `.toimija/current.json` against the live repo.
+    #[arg(long)]
+    pub verify: bool,
+    /// Emit JSON. Required for stable verifier output consumed by harnesses.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -202,6 +217,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Context(args) | Command::Enter(args) | Command::Refresh(args) if args.json => {
             "json"
         }
+        Command::Current(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         _ => "text",
     };
@@ -218,6 +234,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Init => run_init(),
         Command::Doctor(args) => run_doctor(args),
         Command::Context(args) => run_context(args),
+        Command::Current(args) => run_current(args),
         Command::Refresh(args) => run_refresh(args),
         Command::Enter(args) => run_enter(args),
         Command::Watch(args) => run_watch(args),
@@ -250,6 +267,7 @@ impl Command {
             Command::Init => "init",
             Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
+            Command::Current(_) => "current",
             Command::Refresh(_) => "refresh",
             Command::Enter(_) => "enter",
             Command::Watch(_) => "watch",
@@ -308,6 +326,20 @@ fn run_context(args: ContextArgs) -> Result<()> {
         println!("{}", render::render_context_markdown(&packet, budget));
     }
     Ok(())
+}
+
+fn run_current(args: CurrentArgs) -> Result<()> {
+    if args.write {
+        return run_refresh(ContextArgs {
+            json: args.json,
+            for_diff: false,
+            budget: None,
+        });
+    }
+    if args.verify {
+        return run_verify(VerifyArgs { json: args.json });
+    }
+    anyhow::bail!("use `toimija current --write` or `toimija current --verify`")
 }
 
 fn run_refresh(args: ContextArgs) -> Result<()> {
@@ -404,10 +436,24 @@ fn run_run(args: RunArgs) -> Result<()> {
             Verdict::Consistent => {
                 info!(event = "toimija.run.packet_verified", session = %session.id)
             }
-            Verdict::Stale { reasons } => warn!(
+            Verdict::Stale {
+                packet_token,
+                current_token,
+            } => warn!(
                 event = "toimija.run.packet_raced",
                 session = %session.id,
-                reasons = ?reasons,
+                packet_token = %packet_token,
+                current_token = %current_token,
+            ),
+            Verdict::UnsupportedConsistencyAlgorithm(algorithm) => warn!(
+                event = "toimija.run.packet_unsupported",
+                session = %session.id,
+                algorithm = %algorithm,
+            ),
+            Verdict::UnsafeGitOperation(operation) => warn!(
+                event = "toimija.run.packet_unsafe",
+                session = %session.id,
+                operation = ?operation,
             ),
         }
     }
@@ -643,54 +689,21 @@ fn run_landed(args: LandedArgs) -> Result<()> {
 fn run_verify(args: VerifyArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-
-    // Recompute the live fingerprint through the exact same path the packet build
-    // uses (collect -> normalize), so an unchanged repo verifies as consistent.
-    let (mut live, _warnings) = git::collect_git_state(&runner, &cwd)?;
-    context::normalize_git_state(&mut live);
-
-    // Compare the stored block against the live state. A missing or
-    // pre-consistency packet is itself a reason to refresh, not an error.
-    let verdict = match load_stored_consistency(&repo_root)? {
-        Some(stored) => stored.verify(&live),
-        None => Verdict::Stale {
-            reasons: vec![format!(
-                "no verifiable packet at {}; run `toimija refresh`",
-                refresh::CURRENT_JSON
-            )],
-        },
-    };
-
-    let consistent = verdict.is_consistent();
+    let status = compute_verify_status(&runner, &cwd);
+    let verified = matches!(status, VerifyStatus::Verified { .. });
     if args.json {
-        let reasons = match &verdict {
-            Verdict::Consistent => Vec::new(),
-            Verdict::Stale { reasons } => reasons.clone(),
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "consistent": consistent,
-                "reasons": reasons,
-            }))?
-        );
+        println!("{}", serde_json::to_string_pretty(&status.to_json())?);
     } else {
-        match &verdict {
-            Verdict::Consistent => println!("consistent: packet matches the live repo"),
-            Verdict::Stale { reasons } => {
-                eprintln!("stale: packet does not match the live repo");
-                for reason in reasons {
-                    eprintln!("  - {reason}");
-                }
-            }
+        match &status {
+            VerifyStatus::Verified { .. } => println!("verified: packet matches the live repo"),
+            other => eprintln!("{}", other.message()),
         }
     }
 
     // Exit non-zero on staleness so a caller can gate on the packet before
     // trusting it (the verify-before-read contract). Flush first: `process::exit`
     // skips destructors, so a buffered (piped) stdout would otherwise be lost.
-    if !consistent {
+    if !verified {
         use std::io::Write;
         std::io::stdout().flush().ok();
         std::io::stderr().flush().ok();
@@ -699,10 +712,74 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
     Ok(())
 }
 
-/// Read the consistency block stored in `.toimija/current.json`. Missing file or
-/// a packet that predates the block both yield `None` — "refresh first", not an
-/// error.
-fn load_stored_consistency(repo_root: &std::path::Path) -> Result<Option<Consistency>> {
+/// Collect the live Git state and resolve a verify status. A repository that
+/// cannot be discovered or read is itself a refusal state
+/// (`unverifiable_repository`), not a hard error — the harness needs the verdict,
+/// not a panic.
+fn compute_verify_status(runner: &ProcessCommandRunner, cwd: &std::path::Path) -> VerifyStatus {
+    let repo_root = match git::discover_repo_root(runner, cwd) {
+        Ok(root) => root,
+        Err(error) => {
+            return VerifyStatus::UnverifiableRepository {
+                message: format!("not a Git repository: {error}"),
+            };
+        }
+    };
+    // Recompute the live fingerprint through the same path the packet build uses
+    // (collect -> normalize), so an unchanged repo verifies as consistent.
+    let mut live = match git::collect_git_state(runner, cwd) {
+        Ok((live, _warnings)) => live,
+        Err(error) => {
+            return VerifyStatus::UnverifiableRepository {
+                message: format!("could not read Git state: {error}"),
+            };
+        }
+    };
+    context::normalize_git_state(&mut live);
+    verify_status(&repo_root, &live)
+}
+
+fn verify_status(repo_root: &std::path::Path, live: &git::GitState) -> VerifyStatus {
+    match load_stored_consistency(repo_root) {
+        StoredConsistency::Ready(stored) => match stored.verify(live) {
+            Verdict::Consistent => VerifyStatus::Verified {
+                algorithm: stored.algorithm,
+                token: stored.token,
+                head: stored.head,
+            },
+            Verdict::Stale {
+                packet_token,
+                current_token,
+            } => VerifyStatus::StalePacket {
+                packet_token,
+                current_token,
+            },
+            Verdict::UnsupportedConsistencyAlgorithm(algorithm) => {
+                VerifyStatus::UnsupportedConsistencyAlgorithm { algorithm }
+            }
+            Verdict::UnsafeGitOperation(operation) => VerifyStatus::UnsafeGitOperation {
+                operation,
+                message: "Repository is in an unsafe Git operation. Finish or abort it before running an agent harness.".to_string(),
+            },
+        },
+        StoredConsistency::MissingPacket => VerifyStatus::MissingPacket {
+            path: repo_root.join(refresh::CURRENT_JSON).display().to_string(),
+        },
+        StoredConsistency::InvalidPacket(message) => VerifyStatus::InvalidPacket { message },
+        StoredConsistency::MissingConsistency => VerifyStatus::MissingConsistency,
+        StoredConsistency::IoError(message) => VerifyStatus::IoError { message },
+    }
+}
+
+enum StoredConsistency {
+    Ready(Consistency),
+    MissingPacket,
+    InvalidPacket(String),
+    MissingConsistency,
+    IoError(String),
+}
+
+fn load_stored_consistency(repo_root: &std::path::Path) -> StoredConsistency {
     #[derive(serde::Deserialize)]
     struct Stored {
         #[serde(default)]
@@ -711,14 +788,117 @@ fn load_stored_consistency(repo_root: &std::path::Path) -> Result<Option<Consist
     let path = repo_root.join(refresh::CURRENT_JSON);
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return StoredConsistency::MissingPacket;
         }
+        Err(error) => return StoredConsistency::IoError(error.to_string()),
     };
-    let stored: Stored = serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(stored.consistency)
+    let stored: Stored = match serde_json::from_str(&raw) {
+        Ok(stored) => stored,
+        Err(error) => return StoredConsistency::InvalidPacket(error.to_string()),
+    };
+    match stored.consistency {
+        Some(consistency) => StoredConsistency::Ready(consistency),
+        None => StoredConsistency::MissingConsistency,
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum VerifyStatus {
+    Verified {
+        algorithm: String,
+        token: String,
+        head: crate::consistency::HeadState,
+    },
+    MissingPacket {
+        path: String,
+    },
+    InvalidPacket {
+        message: String,
+    },
+    MissingConsistency,
+    UnsupportedConsistencyAlgorithm {
+        algorithm: String,
+    },
+    StalePacket {
+        packet_token: String,
+        current_token: String,
+    },
+    UnsafeGitOperation {
+        operation: GitOperationState,
+        message: String,
+    },
+    UnverifiableRepository {
+        message: String,
+    },
+    IoError {
+        message: String,
+    },
+}
+
+impl VerifyStatus {
+    fn to_json(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).expect("verify status serializes");
+        if let serde_json::Value::Object(map) = &mut value {
+            match self {
+                VerifyStatus::Verified { .. } => {
+                    map.entry("algorithm").or_insert_with(|| {
+                        serde_json::Value::String(CONSISTENCY_ALGORITHM.to_string())
+                    });
+                }
+                VerifyStatus::StalePacket { .. } => {
+                    map.insert(
+                        "message".to_string(),
+                        serde_json::Value::String(
+                            "The repository changed after .toimija/current.json was generated."
+                                .to_string(),
+                        ),
+                    );
+                }
+                VerifyStatus::MissingConsistency => {
+                    map.insert(
+                        "message".to_string(),
+                        serde_json::Value::String(
+                            ".toimija/current.json does not contain a consistency block."
+                                .to_string(),
+                        ),
+                    );
+                }
+                _ => {}
+            }
+        }
+        value
+    }
+
+    fn message(&self) -> String {
+        match self {
+            VerifyStatus::Verified { .. } => "verified".to_string(),
+            VerifyStatus::MissingPacket { path } => {
+                format!(
+                    "missing_packet: no verifiable packet at {path}; run `toimija current --write`"
+                )
+            }
+            VerifyStatus::InvalidPacket { message } => format!("invalid_packet: {message}"),
+            VerifyStatus::MissingConsistency => {
+                "missing_consistency: run `toimija current --write`".to_string()
+            }
+            VerifyStatus::UnsupportedConsistencyAlgorithm { algorithm } => {
+                format!("unsupported_consistency_algorithm: {algorithm}")
+            }
+            VerifyStatus::StalePacket { .. } => {
+                "stale_packet: repository changed after .toimija/current.json was generated"
+                    .to_string()
+            }
+            VerifyStatus::UnsafeGitOperation { message, .. } => {
+                format!("unsafe_git_operation: {message}")
+            }
+            VerifyStatus::UnverifiableRepository { message } => {
+                format!("unverifiable_repository: {message}")
+            }
+            VerifyStatus::IoError { message } => format!("io_error: {message}"),
+        }
+    }
 }
 
 fn run_sessions(args: SessionsArgs) -> Result<()> {

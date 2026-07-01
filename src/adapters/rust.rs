@@ -186,10 +186,12 @@ mod tests {
             ChangedFile {
                 path: PathBuf::from("src/foo.rs"),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             },
             ChangedFile {
                 path: PathBuf::from("src/foo/bar.rs"),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             },
         ];
         let hints = RustAdapter.read_first_hints(temp.path(), &changed);
@@ -304,6 +306,7 @@ name = \"not-this\"
         let changed = vec![ChangedFile {
             path: PathBuf::from("src/foo/mod.rs"),
             status: ChangeStatus::Modified,
+            index_entry: None,
         }];
         let hints = RustAdapter.read_first_hints(temp.path(), &changed);
         assert_eq!(hints[0].0, PathBuf::from("tests/foo_test.rs"));

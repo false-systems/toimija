@@ -660,13 +660,23 @@ mod tests {
             for_diff: false,
             default_budget: Some(4000),
             relevance: RelevancePacket::default(),
-            consistency: crate::consistency::Consistency {
-                schema: crate::consistency::CONSISTENCY_SCHEMA,
-                head: Some("abc".to_string()),
+            consistency: crate::consistency::Consistency::fingerprint(&GitState {
+                repo_root: PathBuf::from("/repo"),
+                git_dir: Some(PathBuf::from("/repo/.git")),
                 branch: Some("main".to_string()),
+                head_oid: Some("abc".to_string()),
+                upstream: None,
+                base: None,
                 merge_base: None,
-                worktree_digest: "0000000000000000".to_string(),
-            },
+                detached: false,
+                dirty: false,
+                staged_files: Vec::new(),
+                unstaged_files: Vec::new(),
+                untracked_files: Vec::new(),
+                conflicted_files: Vec::new(),
+                branch_files: Vec::new(),
+                recent_commits: Vec::new(),
+            }),
         }
     }
 
@@ -688,6 +698,7 @@ mod tests {
             .map(|i| ChangedFile {
                 path: PathBuf::from(format!("src/some/deep/module_{i:02}.rs")),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             })
             .collect();
         packet.changed_surface = (0..40)
@@ -754,6 +765,7 @@ mod tests {
             .map(|i| ChangedFile {
                 path: PathBuf::from(format!("apps/core/lib/some/deep/path/module_{i:02}.ex")),
                 status: ChangeStatus::Modified,
+                index_entry: None,
             })
             .collect();
 
@@ -913,14 +925,17 @@ mod tests {
         packet.git.branch_files = vec![ChangedFile {
             path: PathBuf::from("src/committed.rs"),
             status: ChangeStatus::Modified,
+            index_entry: None,
         }];
         packet.git.staged_files = vec![ChangedFile {
             path: PathBuf::from("src/staged.rs"),
             status: ChangeStatus::Added,
+            index_entry: None,
         }];
         packet.git.unstaged_files = vec![ChangedFile {
             path: PathBuf::from("src/unstaged.rs"),
             status: ChangeStatus::Deleted,
+            index_entry: None,
         }];
         packet.git.untracked_files = vec![PathBuf::from("notes.txt")];
         packet.git.conflicted_files = vec![PathBuf::from("src/conflict.rs")];
@@ -1075,11 +1090,23 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "warnings": []
   },
   "consistency": {
-    "schema": 1,
-    "head": "abc",
-    "branch": "main",
-    "merge_base": null,
-    "worktree_digest": "0000000000000000"
+    "algorithm": "toimija-consistency-v2",
+    "head": {
+      "kind": "normal",
+      "branch": "main",
+      "oid": "abc"
+    },
+    "index_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "worktree_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "git_operation": {
+      "kind": "none"
+    },
+    "conflict_state": {
+      "has_conflicts": false,
+      "files": []
+    },
+    "token": "sha256:ff717383e0b3578065c61acfa64c8b384670f92ecddfff5f7719cbdeffedf616"
   }
 }"#;
         assert_eq!(rendered, expected);
