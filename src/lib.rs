@@ -14,6 +14,7 @@ pub mod render;
 pub mod repo;
 pub mod session;
 pub mod sessions;
+pub mod snapshot;
 pub mod snippet;
 pub mod validate;
 pub mod watch;

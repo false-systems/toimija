@@ -16,6 +16,7 @@ use crate::render;
 use crate::repo;
 use crate::session;
 use crate::sessions;
+use crate::snapshot;
 use crate::snippet;
 use crate::validate;
 use crate::watch;
@@ -95,6 +96,13 @@ pub enum Command {
     /// against the working tree. Exits non-zero (with reasons) when the packet is
     /// stale, so a caller refreshes before trusting it. Read-only; no network.
     Verify(VerifyArgs),
+    /// Materialize the working tree as an immutable git tree object.
+    ///
+    /// Freezes the full working state (content-addressed) so a reader can read
+    /// files *at a version* via `git cat-file` instead of live disk. Prints the
+    /// tree oid and the consistency token. Refuses in an unsafe git state. Writes
+    /// git objects (gc-reclaimable); no network.
+    Snapshot(SnapshotArgs),
 }
 
 #[derive(Debug, Args)]
@@ -164,6 +172,13 @@ pub struct SessionsArgs {
 #[derive(Debug, Args)]
 pub struct VerifyArgs {
     /// Emit the verdict as JSON (`{ "consistent": bool, "reasons": [...] }`).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SnapshotArgs {
+    /// Emit `{ "tree": ..., "token": ..., "algorithm": ..., "head": ... }` as JSON.
     #[arg(long)]
     pub json: bool,
 }
@@ -244,6 +259,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Sessions(args) => run_sessions(args),
         Command::Validate(args) => run_validate(args),
         Command::Verify(args) => run_verify(args),
+        Command::Snapshot(args) => run_snapshot(args),
     };
 
     match &result {
@@ -277,6 +293,7 @@ impl Command {
             Command::Sessions(_) => "sessions",
             Command::Validate(_) => "validate",
             Command::Verify(_) => "verify",
+            Command::Snapshot(_) => "snapshot",
         }
     }
 }
@@ -682,6 +699,44 @@ fn run_landed(args: LandedArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{}", render::render_landed_report(&report));
+    }
+    Ok(())
+}
+
+fn run_snapshot(args: SnapshotArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+
+    // Materialize only a *safe* state: `write-tree` should never freeze a
+    // half-finished merge/rebase or a conflicted tree. Same gate as verify.
+    let (mut live, _warnings) = git::collect_git_state(&runner, &cwd)?;
+    context::normalize_git_state(&mut live);
+    let consistency = Consistency::fingerprint(&live);
+    if consistency.git_operation != GitOperationState::None {
+        anyhow::bail!(
+            "refusing to snapshot: repository is in an unsafe git operation ({:?}); finish or abort it first",
+            consistency.git_operation
+        );
+    }
+    if consistency.conflict_state.has_conflicts {
+        anyhow::bail!("refusing to snapshot: repository has unresolved conflicts");
+    }
+
+    let tree = snapshot::materialize(&repo_root)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "tree": tree,
+                "token": consistency.token,
+                "algorithm": consistency.algorithm,
+                "head": consistency.head,
+            }))?
+        );
+    } else {
+        println!("snapshot tree: {tree}");
+        println!("token: {}", consistency.token);
     }
     Ok(())
 }
