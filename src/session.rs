@@ -178,6 +178,64 @@ impl Session {
     }
 }
 
+/// Whether `id` has the `<unix-secs>-<pid>` shape `run` mints (decision D1).
+/// `toimija intent` reads the id from the environment, so this is also the
+/// guard that keeps a hostile `TOIMIJA_SESSION` from steering the marker path
+/// out of `.toimija/sessions/`.
+pub fn is_valid_session_id(id: &str) -> bool {
+    match id.split_once('-') {
+        Some((secs, pid)) => {
+            !secs.is_empty()
+                && !pid.is_empty()
+                && secs.bytes().all(|byte| byte.is_ascii_digit())
+                && pid.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+/// Update the intent (and append declared scope paths) on an *existing* session
+/// marker — the session belongs to `run`; this is the wrapped agent reaching
+/// back into its own record via the `TOIMIJA_SESSION` handshake. Advisory data
+/// only: never an assignment, never a lock. Returns the updated marker.
+pub fn declare_intent(
+    repo_root: &Path,
+    id: &str,
+    intent: String,
+    scope: Vec<String>,
+) -> Result<SessionMarker> {
+    anyhow::ensure!(
+        is_valid_session_id(id),
+        "invalid session id `{id}` — expected the `<unix-secs>-<pid>` shape from TOIMIJA_SESSION"
+    );
+    let marker_path = repo_root
+        .join(SESSIONS_SUBDIR)
+        .join(id)
+        .join("session.json");
+    let raw = fs::read_to_string(&marker_path).with_context(|| {
+        format!(
+            "no session marker at {} — is the session still open?",
+            marker_path.display()
+        )
+    })?;
+    let mut marker: SessionMarker = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", marker_path.display()))?;
+    anyhow::ensure!(
+        marker.status == SessionStatus::Active,
+        "session {id} is closed; intent can only be declared on a live session"
+    );
+    marker.intent = Some(intent);
+    for path in scope {
+        if !marker.scope.contains(&path) {
+            marker.scope.push(path);
+        }
+    }
+    let json = serde_json::to_string_pretty(&marker)?;
+    fs::write(&marker_path, format!("{json}\n"))
+        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    Ok(marker)
+}
+
 /// Seconds since the Unix epoch; 0 if the system clock is before the epoch.
 /// The fallback is warned about, not silent — a `0` here becomes a `0-<pid>`
 /// session id and `started_at: 0`, which would otherwise read as mystery data.
@@ -201,6 +259,52 @@ mod tests {
     #[test]
     fn session_id_is_timestamp_dash_pid() {
         assert_eq!(session_id(1782608449, 66987), "1782608449-66987");
+    }
+
+    #[test]
+    fn session_id_validation_accepts_minted_ids_and_rejects_traversal() {
+        assert!(is_valid_session_id("1782608449-66987"));
+        assert!(!is_valid_session_id(""));
+        assert!(!is_valid_session_id("no-dash-digits"));
+        assert!(!is_valid_session_id("123-"));
+        assert!(!is_valid_session_id("-123"));
+        assert!(!is_valid_session_id("../../etc"));
+        assert!(!is_valid_session_id("123-456/../../evil"));
+    }
+
+    #[test]
+    fn declare_intent_updates_a_live_marker_and_appends_scope_deduped() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = Session::open(
+            temp.path(),
+            &["claude".to_string()],
+            None,
+            vec!["src/a.rs".to_string()],
+        )
+        .unwrap();
+
+        let marker = declare_intent(
+            temp.path(),
+            &session.id,
+            "closing tracker issues".to_string(),
+            vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
+        )
+        .unwrap();
+        assert_eq!(marker.intent.as_deref(), Some("closing tracker issues"));
+        // Scope appends without duplicating the launch-time declaration.
+        assert_eq!(marker.scope, vec!["src/a.rs", "src/b.rs"]);
+    }
+
+    #[test]
+    fn declare_intent_refuses_a_closed_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut session =
+            Session::open(temp.path(), &["claude".to_string()], None, Vec::new()).unwrap();
+        session.close(Some(0)).unwrap();
+
+        let error = declare_intent(temp.path(), &session.id, "too late".to_string(), Vec::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("closed"));
     }
 
     #[test]

@@ -173,6 +173,17 @@ advisory, never an assignment or a lock:
 toimija run --intent "add sessions command" --scope src/sessions.rs -- codex
 ```
 
+The wrapped agent can also speak for itself, mid-session — it finds its own
+marker through the `TOIMIJA_SESSION` handshake:
+
+```bash
+toimija intent "migrating the auth module" --scope src/auth/
+```
+
+Launch-time `--intent` belongs to the human; `toimija intent` lets the agent
+declare (or sharpen) it once it actually knows what it is doing. Same rules:
+advisory text on the session marker, never an assignment, never a lock.
+
 Then, from anywhere in the repo, see who else is live:
 
 ```bash
@@ -307,6 +318,7 @@ toimija run -- codex       # agent entrypoint
 toimija run -- claude
 toimija run --intent "..." --scope src/x.rs -- codex  # declare why / what (advisory)
 toimija sessions           # who else is live in this repo (read-only awareness)
+toimija intent "..."       # wrapped agent declares why it is here (via TOIMIJA_SESSION)
 toimija enter              # refresh + print the packet as agent preflight
 toimija refresh            # recompute current.md/current.json
 toimija watch              # keep current.* fresh on Git/filesystem changes
@@ -325,6 +337,7 @@ toimija init               # create .toimija/repo.yaml if missing
 |---|---|
 | `run -- <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent`/`--scope` declare why/what (advisory). |
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` removes closed/stale sessions past the 7-day retention. |
+| `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `enter` | Refresh and print the current packet as agent preflight. |
 | `refresh` | Recompute `current.md`/`current.json`. |
 | `current --write` | Joskus-facing alias for synchronous packet refresh. |
