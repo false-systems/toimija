@@ -142,6 +142,18 @@ pub enum Command {
         toimija run --for-diff --budget 4000 -- sh -c '…'            # tune the packet the child sees"
     )]
     Run(RunArgs),
+    /// Declare or update this session's intent — tell siblings why you are here.
+    ///
+    /// Use this from inside a `toimija run` session (the wrapped agent itself,
+    /// mid-work): the session id comes from the TOIMIJA_SESSION env handshake.
+    /// Sets the marker's intent and appends any `--scope` paths, so `toimija
+    /// sessions` shows the others why this session exists. Advisory — never an
+    /// assignment, never a lock. Writes one marker file; no network.
+    #[command(
+        after_help = "Examples:\n  toimija intent \"migrating the auth module\"\n  \
+        toimija intent \"fix #51\" --scope src/cli.rs --scope tests/cli_run.rs"
+    )]
+    Intent(IntentArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     ///
     /// Use this to seed AGENTS.md/CLAUDE.md (`preflight`) or to save a
@@ -261,6 +273,17 @@ pub struct RunArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct IntentArgs {
+    /// Free-text declaration of why this session is here, shown to siblings by
+    /// `toimija sessions`.
+    pub text: String,
+    /// A path this session expects to touch (repeatable, appended to the
+    /// declared scope). Advisory only — never a lock.
+    #[arg(long = "scope", value_name = "PATH")]
+    pub scope: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct SessionsArgs {
     /// Emit the report as JSON instead of the human-readable listing.
     #[arg(long)]
@@ -371,6 +394,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Enter(args) => run_enter(args).map(|()| 0),
         Command::Watch(args) => run_watch(args).map(|()| 0),
         Command::Run(args) => run_run(args),
+        Command::Intent(args) => run_intent(args).map(|()| 0),
         Command::Snippet(args) => run_snippet(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
@@ -406,6 +430,7 @@ impl Command {
             Command::Enter(_) => "enter",
             Command::Watch(_) => "watch",
             Command::Run(_) => "run",
+            Command::Intent(_) => "intent",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Sessions(_) => "sessions",
@@ -1204,6 +1229,30 @@ fn run_sessions(args: SessionsArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", sessions::render_text(&report));
+    }
+    Ok(())
+}
+
+fn run_intent(args: IntentArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    // The wrapped agent's own session id, injected by `run`'s env handshake.
+    let id = std::env::var("TOIMIJA_SESSION").map_err(|_| {
+        anyhow::anyhow!(
+            "TOIMIJA_SESSION is not set — `toimija intent` speaks for a wrapped session, \
+             so run it from inside `toimija run -- <agent>` (the handshake provides the id)"
+        )
+    })?;
+    let marker = session::declare_intent(&repo_root, &id, args.text, args.scope)?;
+    info!(event = "toimija.session.intent_declared", session = %marker.id);
+    println!(
+        "session {}: intent — {}",
+        marker.id,
+        marker.intent.as_deref().unwrap_or("unknown")
+    );
+    if !marker.scope.is_empty() {
+        println!("  scope: {}", marker.scope.join(", "));
     }
     Ok(())
 }

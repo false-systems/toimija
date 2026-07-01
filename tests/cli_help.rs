@@ -52,8 +52,8 @@ fn every_subcommand_help_says_when_to_use_it() {
     // Each subcommand's long help must carry a "use this …" orientation line so
     // an agent can pick between siblings (enter vs context vs refresh, …).
     for subcommand in [
-        "init", "doctor", "context", "current", "refresh", "enter", "watch", "run", "snippet",
-        "landed", "sessions", "validate", "verify", "snapshot",
+        "init", "doctor", "context", "current", "refresh", "enter", "watch", "run", "intent",
+        "snippet", "landed", "sessions", "validate", "verify", "snapshot",
     ] {
         Command::cargo_bin("toimija")
             .unwrap()
@@ -74,6 +74,7 @@ fn high_traffic_subcommands_carry_examples() {
         ("enter", "toimija enter --for-diff --budget 4000"),
         ("run", "toimija run --intent"),
         ("sessions", "toimija sessions --prune"),
+        ("intent", "toimija intent"),
         ("current", "toimija current --verify --json"),
         ("verify", "toimija verify --json"),
         ("landed", "toimija landed"),
