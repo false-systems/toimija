@@ -178,9 +178,19 @@ pub struct VerifyArgs {
 
 #[derive(Debug, Args)]
 pub struct SnapshotArgs {
-    /// Emit `{ "tree": ..., "token": ..., "algorithm": ..., "head": ... }` as JSON.
+    /// Emit JSON.
     #[arg(long)]
     pub json: bool,
+    /// Pin the snapshot with a lease (a git ref) so it survives `git gc` until
+    /// released. Uses the current session id when run under `toimija run`.
+    #[arg(long, conflicts_with_all = ["release", "list"])]
+    pub lease: bool,
+    /// Release a held snapshot lease by id.
+    #[arg(long, value_name = "ID", conflicts_with_all = ["lease", "list"])]
+    pub release: Option<String>,
+    /// List held snapshot leases.
+    #[arg(long, conflicts_with_all = ["lease", "release"])]
+    pub list: bool,
 }
 
 #[derive(Debug, Args)]
@@ -708,6 +718,34 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
 
+    // List held leases.
+    if args.list {
+        let leases = snapshot::list_leases(&repo_root)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&leases)?);
+        } else if leases.is_empty() {
+            println!("no snapshot leases");
+        } else {
+            for lease in &leases {
+                println!(
+                    "{}  tree {}  {}  pid {}",
+                    lease.id,
+                    short_oid(&lease.tree),
+                    lease.token,
+                    lease.pid
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    // Release a held lease.
+    if let Some(id) = &args.release {
+        snapshot::release_lease(&repo_root, id)?;
+        println!("released snapshot lease {id}");
+        return Ok(());
+    }
+
     // Materialize only a *safe* state: `write-tree` should never freeze a
     // half-finished merge/rebase or a conflicted tree. Same gate as verify.
     let (mut live, _warnings) = git::collect_git_state(&runner, &cwd)?;
@@ -722,9 +760,31 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
     if consistency.conflict_state.has_conflicts {
         anyhow::bail!("refusing to snapshot: repository has unresolved conflicts");
     }
-
     let tree = snapshot::materialize(&repo_root)?;
-    if args.json {
+
+    if args.lease {
+        // Tie the lease to the session when wrapped by `toimija run`; otherwise
+        // mint a standalone id.
+        let id = std::env::var("TOIMIJA_SESSION")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs())
+                    .unwrap_or(0);
+                format!("{secs}-{}", std::process::id())
+            });
+        let lease = snapshot::acquire_lease(&repo_root, &id, &tree, &consistency.token)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&lease)?);
+        } else {
+            println!("leased snapshot {}", lease.id);
+            println!("  tree:  {}", lease.tree);
+            println!("  token: {}", lease.token);
+            println!("  ref:   {}", snapshot::lease_ref(&lease.id));
+        }
+    } else if args.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({

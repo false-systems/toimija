@@ -14,16 +14,19 @@
 //! in-progress git operation, no conflicts — so `write-tree` never has to deal
 //! with an unmergeable index.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 /// Toimija's own generated outputs, dropped from the snapshot tree so a
 /// materialization never captures the packet it is about to describe (mirrors the
 /// consistency token's exclusion).
 const GENERATED_FILES: &[&str] = &[".toimija/current.md", ".toimija/current.json"];
-const GENERATED_DIRS: &[&str] = &[".toimija/sessions"];
+const GENERATED_DIRS: &[&str] = &[".toimija/sessions", ".toimija/snapshots"];
 
 /// Materialize the full working tree (tracked + staged + unstaged + untracked,
 /// honoring `.gitignore`) as a git tree object; return its oid. Uses a throwaway
@@ -55,6 +58,93 @@ pub fn materialize(repo_root: &Path) -> Result<String> {
     let tree = run_git(repo_root, &index, &["write-tree"])?;
     let _ = std::fs::remove_file(&index);
     Ok(tree.trim().to_string())
+}
+
+/// Directory, relative to the repo root, holding snapshot-lease markers.
+pub const SNAPSHOTS_SUBDIR: &str = ".toimija/snapshots";
+
+/// A held snapshot: a session registered as reading `tree` at version `token`.
+/// The retention itself is the git ref `refs/toimija/snapshots/<id>` (git gc
+/// keeps ref-reachable objects); this marker is awareness metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotLease {
+    pub id: String,
+    pub tree: String,
+    pub token: String,
+    pub pid: u32,
+    pub created_at: u64,
+}
+
+/// The git ref that pins a lease's tree.
+pub fn lease_ref(id: &str) -> String {
+    format!("refs/toimija/snapshots/{id}")
+}
+
+/// Acquire a lease on `tree`: pin it with a git ref so `git gc` retains it while
+/// held, and record a marker. This is AHTI's `begin_snapshot` — but the "active
+/// reader refcount that blocks reclamation" is git reachability, cross-process.
+pub fn acquire_lease(repo_root: &Path, id: &str, tree: &str, token: &str) -> Result<SnapshotLease> {
+    plain_git(repo_root, &["update-ref", &lease_ref(id), tree])?;
+    let lease = SnapshotLease {
+        id: id.to_string(),
+        tree: tree.to_string(),
+        token: token.to_string(),
+        pid: std::process::id(),
+        created_at: now_secs(),
+    };
+    let dir = repo_root.join(SNAPSHOTS_SUBDIR);
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let json = serde_json::to_string_pretty(&lease)?;
+    let path = dir.join(format!("{id}.json"));
+    fs::write(&path, format!("{json}\n"))
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(lease)
+}
+
+/// Release a lease: delete the ref (git gc may now reclaim the tree if nothing
+/// else references it) and remove the marker. Idempotent.
+pub fn release_lease(repo_root: &Path, id: &str) -> Result<()> {
+    // Ignore a missing ref so release is idempotent.
+    let _ = plain_git(repo_root, &["update-ref", "-d", &lease_ref(id)]);
+    let _ = fs::remove_file(repo_root.join(SNAPSHOTS_SUBDIR).join(format!("{id}.json")));
+    Ok(())
+}
+
+/// Read all lease markers, newest first. A malformed marker is skipped.
+pub fn list_leases(repo_root: &Path) -> Result<Vec<SnapshotLease>> {
+    let dir = repo_root.join(SNAPSHOTS_SUBDIR);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", dir.display()));
+        }
+    };
+    let mut leases = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(raw) = fs::read_to_string(&path)
+            && let Ok(lease) = serde_json::from_str::<SnapshotLease>(&raw)
+        {
+            leases.push(lease);
+        }
+    }
+    leases.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(leases)
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 /// Absolute git dir (handles linked worktrees, where `.git` is a file).

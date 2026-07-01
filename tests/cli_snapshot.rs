@@ -85,3 +85,50 @@ fn identical_content_yields_the_same_tree_but_a_change_yields_a_new_one() {
     fs::write(temp.path().join("a.txt"), "world\n").unwrap();
     assert_ne!(first, snapshot_tree(temp.path()));
 }
+
+fn toimija(path: &Path, args: &[&str]) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(path)
+        .args(args)
+        .assert()
+}
+
+#[test]
+fn a_leased_snapshot_survives_gc_and_release_lets_it_go() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    // An untracked file makes the snapshot tree unique — not reachable via HEAD,
+    // so only the lease ref keeps it alive.
+    fs::write(temp.path().join("scratch.txt"), "x\n").unwrap();
+
+    let assert = toimija(temp.path(), &["snapshot", "--lease", "--json"]).success();
+    let lease: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    let id = lease["id"].as_str().unwrap().to_string();
+    let tree = lease["tree"].as_str().unwrap().to_string();
+
+    // Leased: the tree survives aggressive gc (the ref pins it).
+    git_stdout(temp.path(), &["gc", "--prune=now"]);
+    assert_eq!(
+        git_stdout(temp.path(), &["cat-file", "-t", &tree]).trim(),
+        "tree"
+    );
+
+    // Released: gc may now reclaim it (nothing else references the unique tree).
+    toimija(temp.path(), &["snapshot", "--release", &id]).success();
+    git_stdout(temp.path(), &["gc", "--prune=now"]);
+    let after = std::process::Command::new("git")
+        .args(["cat-file", "-t", &tree])
+        .current_dir(temp.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        !after.status.success(),
+        "released snapshot tree should be reclaimable"
+    );
+}
