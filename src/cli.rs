@@ -25,7 +25,19 @@ use crate::watch;
 #[command(
     name = "toimija",
     version,
-    about = "Git-aware local context compiler for coding agents"
+    about = "Git-aware local context compiler for coding agents",
+    long_about = "Git-aware local context compiler for coding agents.\n\n\
+        Toimija starts from Git's state machine — branch, HEAD, index, merge-base, \
+        staged/unstaged/untracked files — and compiles it into a compact work packet \
+        an agent reads before touching the repo, instead of crawling it cold.",
+    after_help = "Typical agent workflow:\n  \
+        toimija enter --for-diff --budget 4000    # preflight: refresh + print the work packet\n  \
+        toimija run --intent \"fix #51\" -- codex   # wrap an agent in a live session packet\n  \
+        toimija sessions                          # who else is working in this repo right now\n  \
+        toimija validate --plan                   # print (never run) the validation plan\n\n\
+        Boundaries: Toimija is advisory and local-only. It reads Git state, writes only \
+        under .toimija/, executes no validation, starts no daemons, and never touches \
+        the network."
 )]
 pub struct Cli {
     /// Increase log verbosity: -v for info, -vv for debug. Logs go to stderr.
@@ -48,60 +60,146 @@ pub struct Cli {
 pub enum Command {
     /// Create .toimija/repo.yaml. Agent docs (AGENTS.md/CLAUDE.md) stay yours;
     /// run `toimija snippet preflight` to seed them.
+    ///
+    /// Use this once per repo to seed the config. It never overwrites an
+    /// existing file. Writes only .toimija/repo.yaml.
     Init,
     /// Check Toimija setup: git, config, repo kind, and agent docs.
+    ///
+    /// Use this when setting up a repo or gating CI: it verifies git is
+    /// available, the config parses, the repo kind is detected, and the
+    /// boundaries in .toimija/repo.yaml have not drifted from the agent docs.
+    /// Read-only; advisory by default, `--strict` escalates warnings to
+    /// failures.
+    #[command(
+        after_help = "Examples:\n  toimija doctor            # advisory setup check\n  \
+        toimija doctor --strict   # CI / pre-commit gate: drift fails the build"
+    )]
     Doctor(DoctorArgs),
     /// Compile the current Git work state into a context packet.
+    ///
+    /// Use this to *see* the packet without writing anything: branch, HEAD,
+    /// merge-base, changed surface, relevance hints (scope, read order,
+    /// coupling, risk), and the validation plan. `enter` prints the same packet
+    /// and also writes `.toimija/current.*` — prefer it as the agent preflight.
+    /// Read-only; no validation execution, no network.
+    #[command(
+        after_help = "Examples:\n  toimija context --for-diff --budget 4000   # diff-focused, capped for a prompt\n  \
+        toimija context --json                     # machine-readable packet"
+    )]
     Context(ContextArgs),
     /// Joskus-facing current packet contract: write or verify `.toimija/current.*`.
+    ///
+    /// Use this from a harness: `--write` synchronously (re)writes the packet
+    /// files, `--verify` checks the packet's consistency token against the live
+    /// repo and exits non-zero when stale — the verify-before-read gate a
+    /// harness calls before trusting the packet.
+    #[command(
+        after_help = "Examples:\n  toimija current --write            # (re)write .toimija/current.md + current.json\n  \
+        toimija current --verify --json    # harness verifier: exit 0 fresh, 1 stale"
+    )]
     Current(CurrentArgs),
     /// Recompute the live packet and write .toimija/current.md + current.json.
     ///
-    /// Read-only except for those two files. Runs no validation, no network.
+    /// Use this when you want the packet files refreshed without printing them
+    /// (e.g. from a hook or script); `enter` is refresh + print. Read-only
+    /// except for those two files. Runs no validation, no network.
     Refresh(ContextArgs),
     /// Agent entry: write the live packet, then print it as the work preflight.
     ///
     /// The recommended command an agent runs on entering the repo: it refreshes
     /// `.toimija/current.*` and prints the same compact packet as `context`.
+    /// Use this before reading files broadly — the packet's Git state and
+    /// relevance hints tell you what to read first. Writes only the two packet
+    /// files; no validation execution, no network.
+    #[command(
+        after_help = "Examples:\n  toimija enter --for-diff --budget 4000   # the standard agent preflight\n  \
+        toimija enter --json                     # machine-readable entry packet"
+    )]
     Enter(ContextArgs),
     /// Watch the repo and refresh .toimija/current.* on change (foreground).
     ///
-    /// Debounced; ignores build dirs and its own writes. No daemon, no network,
-    /// no validation execution. Runs until stopped (Ctrl-C).
+    /// Use this for a human-driven session where an editor open in the repo
+    /// should keep the packet current. Debounced; ignores build dirs and its
+    /// own writes. No daemon, no network, no validation execution — runs only
+    /// in the foreground until stopped (Ctrl-C). `run` bundles this same watch
+    /// around a wrapped agent command.
     Watch(ContextArgs),
     /// Enter, watch while an agent command runs, then exit with its status.
     ///
-    /// `toimija run [--for-diff] [--budget N] -- <command...>`: opens a
-    /// per-session packet, prints it, keeps it fresh while the command runs,
-    /// mirrors `.toimija/current.*`, and stops watching when it exits.
+    /// The flagship wrapper — use this to wrap any agent command in a live
+    /// session: it opens a per-session packet directory under
+    /// `.toimija/sessions/<id>/`, prints the entry packet, keeps it fresh while
+    /// the command runs, mirrors `.toimija/current.*`, and exits with the
+    /// wrapped command's status (128+signal preserved). The child inherits a
+    /// TOIMIJA_* env handshake (TOIMIJA_LIVE, TOIMIJA_SESSION, …) so a wrapped
+    /// agent can discover its own continuously-refreshed packet. Use `--intent`
+    /// and `--scope` to tell sibling sessions why you are here — advisory,
+    /// never an assignment.
+    #[command(
+        after_help = "Examples:\n  toimija run -- claude                                        # wrap an agent, adopt its exit code\n  \
+        toimija run --intent \"fix #51\" --scope src/cli.rs -- codex   # declare intent/scope for siblings\n  \
+        toimija run --for-diff --budget 4000 -- sh -c '…'            # tune the packet the child sees"
+    )]
     Run(RunArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
+    ///
+    /// Use this to seed AGENTS.md/CLAUDE.md (`preflight`) or to save a
+    /// `scripts/agent-enter` stub (`script`). Output goes to stdout only.
     Snippet(SnippetArgs),
     /// Check whether this branch's work has landed in a base ref by content.
     ///
     /// Answers "did this land?" as a content question, not an ancestry one —
     /// squash merges sever the commit DAG but preserve the tree, so a landed
-    /// branch is often not an ancestor of main. Read-only.
+    /// branch is often not an ancestor of main. Use this before deleting a
+    /// branch or re-doing work that may already be merged. Read-only.
+    #[command(
+        after_help = "Examples:\n  toimija landed                       # did this branch land in origin/main?\n  \
+        toimija landed --base origin/develop --json"
+    )]
     Landed(LandedArgs),
     /// List sibling sessions live in this repo: who is here, on which branch and
     /// worktree, with what intent and scope, and where overlap warrants care.
     ///
-    /// Read-only. Reports presence; assigns nothing, signals nothing, no network.
+    /// Use this before starting work in a shared repo: it reports presence
+    /// (LIVE / STALE / CLOSED) and descriptive overlap warnings. Read-only
+    /// unless `--prune`, which removes closed/stale sessions older than the
+    /// 7-day retention. Assigns nothing, signals nothing, no network.
+    #[command(
+        after_help = "Examples:\n  toimija sessions           # LIVE / STALE / CLOSED listing + warnings\n  \
+        toimija sessions --json    # machine-readable report\n  \
+        toimija sessions --prune   # drop closed/stale sessions older than 7 days"
+    )]
     Sessions(SessionsArgs),
     /// Print the validation plan. Does not run any commands.
+    ///
+    /// Use this to see what the repo considers its fast/strict/full validation
+    /// (from .toimija/repo.yaml, or inferred from the repo kind). Toimija never
+    /// executes the plan — you or your agent run the commands.
     Validate(ValidateArgs),
     /// Verify `.toimija/current.json` still matches the live repo state.
     ///
     /// The verify-before-read gate: checks the packet's consistency fingerprint
     /// against the working tree. Exits non-zero (with reasons) when the packet is
-    /// stale, so a caller refreshes before trusting it. Read-only; no network.
+    /// stale, so a caller refreshes before trusting it. Use this in a harness
+    /// before every packet read. Read-only; no network.
+    #[command(
+        after_help = "Examples:\n  toimija verify --json || toimija refresh   # refresh before trusting a stale packet"
+    )]
     Verify(VerifyArgs),
     /// Materialize the working tree as an immutable git tree object.
     ///
     /// Freezes the full working state (content-addressed) so a reader can read
     /// files *at a version* via `git cat-file` instead of live disk. Prints the
-    /// tree oid and the consistency token. Refuses in an unsafe git state. Writes
-    /// git objects (gc-reclaimable); no network.
+    /// tree oid and the consistency token. Use this when a reader needs a
+    /// stable view of a moving worktree; `--lease` pins the snapshot against
+    /// `git gc` until released. Refuses in an unsafe git state. Writes git
+    /// objects (gc-reclaimable); no network.
+    #[command(
+        after_help = "Examples:\n  toimija snapshot --lease           # freeze + pin the current worktree\n  \
+        toimija snapshot --release <ID>    # let a pinned snapshot go\n  \
+        toimija snapshot --list            # held leases"
+    )]
     Snapshot(SnapshotArgs),
 }
 
