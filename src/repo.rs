@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::command::{CommandRunner, command_available};
-use crate::{config::RepoConfig, git};
+use crate::{
+    config::{CONFIG_PATH, RepoConfig},
+    git,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RepoKind {
@@ -275,20 +278,29 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
     ));
 
     if !config.boundaries.is_empty() {
+        // Boundaries can be satisfied two drift-free ways: mirror them verbatim
+        // into the agent docs, OR have the docs point at `.toimija/repo.yaml` as
+        // the single source. A reference keeps one source of truth — the docs and
+        // the manifest cannot disagree — so it counts as satisfied without
+        // verbatim duplication.
+        let sourced_by_reference = docs_text.contains(CONFIG_PATH);
         let unmirrored: Vec<&String> = config
             .boundaries
             .iter()
             .filter(|boundary| !boundary_present(boundary, &docs_text))
             .collect();
+        let satisfied = sourced_by_reference || unmirrored.is_empty();
         checks.push(check(
             "boundaries mirrored",
-            if unmirrored.is_empty() {
+            if satisfied {
                 DoctorStatus::Ok
             } else {
                 DoctorStatus::Warning
             },
             &if unmirrored.is_empty() {
                 "boundaries appear in the agent docs".to_string()
+            } else if sourced_by_reference {
+                format!("boundaries sourced by reference to {CONFIG_PATH}")
             } else {
                 format!(
                     "{} boundary line(s) missing from agent docs: {}",

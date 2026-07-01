@@ -170,6 +170,34 @@ fn doctor_reports_drift_as_advisory_by_default() {
 }
 
 #[test]
+fn doctor_boundaries_satisfied_by_repo_yaml_reference() {
+    // Boundaries need not be mirrored verbatim: an agent doc that points at
+    // `.toimija/repo.yaml` is single-sourced and therefore drift-free, so the
+    // check passes without duplicating the boundary text.
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    write_ready_rust_repo(temp.path());
+    fs::write(
+        temp.path().join("AGENTS.md"),
+        "# Agent guide\n\nBoundaries live in `.toimija/repo.yaml`; run `toimija context` to load them.\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ok: boundaries mirrored - boundaries sourced by reference to .toimija/repo.yaml",
+        ));
+}
+
+#[test]
 fn doctor_strict_passes_on_this_repo() {
     // Dogfood: the README tells people to run `toimija doctor --strict` as the
     // PR/CI gate, so this repo must pass its own gate. Guards against boundary
@@ -232,6 +260,40 @@ fn doctor_strict_escalates_drift_to_failure() {
             "fail: preflight mention - no agent doc mentions the `toimija enter` preflight",
         ))
         .stdout(predicate::str::contains("fail: boundaries mirrored -"));
+}
+
+#[test]
+fn doctor_accepts_boundaries_sourced_by_reference() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // The agent docs point at the manifest instead of mirroring the boundary
+    // verbatim — a single source of truth, so doctor must accept it rather than
+    // demand duplication.
+    fs::write(
+        temp.path().join("AGENTS.md"),
+        "# Agent guide\nBoundaries are defined in .toimija/repo.yaml; read them there.\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: demo\n  role: test fixture\nboundaries:\n  - a very specific boundary line not copied into the docs\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ok: boundaries mirrored - boundaries sourced by reference to .toimija/repo.yaml",
+        ));
 }
 
 #[test]
