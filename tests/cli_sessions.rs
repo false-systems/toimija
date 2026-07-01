@@ -111,6 +111,82 @@ fn an_open_marker_with_a_live_pid_is_active() {
 }
 
 #[test]
+fn prune_removes_old_closed_sessions_and_keeps_live_and_recent_ones() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let now = now_secs();
+    let eight_days = 8 * 24 * 60 * 60;
+
+    // Closed 8 days ago → prunable.
+    write_marker(
+        temp.path(),
+        "old-closed",
+        &format!(
+            r#"{{
+                "id": "old-closed", "pid": 1, "agent": ["codex"],
+                "worktree": "/repo", "branch": "feat/x", "head": null,
+                "intent": null, "scope": [],
+                "started_at": {start}, "status": "closed",
+                "closed_at": {closed}, "exit_status": 0
+            }}"#,
+            start = now - eight_days - 100,
+            closed = now - eight_days,
+        ),
+    );
+    // Closed an hour ago → inside retention, kept.
+    write_marker(
+        temp.path(),
+        "fresh-closed",
+        &format!(
+            r#"{{
+                "id": "fresh-closed", "pid": 1, "agent": ["codex"],
+                "worktree": "/repo", "branch": "feat/x", "head": null,
+                "intent": null, "scope": [],
+                "started_at": {start}, "status": "closed",
+                "closed_at": {closed}, "exit_status": 0
+            }}"#,
+            start = now - 7200,
+            closed = now - 3600,
+        ),
+    );
+    // Live session (this test's pid, recent start) → never touched.
+    let pid = std::process::id();
+    write_marker(
+        temp.path(),
+        "live",
+        &format!(
+            r#"{{
+                "id": "live", "pid": {pid}, "agent": ["claude"],
+                "worktree": "/repo", "branch": "feat/x", "head": null,
+                "intent": "live work", "scope": [],
+                "started_at": {start}, "status": "active",
+                "closed_at": null, "exit_status": null
+            }}"#,
+            start = now - 5,
+        ),
+    );
+
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["sessions", "--prune", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["removed"], serde_json::json!(["old-closed"]));
+    assert_eq!(report["kept"], 2);
+
+    let sessions_dir = temp.path().join(".toimija/sessions");
+    assert!(!sessions_dir.join("old-closed").exists());
+    assert!(sessions_dir.join("fresh-closed").exists());
+    assert!(sessions_dir.join("live").exists());
+}
+
+#[test]
 fn an_open_marker_with_a_dead_pid_is_stale_and_warned() {
     if !git_available() {
         return;

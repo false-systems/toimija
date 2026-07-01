@@ -107,6 +107,7 @@ Then, from anywhere in the repo, see who else is live:
 ```bash
 toimija sessions          # human listing: LIVE / STALE / CLOSED + warnings
 toimija sessions --json   # same, machine-readable
+toimija sessions --prune  # remove closed/stale sessions older than 7 days
 ```
 
 ```
@@ -130,6 +131,12 @@ warnings are **descriptive, never prescriptive** — Toimija coordinates
 visibility, not decisions. It never assigns work, signals or kills an agent, or
 touches the network. The human remains the orchestrator. Prefer separate
 worktrees for true isolation: same codebase, separate sessions.
+
+Session directories do not accumulate forever: `toimija sessions --prune`
+removes closed or stale sessions older than a 7-day retention window (live
+sessions are never touched), and `toimija run` performs the same cleanup
+opportunistically at startup — synchronous, best-effort, never blocking the
+run.
 
 When the agent exits, `run` prints a one-glance session summary to stderr —
 diffing the Git state from entry to exit so you see what the session actually
@@ -223,7 +230,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | Command | What it does |
 |---|---|
 | `run -- <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent`/`--scope` declare why/what (advisory). |
-| `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output. |
+| `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` removes closed/stale sessions past the 7-day retention. |
 | `enter` | Refresh and print the current packet as agent preflight. |
 | `refresh` | Recompute `current.md`/`current.json`. |
 | `current --write` | Joskus-facing alias for synchronous packet refresh. |

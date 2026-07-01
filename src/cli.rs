@@ -167,6 +167,10 @@ pub struct SessionsArgs {
     /// Emit the report as JSON instead of the human-readable listing.
     #[arg(long)]
     pub json: bool,
+    /// Remove closed or stale session directories older than the 7-day
+    /// retention window. Live sessions are never touched.
+    #[arg(long)]
+    pub prune: bool,
 }
 
 #[derive(Debug, Args)]
@@ -426,6 +430,23 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+
+    // 0. Opportunistic GC: drop closed/stale session directories past the
+    //    retention window so `.toimija/sessions/` does not grow without bound.
+    //    Best-effort — a failed prune never blocks the run.
+    match sessions::prune(
+        &runner,
+        &repo_root,
+        sessions::DEFAULT_STALE_AFTER_SECS,
+        sessions::DEFAULT_RETENTION_SECS,
+    ) {
+        Ok(pruned) if !pruned.removed.is_empty() => eprintln!(
+            "toimija run: pruned {} old session(s)",
+            pruned.removed.len()
+        ),
+        Ok(_) => {}
+        Err(error) => warn!(event = "toimija.sessions.prune_failed", error = %error),
+    }
 
     // 1. Open a session: its own packet directory + marker, so concurrent
     //    wrapped agents do not race on the single repo-level packet.
@@ -1059,6 +1080,27 @@ fn run_sessions(args: SessionsArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    if args.prune {
+        let report = sessions::prune(
+            &runner,
+            &repo_root,
+            sessions::DEFAULT_STALE_AFTER_SECS,
+            sessions::DEFAULT_RETENTION_SECS,
+        )?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else if report.removed.is_empty() {
+            println!("nothing to prune ({} session(s) kept)", report.kept);
+        } else {
+            println!(
+                "pruned {} session(s): {} ({} kept)",
+                report.removed.len(),
+                report.removed.join(", "),
+                report.kept
+            );
+        }
+        return Ok(());
+    }
     let report = sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
