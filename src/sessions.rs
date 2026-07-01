@@ -172,6 +172,12 @@ fn read_markers(repo_root: &Path) -> Result<Vec<(PathBuf, SessionMarker)>> {
 /// Resolve liveness from the marker, a process-liveness flag, and the staleness
 /// threshold. Pure, so the staleness/active/closed transitions are unit-tested
 /// without touching the OS or the clock.
+///
+/// The window measures **inactivity**, not lifetime (proposal 0002): a
+/// day-long session whose watcher keeps stamping `last_seen_at` stays active;
+/// one whose heartbeat froze goes stale within the window even if a recycled
+/// pid looks alive. Markers from before the heartbeat fall back to
+/// `started_at` — exactly the old D2 behavior.
 pub fn liveness(
     marker: &SessionMarker,
     now_secs: u64,
@@ -181,8 +187,9 @@ pub fn liveness(
     match marker.status {
         SessionStatus::Closed => Liveness::Closed,
         SessionStatus::Active => {
-            let age = now_secs.saturating_sub(marker.started_at);
-            if !pid_alive || age > stale_after_secs {
+            let last_seen = marker.last_seen_at.unwrap_or(marker.started_at);
+            let idle = now_secs.saturating_sub(last_seen);
+            if !pid_alive || idle > stale_after_secs {
                 Liveness::Stale
             } else {
                 Liveness::Active
@@ -255,7 +262,9 @@ pub fn prunable(
         Liveness::Active => return false,
         Liveness::Closed => marker.closed_at.unwrap_or(marker.started_at),
         Liveness::Stale if pid_alive => return false,
-        Liveness::Stale => marker.started_at,
+        // Retention counts from when the session was last seen alive, not
+        // from its birth (proposal 0002).
+        Liveness::Stale => marker.last_seen_at.unwrap_or(marker.started_at),
     };
     now_secs.saturating_sub(reference) > retention_secs
 }
@@ -388,7 +397,7 @@ fn overlap_warnings(sessions: &[SessionView]) -> Vec<Warning> {
         warnings.push(Warning {
             severity: Severity::Warning,
             message: format!(
-                "{} is marked open but looks stale (its process is gone or it has been open too long)",
+                "{} is marked open but looks stale (its process is gone or it has shown no activity past the staleness window)",
                 session_label(view)
             ),
         });
@@ -504,6 +513,12 @@ pub fn render_text(report: &SessionsReport) -> String {
                 "    started: {} ago\n",
                 humanize_age(now.saturating_sub(m.started_at))
             ));
+            if let Some(last_seen) = m.last_seen_at {
+                out.push_str(&format!(
+                    "    seen: {} ago\n",
+                    humanize_age(now.saturating_sub(last_seen))
+                ));
+            }
             out.push_str(&format!("    packet: {}\n", view.packet));
         }
         out.push('\n');
@@ -551,6 +566,7 @@ mod tests {
             intent: None,
             scope: Vec::new(),
             started_at,
+            last_seen_at: None,
             status,
             closed_at: None,
             exit_status: None,
@@ -586,6 +602,8 @@ mod tests {
 
     #[test]
     fn open_marker_past_threshold_is_stale_even_if_pid_alive() {
+        // No heartbeat recorded (a pre-0002 marker): inactivity falls back to
+        // started_at — exactly the old D2 behavior.
         let m = marker("a", SessionStatus::Active, 1_000);
         // now is well past started_at + threshold.
         assert_eq!(
@@ -597,6 +615,58 @@ mod tests {
             ),
             Liveness::Stale
         );
+    }
+
+    #[test]
+    fn long_session_with_a_recent_heartbeat_stays_active() {
+        // The proposal-0002 regression case: a session open for days whose
+        // watcher keeps stamping last_seen_at is LIVE, not stale.
+        let mut m = marker("a", SessionStatus::Active, 1_000);
+        let now = 1_000 + 30 * DEFAULT_STALE_AFTER_SECS;
+        m.last_seen_at = Some(now - 60);
+        assert_eq!(
+            liveness(&m, now, true, DEFAULT_STALE_AFTER_SECS),
+            Liveness::Active
+        );
+    }
+
+    #[test]
+    fn frozen_heartbeat_goes_stale_even_with_a_live_pid() {
+        // A recycled pid can look alive; a frozen heartbeat tells the truth.
+        let mut m = marker("a", SessionStatus::Active, 1_000);
+        m.last_seen_at = Some(2_000);
+        assert_eq!(
+            liveness(
+                &m,
+                2_000 + DEFAULT_STALE_AFTER_SECS + 1,
+                true,
+                DEFAULT_STALE_AFTER_SECS
+            ),
+            Liveness::Stale
+        );
+    }
+
+    #[test]
+    fn stale_retention_ages_from_the_last_heartbeat_when_present() {
+        let mut m = marker("a", SessionStatus::Active, 1_000);
+        let last_seen = 1_000 + 5_000;
+        m.last_seen_at = Some(last_seen);
+        let retention = DEFAULT_RETENTION_SECS;
+        // Past retention from started_at but not from last_seen_at → kept.
+        assert!(!prunable(
+            Liveness::Stale,
+            &m,
+            false,
+            last_seen + retention,
+            retention
+        ));
+        assert!(prunable(
+            Liveness::Stale,
+            &m,
+            false,
+            last_seen + retention + 1,
+            retention
+        ));
     }
 
     fn view(
@@ -618,6 +688,7 @@ mod tests {
                 intent: intent.map(str::to_string),
                 scope: scope.iter().map(|s| s.to_string()).collect(),
                 started_at: 0,
+                last_seen_at: None,
                 status: match liveness {
                     Liveness::Closed => SessionStatus::Closed,
                     _ => SessionStatus::Active,
