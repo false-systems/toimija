@@ -115,7 +115,18 @@ pub fn read_all(repo_root: &Path, id: &str) -> Result<Vec<HandoffRecord>> {
 }
 
 pub fn count(repo_root: &Path, id: &str) -> Option<usize> {
-    count_records(&handoff_path(repo_root, id).ok()?).ok()
+    let path = handoff_path(repo_root, id).ok()?;
+    let file = fs::File::open(path).ok()?;
+    let mut total = 0;
+    for line in BufReader::new(file).lines() {
+        let line = line.ok()?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        serde_json::from_str::<HandoffRecord>(&line).ok()?;
+        total += 1;
+    }
+    Some(total)
 }
 
 impl HandoffRecord {
