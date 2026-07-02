@@ -298,6 +298,7 @@ mod tests {
             .map(|i| PathBuf::from(format!("src/{i}.rs")))
             .collect();
         ContextPacket {
+            schema: crate::context::CONTEXT_SCHEMA.to_string(),
             repo: RepoInfo {
                 name: "repo".to_string(),
                 role: Some("role".to_string()),
@@ -382,6 +383,7 @@ mod tests {
                 token: "token".to_string(),
             },
             session: None,
+            sauma: None,
         }
     }
 

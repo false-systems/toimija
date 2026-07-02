@@ -645,6 +645,7 @@ mod tests {
 
     fn packet() -> ContextPacket {
         ContextPacket {
+            schema: crate::context::CONTEXT_SCHEMA.to_string(),
             repo: RepoInfo {
                 name: "demo".to_string(),
                 role: Some("tool".to_string()),
@@ -701,6 +702,7 @@ mod tests {
                 recent_commits: Vec::new(),
             }),
             session: None,
+            sauma: None,
         }
     }
 
@@ -1071,6 +1073,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     fn json_context_snapshot_is_stable() {
         let rendered = serde_json::to_string_pretty(&packet()).unwrap();
         let expected = r#"{
+  "schema": "toimija-context.v1",
   "repo": {
     "name": "demo",
     "role": "tool",
