@@ -301,6 +301,10 @@ The packet includes:
 - risk
 - validation plan
 - warnings
+- on per-session packets, a **session** block — the session's id, declared
+  intent, and scope, read from the marker at each refresh (so `run --intent`
+  reaches a wrapped harness, and `toimija intent` updates propagate on the
+  next refresh)
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state

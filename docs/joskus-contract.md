@@ -11,7 +11,11 @@ prompts, apply model patches, or run model-requested validation.
 
 `.toimija/current.md` is the readable context packet.
 
-`.toimija/current.json` is the machine-readable packet. It includes:
+`.toimija/current.json` is the machine-readable packet. On per-session packets
+(written under `.toimija/sessions/<id>/` by `toimija run`) it also carries a
+`session` block — `{ "id": "...", "intent": "..."|null, "scope": [...] }` —
+additive per the contract's evolution rule; a harness infers the session's
+declared intent from it. It includes:
 
 ```json
 {

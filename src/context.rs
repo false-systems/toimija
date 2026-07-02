@@ -34,6 +34,22 @@ pub struct ContextPacket {
     /// reader (e.g. the harness) checks it against the live repo before trusting
     /// the packet, instead of re-deriving repo state itself.
     pub consistency: Consistency,
+    /// Session identity on a per-session packet (issue #84): the wrapped
+    /// agent's declared intent and scope, read from the session marker at
+    /// refresh time — so `run --intent` reaches the harness, and a mid-session
+    /// `toimija intent` update propagates on the next refresh. `None` on
+    /// repo-level packets. Additive per the packet contract's evolution rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionBlock>,
+}
+
+/// The session half of a per-session packet: who this packet is for and why
+/// that session says it is here. Advisory, like the marker it mirrors.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionBlock {
+    pub id: String,
+    pub intent: Option<String>,
+    pub scope: Vec<String>,
 }
 
 /// Where the changed surface came from. Named honestly: the surface either
@@ -162,6 +178,10 @@ pub fn build_context_packet(
         default_budget: Some(config.context.default_budget),
         relevance,
         consistency,
+        // Session identity is injected by the per-session refresh writer
+        // (`refresh::refresh_session`), which knows the session directory;
+        // packet compilation itself is session-agnostic.
+        session: None,
     };
     debug!(
         event = "toimija.context.git_section.rendered",
@@ -431,6 +451,7 @@ mod tests {
             default_budget: Some(4000),
             relevance: RelevancePacket::default(),
             consistency,
+            session: None,
         };
         let json = serde_json::to_string(&packet).unwrap();
         assert!(json.contains("\"repo\""));

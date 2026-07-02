@@ -381,6 +381,7 @@ mod tests {
                 },
                 token: "token".to_string(),
             },
+            session: None,
         }
     }
 

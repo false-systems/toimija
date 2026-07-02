@@ -133,6 +133,56 @@ fn run_writes_a_per_session_packet_and_closes_the_marker() {
 }
 
 #[test]
+fn run_intent_reaches_the_session_packet() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    // A wrapped harness infers intent from the packet, so the launch-time
+    // declaration must land there — not only on the marker (issue #84).
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test drive 2",
+            "--scope",
+            "src/a.rs",
+            "--",
+            "true",
+        ])
+        .assert()
+        .success();
+
+    let sessions = temp.path().join(".toimija/sessions");
+    let session_dir = fs::read_dir(&sessions)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .next()
+        .expect("one session dir");
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(session_dir.join("current.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["session"]["intent"], "test drive 2");
+    assert_eq!(json["session"]["scope"][0], "src/a.rs");
+    let md = fs::read_to_string(session_dir.join("current.md")).unwrap();
+    assert!(md.contains("## Session"));
+    assert!(md.contains("- intent: test drive 2"));
+
+    // The repo-level summary mirrors the same bytes under `run` (D3) — a
+    // sessionless refresh afterwards would rewrite it without the block.
+    let repo_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(repo_json["session"]["intent"], "test drive 2");
+}
+
+#[test]
 fn run_hands_the_child_a_per_session_handshake() {
     if !git_available() {
         return;
