@@ -185,6 +185,23 @@ impl Session {
     }
 }
 
+/// The `run` session this process was launched under, if any: a valid
+/// `TOIMIJA_SESSION` id whose marker exists under *this* repo root and is
+/// still active. Resolution is per-repo — an id inherited from a session in
+/// another repo finds no marker here and resolves to `None`, so a handshake
+/// can never steer writes into the wrong repo. Returns the id and the
+/// session directory.
+pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
+    let id = std::env::var("TOIMIJA_SESSION").ok()?;
+    if !is_valid_session_id(&id) {
+        return None;
+    }
+    let dir = repo_root.join(SESSIONS_SUBDIR).join(&id);
+    let raw = fs::read_to_string(dir.join("session.json")).ok()?;
+    let marker: SessionMarker = serde_json::from_str(&raw).ok()?;
+    (marker.status == SessionStatus::Active).then_some((id, dir))
+}
+
 /// Best-effort activity heartbeat (proposal 0002): stamp `last_seen_at = now`
 /// on an open marker. Called by `run`'s watcher after each packet refresh —
 /// an event worth a refresh is worth a heartbeat, and nothing else is. A
