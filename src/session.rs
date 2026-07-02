@@ -202,6 +202,15 @@ pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
     (marker.status == SessionStatus::Active).then_some((id, dir))
 }
 
+/// Read the marker in a session directory. Used by the per-session refresh
+/// writer to carry the session's identity (intent, scope) into the packet.
+pub fn load_marker(session_dir: &Path) -> Result<SessionMarker> {
+    let marker_path = session_dir.join("session.json");
+    let raw = fs::read_to_string(&marker_path)
+        .with_context(|| format!("failed to read {}", marker_path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", marker_path.display()))
+}
+
 /// Best-effort activity heartbeat (proposal 0002): stamp `last_seen_at = now`
 /// on an open marker. Called by `run`'s watcher after each packet refresh —
 /// an event worth a refresh is worth a heartbeat, and nothing else is. A

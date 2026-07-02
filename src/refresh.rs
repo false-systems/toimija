@@ -17,6 +17,7 @@ use crate::command::CommandRunner;
 use crate::config::DEFAULT_BUDGET;
 use crate::context::{self, ContextPacket};
 use crate::render;
+use crate::session;
 
 /// Live agent packet, Markdown form. Regenerated each refresh; not committed.
 pub const CURRENT_MD: &str = ".toimija/current.md";
@@ -63,7 +64,7 @@ pub fn refresh(
     for_diff: bool,
     budget_override: Option<usize>,
 ) -> Result<Refreshed> {
-    let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override)?;
+    let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override, None)?;
     let md_path = repo_root.join(CURRENT_MD);
     let json_path = repo_root.join(CURRENT_JSON);
     write_packet(&md_path, &json_path, &markdown, &json)?;
@@ -87,7 +88,13 @@ pub fn refresh_session(
     budget_override: Option<usize>,
     session_dir: &Path,
 ) -> Result<Refreshed> {
-    let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override)?;
+    let (packet, markdown, json) = compute(
+        runner,
+        repo_root,
+        for_diff,
+        budget_override,
+        Some(session_dir),
+    )?;
     let md_path = session_dir.join("current.md");
     let json_path = session_dir.join("current.json");
     // The session packet is authoritative for the agent — its failure is fatal.
@@ -115,15 +122,30 @@ pub fn refresh_session(
 }
 
 /// Build the packet and its two renderings. The read-only half of a refresh:
-/// no validation, no network.
+/// no validation, no network. When `session_dir` is given, the session's
+/// identity (intent, scope — issue #84) is read from its marker and carried
+/// into the packet before rendering, so `run --intent` reaches a wrapped
+/// harness and `toimija intent` updates propagate on the next refresh.
+/// Best-effort: a missing or unreadable marker yields a packet without the
+/// session block, never a failed refresh.
 fn compute(
     runner: &impl CommandRunner,
     repo_root: &Path,
     for_diff: bool,
     budget_override: Option<usize>,
+    session_dir: Option<&Path>,
 ) -> Result<(ContextPacket, String, String)> {
-    let packet = context::build_context_packet(runner, repo_root, for_diff)
+    let mut packet = context::build_context_packet(runner, repo_root, for_diff)
         .context("failed to build context packet")?;
+    if let Some(dir) = session_dir
+        && let Ok(marker) = session::load_marker(dir)
+    {
+        packet.session = Some(context::SessionBlock {
+            id: marker.id,
+            intent: marker.intent,
+            scope: marker.scope,
+        });
+    }
     let budget = budget_override
         .or(packet.config_default_budget())
         .unwrap_or(DEFAULT_BUDGET);

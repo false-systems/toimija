@@ -244,6 +244,29 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     .unwrap();
     writeln!(&mut output, "- kind: {:?}", packet.repo_kind).unwrap();
 
+    // The session block renders only on per-session packets — the wrapped
+    // agent reads its own declared identity back; repo-level packets skip it.
+    if let Some(session) = &packet.session {
+        write_h2(&mut output, "Session");
+        writeln!(&mut output, "- id: {}", session.id).unwrap();
+        writeln!(
+            &mut output,
+            "- intent: {}",
+            session.intent.as_deref().unwrap_or("unknown")
+        )
+        .unwrap();
+        writeln!(
+            &mut output,
+            "- scope: {}",
+            if session.scope.is_empty() {
+                "unknown".to_string()
+            } else {
+                session.scope.join(", ")
+            }
+        )
+        .unwrap();
+    }
+
     write_h2(&mut output, "Git");
     writeln!(
         &mut output,
@@ -677,6 +700,7 @@ mod tests {
                 branch_files: Vec::new(),
                 recent_commits: Vec::new(),
             }),
+            session: None,
         }
     }
 
@@ -687,6 +711,23 @@ mod tests {
         assert!(rendered.contains("## Repo"));
         assert!(rendered.contains("## Git"));
         assert!(rendered.contains("## Validation plan"));
+        // Repo-level packets carry no session identity.
+        assert!(!rendered.contains("## Session"));
+    }
+
+    #[test]
+    fn session_block_renders_identity_on_per_session_packets() {
+        let mut packet = packet();
+        packet.session = Some(crate::context::SessionBlock {
+            id: "100-1".to_string(),
+            intent: Some("test drive 2".to_string()),
+            scope: vec!["src/a.rs".to_string()],
+        });
+        let rendered = render_context_markdown(&packet, 4000);
+        assert!(rendered.contains("## Session"));
+        assert!(rendered.contains("- id: 100-1"));
+        assert!(rendered.contains("- intent: test drive 2"));
+        assert!(rendered.contains("- scope: src/a.rs"));
     }
 
     #[test]
