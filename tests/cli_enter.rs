@@ -63,6 +63,44 @@ fn enter_json_is_valid() {
 }
 
 #[test]
+fn enter_inside_a_run_session_targets_the_session_packet() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let dir = temp.path().join(".toimija/sessions/100-1");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("session.json"),
+        r#"{
+            "id": "100-1", "pid": 1, "agent": ["claude"],
+            "worktree": "/repo", "branch": "main", "head": null,
+            "intent": null, "scope": [],
+            "started_at": 100, "status": "active",
+            "closed_at": null, "exit_status": null
+        }"#,
+    )
+    .unwrap();
+
+    // A wrapped agent following the docs' `toimija enter` preflight must
+    // update its own session packet (the one $TOIMIJA_LIVE points at), not
+    // just the repo-level summary.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("TOIMIJA_SESSION", "100-1")
+        .arg("enter")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "also written to .toimija/sessions/100-1/current.md",
+        ));
+    assert!(dir.join("current.md").exists());
+    assert!(temp.path().join(".toimija/current.md").exists());
+}
+
+#[test]
 fn enter_writes_the_live_packet_but_not_agent_docs() {
     if !git_available() {
         return;

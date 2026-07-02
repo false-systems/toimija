@@ -28,6 +28,80 @@ fn refresh(path: &Path) {
         .stdout(predicate::str::contains(".toimija/current.md"));
 }
 
+fn write_active_marker(repo: &Path, id: &str) {
+    let dir = repo.join(".toimija/sessions").join(id);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("session.json"),
+        format!(
+            r#"{{
+                "id": "{id}", "pid": 1, "agent": ["claude"],
+                "worktree": "/repo", "branch": "main", "head": null,
+                "intent": null, "scope": [],
+                "started_at": 100, "status": "active",
+                "closed_at": null, "exit_status": null
+            }}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn refresh_inside_a_run_session_targets_the_session_packet() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    write_active_marker(temp.path(), "100-1");
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("TOIMIJA_SESSION", "100-1")
+        .arg("refresh")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            ".toimija/sessions/100-1/current.md",
+        ));
+
+    // The session packet is written, and the repo-level summary is mirrored.
+    let session_md = temp.path().join(".toimija/sessions/100-1/current.md");
+    assert!(session_md.exists(), "session packet should be written");
+    assert!(temp.path().join(".toimija/current.md").exists());
+    // Refreshing one's own packet is activity: the heartbeat is stamped.
+    let marker: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/sessions/100-1/session.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        marker["last_seen_at"].is_u64(),
+        "heartbeat should be stamped"
+    );
+}
+
+#[test]
+fn refresh_with_a_session_env_but_no_marker_stays_repo_level() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    // An id inherited from a session in another repo finds no marker here:
+    // the handshake must never steer writes into the wrong repo.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("TOIMIJA_SESSION", "100-1")
+        .arg("refresh")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".toimija/current.md"));
+    assert!(!temp.path().join(".toimija/sessions").exists());
+}
+
 #[test]
 fn refresh_writes_current_md_and_json() {
     if !git_available() {

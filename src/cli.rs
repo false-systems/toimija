@@ -509,14 +509,14 @@ fn run_refresh(args: ContextArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let refreshed = refresh::refresh(&runner, &repo_root, args.for_diff, args.budget)?;
+    let refreshed = ambient_refresh(&runner, &repo_root, &args)?;
     if args.json {
         println!("{}", refreshed.json);
     } else {
         println!(
             "Refreshed {} and {}",
-            refresh::CURRENT_MD,
-            refresh::CURRENT_JSON
+            rel_display(&refreshed.md_path, &repo_root),
+            rel_display(&refreshed.json_path, &repo_root)
         );
     }
     Ok(())
@@ -528,20 +528,55 @@ fn run_enter(args: ContextArgs) -> Result<()> {
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
     // Enter is refresh + print: it writes the live packet, then frames it as the
     // work preflight an agent reads on entering the repo.
-    let refreshed = refresh::refresh(&runner, &repo_root, args.for_diff, args.budget)?;
+    let refreshed = ambient_refresh(&runner, &repo_root, &args)?;
     if args.json {
         println!("{}", refreshed.json);
     } else {
-        print_agent_entry(&refreshed);
+        print_agent_entry(&refreshed, &repo_root);
     }
     Ok(())
 }
 
+/// Refresh honoring the run handshake (issue #68): when this process runs
+/// inside a `toimija run` session, target *that session's* packet — the one
+/// `$TOIMIJA_LIVE` points the agent at — which also mirrors to the repo-level
+/// summary (decision D3). Sessionless invocations keep writing only
+/// `.toimija/current.*`. Updating one's own packet is activity, so the
+/// session heartbeat is stamped too.
+fn ambient_refresh(
+    runner: &ProcessCommandRunner,
+    repo_root: &std::path::Path,
+    args: &ContextArgs,
+) -> Result<refresh::Refreshed> {
+    let ambient = session::ambient_session(repo_root);
+    let plan = refresh::Plan {
+        for_diff: args.for_diff,
+        budget: args.budget,
+        session_dir: ambient.as_ref().map(|(_, dir)| dir.clone()),
+    };
+    let refreshed = plan.run(runner, repo_root)?;
+    if let Some((id, _)) = &ambient
+        && let Err(error) = session::touch(repo_root, id)
+    {
+        warn!(event = "toimija.session.heartbeat_failed", error = %error);
+    }
+    Ok(refreshed)
+}
+
+/// A path as the repo-relative string used in human-facing messages; falls
+/// back to the full path when it is not under the repo root.
+fn rel_display(path: &std::path::Path, repo_root: &std::path::Path) -> String {
+    path.strip_prefix(repo_root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 /// Frame the refreshed packet as the agent's work preflight.
-fn print_agent_entry(refreshed: &refresh::Refreshed) {
+fn print_agent_entry(refreshed: &refresh::Refreshed, repo_root: &std::path::Path) {
     println!(
         "Toimija agent entry — working state below (also written to {}):\n",
-        refresh::CURRENT_MD
+        rel_display(&refreshed.md_path, repo_root)
     );
     println!("{}", refreshed.markdown);
 }
@@ -596,7 +631,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
-    print_agent_entry(&entry);
+    print_agent_entry(&entry, &repo_root);
     // The branch and HEAD are known once the packet is built; record them.
     if let Err(error) = session.record_git(
         entry.packet.git.branch.clone(),
