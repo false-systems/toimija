@@ -308,6 +308,8 @@ The packet includes:
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state
+- a **sauma** envelope — a local attestation digest and provenance edge set for
+  the packet artifact
 
 See **Verify before read** for what that token buys you, and **Example context
 output** below for a full rendering.

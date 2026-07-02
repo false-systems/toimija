@@ -133,6 +133,9 @@ walk of a real chain (bug → issue → fix → proposal → build → review) r
 like magic, build the sauma crate. If it reads like bookkeeping, we lost
 three optional fields and stop.**
 
+Status note, 2026-07-03: the toimija retrofit landed for context packets and
+handoff records; the throwaway walker is `cargo xtask sauma-why`.
+
 ## 7. Boundary notes
 
 No boundary edits required for §6: each retrofit evolves a repo's own
