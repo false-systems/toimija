@@ -322,8 +322,9 @@ freshness checkable instead of assumed, in three escalating moves:
    deterministic, content-based fingerprint of the repo's work state (HEAD,
    index, unstaged tracked content, untracked content, conflicts, in-flight Git
    operations). No clocks, no mtimes, no file sizes: same content, same token.
-   Toimija's own output (`current.*`, `sessions/`) is excluded, so a refresh
-   never invalidates itself.
+   Generated state under `.toimija/` is excluded so refreshes, sessions,
+   snapshots, and harness runs never invalidate the packet; `.toimija/repo.yaml`
+   is the exception and always counts.
 2. **Gate.** `toimija verify` (or `toimija current --verify --json` for
    machines) recomputes the fingerprint against the live repo and exits
    non-zero, with reasons, when the packet is stale, missing, unsupported,
