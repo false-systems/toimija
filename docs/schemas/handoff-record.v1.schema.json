@@ -176,6 +176,10 @@
     "next_step": {
       "description": "Optional free-text note supplied by the handoff writer.",
       "type": ["string", "null"]
+    },
+    "sauma": {
+      "description": "Optional Sauma attestation envelope for newly emitted records. Old v1 records omit it and remain valid.",
+      "$ref": "sauma-envelope.v1.schema.json"
     }
   }
 }

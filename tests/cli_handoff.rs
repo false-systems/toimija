@@ -56,6 +56,14 @@ fn handoff_writes_then_show_round_trips_via_env_handshake() {
         .success()
         .stdout(predicate::str::contains("1 record(s)"))
         .stdout(predicate::str::contains("next: run cargo test"));
+
+    let raw = fs::read_to_string(temp.path().join(".toimija/sessions/100-1/handoff.jsonl"))
+        .expect("handoff should be written");
+    let record: serde_json::Value = serde_json::from_str(raw.lines().next().unwrap()).unwrap();
+    assert_eq!(record["sauma"]["envelope"], "sauma-envelope.v1");
+    assert_eq!(record["sauma"]["schema"], "handoff-record.v1");
+    assert_eq!(record["sauma"]["producer"]["run"], "100-1");
+    assert_eq!(record["sauma"]["anchored_at"], record["consistency_token"]);
 }
 
 #[test]

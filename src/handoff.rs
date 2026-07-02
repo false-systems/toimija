@@ -14,6 +14,7 @@ use tracing::info;
 use crate::command::CommandRunner;
 use crate::context::{ContextPacket, build_context_packet};
 use crate::git::ChangedFile;
+use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
 use crate::session::{SESSIONS_SUBDIR, SessionMarker, SessionStatus, is_valid_session_id};
 
 const VERSION: u32 = 1;
@@ -50,6 +51,8 @@ pub struct HandoffRecord {
     pub risk_total: usize,
     pub consistency_token: String,
     pub next_step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sauma: Option<SaumaEnvelope>,
 }
 
 pub fn write(
@@ -171,7 +174,7 @@ impl HandoffRecord {
         let (suggested_validation, suggested_validation_total) = cap(suggested);
         let (coupling, coupling_total) = cap(coupling);
         let (risk, risk_total) = cap(risk);
-        HandoffRecord {
+        let mut record = HandoffRecord {
             version: VERSION,
             session_id: marker.id.clone(),
             written_at: now_secs(),
@@ -200,7 +203,29 @@ impl HandoffRecord {
             risk_total,
             consistency_token: packet.consistency.token.clone(),
             next_step,
+            sauma: None,
+        };
+        record.attach_sauma().expect("handoff record serializes");
+        record
+    }
+
+    fn attach_sauma(&mut self) -> serde_json::Result<()> {
+        self.sauma = None;
+        let json_without_sauma = serde_json::to_string(self)?;
+        let mut provenance = vec![SaumaProvenance::Token {
+            token: self.consistency_token.clone(),
+        }];
+        if let Some(oid) = self.head.clone() {
+            provenance.push(SaumaProvenance::Git { oid });
         }
+        self.sauma = Some(sauma::envelope(
+            "handoff-record.v1",
+            &json_without_sauma,
+            provenance,
+            &self.consistency_token,
+            Some(self.session_id.clone()),
+        ));
+        Ok(())
     }
 }
 
@@ -418,6 +443,27 @@ mod tests {
             record.risk[0],
             "src/lib.rs — high churn; keep the change small"
         );
+        assert_eq!(record.sauma.as_ref().unwrap().schema, "handoff-record.v1");
+        assert_eq!(
+            record.sauma.as_ref().unwrap().producer.run.as_deref(),
+            Some("100-1")
+        );
+        assert_eq!(
+            record.sauma.as_ref().unwrap().anchored_at,
+            record.consistency_token
+        );
+    }
+
+    #[test]
+    fn handoff_sauma_digest_round_trips_without_self_reference() {
+        let record =
+            HandoffRecord::from_marker_packet(&marker(SessionStatus::Active), &packet(), None);
+        let digest = record.sauma.as_ref().unwrap().digest.clone();
+        let mut stripped = record.clone();
+        stripped.sauma = None;
+        let json_without_sauma = serde_json::to_string(&stripped).unwrap();
+
+        assert_eq!(crate::sauma::digest_json(&json_without_sauma), digest);
     }
 
     #[test]
@@ -432,6 +478,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read_all(temp.path(), id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn read_all_tolerates_old_records_without_sauma() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = "100-1";
+        let dir = temp.path().join(SESSIONS_SUBDIR).join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(FILE_NAME),
+            r#"{"version":1,"session_id":"100-1","written_at":1,"agent":[],"agent_total":0,"intent":null,"branch":null,"entry_head":null,"head":null,"merge_base":null,"staged":[],"staged_total":0,"unstaged":[],"unstaged_total":0,"untracked":[],"untracked_total":0,"conflicts":[],"conflicts_total":0,"branch_scope":[],"branch_scope_total":0,"suggested_validation":[],"suggested_validation_total":0,"coupling":[],"coupling_total":0,"risk":[],"risk_total":0,"consistency_token":"t","next_step":null}"#,
+        )
+        .unwrap();
+        let records = read_all(temp.path(), id).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].sauma.is_none());
     }
 
     #[test]
