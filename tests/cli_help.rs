@@ -23,6 +23,9 @@ fn top_level_help_describes_every_subcommand() {
         .stdout(predicate::str::contains(
             "Enter, watch while an agent command runs",
         ))
+        .stdout(predicate::str::contains(
+            "Append or inspect a session handoff record",
+        ))
         .stdout(predicate::str::contains("Print suggested preflight text"))
         .stdout(predicate::str::contains(
             "Check whether this branch's work has landed",
@@ -53,7 +56,7 @@ fn every_subcommand_help_says_when_to_use_it() {
     // an agent can pick between siblings (enter vs context vs refresh, …).
     for subcommand in [
         "init", "doctor", "context", "current", "refresh", "enter", "watch", "run", "intent",
-        "snippet", "landed", "sessions", "validate", "verify", "snapshot",
+        "handoff", "snippet", "landed", "sessions", "validate", "verify", "snapshot",
     ] {
         Command::cargo_bin("toimija")
             .unwrap()
@@ -75,6 +78,7 @@ fn high_traffic_subcommands_carry_examples() {
         ("run", "toimija run --intent"),
         ("sessions", "toimija sessions --prune"),
         ("intent", "toimija intent"),
+        ("handoff", "toimija handoff --show"),
         ("current", "toimija current --verify --json"),
         ("verify", "toimija verify --json"),
         ("landed", "toimija landed"),
