@@ -66,7 +66,7 @@ What you get:
 | **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed on every relevant change while the agent works. |
 | **Git-derived relevance** | What to read first, what co-changes, what is risky, what is mechanical dep-bump ripple to skip. No parsing, no index — just Git, used well. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
-| **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, 7-day GC. Visibility, never orchestration. |
+| **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, explicit handoff records, 7-day GC. Visibility, never orchestration. |
 | **Honest validation** | `validate --plan` prints the repo's real gates (including a focused tier derived from the diff). Toimija never runs them for you. |
 | **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
 
@@ -196,6 +196,21 @@ toimija sessions --json   # same, machine-readable
 toimija sessions --prune  # remove closed/stale sessions older than 7 days
 ```
 
+When pausing or finishing, the wrapped agent can leave an explicit handoff
+record for its own session:
+
+```bash
+toimija handoff "auth migration half done; run cargo test -p auth next"
+toimija handoff --show 1782675584-99172
+```
+
+Handoffs are append-only JSONL at `.toimija/sessions/<id>/handoff.jsonl`.
+They snapshot one context packet: Git state, changed surface, suggested
+validation commands, coupling/risk hints, consistency token, and the note.
+The public record embeds `version: 1` and is documented by
+`docs/schemas/handoff-record.v1.schema.json`; optional fields may be added in
+v1, while breaking changes require a v2 schema and version bump.
+
 ```
 LIVE
   claude  1782675584-99172
@@ -206,6 +221,7 @@ LIVE
     started: 12m ago
     seen: 8s ago
     packet: .toimija/sessions/1782675584-99172/current.md
+    handoff: 1 record(s)
 
 WARNINGS
   - 2 live sessions on branch feat/sessions-awareness: claude (…), codex (…)
@@ -329,6 +345,8 @@ toimija run -- claude
 toimija run --intent "..." --scope src/x.rs -- codex  # declare why / what (advisory)
 toimija sessions           # who else is live in this repo (read-only awareness)
 toimija intent "..."       # wrapped agent declares why it is here (via TOIMIJA_SESSION)
+toimija handoff "..."      # wrapped agent appends a session handoff record
+toimija handoff --show ID  # read a session's handoff records
 toimija enter              # refresh + print the packet as agent preflight
 toimija refresh            # recompute current.md/current.json
 toimija watch              # keep current.* fresh on Git/filesystem changes
@@ -348,6 +366,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `run -- <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent`/`--scope` declare why/what (advisory). |
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` removes closed/stale sessions past the 7-day retention. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
+| `handoff ["<note>"]` | Wrapped agent appends an explicit JSONL handoff record for its own session. `--show <id>` reads records, including closed sessions; `--json` emits the written record or all shown records. |
 | `enter` | Refresh and print the current packet as agent preflight. |
 | `refresh` | Recompute `current.md`/`current.json`. |
 | `current --write` | Joskus-facing alias for synchronous packet refresh. |
@@ -396,7 +415,7 @@ a live, repo-aware context layer an agent asks for before it works.
 .toimija/repo.yaml      owned by you        durable repo meaning (boundary + validation hints)
 .toimija/current.md     owned by Toimija    repo-level live packet / latest summary (regenerated, git-ignored)
 .toimija/current.json   owned by Toimija    repo-level machine-readable packet (regenerated, git-ignored)
-.toimija/sessions/      owned by Toimija    per-session live packets + markers from `run` (regenerated, git-ignored)
+.toimija/sessions/      owned by Toimija    per-session live packets, markers, handoff records from `run`/`handoff` (regenerated, git-ignored)
 AGENTS.md               owned by you        agent policy — Toimija only suggests text
 CLAUDE.md               owned by you        agent policy — Toimija only suggests text
 scripts/                owned by you        e.g. agent-enter — Toimija only suggests text

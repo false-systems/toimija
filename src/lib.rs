@@ -6,6 +6,7 @@ pub mod consistency;
 pub mod context;
 pub mod error;
 pub mod git;
+pub mod handoff;
 pub mod landed;
 pub mod logging;
 pub mod refresh;

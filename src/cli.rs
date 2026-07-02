@@ -9,6 +9,7 @@ use crate::config::{self, RepoConfig};
 use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency, GitOperationState, Verdict};
 use crate::context;
 use crate::git;
+use crate::handoff;
 use crate::landed;
 use crate::logging::LogFormat;
 use crate::refresh;
@@ -154,6 +155,17 @@ pub enum Command {
         toimija intent \"fix #51\" --scope src/cli.rs --scope tests/cli_run.rs"
     )]
     Intent(IntentArgs),
+    /// Append or inspect a session handoff record.
+    ///
+    /// Use this from inside a `toimija run` session when pausing or finishing:
+    /// unlike `intent` (why I am here), a handoff says what I leave behind.
+    /// Writing uses the TOIMIJA_SESSION env handshake and appends one local JSONL
+    /// record. `--show` is read-only and also works for closed sessions.
+    #[command(
+        after_help = "Examples:\n  toimija handoff \"auth migration half done; run cargo test -p auth next\"\n  \
+        toimija handoff --show 1782951227-52574"
+    )]
+    Handoff(HandoffArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     ///
     /// Use this to seed AGENTS.md/CLAUDE.md (`preflight`) or to save a
@@ -284,6 +296,19 @@ pub struct IntentArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct HandoffArgs {
+    /// Free-text note for the next agent.
+    #[arg(conflicts_with = "show")]
+    pub note: Option<String>,
+    /// Print recorded handoffs for a session id. Read-only; works on closed sessions.
+    #[arg(long, value_name = "SESSION_ID")]
+    pub show: Option<String>,
+    /// Emit JSON: written record for write mode, all records array for --show.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct SessionsArgs {
     /// Emit the report as JSON instead of the human-readable listing.
     #[arg(long)]
@@ -373,6 +398,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             "json"
         }
         Command::Current(args) if args.json => "json",
+        Command::Handoff(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         _ => "text",
     };
@@ -395,6 +421,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Watch(args) => run_watch(args).map(|()| 0),
         Command::Run(args) => run_run(args),
         Command::Intent(args) => run_intent(args).map(|()| 0),
+        Command::Handoff(args) => run_handoff(args).map(|()| 0),
         Command::Snippet(args) => run_snippet(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
@@ -431,6 +458,7 @@ impl Command {
             Command::Watch(_) => "watch",
             Command::Run(_) => "run",
             Command::Intent(_) => "intent",
+            Command::Handoff(_) => "handoff",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Sessions(_) => "sessions",
@@ -1297,6 +1325,77 @@ fn run_intent(args: IntentArgs) -> Result<()> {
         println!("  scope: {}", marker.scope.join(", "));
     }
     Ok(())
+}
+
+fn run_handoff(args: HandoffArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    if let Some(id) = args.show {
+        let records = handoff::read_all(&repo_root, &id)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&records)?);
+        } else {
+            print_handoff_records(&id, &records)?;
+        }
+        return Ok(());
+    }
+
+    let id = std::env::var("TOIMIJA_SESSION").map_err(|_| {
+        anyhow::anyhow!(
+            "TOIMIJA_SESSION is not set — `toimija handoff` writes for a wrapped session, \
+             so run it from inside `toimija run -- <agent>` (the handshake provides the id)"
+        )
+    })?;
+    let record = handoff::write(&runner, &repo_root, &id, args.note)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&record)?);
+    } else {
+        println!(
+            "Wrote handoff for session {} at {}",
+            record.session_id, record.written_at
+        );
+    }
+    Ok(())
+}
+
+fn print_handoff_records(id: &str, records: &[handoff::HandoffRecord]) -> Result<()> {
+    anyhow::ensure!(!records.is_empty(), "no handoff recorded for session {id}");
+    let latest = records.last().expect("checked non-empty");
+    let age = now_secs().saturating_sub(latest.written_at);
+    println!(
+        "Handoff for session {id}: {} record(s), latest written {} ago",
+        records.len(),
+        humanize_age(age)
+    );
+    println!("  written_at: {}", latest.written_at);
+    if let Some(step) = &latest.next_step {
+        println!("  next_step: {step}");
+    }
+    if !latest.suggested_validation.is_empty() {
+        println!(
+            "  suggested_validation: {}",
+            latest.suggested_validation.join("; ")
+        );
+    }
+    println!("  consistency_token: {}", latest.consistency_token);
+    Ok(())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+fn humanize_age(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
 }
 
 fn run_snippet(args: SnippetArgs) -> Result<()> {
