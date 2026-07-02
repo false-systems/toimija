@@ -70,6 +70,15 @@ fn refresh_inside_a_run_session_targets_the_session_packet() {
     let session_md = temp.path().join(".toimija/sessions/100-1/current.md");
     assert!(session_md.exists(), "session packet should be written");
     assert!(temp.path().join(".toimija/current.md").exists());
+    let session_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/sessions/100-1/current.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(session_json["schema"], "toimija-context.v1");
+    assert_eq!(
+        session_json["sauma"]["producer"]["run"].as_str(),
+        Some("100-1")
+    );
     // Refreshing one's own packet is activity: the heartbeat is stamped.
     let marker: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join(".toimija/sessions/100-1/session.json")).unwrap(),
@@ -118,7 +127,20 @@ fn refresh_writes_current_md_and_json() {
     let value: serde_json::Value =
         serde_json::from_str(&json).expect("current.json must be valid JSON");
     assert!(value.is_object());
+    assert_eq!(value["schema"], "toimija-context.v1");
     assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v2");
+    assert_eq!(value["sauma"]["envelope"], "sauma-envelope.v1");
+    assert_eq!(value["sauma"]["schema"], "toimija-context.v1");
+    assert_eq!(value["sauma"]["producer"]["tool"], "toimija");
+    assert_eq!(value["sauma"]["producer"]["run"], serde_json::Value::Null);
+    assert_eq!(value["sauma"]["anchored_at"], value["consistency"]["token"]);
+    assert!(
+        value["sauma"]["digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert_eq!(value["sauma"]["provenance"][0]["kind"], "git");
     assert!(
         value["consistency"]["index_fingerprint"]
             .as_str()

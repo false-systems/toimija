@@ -301,23 +301,18 @@ fn status(status: &ChangeStatus) -> String {
     }
 }
 
-/// Whether a repo-relative path is one of Toimija's own generated artifacts
-/// (`.toimija/current.*`, `.toimija/sessions/…`). These are excluded from the
-/// digest: a `refresh` writing them must not make the packet appear stale. The
-/// tracked manifest `.toimija/repo.yaml` is deliberately NOT generated — a change
-/// to it is a real change the packet should reflect.
+/// Whether a repo-relative path is generated state under `.toimija/`. Everything
+/// under that namespace is excluded from the digest so harness output
+/// (`runs/`), session packets, snapshots, and refresh output cannot
+/// self-invalidate the packet. The tracked manifest `.toimija/repo.yaml` is
+/// deliberately NOT generated — a change to it is a real change the packet
+/// should reflect.
 fn is_generated_output(path: &Path) -> bool {
     let mut components = path.components().map(|c| c.as_os_str().to_str());
     if components.next() != Some(Some(".toimija")) {
         return false;
     }
-    matches!(
-        components.next(),
-        Some(Some("current.md"))
-            | Some(Some("current.json"))
-            | Some(Some("sessions"))
-            | Some(Some("snapshots"))
-    )
+    components.next() != Some(Some("repo.yaml"))
 }
 
 fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -465,8 +460,10 @@ mod tests {
 
     #[test]
     fn toimija_generated_output_does_not_make_a_packet_stale() {
-        // A refresh writes .toimija/current.* (and sessions/) as untracked files;
-        // those must not invalidate the very packet that wrote them.
+        // A refresh writes .toimija/current.*; run sessions write under
+        // .toimija/sessions/; harnesses write under .toimija/runs/. Those
+        // generated artifacts must not invalidate the packet that authorized
+        // them.
         let stored = Consistency::fingerprint(&git_state());
         let mut live = git_state();
         live.untracked_files
@@ -475,6 +472,10 @@ mod tests {
             .push(PathBuf::from(".toimija/current.md"));
         live.untracked_files
             .push(PathBuf::from(".toimija/sessions/1-1/session.json"));
+        live.untracked_files
+            .push(PathBuf::from(".toimija/runs/kisko.jsonl"));
+        live.untracked_files
+            .push(PathBuf::from(".toimija/anything/tool-output.json"));
         assert!(stored.verify(&live).is_consistent());
     }
 
@@ -489,6 +490,8 @@ mod tests {
             status: ChangeStatus::Modified,
             index_entry: None,
         });
+        live.untracked_files
+            .push(PathBuf::from(".toimija/runs/kisko.jsonl"));
         assert!(!stored.verify(&live).is_consistent());
     }
 

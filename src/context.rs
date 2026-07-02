@@ -14,10 +14,14 @@ use crate::consistency::Consistency;
 use crate::git::{self, ChangedFile, GitState};
 use crate::relevance::{RelevanceInput, RelevancePacket, RelevanceSource};
 use crate::repo::{self, RepoInfo, RepoKind};
+use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
 use crate::validate::ValidationPlan;
+
+pub const CONTEXT_SCHEMA: &str = "toimija-context.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextPacket {
+    pub schema: String,
     pub repo: RepoInfo,
     pub repo_kind: RepoKind,
     pub git: GitState,
@@ -41,6 +45,11 @@ pub struct ContextPacket {
     /// repo-level packets. Additive per the packet contract's evolution rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionBlock>,
+    /// Sauma attestation envelope for the serialized packet. The digest is over
+    /// this artifact serialized with `sauma: None`; serde's struct field order is
+    /// the canonical order for v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sauma: Option<SaumaEnvelope>,
 }
 
 /// The session half of a per-session packet: who this packet is for and why
@@ -75,6 +84,26 @@ pub struct ReadFirstEntry {
 impl ContextPacket {
     pub fn config_default_budget(&self) -> Option<usize> {
         self.default_budget
+    }
+
+    pub fn attach_sauma(&mut self, run: Option<String>) -> serde_json::Result<()> {
+        self.sauma = None;
+        let json_without_sauma = serde_json::to_string(self)?;
+        let provenance = self
+            .git
+            .head_oid
+            .iter()
+            .cloned()
+            .map(|oid| SaumaProvenance::Git { oid })
+            .collect();
+        self.sauma = Some(sauma::envelope(
+            CONTEXT_SCHEMA,
+            &json_without_sauma,
+            provenance,
+            &self.consistency.token,
+            run,
+        ));
+        Ok(())
     }
 }
 
@@ -165,6 +194,7 @@ pub fn build_context_packet(
     // into the packet, so a reader can verify the packet against the live repo.
     let consistency = Consistency::fingerprint(&git);
     let packet = ContextPacket {
+        schema: CONTEXT_SCHEMA.to_string(),
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
         git,
@@ -182,6 +212,7 @@ pub fn build_context_packet(
         // (`refresh::refresh_session`), which knows the session directory;
         // packet compilation itself is session-agnostic.
         session: None,
+        sauma: None,
     };
     debug!(
         event = "toimija.context.git_section.rendered",
@@ -428,6 +459,7 @@ mod tests {
         };
         let consistency = Consistency::fingerprint(&git);
         let packet = ContextPacket {
+            schema: CONTEXT_SCHEMA.to_string(),
             repo: RepoInfo {
                 name: "repo".to_string(),
                 role: None,
@@ -452,9 +484,81 @@ mod tests {
             relevance: RelevancePacket::default(),
             consistency,
             session: None,
+            sauma: None,
         };
         let json = serde_json::to_string(&packet).unwrap();
         assert!(json.contains("\"repo\""));
+    }
+
+    #[test]
+    fn packet_sauma_digest_round_trips_without_self_reference() {
+        let git = GitState {
+            repo_root: PathBuf::from("/repo"),
+            git_dir: Some(PathBuf::from(".git")),
+            branch: Some("main".to_string()),
+            head_oid: Some("abc".to_string()),
+            upstream: None,
+            base: None,
+            merge_base: None,
+            detached: false,
+            dirty: false,
+            staged_files: Vec::new(),
+            unstaged_files: Vec::new(),
+            untracked_files: Vec::new(),
+            conflicted_files: Vec::new(),
+            branch_files: Vec::new(),
+            recent_commits: Vec::new(),
+        };
+        let consistency = Consistency::fingerprint(&git);
+        let mut packet = ContextPacket {
+            schema: CONTEXT_SCHEMA.to_string(),
+            repo: RepoInfo {
+                name: "repo".to_string(),
+                role: None,
+                not_roles: Vec::new(),
+                important_docs: Vec::new(),
+                boundaries: Vec::new(),
+            },
+            repo_kind: RepoKind::Generic,
+            git,
+            changed_surface: Vec::new(),
+            changed_surface_source: ChangedSurfaceSource::Unknown,
+            read_first: Vec::new(),
+            safe_to_ignore: Vec::new(),
+            validation_plan: crate::validate::validation_plan(
+                Path::new("/repo"),
+                &RepoConfig::default(),
+                RepoKind::Generic,
+            ),
+            warnings: Vec::new(),
+            for_diff: false,
+            default_budget: Some(4000),
+            relevance: RelevancePacket::default(),
+            consistency,
+            session: Some(SessionBlock {
+                id: "100-1".to_string(),
+                intent: None,
+                scope: Vec::new(),
+            }),
+            sauma: None,
+        };
+
+        packet.attach_sauma(Some("100-1".to_string())).unwrap();
+        let envelope = packet.sauma.as_ref().unwrap();
+        let digest = envelope.digest.clone();
+        let mut stripped = packet.clone();
+        stripped.sauma = None;
+        let json_without_sauma = serde_json::to_string(&stripped).unwrap();
+
+        assert_eq!(crate::sauma::digest_json(&json_without_sauma), digest);
+        assert_eq!(envelope.schema, CONTEXT_SCHEMA);
+        assert_eq!(envelope.producer.run.as_deref(), Some("100-1"));
+        assert_eq!(
+            envelope.provenance,
+            vec![SaumaProvenance::Git {
+                oid: "abc".to_string()
+            }]
+        );
     }
 
     #[test]

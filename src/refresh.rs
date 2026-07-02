@@ -146,6 +146,8 @@ fn compute(
             scope: marker.scope,
         });
     }
+    let run = packet.session.as_ref().map(|session| session.id.clone());
+    packet.attach_sauma(run)?;
     let budget = budget_override
         .or(packet.config_default_budget())
         .unwrap_or(DEFAULT_BUDGET);

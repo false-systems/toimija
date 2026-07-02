@@ -39,8 +39,9 @@ mode, and a **SHA-256 content hash** of each changed and untracked file
 bytes always fingerprint the same regardless of mtime, and different bytes
 always differ — so a bare `touch` does not falsely invalidate the token, and a
 same-size edit cannot slip through. (v1 used file size + mtime and is rejected
-with `unsupported_consistency_algorithm`.) Ignored files and Toimija-generated
-packet files do not affect the token.
+with `unsupported_consistency_algorithm`.) Ignored files and generated state
+under `.toimija/` do not affect the token, except `.toimija/repo.yaml`, which is
+repo policy and always counts.
 
 ## Commands
 

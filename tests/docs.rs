@@ -3,6 +3,7 @@
 
 const README: &str = include_str!("../README.md");
 const HANDOFF_SCHEMA: &str = include_str!("../docs/schemas/handoff-record.v1.schema.json");
+const SAUMA_SCHEMA: &str = include_str!("../docs/schemas/sauma-envelope.v1.schema.json");
 
 #[test]
 fn readme_states_the_git_state_thesis() {
@@ -64,8 +65,60 @@ fn handoff_schema_matches_emitted_record_fields() {
         risk_total: 0,
         consistency_token: "token".to_string(),
         next_step: None,
+        sauma: Some(toimija::sauma::envelope(
+            "handoff-record.v1",
+            "{}",
+            Vec::new(),
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            Some("100-1".to_string()),
+        )),
     };
     let emitted = serde_json::to_value(record).unwrap();
+    let emitted_keys: BTreeSet<_> = emitted.as_object().unwrap().keys().cloned().collect();
+    let property_keys: BTreeSet<_> = schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let required: BTreeSet<_> = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+
+    let mut required_with_additive = required.clone();
+    required_with_additive.insert("sauma".to_string());
+
+    assert_eq!(emitted_keys, property_keys);
+    assert_eq!(emitted_keys, required_with_additive);
+    assert!(!required.contains("sauma"));
+}
+
+#[test]
+fn sauma_schema_matches_emitted_envelope_fields() {
+    use std::collections::BTreeSet;
+
+    let schema: serde_json::Value = serde_json::from_str(SAUMA_SCHEMA).unwrap();
+    assert_eq!(
+        schema["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert_eq!(schema["$id"], "docs/schemas/sauma-envelope.v1.schema.json");
+    assert_eq!(schema["additionalProperties"], false);
+
+    let envelope = toimija::sauma::envelope(
+        "handoff-record.v1",
+        "{}",
+        vec![toimija::sauma::SaumaProvenance::Token {
+            token: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+        }],
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        Some("100-1".to_string()),
+    );
+    let emitted = serde_json::to_value(envelope).unwrap();
     let emitted_keys: BTreeSet<_> = emitted.as_object().unwrap().keys().cloned().collect();
     let property_keys: BTreeSet<_> = schema["properties"]
         .as_object()
