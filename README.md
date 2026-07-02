@@ -145,9 +145,13 @@ handshake — the only signal `run` injects into the child:
 | Variable | Meaning |
 | --- | --- |
 | `TOIMIJA_RUN=1` | The agent is under `run`; a watcher is keeping the packet fresh. |
-| `TOIMIJA_SESSION` | This session's id (`<unix-secs>-<pid>`). |
+| `TOIMIJA_SESSION` | This session's id (`<unix-secs>-<pid>`). `toimija intent`, `enter`, and `refresh` use it to find the session. |
 | `TOIMIJA_LIVE` | Absolute path to this session's live `current.md` (authoritative). |
 | `TOIMIJA_LIVE_JSON` | Absolute path to this session's live `current.json`. |
+| `TOIMIJA_CURRENT_MD` | Alias of `TOIMIJA_LIVE`, for harnesses that key on the file name. |
+| `TOIMIJA_CURRENT_JSON` | Alias of `TOIMIJA_LIVE_JSON`. |
+| `TOIMIJA_REPO_ROOT` | Absolute path of the repo root the session runs in. |
+| `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
 | `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
 
 An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after Git-state
