@@ -11,8 +11,8 @@
 *Toimija* is Finnish for "the one who acts" — an actor, an agent, an operative.
 This Toimija is the layer between a repo and the agents acting on it.
 
-Instead of running `codex` directly, run `toimija run -- codex`.
-Instead of running `claude` directly, run `toimija run -- claude`.
+Instead of running `codex` directly, run `toimija run codex`.
+Instead of running `claude` directly, run `toimija run claude`.
 
 Toimija refreshes the repo context, writes `.toimija/current.md` and
 `.toimija/current.json`, starts a watcher, launches the agent, keeps the packet
@@ -26,7 +26,7 @@ fresh while the agent works, and exits with the wrapped command's status.
 cargo install --path .          # or grab the release artifact
 cd /path/to/repo
 toimija init                    # once per repo: seed .toimija/repo.yaml
-toimija run -- claude           # every time: wrap the agent
+toimija run claude              # every time: wrap the agent
 ```
 
 ```text
@@ -106,12 +106,12 @@ Git is not a save button here. Git is the substrate.
 
 ```bash
 cd /path/to/repo
-toimija run -- codex
+toimija run codex
 ```
 
 ```bash
 cd /path/to/repo
-toimija run -- claude
+toimija run claude
 ```
 
 `run` is the recommended agent entrypoint. It runs `enter`, starts `watch`,
@@ -120,7 +120,7 @@ agent command's exit status (signal termination is preserved too, e.g. SIGTERM �
 143).
 
 ```text
-toimija run --intent "fix #51" -- codex
+toimija run --intent "fix #51" codex
  │
  ├─ 0  GC     prune closed/stale sessions past the 7-day retention (best-effort)
  ├─ 1  enter  open .toimija/sessions/<id>/ · write the session packet + marker
@@ -130,6 +130,9 @@ toimija run --intent "fix #51" -- codex
  └─ 5  exit   close the marker · print a Git entry→exit summary · adopt codex's
               exit code (128+signal preserved)
 ```
+
+Use `--` before the wrapped command when you need to pass flags through
+unambiguously, for example `toimija run -- codex --help`.
 
 Each `run` opens a **session** with its own live packet under
 `.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
@@ -174,7 +177,7 @@ Declare why you're here (and optionally what you'll touch) when you launch — i
 advisory, never an assignment or a lock:
 
 ```bash
-toimija run --intent "add sessions command" --scope src/sessions.rs -- codex
+toimija run --intent "add sessions command" --scope src/sessions.rs codex
 ```
 
 The wrapped agent can also speak for itself, mid-session — it finds its own
@@ -340,9 +343,9 @@ nothing reads repo state on faith.
 Ordered by workflow:
 
 ```bash
-toimija run -- codex       # agent entrypoint
-toimija run -- claude
-toimija run --intent "..." --scope src/x.rs -- codex  # declare why / what (advisory)
+toimija run codex          # agent entrypoint
+toimija run claude
+toimija run --intent "..." --scope src/x.rs codex  # declare why / what (advisory)
 toimija sessions           # who else is live in this repo (read-only awareness)
 toimija intent "..."       # wrapped agent declares why it is here (via TOIMIJA_SESSION)
 toimija handoff "..."      # wrapped agent appends a session handoff record
@@ -363,7 +366,7 @@ toimija init               # create .toimija/repo.yaml if missing
 
 | Command | What it does |
 |---|---|
-| `run -- <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent`/`--scope` declare why/what (advisory). |
+| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. Use `--` before child flags when needed. `--intent`/`--scope` declare why/what (advisory). |
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` removes closed/stale sessions past the 7-day retention. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `handoff ["<note>"]` | Wrapped agent appends an explicit JSONL handoff record for its own session. `--show <id>` reads records, including closed sessions; `--json` emits the written record or all shown records. |
