@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "docs/schemas/handoff-record.v1.schema.json",
+  "$id": "https://false.systems/schemas/handoff-record.v1.schema.json",
   "title": "Toimija handoff record v1",
   "description": "A Toimija session handoff record. Evolution rules: new optional fields are additive within v1; any breaking change requires docs/schemas/handoff-record.v2.schema.json plus a version bump. Readers must tolerate unknown optional fields, matching SessionMarker's additive reader discipline.",
   "type": "object",
@@ -179,7 +179,7 @@
     },
     "sauma": {
       "description": "Optional Sauma attestation envelope for newly emitted records. Old v1 records omit it and remain valid.",
-      "$ref": "sauma-envelope.v1.schema.json"
+      "$ref": "https://false.systems/schemas/sauma-envelope.v1.schema.json"
     }
   }
 }

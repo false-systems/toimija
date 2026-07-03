@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+use crate::consistency;
 
 pub const ENVELOPE_SCHEMA: &str = "sauma-envelope.v1";
 pub const TOOL: &str = "toimija";
@@ -30,14 +31,46 @@ pub struct SaumaProducer {
 }
 
 pub fn digest_json(json: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(json.as_bytes());
-    format!("sha256:{:x}", hasher.finalize())
+    consistency::hash_bytes(json.as_bytes())
 }
 
-pub fn envelope(
+pub trait Carrier: Serialize {
+    fn sauma_mut(&mut self) -> &mut Option<SaumaEnvelope>;
+}
+
+pub fn attach<T: Carrier>(
+    artifact: &mut T,
     schema: &str,
-    artifact_json_without_sauma: &str,
+    provenance: Vec<SaumaProvenance>,
+    anchored_at: &str,
+    run: Option<String>,
+) -> serde_json::Result<()> {
+    *artifact.sauma_mut() = None;
+    let canonical = serde_json::to_string(artifact)?;
+    *artifact.sauma_mut() = Some(envelope_from_canonical(
+        schema,
+        &canonical,
+        provenance,
+        anchored_at,
+        run,
+    ));
+    Ok(())
+}
+
+pub fn verify<T: Carrier>(artifact: &mut T) -> serde_json::Result<Option<(String, String)>> {
+    let Some(envelope) = artifact.sauma_mut().clone() else {
+        return Ok(None);
+    };
+    *artifact.sauma_mut() = None;
+    let canonical = serde_json::to_string(artifact)?;
+    *artifact.sauma_mut() = Some(envelope.clone());
+    let actual = digest_json(&canonical);
+    Ok((actual != envelope.digest).then_some((envelope.digest, actual)))
+}
+
+pub fn envelope_from_canonical(
+    schema: &str,
+    canonical_json_without_sauma: &str,
     provenance: Vec<SaumaProvenance>,
     anchored_at: &str,
     run: Option<String>,
@@ -45,7 +78,7 @@ pub fn envelope(
     SaumaEnvelope {
         envelope: ENVELOPE_SCHEMA.to_string(),
         schema: schema.to_string(),
-        digest: digest_json(artifact_json_without_sauma),
+        digest: digest_json(canonical_json_without_sauma),
         provenance,
         producer: SaumaProducer {
             tool: TOOL.to_string(),
@@ -54,6 +87,22 @@ pub fn envelope(
         },
         anchored_at: anchored_at.to_string(),
     }
+}
+
+pub fn envelope(
+    schema: &str,
+    canonical_json_without_sauma: &str,
+    provenance: Vec<SaumaProvenance>,
+    anchored_at: &str,
+    run: Option<String>,
+) -> SaumaEnvelope {
+    envelope_from_canonical(
+        schema,
+        canonical_json_without_sauma,
+        provenance,
+        anchored_at,
+        run,
+    )
 }
 
 #[cfg(test)]

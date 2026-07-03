@@ -33,7 +33,10 @@ fn handoff_schema_matches_emitted_record_fields() {
         schema["$schema"],
         "https://json-schema.org/draft/2020-12/schema"
     );
-    assert_eq!(schema["$id"], "docs/schemas/handoff-record.v1.schema.json");
+    assert_eq!(
+        schema["$id"],
+        "https://false.systems/schemas/handoff-record.v1.schema.json"
+    );
     assert_eq!(schema["additionalProperties"], false);
 
     let record = toimija::handoff::HandoffRecord {
@@ -105,7 +108,10 @@ fn sauma_schema_matches_emitted_envelope_fields() {
         schema["$schema"],
         "https://json-schema.org/draft/2020-12/schema"
     );
-    assert_eq!(schema["$id"], "docs/schemas/sauma-envelope.v1.schema.json");
+    assert_eq!(
+        schema["$id"],
+        "https://false.systems/schemas/sauma-envelope.v1.schema.json"
+    );
     assert_eq!(schema["additionalProperties"], false);
 
     let envelope = toimija::sauma::envelope(
@@ -135,4 +141,33 @@ fn sauma_schema_matches_emitted_envelope_fields() {
 
     assert_eq!(emitted_keys, property_keys);
     assert_eq!(emitted_keys, required);
+    assert_object_shape(&emitted, &schema);
+    assert_object_shape(&emitted["producer"], &schema["properties"]["producer"]);
+    for variant in schema["$defs"]["provenance"]["oneOf"].as_array().unwrap() {
+        assert_eq!(variant["additionalProperties"], false);
+        assert_eq!(
+            keys(&variant["properties"]),
+            required_set(variant),
+            "provenance variant properties must be exactly required"
+        );
+    }
+}
+
+fn assert_object_shape(emitted: &serde_json::Value, schema: &serde_json::Value) {
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(keys(emitted), keys(&schema["properties"]));
+    assert_eq!(keys(emitted), required_set(schema));
+}
+
+fn keys(value: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    value.as_object().unwrap().keys().cloned().collect()
+}
+
+fn required_set(schema: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect()
 }

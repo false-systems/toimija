@@ -168,6 +168,14 @@ fn refresh_writes_current_md_and_json() {
     assert!(value["consistency"]["head"]["kind"].is_string());
     assert!(value["consistency"]["git_operation"]["kind"].is_string());
     assert!(value["consistency"]["conflict_state"]["has_conflicts"].is_boolean());
+
+    let mut packet: toimija::context::ContextPacket =
+        serde_json::from_str(&json).expect("current.json must match the packet type");
+    assert_eq!(
+        toimija::sauma::verify(&mut packet).unwrap(),
+        None,
+        "pretty on-disk current.json must reproduce its sauma digest via canonical serialization"
+    );
 }
 
 #[test]

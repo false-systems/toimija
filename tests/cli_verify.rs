@@ -123,6 +123,33 @@ fn verify_distinguishes_missing_and_unsupported_consistency() {
 }
 
 #[test]
+fn verify_rejects_a_forged_sauma_digest() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+    let path = temp.path().join(".toimija/current.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    value["sauma"]["digest"] = serde_json::json!(
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    );
+    fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let assert = toimija(temp.path())
+        .args(["current", "--verify", "--json"])
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "sauma_digest_mismatch");
+}
+
+#[test]
 fn staged_and_deleted_and_renamed_changes_are_stale() {
     if !git_available() {
         return;

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "docs/schemas/sauma-envelope.v1.schema.json",
+  "$id": "https://false.systems/schemas/sauma-envelope.v1.schema.json",
   "title": "Sauma attestation envelope v1",
-  "description": "A Sauma envelope attests one local artifact without indexing or persistence. Evolution rules: new optional fields are additive within v1; any breaking change requires docs/schemas/sauma-envelope.v2.schema.json plus a new envelope id. The digest is sha256 over the artifact JSON serialized without its sauma field; serde struct field order is the canonical order for Toimija-emitted v1 artifacts.",
+  "description": "A Sauma envelope attests one local artifact without indexing or persistence. Evolution rules: new optional fields are additive within v1; any breaking change requires docs/schemas/sauma-envelope.v2.schema.json plus a new envelope id. The digest is sha256 over the canonical artifact JSON: parse the artifact into its typed structure, set its sauma field to None, then serialize with compact serde_json::to_string as UTF-8 using serde struct field order and skip_serializing_if omissions.",
   "type": "object",
   "additionalProperties": false,
   "required": [

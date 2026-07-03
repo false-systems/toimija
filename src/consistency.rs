@@ -265,7 +265,7 @@ fn metadata(repo_root: &Path, path: &Path) -> String {
 
 /// `sha256:<hex>` over raw bytes — the content address of a file (or a symlink
 /// target). Toimija's own digest, so it need not match git's blob hashing.
-fn hash_bytes(bytes: &[u8]) -> String {
+pub(crate) fn hash_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("sha256:{:x}", hasher.finalize())
@@ -307,7 +307,7 @@ fn status(status: &ChangeStatus) -> String {
 /// self-invalidate the packet. The tracked manifest `.toimija/repo.yaml` is
 /// deliberately NOT generated — a change to it is a real change the packet
 /// should reflect.
-fn is_generated_output(path: &Path) -> bool {
+pub(crate) fn is_generated_output(path: &Path) -> bool {
     let mut components = path.components().map(|c| c.as_os_str().to_str());
     if components.next() != Some(Some(".toimija")) {
         return false;
