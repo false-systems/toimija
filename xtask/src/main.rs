@@ -10,11 +10,12 @@
 //! cargo xtask install-pre-commit-hook
 //! ```
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::{collections::HashSet, collections::VecDeque};
 
 use anyhow::{bail, Result};
 use devx_pre_commit::{install_self_as_hook, locate_project_root, PreCommitContext};
@@ -123,45 +124,111 @@ enum Provenance {
 
 fn run_sauma_why(query: &str) -> Result<()> {
     let root = locate_project_root()?;
-    let artifacts = scan_artifacts(&root)?;
-    let mut queue: VecDeque<usize> = artifacts
-        .iter()
-        .enumerate()
-        .filter_map(|(index, artifact)| touches(artifact, query).then_some(index))
-        .collect();
+    print!("{}", render_sauma_why(&root, query)?);
+    Ok(())
+}
+
+fn render_sauma_why(root: &Path, query: &str) -> Result<String> {
+    let artifacts = scan_artifacts(root)?;
+    let roots = chain_roots(&artifacts, query);
+    let mut output = String::new();
     let mut seen = HashSet::new();
-    while let Some(index) = queue.pop_front() {
-        if !seen.insert(index) {
-            continue;
-        }
-        let artifact = &artifacts[index];
-        println!(
-            "{} {} ({}, {}) ← {}{}",
-            artifact.schema,
-            short(&artifact.digest),
-            artifact.producer,
-            short(&artifact.anchored_at),
-            artifact
-                .edges
-                .first()
-                .map(|edge| short(edge))
-                .unwrap_or_else(|| "root".to_string()),
-            if artifact.verified {
-                ""
-            } else {
-                " [digest mismatch]"
-            }
-        );
-        for edge in &artifact.edges {
-            for (next, candidate) in artifacts.iter().enumerate() {
-                if candidate.digest == *edge || candidate.anchored_at == *edge {
-                    queue.push_back(next);
-                }
-            }
+    for root in roots {
+        render_chain(&mut output, &artifacts, root, 0, &mut seen)?;
+    }
+    for (index, artifact) in artifacts.iter().enumerate() {
+        if !artifact.verified && touches(artifact, query) && seen.insert(index) {
+            render_artifact(&mut output, artifact, 0)?;
         }
     }
     if seen.is_empty() {
-        println!("no sauma chain touches {query}");
+        writeln!(output, "no sauma chain touches {query}")?;
+    }
+    Ok(output)
+}
+
+fn chain_roots(artifacts: &[Artifact], query: &str) -> Vec<usize> {
+    let touched: HashSet<usize> = artifacts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, artifact)| {
+            (artifact.verified && touches(artifact, query)).then_some(index)
+        })
+        .collect();
+    let mut roots: Vec<usize> = touched
+        .iter()
+        .copied()
+        .filter(|index| {
+            !touched
+                .iter()
+                .any(|parent| parent != index && links_to(&artifacts[*index], &artifacts[*parent]))
+        })
+        .collect();
+    roots.sort_by_key(|index| {
+        (
+            artifacts[*index].schema != toimija::context::CONTEXT_SCHEMA,
+            *index,
+        )
+    });
+    roots
+}
+
+fn render_chain(
+    output: &mut String,
+    artifacts: &[Artifact],
+    index: usize,
+    depth: usize,
+    seen: &mut HashSet<usize>,
+) -> Result<()> {
+    if !seen.insert(index) {
+        return Ok(());
+    }
+    render_artifact(output, &artifacts[index], depth)?;
+    let mut children: Vec<usize> = artifacts
+        .iter()
+        .enumerate()
+        .filter_map(|(child, artifact)| {
+            (artifact.verified && child != index && links_to(artifact, &artifacts[index]))
+                .then_some(child)
+        })
+        .collect();
+    children.sort_unstable();
+    for child in children {
+        render_chain(output, artifacts, child, depth + 1, seen)?;
+    }
+    Ok(())
+}
+
+fn links_to(child: &Artifact, parent: &Artifact) -> bool {
+    child.edges.iter().any(|edge| {
+        edge == &parent.digest
+            || (parent.schema == toimija::context::CONTEXT_SCHEMA && edge == &parent.anchored_at)
+    })
+}
+
+fn render_artifact(output: &mut String, artifact: &Artifact, depth: usize) -> Result<()> {
+    for _ in 0..depth {
+        output.push_str("  ");
+    }
+    if depth > 0 {
+        output.push_str("← ");
+    }
+    write!(
+        output,
+        "{} {} ({}, ",
+        artifact.schema,
+        short(&artifact.digest),
+        artifact.producer
+    )?;
+    if depth > 0 {
+        write!(output, "anchored {}", short(&artifact.anchored_at))?;
+    } else {
+        write!(output, "{}", short(&artifact.anchored_at))?;
+    }
+    if !artifact.verified {
+        output.push_str(") [digest mismatch]\n");
+    } else {
+        output.push_str(")\n");
     }
     Ok(())
 }
@@ -201,7 +268,6 @@ fn scan_artifacts(root: &Path) -> Result<Vec<Artifact>> {
             for line in raw.lines() {
                 collect_artifact(line, &mut artifacts)?;
             }
-            collect_artifact(&raw, &mut artifacts)?;
         } else {
             collect_artifact(&raw, &mut artifacts)?;
         }
@@ -303,4 +369,117 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use toimija::command::ProcessCommandRunner;
+
+    #[test]
+    fn renders_cross_tool_chain_and_reports_tampering() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = temp_repo("sauma-crosstool");
+        init_git(&root);
+        write_context_packet(&root);
+        let packet: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join(".toimija/current.json")).unwrap())
+                .unwrap();
+        let token = packet["consistency"]["token"].as_str().unwrap();
+        let model_call = kisko_event(token, false);
+        fs::create_dir_all(root.join(".toimija/runs")).unwrap();
+        fs::write(
+            root.join(".toimija/runs/x.jsonl"),
+            format!("{}\n", serde_json::to_string(&model_call).unwrap()),
+        )
+        .unwrap();
+
+        let output = render_sauma_why(&root, token).unwrap();
+        assert!(output.contains("toimija-context.v1"));
+        assert!(output.contains("  ← kisko-model-call.v1"));
+        assert!(!output.contains("digest mismatch"));
+
+        let tampered = kisko_event(token, true);
+        fs::write(
+            root.join(".toimija/runs/x.jsonl"),
+            format!("{}\n", serde_json::to_string(&tampered).unwrap()),
+        )
+        .unwrap();
+        let output = render_sauma_why(&root, token).unwrap();
+        assert!(output.contains("toimija-context.v1"));
+        assert!(output.contains("kisko-model-call.v1"));
+        assert!(output.contains("digest mismatch"));
+        assert!(!output.contains("  ← kisko-model-call.v1"));
+    }
+
+    fn temp_repo(name: &str) -> PathBuf {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{name}-{id}"));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn init_git(root: &Path) {
+        git(root, &["init"]);
+        git(root, &["config", "user.email", "toimija@example.invalid"]);
+        git(root, &["config", "user.name", "Toimija Test"]);
+        fs::write(root.join("README.md"), "# Demo\n").unwrap();
+        git(root, &["add", "README.md"]);
+        git(root, &["commit", "-m", "initial"]);
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn write_context_packet(root: &Path) {
+        let runner = ProcessCommandRunner;
+        let mut packet = toimija::context::build_context_packet(&runner, root, true).unwrap();
+        packet.attach_sauma(None).unwrap();
+        fs::create_dir_all(root.join(".toimija")).unwrap();
+        fs::write(
+            root.join(".toimija/current.json"),
+            serde_json::to_string_pretty(&packet).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn kisko_event(token: &str, tamper_digest: bool) -> serde_json::Value {
+        let mut event = json!({
+            "schema": "kisko-model-call.v1",
+            "payload": {
+                "model": "test-model",
+                "request": "review"
+            },
+            "sauma": null
+        });
+        event.as_object_mut().unwrap().swap_remove("sauma");
+        let digest = toimija::sauma::digest_json(&serde_json::to_string(&event).unwrap());
+        event["sauma"] = json!({
+            "envelope": "sauma-envelope.v1",
+            "schema": "kisko-model-call.v1",
+            "digest": if tamper_digest { "sha256:bad" } else { &digest },
+            "provenance": [],
+            "producer": {
+                "tool": "kisko",
+                "version": "0.0.0",
+                "run": "call-1"
+            },
+            "anchored_at": token
+        });
+        event
+    }
 }

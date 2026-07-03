@@ -706,6 +706,10 @@ The hook formats the staged Rust crates, re-stages the result, then runs
 commit if either fails — the same gates CI enforces. Re-run the command after
 editing `xtask`.
 
+`cargo xtask sauma-why <query>` is a dev-only provenance walker: it verifies
+local sauma artifacts, renders verified token/digest links as an indented chain,
+and reports digest mismatches without walking through them.
+
 ## Current limitations
 
 - Git state is collected through the Git CLI, not Git internals.
