@@ -604,9 +604,9 @@ mod tests {
         let digest = envelope.digest.clone();
         let mut stripped = packet.clone();
         stripped.sauma = None;
-        let json_without_sauma = serde_json::to_string(&stripped).unwrap();
+        let value = serde_json::to_value(&stripped).unwrap();
 
-        assert_eq!(crate::sauma::digest_json(&json_without_sauma), digest);
+        assert_eq!(crate::sauma::digest_value(&value), digest);
         assert_eq!(envelope.schema, CONTEXT_SCHEMA);
         assert_eq!(envelope.producer.run.as_deref(), Some("100-1"));
         assert_eq!(

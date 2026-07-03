@@ -347,8 +347,7 @@ fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
     if let serde_json::Value::Object(object) = &mut value {
         object.swap_remove("sauma");
     }
-    let canonical = serde_json::to_string(&value)?;
-    let actual = toimija::sauma::digest_json(&canonical);
+    let actual = toimija::sauma::digest_value(&value);
     let edges: Vec<String> = envelope
         .provenance
         .into_iter()
@@ -515,7 +514,7 @@ mod tests {
             "sauma": null
         });
         event.as_object_mut().unwrap().swap_remove("sauma");
-        let digest = toimija::sauma::digest_json(&serde_json::to_string(&event).unwrap());
+        let digest = toimija::sauma::digest_value(&event);
         event["sauma"] = json!({
             "envelope": "sauma-envelope.v1",
             "schema": "kisko-model-call.v1",
@@ -543,6 +542,6 @@ mod tests {
     fn digest_without_sauma(event: &serde_json::Value) -> String {
         let mut value = event.clone();
         value.as_object_mut().unwrap().swap_remove("sauma");
-        toimija::sauma::digest_json(&serde_json::to_string(&value).unwrap())
+        toimija::sauma::digest_value(&value)
     }
 }

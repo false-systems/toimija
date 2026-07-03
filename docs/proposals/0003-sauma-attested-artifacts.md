@@ -57,8 +57,15 @@ Everything that crosses a layer boundary wears the same envelope
 
 - **`schema`** — every artifact already versions per the standing rule
   (handoff-record.v1, loop-protocol.v1, …). Sauma adds no new obligation.
-- **`digest`** — content-addressed over the stored bytes as stored (Git's
-  rule; no canonical-JSON scheme, no normalization pass).
+- **`digest`** — content-addressed over the artifact's **sauma canonical
+  form** (§9 D-P2): compact JSON with object keys sorted lexicographically at
+  every level, the top-level `sauma` field removed. Sorted keys + compact
+  spacing only — no number/unicode normalization. This one lightweight
+  canonicalization is what makes a digest *portable*: any walker verifies any
+  producer's artifact regardless of a crate's `serde_json` key ordering. (The
+  original "bytes as stored, no canonicalization" rule self-verified only
+  within one tool — the 2026-07-03 live walk proved cross-tool verification
+  needs a shared canonical form; §9.)
 - **`provenance`** — edges to what this artifact was derived from. The graph
   IS these fields; there is no other data structure.
 - **`anchored_at`** — the consistency token, for artifacts that assert
@@ -145,7 +152,10 @@ note per the drift guard — a decision, recorded, like every other one.
 
 ## 8. Non-goals
 
-A graph database, daemon, index, or service; canonical-JSON schemes; a
+A graph database, daemon, index, or service; heavy canonical-JSON schemes
+(JCS-style number/unicode normalization — the ONE permitted canonicalization
+is sorted-key compact JSON per §2/§9 D-P2, adopted 2026-07-03 for portable
+cross-tool digests); a
 shared runtime library in v1; Vaisto as a dependency; retroactive
 back-filling of history (the graph starts when the fields do); any weakening
 of the confirmed boundaries (no network, no dispatch, read-only kisko).
@@ -167,14 +177,20 @@ Locked:
 - **D-P1 — top-level placement.** The `sauma` envelope is a **top-level field
   on every artifact.** For a JSONL event stream, *each line is an artifact* and
   carries its own top-level `sauma`. No nesting under `payload`/`data`/etc.
-- **D-P2 — whole-artifact digest.** The digest is `sha256:` over
-  `serde_json::to_string(artifact)` with the **top-level `sauma` field
-  removed** — the entire artifact object minus its own envelope, compact,
-  with `serde_json::Value`'s default sorted-key ordering. Every producer
-  computes it identically, so any walker verifies any tool's artifact by the
-  same recompute. (This is what toimija already does for packet/handoff; kisko
-  must match — hoist the envelope out of `payload` and digest the whole event
-  line, not just the payload.)
+- **D-P2 — whole-artifact digest over the canonical form.** The digest is
+  `sha256:` over the artifact's **sauma canonical form**: compact JSON with
+  object keys sorted lexicographically **at every level**, the top-level
+  `sauma` field removed — the entire artifact minus its own envelope. Sorted
+  keys + compact spacing only; no number/unicode normalization. **A producer
+  must sort explicitly, not rely on its `serde_json` default** — toimija
+  enables `preserve_order` (Values keep insertion order) and structs serialize
+  in declaration order, so toimija routes every digest through
+  `sauma::canonical_json`; kisko's default `serde_json` already sorts, and adds
+  a conformance test pinning it to this rule. Because the form is defined
+  independently of any crate's key ordering, any walker verifies any producer's
+  artifact by the same recompute. (Adopted 2026-07-03 after the live walk found
+  toimija and kisko disagreeing on key order — the two-tool digest only matches
+  under an explicit shared canonicalization.)
 - **D-P2a — open provenance vocabulary.** `provenance[].kind` is open; the
   load-bearing edge value is a link such as `digest`, `token`, `oid`, `id`, or
   `ref`, and walkers must tolerate unknown kinds without failing the walk.

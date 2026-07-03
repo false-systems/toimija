@@ -460,9 +460,9 @@ mod tests {
         let digest = record.sauma.as_ref().unwrap().digest.clone();
         let mut stripped = record.clone();
         stripped.sauma = None;
-        let json_without_sauma = serde_json::to_string(&stripped).unwrap();
+        let value = serde_json::to_value(&stripped).unwrap();
 
-        assert_eq!(crate::sauma::digest_json(&json_without_sauma), digest);
+        assert_eq!(crate::sauma::digest_value(&value), digest);
     }
 
     #[test]
