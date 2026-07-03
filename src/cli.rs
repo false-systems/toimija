@@ -502,8 +502,9 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
 fn run_context(args: ContextArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let packet = context::build_context_packet(&runner, &cwd, args.for_diff)
+    let mut packet = context::build_context_packet(&runner, &cwd, args.for_diff)
         .context("failed to build context packet")?;
+    packet.attach_sauma(None)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&packet)?);
     } else {
@@ -1108,67 +1109,85 @@ fn compute_verify_status(runner: &ProcessCommandRunner, cwd: &std::path::Path) -
 }
 
 fn verify_status(repo_root: &std::path::Path, live: &git::GitState) -> VerifyStatus {
-    match load_stored_consistency(repo_root) {
-        StoredConsistency::Ready(stored) => match stored.verify(live) {
-            Verdict::Consistent => VerifyStatus::Verified {
-                algorithm: stored.algorithm,
-                token: stored.token,
-                head: stored.head,
-            },
-            Verdict::Stale {
-                packet_token,
-                current_token,
-            } => VerifyStatus::StalePacket {
-                packet_token,
-                current_token,
-            },
-            Verdict::UnsupportedConsistencyAlgorithm(algorithm) => {
-                VerifyStatus::UnsupportedConsistencyAlgorithm { algorithm }
+    match load_stored_packet(repo_root) {
+        StoredPacket::Ready(mut packet) => {
+            if packet.consistency.algorithm != CONSISTENCY_ALGORITHM {
+                return VerifyStatus::UnsupportedConsistencyAlgorithm {
+                    algorithm: packet.consistency.algorithm,
+                };
             }
-            Verdict::UnsafeGitOperation(operation) => VerifyStatus::UnsafeGitOperation {
-                operation,
-                message: "Repository is in an unsafe Git operation. Finish or abort it before running an agent harness.".to_string(),
-            },
-        },
-        StoredConsistency::MissingPacket => VerifyStatus::MissingPacket {
+            match crate::sauma::verify(packet.as_mut()) {
+                Ok(Some((expected, actual))) => {
+                    return VerifyStatus::SaumaDigestMismatch { expected, actual };
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return VerifyStatus::InvalidPacket {
+                        message: error.to_string(),
+                    };
+                }
+            }
+            let stored = packet.consistency;
+            match stored.verify(live) {
+                Verdict::Consistent => VerifyStatus::Verified {
+                    algorithm: stored.algorithm,
+                    token: stored.token,
+                    head: stored.head,
+                },
+                Verdict::Stale {
+                    packet_token,
+                    current_token,
+                } => VerifyStatus::StalePacket {
+                    packet_token,
+                    current_token,
+                },
+                Verdict::UnsupportedConsistencyAlgorithm(algorithm) => {
+                    VerifyStatus::UnsupportedConsistencyAlgorithm { algorithm }
+                }
+                Verdict::UnsafeGitOperation(operation) => VerifyStatus::UnsafeGitOperation {
+                    operation,
+                    message: "Repository is in an unsafe Git operation. Finish or abort it before running an agent harness.".to_string(),
+                },
+            }
+        }
+        StoredPacket::MissingPacket => VerifyStatus::MissingPacket {
             path: repo_root.join(refresh::CURRENT_JSON).display().to_string(),
         },
-        StoredConsistency::InvalidPacket(message) => VerifyStatus::InvalidPacket { message },
-        StoredConsistency::MissingConsistency => VerifyStatus::MissingConsistency,
-        StoredConsistency::IoError(message) => VerifyStatus::IoError { message },
+        StoredPacket::InvalidPacket(message) => VerifyStatus::InvalidPacket { message },
+        StoredPacket::MissingConsistency => VerifyStatus::MissingConsistency,
+        StoredPacket::IoError(message) => VerifyStatus::IoError { message },
     }
 }
 
-enum StoredConsistency {
-    Ready(Consistency),
+enum StoredPacket {
+    Ready(Box<context::ContextPacket>),
     MissingPacket,
     InvalidPacket(String),
     MissingConsistency,
     IoError(String),
 }
 
-fn load_stored_consistency(repo_root: &std::path::Path) -> StoredConsistency {
-    #[derive(serde::Deserialize)]
-    struct Stored {
-        #[serde(default)]
-        consistency: Option<Consistency>,
-    }
+fn load_stored_packet(repo_root: &std::path::Path) -> StoredPacket {
     let path = repo_root.join(refresh::CURRENT_JSON);
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return StoredConsistency::MissingPacket;
+            return StoredPacket::MissingPacket;
         }
-        Err(error) => return StoredConsistency::IoError(error.to_string()),
+        Err(error) => return StoredPacket::IoError(error.to_string()),
     };
-    let stored: Stored = match serde_json::from_str(&raw) {
-        Ok(stored) => stored,
-        Err(error) => return StoredConsistency::InvalidPacket(error.to_string()),
+    let value: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => return StoredPacket::InvalidPacket(error.to_string()),
     };
-    match stored.consistency {
-        Some(consistency) => StoredConsistency::Ready(consistency),
-        None => StoredConsistency::MissingConsistency,
+    if value.get("consistency").is_none() {
+        return StoredPacket::MissingConsistency;
     }
+    let packet: context::ContextPacket = match serde_json::from_value(value) {
+        Ok(packet) => packet,
+        Err(error) => return StoredPacket::InvalidPacket(error.to_string()),
+    };
+    StoredPacket::Ready(Box::new(packet))
 }
 
 #[derive(serde::Serialize)]
@@ -1192,6 +1211,10 @@ enum VerifyStatus {
     StalePacket {
         packet_token: String,
         current_token: String,
+    },
+    SaumaDigestMismatch {
+        expected: String,
+        actual: String,
     },
     UnsafeGitOperation {
         operation: GitOperationState,
@@ -1257,6 +1280,9 @@ impl VerifyStatus {
             VerifyStatus::StalePacket { .. } => {
                 "stale_packet: repository changed after .toimija/current.json was generated"
                     .to_string()
+            }
+            VerifyStatus::SaumaDigestMismatch { .. } => {
+                "sauma_digest_mismatch: .toimija/current.json was tampered with".to_string()
             }
             VerifyStatus::UnsafeGitOperation { message, .. } => {
                 format!("unsafe_git_operation: {message}")

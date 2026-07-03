@@ -210,22 +210,21 @@ impl HandoffRecord {
     }
 
     fn attach_sauma(&mut self) -> serde_json::Result<()> {
-        self.sauma = None;
-        let json_without_sauma = serde_json::to_string(self)?;
         let mut provenance = vec![SaumaProvenance::Token {
             token: self.consistency_token.clone(),
         }];
         if let Some(oid) = self.head.clone() {
             provenance.push(SaumaProvenance::Git { oid });
         }
-        self.sauma = Some(sauma::envelope(
-            "handoff-record.v1",
-            &json_without_sauma,
-            provenance,
-            &self.consistency_token,
-            Some(self.session_id.clone()),
-        ));
-        Ok(())
+        let token = self.consistency_token.clone();
+        let run = Some(self.session_id.clone());
+        sauma::attach(self, "handoff-record.v1", provenance, &token, run)
+    }
+}
+
+impl sauma::Carrier for HandoffRecord {
+    fn sauma_mut(&mut self) -> &mut Option<SaumaEnvelope> {
+        &mut self.sauma
     }
 }
 

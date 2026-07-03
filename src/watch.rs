@@ -8,7 +8,7 @@
 //! the live packet — `.toimija/current.*`, or a per-session
 //! `.toimija/sessions/<id>/current.*` under `run` — never re-triggers a refresh.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use notify::{Event, RecursiveMode, Watcher};
 
 use crate::command::CommandRunner;
-use crate::refresh;
+use crate::{consistency, refresh};
 
 /// Coalesce a burst of events for this long before refreshing once.
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -124,12 +124,11 @@ fn relevant(event: &Event) -> bool {
     event.paths.iter().any(|path| !is_ignored(path))
 }
 
-/// Ignore the live files and per-session output (so our own writes never
-/// re-trigger) and anything under a build/vendor directory. Matched on path
-/// tails/components so it is robust to the absolute, possibly symlink-resolved
-/// paths notify reports.
+/// Ignore generated Toimija output (so our own writes never re-trigger) and
+/// anything under a build/vendor directory. Matched on path tails/components so
+/// it is robust to the absolute, possibly symlink-resolved paths notify reports.
 fn is_ignored(path: &Path) -> bool {
-    if is_live_file(path) || is_in_sessions(path) {
+    if is_generated_output(path) {
         return true;
     }
     path.components().any(|component| {
@@ -137,30 +136,18 @@ fn is_ignored(path: &Path) -> bool {
     })
 }
 
-/// Anything under `.toimija/sessions/` is Toimija's own per-session output;
-/// refreshing a session packet must not re-trigger the watch. Matched on the
-/// contiguous `.toimija/sessions` component pair so it survives absolute paths.
-fn is_in_sessions(path: &Path) -> bool {
-    let names: Vec<&str> = path
+fn is_generated_output(path: &Path) -> bool {
+    let parts: Vec<_> = path
         .components()
         .filter_map(|component| match component {
             Component::Normal(name) => name.to_str(),
             _ => None,
         })
         .collect();
-    names
-        .windows(2)
-        .any(|pair| pair == [".toimija", "sessions"])
-}
-
-fn is_live_file(path: &Path) -> bool {
-    let in_toimija = path
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        == Some(".toimija");
-    let name = path.file_name().and_then(|name| name.to_str());
-    in_toimija && matches!(name, Some("current.md") | Some("current.json"))
+    parts
+        .iter()
+        .position(|part| *part == ".toimija")
+        .is_some_and(|index| consistency::is_generated_output(&PathBuf::from_iter(&parts[index..])))
 }
 
 #[cfg(test)]
@@ -186,6 +173,14 @@ mod tests {
             "/repo/.toimija/sessions/1782608449-66987/session.json"
         )));
         // Config under .toimija still matters and must NOT be ignored.
+        assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
+    }
+
+    #[test]
+    fn runs_output_is_ignored_but_repo_yaml_is_not() {
+        assert!(is_ignored(&PathBuf::from(
+            "/repo/.toimija/runs/kisko.jsonl"
+        )));
         assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
     }
 
