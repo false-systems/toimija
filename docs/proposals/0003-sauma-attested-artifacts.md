@@ -186,3 +186,6 @@ Implementation split: kisko `prompts/codex_sauma_placement.md` (D-P1/D-P2 on the
 transcript event), toimija `docs/prompts/codex-sauma-crosstool-walk.md` (ingest
 + verify + render the cross-tool chain). No boundary change — schema evolution
 within existing scope, as §7.
+
+Status note, 2026-07-03: cross-tool walk lands; gate D-P3 met when kisko's
+placement fix merges.
