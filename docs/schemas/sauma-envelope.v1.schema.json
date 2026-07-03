@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://false.systems/schemas/sauma-envelope.v1.schema.json",
   "title": "Sauma attestation envelope v1",
-  "description": "A Sauma envelope attests one local artifact without indexing or persistence. Evolution rules: new optional fields are additive within v1; any breaking change requires docs/schemas/sauma-envelope.v2.schema.json plus a new envelope id. The digest is sha256 over the canonical artifact JSON: parse the artifact into its typed structure, set its sauma field to None, then serialize with compact serde_json::to_string as UTF-8 using serde struct field order and skip_serializing_if omissions.",
+  "description": "A Sauma envelope attests one local artifact without indexing or persistence. Evolution rules: new optional fields are additive within v1; provenance kind is an open enumeration and walkers must tolerate unknown kinds, using any digest/token/oid/id/ref linking value they understand. Any breaking change requires docs/schemas/sauma-envelope.v2.schema.json plus a new envelope id. The digest is sha256 over the canonical artifact JSON: parse the artifact into its typed structure, set its sauma field to None, then serialize with compact serde_json::to_string as UTF-8 using serde struct field order and skip_serializing_if omissions.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -29,7 +29,7 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "provenance": {
-      "description": "Edges this artifact was produced from: git oids, consistency tokens, or other artifact digests.",
+      "description": "Edges this artifact was produced from. Known kinds include git oids, consistency tokens, and other artifact digests; producers may emit other kind values, and walkers must ignore unknown edges they cannot link.",
       "type": "array",
       "items": { "$ref": "#/$defs/provenance" }
     },
@@ -98,6 +98,18 @@
               "description": "sha256-prefixed artifact digest.",
               "type": "string",
               "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "description": "Unknown provenance edge kind. Kind is open; walkers may use id-like fields when present.",
+              "type": "string",
+              "not": { "enum": ["git", "token", "artifact"] }
             }
           }
         }

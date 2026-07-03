@@ -144,12 +144,20 @@ fn sauma_schema_matches_emitted_envelope_fields() {
     assert_object_shape(&emitted, &schema);
     assert_object_shape(&emitted["producer"], &schema["properties"]["producer"]);
     for variant in schema["$defs"]["provenance"]["oneOf"].as_array().unwrap() {
-        assert_eq!(variant["additionalProperties"], false);
-        assert_eq!(
-            keys(&variant["properties"]),
-            required_set(variant),
-            "provenance variant properties must be exactly required"
-        );
+        if variant["additionalProperties"] == false {
+            assert_eq!(
+                keys(&variant["properties"]),
+                required_set(variant),
+                "provenance variant properties must be exactly required"
+            );
+        } else {
+            assert_eq!(variant["additionalProperties"], true);
+            assert_eq!(variant["required"], serde_json::json!(["kind"]));
+            assert_eq!(
+                variant["properties"]["kind"]["not"]["enum"],
+                serde_json::json!(["git", "token", "artifact"])
+            );
+        }
     }
 }
 
