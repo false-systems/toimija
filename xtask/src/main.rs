@@ -114,12 +114,54 @@ struct Producer {
     run: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug)]
 enum Provenance {
-    Git { oid: String },
-    Token { token: String },
-    Artifact { digest: String },
+    Git(String),
+    Token(String),
+    Artifact(String),
+    Other(Option<String>),
+}
+
+impl<'de> Deserialize<'de> for Provenance {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let kind = value.get("kind").and_then(serde_json::Value::as_str);
+        Ok(match kind {
+            Some("git") => link_field(&value, "oid").map_or_else(|| Self::Other(None), Self::Git),
+            Some("token") => {
+                link_field(&value, "token").map_or_else(|| Self::Other(None), Self::Token)
+            }
+            Some("artifact") => {
+                link_field(&value, "digest").map_or_else(|| Self::Other(None), Self::Artifact)
+            }
+            _ => Self::Other(first_link_field(&value)),
+        })
+    }
+}
+
+impl Provenance {
+    fn link(self) -> Option<String> {
+        match self {
+            Self::Git(value) | Self::Token(value) | Self::Artifact(value) => Some(value),
+            Self::Other(value) => value,
+        }
+    }
+}
+
+fn link_field(value: &serde_json::Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn first_link_field(value: &serde_json::Value) -> Option<String> {
+    ["digest", "token", "oid", "id", "ref"]
+        .iter()
+        .find_map(|field| link_field(value, field))
 }
 
 fn run_sauma_why(query: &str) -> Result<()> {
@@ -200,6 +242,13 @@ fn render_chain(
 }
 
 fn links_to(child: &Artifact, parent: &Artifact) -> bool {
+    if child.anchored_at == parent.anchored_at
+        && !child.anchored_at.is_empty()
+        && parent.schema == toimija::context::CONTEXT_SCHEMA
+        && child.schema != toimija::context::CONTEXT_SCHEMA
+    {
+        return true;
+    }
     child.edges.iter().any(|edge| {
         edge == &parent.digest
             || (parent.schema == toimija::context::CONTEXT_SCHEMA && edge == &parent.anchored_at)
@@ -300,16 +349,11 @@ fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
     }
     let canonical = serde_json::to_string(&value)?;
     let actual = toimija::sauma::digest_json(&canonical);
-    let mut edges: Vec<String> = envelope
+    let edges: Vec<String> = envelope
         .provenance
         .into_iter()
-        .map(|edge| match edge {
-            Provenance::Git { oid } => oid,
-            Provenance::Token { token } => token,
-            Provenance::Artifact { digest } => digest,
-        })
+        .filter_map(Provenance::link)
         .collect();
-    edges.push(envelope.anchored_at.clone());
     let run = envelope.producer.run;
     let producer = run
         .as_ref()
@@ -392,6 +436,10 @@ mod tests {
                 .unwrap();
         let token = packet["consistency"]["token"].as_str().unwrap();
         let model_call = kisko_event(token, false);
+        assert_eq!(
+            model_call["sauma"]["digest"].as_str().unwrap(),
+            digest_without_sauma(&model_call)
+        );
         fs::create_dir_all(root.join(".toimija/runs")).unwrap();
         fs::write(
             root.join(".toimija/runs/x.jsonl"),
@@ -472,7 +520,16 @@ mod tests {
             "envelope": "sauma-envelope.v1",
             "schema": "kisko-model-call.v1",
             "digest": if tamper_digest { "sha256:bad" } else { &digest },
-            "provenance": [],
+            "provenance": [
+                {
+                    "kind": "context_fragment",
+                    "id": "fragment-1"
+                },
+                {
+                    "kind": "contract",
+                    "ref": "contract-1"
+                }
+            ],
             "producer": {
                 "tool": "kisko",
                 "version": "0.0.0",
@@ -481,5 +538,11 @@ mod tests {
             "anchored_at": token
         });
         event
+    }
+
+    fn digest_without_sauma(event: &serde_json::Value) -> String {
+        let mut value = event.clone();
+        value.as_object_mut().unwrap().swap_remove("sauma");
+        toimija::sauma::digest_json(&serde_json::to_string(&value).unwrap())
     }
 }

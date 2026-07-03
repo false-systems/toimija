@@ -708,7 +708,8 @@ editing `xtask`.
 
 `cargo xtask sauma-why <query>` is a dev-only provenance walker: it verifies
 local sauma artifacts, renders verified token/digest links as an indented chain,
-and reports digest mismatches without walking through them.
+tolerates unknown provenance edge kinds, and reports digest mismatches without
+walking through them.
 
 ## Current limitations
 

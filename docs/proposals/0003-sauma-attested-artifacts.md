@@ -175,6 +175,9 @@ Locked:
   same recompute. (This is what toimija already does for packet/handoff; kisko
   must match — hoist the envelope out of `payload` and digest the whole event
   line, not just the payload.)
+- **D-P2a — open provenance vocabulary.** `provenance[].kind` is open; the
+  load-bearing edge value is a link such as `digest`, `token`, `oid`, `id`, or
+  `ref`, and walkers must tolerate unknown kinds without failing the walk.
 - **D-P3 — the graduation gate is one command.** When both tools obey D-P1/D-P2,
   `sauma-why <token>` over a directory holding a toimija packet and a real
   kisko transcript must print **one verified chain spanning both tools**
