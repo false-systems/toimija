@@ -34,6 +34,56 @@ pub fn digest_json(json: &str) -> String {
     consistency::hash_bytes(json.as_bytes())
 }
 
+/// The sauma canonical serialization: compact JSON with object keys sorted
+/// lexicographically at every level. This is the one canonical form every
+/// producer digests over (proposal 0003 §2/§9 D-P2), so a digest is a portable
+/// content-address any walker can verify regardless of a crate's `serde_json`
+/// key-ordering (toimija enables `preserve_order`; kisko does not). No
+/// number/unicode normalization — sorted keys and compact spacing only.
+pub fn canonical_json(value: &serde_json::Value) -> String {
+    let mut out = String::new();
+    write_canonical(&mut out, value);
+    out
+}
+
+fn write_canonical(out: &mut String, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            out.push('{');
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                // Serialize the key as a JSON string for correct escaping.
+                out.push_str(&serde_json::Value::String(key.clone()).to_string());
+                out.push(':');
+                write_canonical(out, &map[key]);
+            }
+            out.push('}');
+        }
+        serde_json::Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_canonical(out, item);
+            }
+            out.push(']');
+        }
+        // Scalars: serde_json's own compact serialization is already canonical.
+        scalar => out.push_str(&scalar.to_string()),
+    }
+}
+
+/// Digest an artifact value over the sauma canonical form. The caller is
+/// responsible for having removed the top-level `sauma` field first.
+pub fn digest_value(value: &serde_json::Value) -> String {
+    digest_json(&canonical_json(value))
+}
+
 pub trait Carrier: Serialize {
     fn sauma_mut(&mut self) -> &mut Option<SaumaEnvelope>;
 }
@@ -46,10 +96,10 @@ pub fn attach<T: Carrier>(
     run: Option<String>,
 ) -> serde_json::Result<()> {
     *artifact.sauma_mut() = None;
-    let canonical = serde_json::to_string(artifact)?;
+    let value = serde_json::to_value(&*artifact)?;
     *artifact.sauma_mut() = Some(envelope_from_canonical(
         schema,
-        &canonical,
+        &canonical_json(&value),
         provenance,
         anchored_at,
         run,
@@ -62,9 +112,9 @@ pub fn verify<T: Carrier>(artifact: &mut T) -> serde_json::Result<Option<(String
         return Ok(None);
     };
     *artifact.sauma_mut() = None;
-    let canonical = serde_json::to_string(artifact)?;
+    let value = serde_json::to_value(&*artifact)?;
     *artifact.sauma_mut() = Some(envelope.clone());
-    let actual = digest_json(&canonical);
+    let actual = digest_value(&value);
     Ok((actual != envelope.digest).then_some((envelope.digest, actual)))
 }
 
