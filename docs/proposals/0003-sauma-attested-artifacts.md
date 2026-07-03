@@ -149,3 +149,40 @@ A graph database, daemon, index, or service; canonical-JSON schemes; a
 shared runtime library in v1; Vaisto as a dependency; retroactive
 back-filling of history (the graph starts when the fields do); any weakening
 of the confirmed boundaries (no network, no dispatch, read-only kisko).
+
+## 9. Amendment 2026-07-03 — placement is normative (the cross-tool gate)
+
+The §6 experiment ran live: a kisko `review` in the toimija repo wrote a
+`kisko-model-call.v1` envelope whose `anchored_at` equals the toimija packet
+token. **The cross-tool anchor works** — kisko knows exactly which verified
+repo state its model call ran against. But `cargo xtask sauma-why <token>`
+surfaced only the toimija packet, not the kisko event, because the "one
+envelope" was one *shape* in two *placements*: toimija writes `sauma` at the
+artifact's top level; kisko nested it under `payload`, and the walker reads
+top-level only. The four dialects reappeared one level down.
+
+So the envelope needs a **placement + digest law**, not just a field list.
+Locked:
+
+- **D-P1 — top-level placement.** The `sauma` envelope is a **top-level field
+  on every artifact.** For a JSONL event stream, *each line is an artifact* and
+  carries its own top-level `sauma`. No nesting under `payload`/`data`/etc.
+- **D-P2 — whole-artifact digest.** The digest is `sha256:` over
+  `serde_json::to_string(artifact)` with the **top-level `sauma` field
+  removed** — the entire artifact object minus its own envelope, compact,
+  with `serde_json::Value`'s default sorted-key ordering. Every producer
+  computes it identically, so any walker verifies any tool's artifact by the
+  same recompute. (This is what toimija already does for packet/handoff; kisko
+  must match — hoist the envelope out of `payload` and digest the whole event
+  line, not just the payload.)
+- **D-P3 — the graduation gate is one command.** When both tools obey D-P1/D-P2,
+  `sauma-why <token>` over a directory holding a toimija packet and a real
+  kisko transcript must print **one verified chain spanning both tools**
+  (`toimija-context.v1 ← kisko-model-call.v1`). If that reads like provenance,
+  the sauma crate is justified (§6). If it is still thin, convention-only, the
+  crate waits. Do not greenlight or kill until this command runs green.
+
+Implementation split: kisko `prompts/codex_sauma_placement.md` (D-P1/D-P2 on the
+transcript event), toimija `docs/prompts/codex-sauma-crosstool-walk.md` (ingest
++ verify + render the cross-tool chain). No boundary change — schema evolution
+within existing scope, as §7.
