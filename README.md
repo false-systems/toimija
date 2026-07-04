@@ -29,26 +29,55 @@ toimija init                    # once per repo: seed .toimija/repo.yaml
 toimija run claude              # every time: wrap the agent
 ```
 
-```text
-                ┌───────────────────────────────────────────────┐
-                │                     Git                       │
-                │  HEAD · index · merge-base · branch · history │
-                └──────────────────────┬────────────────────────┘
-                                       │ read (git CLI, bounded)
-                                       ▼
-  .toimija/repo.yaml  ──────►   toimija compile   ◄────── language adapters
-  (durable meaning:                    │                  (path heuristics,
-   role, boundaries)                   │                   no parsing)
-                                       ▼
-                ┌───────────────────────────────────────────────┐
-                │     .toimija/current.md  /  current.json      │
-                │   scope · read order · coupling · risk ·      │
-                │   validation plan · consistency token         │
-                └──────────────────────┬────────────────────────┘
-                                       │ verify-before-read
-                                       ▼
-                        the agent (claude, codex, …)
+```mermaid
+flowchart TB
+    subgraph GIT["Git — the database every repo already ships"]
+        direction LR
+        STATE["HEAD · index · merge-base · branch"]
+        HIST["history · trees · refs"]
+    end
+
+    YAML[".toimija/repo.yaml<br/>durable meaning: role, boundaries"]
+    ADAPT["language adapters<br/>path heuristics, no parsing"]
+
+    COMP{{"toimija — context compiler"}}
+
+    GIT -- "plumbing reads<br/>rev-parse · log · ls-tree" --> COMP
+    YAML --> COMP
+    ADAPT --> COMP
+    COMP -- "write-tree + refs<br/>(MVCC snapshots)" --> GIT
+
+    PACKET["<b>the live packet</b><br/>current.md / current.json<br/>scope · read order · coupling · risk<br/>validation plan · consistency token · sauma envelope"]
+
+    COMP --> PACKET
+    PACKET -- "verify-before-read gate" --> AGENT["the agent<br/>claude · codex · …"]
 ```
+
+## Porcelain for agents
+
+Git's own manual splits its commands into **plumbing** (stable, machine-facing
+primitives: `rev-parse`, `ls-tree`, `write-tree`) and **porcelain** (the human
+interface built on top: `status`, `log`, `commit`). The porcelain is just one
+client of the object database underneath — anyone can write another.
+
+Toimija is another porcelain, purpose-built for a different client: **an agent,
+not a human at a prompt.** Same pipes, different sink.
+
+That is the whole design move, and it repeats at every layer:
+
+- **Context** is compiled from plumbing reads — no index to keep fresh, Git's
+  state machine *is* the state.
+- **Snapshots** are `write-tree` plus a ref — immutable, content-addressed,
+  garbage-collected by git itself.
+- **Freshness** is a content-based token — the same content-addressing trick
+  git's object model is built on, applied one layer up.
+- **Provenance** (the sauma envelope) is passive files plus a reader — the same
+  shape as git itself: no service, no daemon.
+
+Every repo already ships a battle-tested, content-addressed, distributed
+database that every machine and every CI system knows how to replicate: `.git`.
+Toimija refuses to build a second one. The design test for any new need is
+*"does git already store this?"* — before writing a line of infrastructure.
 
 ## Why
 
@@ -67,6 +96,7 @@ What you get:
 | **Git-derived relevance** | What to read first, what co-changes, what is risky, what is mechanical dep-bump ripple to skip. No parsing, no index — just Git, used well. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
 | **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, explicit handoff records, 7-day GC. Visibility, never orchestration. |
+| **Chain of custody** | Every packet and handoff carries a sauma envelope — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
 | **Honest validation** | `validate --plan` prints the repo's real gates (including a focused tier derived from the diff). Toimija never runs them for you. |
 | **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
 
@@ -119,16 +149,28 @@ launches the agent command, stops watching when the agent exits, and returns the
 agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
 143).
 
-```text
-toimija run --intent "fix #51" codex
- │
- ├─ 0  GC     prune closed/stale sessions past the 7-day retention (best-effort)
- ├─ 1  enter  open .toimija/sessions/<id>/ · write the session packet + marker
- ├─ 2  gate   verify the entry packet against the live repo before launch
- ├─ 3  watch  refresh the packet on every relevant Git/fs change (foreground)
- ├─ 4  exec   codex, with the TOIMIJA_* handshake in its environment
- └─ 5  exit   close the marker · print a Git entry→exit summary · adopt codex's
-              exit code (128+signal preserved)
+```mermaid
+sequenceDiagram
+    participant Y as you
+    participant T as toimija run
+    participant G as Git
+    participant A as agent (claude, codex, …)
+
+    Y->>T: toimija run --intent "fix the auth bug" codex
+    T->>T: prune sessions past retention (best-effort)
+    T->>G: read state (plumbing)
+    T->>T: enter — write session packet + marker
+    T->>T: gate — verify entry packet against the live repo
+    T->>A: exec, with the TOIMIJA_* handshake
+    loop while the agent works
+        A->>G: edits move Git state
+        G-->>T: watcher notices (debounced)
+        T->>T: refresh session packet + heartbeat
+        A->>T: re-reads $TOIMIJA_LIVE
+    end
+    A-->>T: exit status
+    T->>T: close marker · print entry→exit summary
+    T-->>Y: agent's exit code (128+signal preserved)
 ```
 
 Use `--` before the wrapped command when you need to pass flags through
@@ -172,6 +214,18 @@ foundation for the `toimija handoff` record designed in
 Several agents can work one repo at once without trampling each other's context.
 Each wrapped agent gets its **own** session packet, and `toimija sessions` makes
 the others visible.
+
+```mermaid
+flowchart LR
+    subgraph DIR[".toimija/sessions/"]
+        S1["id-1/ — current.* + marker<br/>claude · LIVE · intent: add sessions command"]
+        S2["id-2/ — current.* + marker<br/>codex · LIVE · intent: refresh the readme"]
+        S3["id-3/ — marker + handoff.jsonl<br/>kisko · CLOSED · handoff: 1 record"]
+    end
+
+    CMD["toimija sessions"] -- "read-only awareness:<br/>LIVE / STALE / CLOSED<br/>+ overlap warnings" --> DIR
+    H["the human"] -- "remains the orchestrator" --> CMD
+```
 
 Declare why you're here (and optionally what you'll touch) when you launch — it's
 advisory, never an assignment or a lock:
@@ -264,6 +318,91 @@ toimija run: session summary
   refreshed: 12 time(s) while you worked
 ```
 
+## Verify before read — the packet is a claim, not a hope
+
+A context packet is only useful while it still matches the repo. A map an agent
+trusts *after* the territory moved is worse than no map. So Toimija makes
+freshness checkable instead of assumed, in three escalating moves:
+
+```mermaid
+flowchart LR
+    A["harness wants<br/>repo context"] --> V{"toimija verify"}
+    V -- "token matches" --> T["trust the packet"]
+    V -- "stale · missing<br/>unsafe · unverifiable" --> R["refresh first"]
+    R --> V
+    T --> Q{"need one coherent version<br/>while the tree keeps moving?"}
+    Q -- "no" --> READ["read current.*"]
+    Q -- "yes" --> SNAP["toimija snapshot --lease<br/>immutable git tree,<br/>readable at that version"]
+```
+
+1. **Fingerprint.** Every packet embeds a `toimija-consistency-v2` token — a
+   deterministic, content-based fingerprint of the repo's work state (HEAD,
+   index, unstaged tracked content, untracked content, conflicts, in-flight Git
+   operations). No clocks, no mtimes, no file sizes: same content, same token.
+   Generated state under `.toimija/` is excluded so refreshes, sessions,
+   snapshots, and harness runs never invalidate the packet; `.toimija/repo.yaml`
+   is the exception and always counts.
+2. **Gate.** `toimija verify` (or `toimija current --verify --json` for
+   machines) recomputes the fingerprint against the live repo and exits
+   non-zero, with reasons, when the packet is stale, missing, unsupported,
+   unsafe, or unverifiable. A harness calls this before *every* packet read:
+   pass → trust the packet; fail → refresh first. `run` performs the same check
+   on its own entry packet before launching the agent, so a startup race is
+   surfaced, never silent.
+3. **Freeze.** When "fresh right now" is not enough — a reader that must see
+   one coherent version while the worktree keeps moving — `toimija snapshot`
+   materializes the working tree (untracked included) as an immutable,
+   content-addressed git tree object. Files are then readable *at that version*
+   via `git cat-file`, and `--lease` pins the snapshot against `git gc` until
+   released.
+
+The token is a transaction version, not a timestamp: verify tells you whether
+the world changed, snapshot gives you a world that cannot change. Either way,
+nothing reads repo state on faith.
+
+## Chain of custody — the sauma envelope
+
+Work done by agents should be auditable the way commits are: *what produced
+this, from what state, and does it still verify?* Toimija's packets and handoff
+records carry a **sauma envelope** for exactly this — a small, versioned
+attestation block (schema at `docs/schemas/sauma-envelope.v1.schema.json`,
+design in `docs/proposals/0003-sauma.md`):
+
+- **`digest`** — sha256 over the artifact's canonical form: compact JSON with
+  object keys sorted at every level. Canonical means *portable*: any tool, in
+  any language, recomputes the same digest from the same content — a foreign
+  walker can verify an artifact it did not produce.
+- **`provenance`** — typed edges to what the artifact was built from (a git
+  state, a consistency token, another artifact). The edge vocabulary is an
+  **open enumeration**: readers must tolerate kinds they do not know.
+- **`producer` + `anchored_at`** — who wrote it, pinned to which consistency
+  token.
+
+Because every envelope anchors to a consistency token, artifacts from
+*different tools* link into one verifiable chain:
+
+```mermaid
+flowchart RL
+    EV["an agent harness event<br/>(e.g. a model call's review)<br/>sauma digest sha256:3ad62e…"]
+    PKT["toimija-context.v1 packet<br/>sauma digest sha256:24ebeb…<br/>consistency token fe56f3…"]
+    GITSTATE["the exact Git state<br/>HEAD · index · worktree content"]
+
+    EV -- "anchored_at fe56f3…<br/>(verifies independently)" --> PKT
+    PKT -- "token computed over" --> GITSTATE
+```
+
+That chain reads: *this review was produced against this exact packet, which
+was compiled from this exact repo state* — git-blame for agent decisions.
+Convention first, deliberately: joining the chain means writing one JSON block
+correctly, not importing a library or calling a service. There is no provenance
+daemon, no graph database, no index — passive files plus a reader, the same
+shape as git itself.
+
+`cargo xtask sauma-why <digest|token|session-id>` is the in-repo dev walker: it
+verifies local sauma artifacts, renders verified token/digest links as an
+indented chain, tolerates unknown provenance edge kinds, and reports digest
+mismatches without walking through them.
+
 ## One-time repo setup
 
 ```bash
@@ -311,39 +450,9 @@ The packet includes:
 - a **sauma** envelope — a local attestation digest and provenance edge set for
   the packet artifact
 
-See **Verify before read** for what that token buys you, and **Example context
-output** below for a full rendering.
-
-## Verify before read — the packet is a claim, not a hope
-
-A context packet is only useful while it still matches the repo. A map an agent
-trusts *after* the territory moved is worse than no map. So Toimija makes
-freshness checkable instead of assumed, in three escalating moves:
-
-1. **Fingerprint.** Every packet embeds a `toimija-consistency-v2` token — a
-   deterministic, content-based fingerprint of the repo's work state (HEAD,
-   index, unstaged tracked content, untracked content, conflicts, in-flight Git
-   operations). No clocks, no mtimes, no file sizes: same content, same token.
-   Generated state under `.toimija/` is excluded so refreshes, sessions,
-   snapshots, and harness runs never invalidate the packet; `.toimija/repo.yaml`
-   is the exception and always counts.
-2. **Gate.** `toimija verify` (or `toimija current --verify --json` for
-   machines) recomputes the fingerprint against the live repo and exits
-   non-zero, with reasons, when the packet is stale, missing, unsupported,
-   unsafe, or unverifiable. A harness calls this before *every* packet read:
-   pass → trust the packet; fail → refresh first. `run` performs the same check
-   on its own entry packet before launching the agent, so a startup race is
-   surfaced, never silent.
-3. **Freeze.** When "fresh right now" is not enough — a reader that must see
-   one coherent version while the worktree keeps moving — `toimija snapshot`
-   materializes the working tree (untracked included) as an immutable,
-   content-addressed git tree object. Files are then readable *at that version*
-   via `git cat-file`, and `--lease` pins the snapshot against `git gc` until
-   released.
-
-The token is a transaction version, not a timestamp: verify tells you whether
-the world changed, snapshot gives you a world that cannot change. Either way,
-nothing reads repo state on faith.
+See **Verify before read** for what the token buys you, **Chain of custody**
+for what the envelope buys you, and **Example context output** below for a full
+rendering.
 
 ## Commands
 
@@ -705,11 +814,6 @@ The hook formats the staged Rust crates, re-stages the result, then runs
 `cargo clippy --all-targets -- -D warnings` followed by `cargo test`, blocking the
 commit if either fails — the same gates CI enforces. Re-run the command after
 editing `xtask`.
-
-`cargo xtask sauma-why <query>` is a dev-only provenance walker: it verifies
-local sauma artifacts, renders verified token/digest links as an indented chain,
-tolerates unknown provenance edge kinds, and reports digest mismatches without
-walking through them.
 
 ## Current limitations
 
