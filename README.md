@@ -30,27 +30,11 @@ toimija run claude              # every time: wrap the agent
 ```
 
 ```mermaid
-flowchart TB
-    subgraph GIT["Git — the database every repo already ships"]
-        direction LR
-        STATE["HEAD · index · merge-base · branch"]
-        HIST["history · trees · refs"]
-    end
-
-    YAML[".toimija/repo.yaml<br/>durable meaning: role, boundaries"]
-    ADAPT["language adapters<br/>path heuristics, no parsing"]
-
-    COMP{{"toimija — context compiler"}}
-
-    GIT -- "plumbing reads<br/>rev-parse · log · ls-tree" --> COMP
-    YAML --> COMP
-    ADAPT --> COMP
-    COMP -- "write-tree + refs<br/>(MVCC snapshots)" --> GIT
-
-    PACKET["<b>the live packet</b><br/>current.md / current.json<br/>scope · read order · coupling · risk<br/>validation plan · consistency token · sauma envelope"]
-
-    COMP --> PACKET
-    PACKET -- "verify-before-read gate" --> AGENT["the agent<br/>claude · codex · …"]
+flowchart LR
+    GIT["Git<br/>HEAD · index · history"] -- "plumbing reads" --> T{{"toimija"}}
+    YAML[".toimija/repo.yaml<br/>role · boundaries"] --> T
+    T --> P["the live packet<br/>current.md / current.json"]
+    P -- "verify, then read" --> A["the agent"]
 ```
 
 ## Porcelain for agents
@@ -153,24 +137,16 @@ agent command's exit status (signal termination is preserved too, e.g. SIGTERM �
 sequenceDiagram
     participant Y as you
     participant T as toimija run
-    participant G as Git
-    participant A as agent (claude, codex, …)
+    participant A as the agent
 
-    Y->>T: toimija run --intent "fix the auth bug" codex
-    T->>T: prune sessions past retention (best-effort)
-    T->>G: read state (plumbing)
-    T->>T: enter — write session packet + marker
-    T->>T: gate — verify entry packet against the live repo
-    T->>A: exec, with the TOIMIJA_* handshake
+    Y->>T: toimija run codex
+    T->>T: compile + verify the packet
+    T->>A: launch, with the TOIMIJA_* handshake
     loop while the agent works
-        A->>G: edits move Git state
-        G-->>T: watcher notices (debounced)
-        T->>T: refresh session packet + heartbeat
-        A->>T: re-reads $TOIMIJA_LIVE
+        T->>T: refresh the packet on every Git change
     end
-    A-->>T: exit status
-    T->>T: close marker · print entry→exit summary
-    T-->>Y: agent's exit code (128+signal preserved)
+    A-->>T: exit
+    T-->>Y: entry→exit summary · agent's exit code
 ```
 
 Use `--` before the wrapped command when you need to pass flags through
@@ -214,18 +190,6 @@ foundation for the `toimija handoff` record designed in
 Several agents can work one repo at once without trampling each other's context.
 Each wrapped agent gets its **own** session packet, and `toimija sessions` makes
 the others visible.
-
-```mermaid
-flowchart LR
-    subgraph DIR[".toimija/sessions/"]
-        S1["id-1/ — current.* + marker<br/>claude · LIVE · intent: add sessions command"]
-        S2["id-2/ — current.* + marker<br/>codex · LIVE · intent: refresh the readme"]
-        S3["id-3/ — marker + handoff.jsonl<br/>kisko · CLOSED · handoff: 1 record"]
-    end
-
-    CMD["toimija sessions"] -- "read-only awareness:<br/>LIVE / STALE / CLOSED<br/>+ overlap warnings" --> DIR
-    H["the human"] -- "remains the orchestrator" --> CMD
-```
 
 Declare why you're here (and optionally what you'll touch) when you launch — it's
 advisory, never an assignment or a lock:
@@ -326,13 +290,9 @@ freshness checkable instead of assumed, in three escalating moves:
 
 ```mermaid
 flowchart LR
-    A["harness wants<br/>repo context"] --> V{"toimija verify"}
-    V -- "token matches" --> T["trust the packet"]
-    V -- "stale · missing<br/>unsafe · unverifiable" --> R["refresh first"]
-    R --> V
-    T --> Q{"need one coherent version<br/>while the tree keeps moving?"}
-    Q -- "no" --> READ["read current.*"]
-    Q -- "yes" --> SNAP["toimija snapshot --lease<br/>immutable git tree,<br/>readable at that version"]
+    A["agent wants context"] --> V{"toimija verify"}
+    V -- "fresh" --> R["read the packet"]
+    V -- "stale" --> F["refresh"] --> V
 ```
 
 1. **Fingerprint.** Every packet embeds a `toimija-consistency-v2` token — a
@@ -383,12 +343,7 @@ Because every envelope anchors to a consistency token, artifacts from
 
 ```mermaid
 flowchart RL
-    EV["an agent harness event<br/>(e.g. a model call's review)<br/>sauma digest sha256:3ad62e…"]
-    PKT["toimija-context.v1 packet<br/>sauma digest sha256:24ebeb…<br/>consistency token fe56f3…"]
-    GITSTATE["the exact Git state<br/>HEAD · index · worktree content"]
-
-    EV -- "anchored_at fe56f3…<br/>(verifies independently)" --> PKT
-    PKT -- "token computed over" --> GITSTATE
+    EV["an agent's event<br/>digest + anchored_at"] -- "anchored to the token" --> PKT["toimija packet<br/>digest + consistency token"] -- "token computed over" --> GITSTATE["the exact Git state"]
 ```
 
 That chain reads: *this review was produced against this exact packet, which
