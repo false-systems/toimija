@@ -139,22 +139,6 @@ pub fn envelope_from_canonical(
     }
 }
 
-pub fn envelope(
-    schema: &str,
-    canonical_json_without_sauma: &str,
-    provenance: Vec<SaumaProvenance>,
-    anchored_at: &str,
-    run: Option<String>,
-) -> SaumaEnvelope {
-    envelope_from_canonical(
-        schema,
-        canonical_json_without_sauma,
-        provenance,
-        anchored_at,
-        run,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

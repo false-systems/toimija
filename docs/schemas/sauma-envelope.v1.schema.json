@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://false.systems/schemas/sauma-envelope.v1.schema.json",
   "title": "Sauma attestation envelope v1",
-  "description": "A Sauma envelope attests one local artifact without indexing or persistence. Evolution rules: new optional fields are additive within v1; provenance kind is an open enumeration and walkers must tolerate unknown kinds, using any digest/token/oid/id/ref linking value they understand. Any breaking change requires docs/schemas/sauma-envelope.v2.schema.json plus a new envelope id. The digest is sha256 over the canonical artifact JSON: parse the artifact into its typed structure, set its sauma field to None, then serialize with compact serde_json::to_string as UTF-8 using serde struct field order and skip_serializing_if omissions.",
+  "description": "A Sauma envelope attests one local artifact without indexing or persistence. Evolution rules: new optional fields are additive within v1; provenance kind is an open enumeration and walkers must tolerate unknown kinds, using any digest/token/oid/id/ref linking value they understand. Any breaking change requires docs/schemas/sauma-envelope.v2.schema.json plus a new envelope id. The digest is sha256 over the artifact's sauma canonical form: take the artifact with its top-level sauma field removed, then serialize as compact UTF-8 JSON with object keys sorted lexicographically at every level (sorted keys and compact spacing only; no number or unicode normalization). A producer must sort keys explicitly rather than rely on any serde_json default so that any walker recomputes the same digest regardless of the producer's key ordering.",
   "type": "object",
   "additionalProperties": false,
   "required": [
