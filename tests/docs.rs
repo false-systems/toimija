@@ -68,7 +68,7 @@ fn handoff_schema_matches_emitted_record_fields() {
         risk_total: 0,
         consistency_token: "token".to_string(),
         next_step: None,
-        sauma: Some(toimija::sauma::envelope(
+        sauma: Some(toimija::sauma::envelope_from_canonical(
             "handoff-record.v1",
             "{}",
             Vec::new(),
@@ -114,7 +114,7 @@ fn sauma_schema_matches_emitted_envelope_fields() {
     );
     assert_eq!(schema["additionalProperties"], false);
 
-    let envelope = toimija::sauma::envelope(
+    let envelope = toimija::sauma::envelope_from_canonical(
         "handoff-record.v1",
         "{}",
         vec![toimija::sauma::SaumaProvenance::Token {
@@ -159,6 +159,35 @@ fn sauma_schema_matches_emitted_envelope_fields() {
             );
         }
     }
+}
+
+/// Pins the sauma canonical form and digest to a fixed vector so the digest law
+/// is enforced by CI, not just described in prose. The schema `description`
+/// promises "object keys sorted lexicographically at every level"; this proves
+/// the code delivers exactly that and that the digest is a stable content-address
+/// a foreign walker can recompute. If this vector changes, the schema description
+/// and any cross-tool digest contract change with it — that is the point.
+#[test]
+fn sauma_canonical_digest_matches_pinned_vector() {
+    // Keys deliberately out of lexical order, with a nested object and an array,
+    // to prove sorting happens at every level while array order is preserved.
+    let artifact = serde_json::json!({
+        "b": 1,
+        "a": { "y": true, "x": [3, 1, 2] },
+        "c": "hi"
+    });
+
+    let canonical = toimija::sauma::canonical_json(&artifact);
+    assert_eq!(
+        canonical, r#"{"a":{"x":[3,1,2],"y":true},"b":1,"c":"hi"}"#,
+        "canonical form must sort object keys at every level, compact, arrays in order"
+    );
+
+    assert_eq!(
+        toimija::sauma::digest_value(&artifact),
+        "sha256:adac1485cdabade54a2ab242128ff4ad18618ee9038acdcc6404ea9be057853d",
+        "digest must be sha256 over the sorted-key canonical form"
+    );
 }
 
 fn assert_object_shape(emitted: &serde_json::Value, schema: &serde_json::Value) {

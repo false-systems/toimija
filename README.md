@@ -326,7 +326,7 @@ Work done by agents should be auditable the way commits are: *what produced
 this, from what state, and does it still verify?* Toimija's packets and handoff
 records carry a **sauma envelope** for exactly this — a small, versioned
 attestation block (schema at `docs/schemas/sauma-envelope.v1.schema.json`,
-design in `docs/proposals/0003-sauma.md`):
+design in `docs/proposals/0003-sauma-attested-artifacts.md`):
 
 - **`digest`** — sha256 over the artifact's canonical form: compact JSON with
   object keys sorted at every level. Canonical means *portable*: any tool, in
@@ -448,7 +448,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
 | `context` | Print the context packet without wrapping an agent. |
 | `verify` | Check that `current.json` still matches the live repo; exits non-zero when not verified. `--json` emits structured status. |
-| `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held. Refuses in an unsafe git state. |
+| `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; `--json` emits the snapshot record. Refuses in an unsafe git state. |
 | `validate --plan` | Print the validation plan; never runs validation. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
