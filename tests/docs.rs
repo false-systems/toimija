@@ -37,7 +37,12 @@ fn handoff_schema_matches_emitted_record_fields() {
         schema["$id"],
         "https://false.systems/schemas/handoff-record.v1.schema.json"
     );
-    assert_eq!(schema["additionalProperties"], false);
+    // The record schema permits unknown properties: the reader is tolerant
+    // (`HandoffRecord` has no `deny_unknown_fields`) and the schema's own rule is
+    // that new optional fields are additive within v1, so an older validator must
+    // accept a newer-but-compatible record. Enforced end to end by
+    // `handoff_schema_permits_additive_fields_like_the_reader`.
+    assert_eq!(schema["additionalProperties"], true);
 
     let record = toimija::handoff::HandoffRecord {
         version: 1,
@@ -97,6 +102,29 @@ fn handoff_schema_matches_emitted_record_fields() {
     assert_eq!(emitted_keys, property_keys);
     assert_eq!(emitted_keys, required_with_additive);
     assert!(!required.contains("sauma"));
+}
+
+/// The handoff schema and the handoff reader must agree on forward-compatibility:
+/// the schema permits unknown properties (`additionalProperties: true`) and the
+/// reader parses a record carrying one. Without this pairing the two drift — a
+/// strict schema rejecting exactly the additive v1 fields the reader and the
+/// schema description promise to accept.
+#[test]
+fn handoff_schema_permits_additive_fields_like_the_reader() {
+    let schema: serde_json::Value = serde_json::from_str(HANDOFF_SCHEMA).unwrap();
+    assert_eq!(
+        schema["additionalProperties"], true,
+        "handoff schema must permit additive unknown fields"
+    );
+
+    // A complete v1 record plus one field the schema does not name. The tolerant
+    // reader must still parse it, matching the schema's now-open stance.
+    let with_unknown = r#"{"version":1,"session_id":"100-1","written_at":1,"agent":[],"agent_total":0,"intent":null,"branch":null,"entry_head":null,"head":null,"merge_base":null,"staged":[],"staged_total":0,"unstaged":[],"unstaged_total":0,"untracked":[],"untracked_total":0,"conflicts":[],"conflicts_total":0,"branch_scope":[],"branch_scope_total":0,"suggested_validation":[],"suggested_validation_total":0,"coupling":[],"coupling_total":0,"risk":[],"risk_total":0,"consistency_token":"t","next_step":null,"future_optional":"ok"}"#;
+    let parsed: Result<toimija::handoff::HandoffRecord, _> = serde_json::from_str(with_unknown);
+    assert!(
+        parsed.is_ok(),
+        "tolerant reader must accept a record with an unknown optional field"
+    );
 }
 
 #[test]

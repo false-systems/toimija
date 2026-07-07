@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -nE '^\\\\s*\\(///|[A-Z][a-zA-Z]+ \\\\{|[A-Z][a-zA-Z]+,|#\\\\[command\\)' src/cli.rs)",
+      "Bash(cargo test *)",
+      "Bash(git fetch *)",
+      "Bash(gh pr *)",
+      "Bash(gh issue *)",
+      "Bash(gh auth *)",
+      "Bash(git checkout *)",
+      "Bash(cargo run *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo clippy *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
+    ]
+  }
+}
