@@ -628,6 +628,7 @@ fn source_label(source: &ValidationSource) -> &'static str {
     match source {
         ValidationSource::RepoConfig => "repo config",
         ValidationSource::Inferred => "inferred",
+        ValidationSource::InferredAndRepoConfig => "inferred and repo config",
         ValidationSource::Unknown => "unknown",
     }
 }
@@ -1104,7 +1105,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
   "read_first": [],
   "safe_to_ignore": [],
   "validation_plan": {
-    "source": "Inferred",
+    "source": "inferred",
     "focused": [],
     "fast": [
       "cargo test --workspace"

@@ -23,24 +23,31 @@ pub struct ValidationPlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ValidationSource {
     RepoConfig,
     Inferred,
+    InferredAndRepoConfig,
     Unknown,
 }
 
 pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -> ValidationPlan {
-    if config.has_validation() {
-        return ValidationPlan {
-            source: ValidationSource::RepoConfig,
-            focused: Vec::new(),
-            fast: config.validation.fast.clone(),
-            strict: config.validation.strict.clone(),
-            full: config.validation.full.clone(),
-            privileged: config.validation.privileged.clone(),
-            notes: Vec::new(),
-        };
+    let mut inferred = inferred_plan(kind);
+    if !config.has_validation() {
+        return inferred;
     }
+    if config.validation.replace_inferred || kind == RepoKind::Generic {
+        return configured_plan(config, config.validation.replace_inferred);
+    }
+    extend_unique(&mut inferred.fast, &config.validation.fast);
+    extend_unique(&mut inferred.strict, &config.validation.strict);
+    extend_unique(&mut inferred.full, &config.validation.full);
+    extend_unique(&mut inferred.privileged, &config.validation.privileged);
+    inferred.source = ValidationSource::InferredAndRepoConfig;
+    inferred
+}
+
+fn inferred_plan(kind: RepoKind) -> ValidationPlan {
     match kind {
         RepoKind::Rust => {
             info!(event = "toimija.validation.inferred", repo_kind = "rust");
@@ -85,6 +92,29 @@ pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -
     }
 }
 
+fn configured_plan(config: &RepoConfig, replaces_inferred: bool) -> ValidationPlan {
+    ValidationPlan {
+        source: ValidationSource::RepoConfig,
+        focused: Vec::new(),
+        fast: config.validation.fast.clone(),
+        strict: config.validation.strict.clone(),
+        full: config.validation.full.clone(),
+        privileged: config.validation.privileged.clone(),
+        notes: replaces_inferred
+            .then(|| "Repository config explicitly replaces inferred validation.".to_string())
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn extend_unique(target: &mut Vec<String>, additions: &[String]) {
+    for command in additions {
+        if !target.contains(command) {
+            target.push(command.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +126,45 @@ mod tests {
         let plan = validation_plan(Path::new("."), &config, RepoKind::Generic);
         assert_eq!(plan.source, ValidationSource::RepoConfig);
         assert_eq!(plan.fast, vec!["just test"]);
+    }
+
+    #[test]
+    fn repository_validation_is_additive_and_deduplicated() {
+        let mut config = RepoConfig::default();
+        config.validation.fast = vec![
+            "cargo test --workspace".to_string(),
+            "just test-fast".to_string(),
+        ];
+        config.validation.privileged = vec!["just integration".to_string()];
+
+        let plan = validation_plan(Path::new("."), &config, RepoKind::Rust);
+
+        assert_eq!(plan.source, ValidationSource::InferredAndRepoConfig);
+        assert_eq!(
+            serde_json::to_value(&plan).unwrap()["source"],
+            "inferred_and_repo_config"
+        );
+        assert_eq!(plan.fast, vec!["cargo test --workspace", "just test-fast"]);
+        assert!(plan.strict.iter().any(|cmd| cmd.contains("cargo clippy")));
+        assert_eq!(plan.privileged, vec!["just integration"]);
+    }
+
+    #[test]
+    fn explicit_replacement_omits_inferred_validation() {
+        let mut config = RepoConfig::default();
+        config.validation.replace_inferred = true;
+        config.validation.fast = vec!["just test".to_string()];
+
+        let plan = validation_plan(Path::new("."), &config, RepoKind::Rust);
+
+        assert_eq!(plan.source, ValidationSource::RepoConfig);
+        assert_eq!(
+            serde_json::to_value(&plan).unwrap()["source"],
+            "repo_config"
+        );
+        assert_eq!(plan.fast, vec!["just test"]);
+        assert!(plan.strict.is_empty());
+        assert!(plan.notes[0].contains("explicitly replaces"));
     }
 
     #[test]

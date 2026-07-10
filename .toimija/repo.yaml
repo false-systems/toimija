@@ -18,6 +18,7 @@ context:
     - target/
 
 validation:
+  replace_inferred: false
   fast: []
   strict: []
   full: []

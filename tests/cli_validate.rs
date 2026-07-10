@@ -64,6 +64,71 @@ fn validate_plan_uses_repo_config_when_present() {
 }
 
 #[test]
+fn validate_plan_adds_repo_checks_to_inferred_rust_checks() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "validation:\n  privileged:\n    - just integration\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["validate", "--plan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source: inferred and repo config"))
+        .stdout(predicate::str::contains("cargo test --workspace"))
+        .stdout(predicate::str::contains("cargo fmt --check"))
+        .stdout(predicate::str::contains("cargo clippy"))
+        .stdout(predicate::str::contains("just integration"));
+}
+
+#[test]
+fn validate_plan_replaces_inference_only_when_explicit() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "validation:\n  replace_inferred: true\n  fast:\n    - just test\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["validate", "--plan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source: repo config"))
+        .stdout(predicate::str::contains("just test"))
+        .stdout(predicate::str::contains("explicitly replaces inferred"))
+        .stdout(predicate::str::contains("cargo test").not())
+        .stdout(predicate::str::contains("cargo fmt").not())
+        .stdout(predicate::str::contains("cargo clippy").not());
+}
+
+#[test]
 fn validate_plan_infers_rust_commands() {
     if !git_available() {
         return;
