@@ -254,11 +254,8 @@ fn context_budget_truncates_markdown_output() {
             "Output truncated to fit approximate budget.",
         ));
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
-    assert!(
-        stdout.len() <= 260,
-        "expected truncated output near budget, got {} bytes:\n{stdout}",
-        stdout.len()
-    );
+    assert!(stdout.contains("## Workset contract"));
+    assert!(stdout.contains("invisible expansion is."));
 }
 
 #[test]

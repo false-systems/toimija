@@ -617,6 +617,14 @@ renders like this:
 - not: platform, dashboard, dispatcher
 - kind: Rust
 
+## Workset contract
+Work from this packet's Scope and Read order; they are your working set, not
+a preamble. Configured exclusions are do-not-scan. You MAY read outside the
+workset when a concrete unresolved dependency requires it — but you MUST
+declare the expansion first: `toimija intent "<why>" --scope <path>` (or, if
+you are not under a session, state the expansion and its reason in your
+visible output). Expansion is never forbidden; invisible expansion is.
+
 ## Git
 - branch: feat/git-ceramics
 - HEAD: abc123
@@ -798,6 +806,7 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - read-first entries are grouped as changed files, matching-test hints, then configured docs
 - warnings are sorted and deduplicated
 - Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
+- every packet carries a normative `Workset contract` section (proposal 0005), rendered early so budget truncation cannot drop it: work from Scope and Read order, treat exclusions as do-not-scan, and declare any expansion outside the workset (`toimija intent --scope`) instead of reading invisibly
 - high-value Markdown sections (`Scope`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Coupling`, `Risk`) render before the raw working-tree and changed-surface lists
 - Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections
 - empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
