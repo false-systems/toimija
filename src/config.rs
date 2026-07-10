@@ -43,6 +43,7 @@ pub struct ContextSection {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default)]
 pub struct ValidationSection {
+    pub replace_inferred: bool,
     pub fast: Vec<String>,
     pub strict: Vec<String>,
     pub full: Vec<String>,
@@ -116,7 +117,8 @@ impl RepoConfig {
     }
 
     pub fn has_validation(&self) -> bool {
-        !self.validation.fast.is_empty()
+        self.validation.replace_inferred
+            || !self.validation.fast.is_empty()
             || !self.validation.strict.is_empty()
             || !self.validation.full.is_empty()
             || !self.validation.privileged.is_empty()
@@ -195,6 +197,7 @@ mod tests {
         );
         assert!(config.context.read_first.is_empty());
         assert!(config.context.safe_to_ignore.is_empty());
+        assert!(!config.validation.replace_inferred);
     }
 
     #[test]

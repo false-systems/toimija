@@ -723,6 +723,7 @@ context:
     - deps/
 
 validation:
+  replace_inferred: false
   fast: []
   strict: []
   full: []
@@ -735,6 +736,7 @@ boundaries:
 
 `context.read_first` adds repo-specific files to the Read first section when they exist.
 `context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
+Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible.
 
 ## Build from source & development
 
