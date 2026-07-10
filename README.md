@@ -303,7 +303,9 @@ flowchart LR
    snapshots, and harness runs never invalidate the packet; `.toimija/repo.yaml`
    is the exception and always counts.
 2. **Gate.** `toimija verify` (or `toimija current --verify --json` for
-   machines) recomputes the fingerprint against the live repo and exits
+   machines) verifies the ambient session packet when wrapped by `run`, and the
+   repo-level packet otherwise. `--packet <path>` selects one explicitly. It
+   recomputes the fingerprint against the live repo and exits
    non-zero, with reasons, when the packet is stale, missing, unsupported,
    unsafe, or unverifiable. A harness calls this before *every* packet read:
    pass → trust the packet; fail → refresh first. `run` performs the same check
@@ -428,7 +430,7 @@ toimija context            # print the packet without wrapping an agent
 toimija context --json
 toimija current --write    # synchronously write current.md/current.json
 toimija current --verify --json  # machine-readable verify-before-read gate
-toimija verify             # is current.json still consistent with the live repo?
+toimija verify             # does the selected session/repo packet still match?
 toimija snapshot           # freeze the worktree as an immutable git tree (content @ version)
 toimija validate --plan    # print the validation plan; never runs it
 toimija doctor             # check Toimija setup
@@ -447,7 +449,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `current --verify --json` | Joskus-facing structured verification command. |
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
 | `context` | Print the context packet without wrapping an agent. |
-| `verify` | Check that `current.json` still matches the live repo; exits non-zero when not verified. `--json` emits structured status. |
+| `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified. `--json` includes the selected path, digest, and token. |
 | `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; `--json` emits the snapshot record. Refuses in an unsafe git state. |
 | `validate --plan` | Print the validation plan; never runs validation. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |

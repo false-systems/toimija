@@ -199,7 +199,7 @@ pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
     let dir = repo_root.join(SESSIONS_SUBDIR).join(&id);
     let raw = fs::read_to_string(dir.join("session.json")).ok()?;
     let marker: SessionMarker = serde_json::from_str(&raw).ok()?;
-    (marker.status == SessionStatus::Active).then_some((id, dir))
+    (marker.id == id && marker.status == SessionStatus::Active).then_some((id, dir))
 }
 
 /// Read the marker in a session directory. Used by the per-session refresh

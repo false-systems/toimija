@@ -24,6 +24,32 @@ fn toimija(path: &Path) -> Command {
     command
 }
 
+fn active_session(path: &Path, id: &str) -> std::path::PathBuf {
+    let dir = path.join(".toimija/sessions").join(id);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "id": id,
+            "pid": std::process::id(),
+            "agent": ["codex"],
+            "worktree": path.display().to_string(),
+            "branch": "main",
+            "head": null,
+            "intent": null,
+            "scope": [],
+            "started_at": 1,
+            "last_seen_at": 1,
+            "status": "active",
+            "closed_at": null,
+            "exit_status": null
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    dir
+}
+
 #[test]
 fn fresh_packet_verifies_consistent_then_a_change_makes_it_stale() {
     if !git_available() {
@@ -87,6 +113,133 @@ fn verify_without_a_packet_is_missing_packet() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(value["status"], "missing_packet");
+}
+
+#[test]
+fn ambient_session_verifies_its_packet_not_the_repo_summary() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+
+    let id = "100-1";
+    let session = active_session(temp.path(), id);
+    let session_packet = session.join("current.json");
+    fs::copy(temp.path().join(".toimija/current.json"), &session_packet).unwrap();
+    let session_packet = fs::canonicalize(session_packet).unwrap();
+
+    // Make only the repo-level packet fresh. If verify reads that mirror, this
+    // incorrectly succeeds; the authoritative session packet must be stale.
+    fs::write(temp.path().join("a.txt"), "changed\n").unwrap();
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+    let assert = toimija(temp.path())
+        .args(["current", "--verify", "--json"])
+        .env("TOIMIJA_SESSION", id)
+        .env("TOIMIJA_LIVE_JSON", &session_packet)
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "stale_packet");
+    assert_eq!(value["packet_path"], session_packet.display().to_string());
+}
+
+#[test]
+fn explicit_packet_wins_and_reports_its_identity() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+    let session = active_session(temp.path(), "100-1");
+    let session_packet = session.join("current.json");
+    fs::copy(temp.path().join(".toimija/current.json"), &session_packet).unwrap();
+    let session_packet = fs::canonicalize(session_packet).unwrap();
+
+    let assert = toimija(temp.path())
+        .args([
+            "verify",
+            "--packet",
+            ".toimija/sessions/100-1/current.json",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "verified");
+    assert_eq!(value["packet_path"], session_packet.display().to_string());
+    assert!(
+        value["artifact_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(value["token"].as_str().unwrap().starts_with("sha256:"));
+}
+
+#[test]
+fn explicit_packet_rejects_unrelated_paths() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    let assert = toimija(temp.path())
+        .args(["verify", "--packet", "a.txt", "--json"])
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "invalid_packet");
+}
+
+#[test]
+fn tampered_ambient_packet_fails_even_when_repo_summary_is_valid() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+    let id = "100-1";
+    let session = active_session(temp.path(), id);
+    let session_packet = session.join("current.json");
+    let mut value: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
+    )
+    .unwrap();
+    value["sauma"]["digest"] = serde_json::json!(
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    );
+    fs::write(
+        &session_packet,
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
+    let session_packet = fs::canonicalize(session_packet).unwrap();
+
+    let assert = toimija(temp.path())
+        .args(["verify", "--json"])
+        .env("TOIMIJA_SESSION", id)
+        .env("TOIMIJA_LIVE_JSON", &session_packet)
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "sauma_digest_mismatch");
+    assert_eq!(value["packet_path"], session_packet.display().to_string());
 }
 
 #[test]

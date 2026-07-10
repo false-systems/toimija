@@ -201,14 +201,17 @@ pub enum Command {
     /// (from .toimija/repo.yaml, or inferred from the repo kind). Toimija never
     /// executes the plan — you or your agent run the commands.
     Validate(ValidateArgs),
-    /// Verify `.toimija/current.json` still matches the live repo state.
+    /// Verify the selected session or repo packet still matches live repo state.
     ///
     /// The verify-before-read gate: checks the packet's consistency fingerprint
-    /// against the working tree. Exits non-zero (with reasons) when the packet is
-    /// stale, so a caller refreshes before trusting it. Use this in a harness
-    /// before every packet read. Read-only; no network.
+    /// against the working tree. Inside `run`, it selects that session's packet;
+    /// otherwise it selects `.toimija/current.json`. `--packet` overrides the
+    /// selection. Use this before every packet read; it exits non-zero (with
+    /// reasons) when the packet is stale, so a caller refreshes before trusting
+    /// it. Read-only; no network.
     #[command(
-        after_help = "Examples:\n  toimija verify --json || toimija refresh   # refresh before trusting a stale packet"
+        after_help = "Examples:\n  toimija verify --json || toimija refresh   # verify the ambient packet\n  \
+        toimija verify --packet .toimija/current.json --json  # select explicitly"
     )]
     Verify(VerifyArgs),
     /// Materialize the working tree as an immutable git tree object.
@@ -251,6 +254,9 @@ pub struct CurrentArgs {
     /// Emit JSON. Required for stable verifier output consumed by harnesses.
     #[arg(long)]
     pub json: bool,
+    /// Packet to verify instead of the ambient session or repo-level packet.
+    #[arg(long, value_name = "PATH", requires = "verify")]
+    pub packet: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -324,6 +330,9 @@ pub struct VerifyArgs {
     /// Emit the verdict as JSON (`{ "consistent": bool, "reasons": [...] }`).
     #[arg(long)]
     pub json: bool,
+    /// Packet to verify instead of the ambient session or repo-level packet.
+    #[arg(long, value_name = "PATH")]
+    pub packet: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -529,7 +538,10 @@ fn run_current(args: CurrentArgs) -> Result<i32> {
     if args.verify {
         // Delegates to `verify`, exit code included — harness verifiers gate
         // on it (the verify-before-read contract).
-        return run_verify(VerifyArgs { json: args.json });
+        return run_verify(VerifyArgs {
+            json: args.json,
+            packet: args.packet,
+        });
     }
     anyhow::bail!("use `toimija current --write` or `toimija current --verify`")
 }
@@ -1065,13 +1077,19 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
 fn run_verify(args: VerifyArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let status = compute_verify_status(&runner, &cwd);
-    let verified = matches!(status, VerifyStatus::Verified { .. });
+    let report = compute_verify_status(&runner, &cwd, args.packet.as_deref());
+    let verified = matches!(report.status, VerifyStatus::Verified { .. });
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&status.to_json())?);
+        println!("{}", serde_json::to_string_pretty(&report.to_json())?);
     } else {
-        match &status {
-            VerifyStatus::Verified { .. } => println!("verified: packet matches the live repo"),
+        match &report.status {
+            VerifyStatus::Verified { .. } => println!(
+                "verified: {} matches the live repo",
+                report
+                    .packet_path
+                    .as_deref()
+                    .map_or_else(|| "packet".to_string(), |path| path.display().to_string())
+            ),
             other => eprintln!("{}", other.message()),
         }
     }
@@ -1085,12 +1103,28 @@ fn run_verify(args: VerifyArgs) -> Result<i32> {
 /// cannot be discovered or read is itself a refusal state
 /// (`unverifiable_repository`), not a hard error — the harness needs the verdict,
 /// not a panic.
-fn compute_verify_status(runner: &ProcessCommandRunner, cwd: &std::path::Path) -> VerifyStatus {
+fn compute_verify_status(
+    runner: &ProcessCommandRunner,
+    cwd: &std::path::Path,
+    explicit_packet: Option<&std::path::Path>,
+) -> VerifyReport {
     let repo_root = match git::discover_repo_root(runner, cwd) {
         Ok(root) => root,
         Err(error) => {
-            return VerifyStatus::UnverifiableRepository {
-                message: format!("not a Git repository: {error}"),
+            return VerifyReport {
+                packet_path: None,
+                status: VerifyStatus::UnverifiableRepository {
+                    message: format!("not a Git repository: {error}"),
+                },
+            };
+        }
+    };
+    let packet_path = match select_verify_packet(&repo_root, cwd, explicit_packet) {
+        Ok(path) => path,
+        Err(message) => {
+            return VerifyReport {
+                packet_path: explicit_packet.map(std::path::Path::to_path_buf),
+                status: VerifyStatus::InvalidPacket { message },
             };
         }
     };
@@ -1099,17 +1133,24 @@ fn compute_verify_status(runner: &ProcessCommandRunner, cwd: &std::path::Path) -
     let mut live = match git::collect_git_state(runner, cwd) {
         Ok((live, _warnings)) => live,
         Err(error) => {
-            return VerifyStatus::UnverifiableRepository {
-                message: format!("could not read Git state: {error}"),
+            return VerifyReport {
+                packet_path: Some(packet_path),
+                status: VerifyStatus::UnverifiableRepository {
+                    message: format!("could not read Git state: {error}"),
+                },
             };
         }
     };
     context::normalize_git_state(&mut live);
-    verify_status(&repo_root, &live)
+    let status = verify_status(&packet_path, &live);
+    VerifyReport {
+        packet_path: Some(packet_path),
+        status,
+    }
 }
 
-fn verify_status(repo_root: &std::path::Path, live: &git::GitState) -> VerifyStatus {
-    match load_stored_packet(repo_root) {
+fn verify_status(packet_path: &std::path::Path, live: &git::GitState) -> VerifyStatus {
+    match load_stored_packet(packet_path) {
         StoredPacket::Ready(mut packet) => {
             if packet.consistency.algorithm != CONSISTENCY_ALGORITHM {
                 return VerifyStatus::UnsupportedConsistencyAlgorithm {
@@ -1127,12 +1168,14 @@ fn verify_status(repo_root: &std::path::Path, live: &git::GitState) -> VerifySta
                     };
                 }
             }
+            let artifact_digest = packet.sauma.as_ref().map(|sauma| sauma.digest.clone());
             let stored = packet.consistency;
             match stored.verify(live) {
                 Verdict::Consistent => VerifyStatus::Verified {
                     algorithm: stored.algorithm,
                     token: stored.token,
                     head: stored.head,
+                    artifact_digest,
                 },
                 Verdict::Stale {
                     packet_token,
@@ -1151,11 +1194,131 @@ fn verify_status(repo_root: &std::path::Path, live: &git::GitState) -> VerifySta
             }
         }
         StoredPacket::MissingPacket => VerifyStatus::MissingPacket {
-            path: repo_root.join(refresh::CURRENT_JSON).display().to_string(),
+            path: packet_path.display().to_string(),
         },
         StoredPacket::InvalidPacket(message) => VerifyStatus::InvalidPacket { message },
         StoredPacket::MissingConsistency => VerifyStatus::MissingConsistency,
         StoredPacket::IoError(message) => VerifyStatus::IoError { message },
+    }
+}
+
+/// Choose the exact packet the caller will read. An explicit path wins; inside
+/// `toimija run`, the validated session handshake wins; otherwise verification
+/// falls back to the repo-level packet.
+fn select_verify_packet(
+    repo_root: &std::path::Path,
+    cwd: &std::path::Path,
+    explicit: Option<&std::path::Path>,
+) -> std::result::Result<std::path::PathBuf, String> {
+    if let Some(path) = explicit {
+        return validate_packet_path(repo_root, cwd, path);
+    }
+    if let Some((_id, session_dir)) = session::ambient_session(repo_root) {
+        let expected = normalize_absolute(&session_dir.join("current.json"))
+            .ok_or_else(|| "invalid ambient session packet path".to_string())?;
+        if let Some(path) = std::env::var_os("TOIMIJA_LIVE_JSON") {
+            let selected = validate_packet_path(repo_root, cwd, std::path::Path::new(&path))?;
+            if selected != expected {
+                return Err(format!(
+                    "TOIMIJA_LIVE_JSON points at {}, but session packet is {}",
+                    selected.display(),
+                    expected.display()
+                ));
+            }
+        }
+        return Ok(expected);
+    }
+    Ok(repo_root.join(refresh::CURRENT_JSON))
+}
+
+fn validate_packet_path(
+    repo_root: &std::path::Path,
+    cwd: &std::path::Path,
+    path: &std::path::Path,
+) -> std::result::Result<std::path::PathBuf, String> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let path = normalize_absolute(&path)
+        .ok_or_else(|| format!("invalid packet path: {}", path.display()))?;
+    let repo_packet = repo_root.join(refresh::CURRENT_JSON);
+    let allowed = if path == repo_packet {
+        true
+    } else {
+        path.strip_prefix(repo_root.join(session::SESSIONS_SUBDIR))
+            .ok()
+            .and_then(|relative| {
+                let mut parts = relative.components();
+                let id = parts.next()?.as_os_str().to_str()?;
+                let file = parts.next()?.as_os_str();
+                (session::is_valid_session_id(id)
+                    && file == "current.json"
+                    && parts.next().is_none()
+                    && repo_root
+                        .join(session::SESSIONS_SUBDIR)
+                        .join(id)
+                        .join("session.json")
+                        .is_file())
+                .then_some(())
+            })
+            .is_some()
+    };
+    if !allowed {
+        return Err(format!(
+            "packet path must be {} or a session current.json under {}",
+            repo_packet.display(),
+            repo_root.join(session::SESSIONS_SUBDIR).display()
+        ));
+    }
+    if path.exists() {
+        let canonical = std::fs::canonicalize(&path)
+            .map_err(|error| format!("failed to resolve {}: {error}", path.display()))?;
+        let canonical_root = std::fs::canonicalize(repo_root)
+            .map_err(|error| format!("failed to resolve {}: {error}", repo_root.display()))?;
+        if !canonical.starts_with(canonical_root) {
+            return Err(format!(
+                "packet path escapes the repository: {}",
+                path.display()
+            ));
+        }
+        return Ok(canonical);
+    }
+    Ok(path)
+}
+
+fn normalize_absolute(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    Some(normalized)
+}
+
+struct VerifyReport {
+    packet_path: Option<std::path::PathBuf>,
+    status: VerifyStatus,
+}
+
+impl VerifyReport {
+    fn to_json(&self) -> serde_json::Value {
+        let mut value = self.status.to_json();
+        if let (Some(path), serde_json::Value::Object(map)) = (&self.packet_path, &mut value) {
+            map.insert(
+                "packet_path".to_string(),
+                serde_json::Value::String(path.display().to_string()),
+            );
+        }
+        value
     }
 }
 
@@ -1167,9 +1330,8 @@ enum StoredPacket {
     IoError(String),
 }
 
-fn load_stored_packet(repo_root: &std::path::Path) -> StoredPacket {
-    let path = repo_root.join(refresh::CURRENT_JSON);
-    let raw = match std::fs::read_to_string(&path) {
+fn load_stored_packet(path: &std::path::Path) -> StoredPacket {
+    let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return StoredPacket::MissingPacket;
@@ -1197,6 +1359,7 @@ enum VerifyStatus {
         algorithm: String,
         token: String,
         head: crate::consistency::HeadState,
+        artifact_digest: Option<String>,
     },
     MissingPacket {
         path: String,
@@ -1242,7 +1405,7 @@ impl VerifyStatus {
                     map.insert(
                         "message".to_string(),
                         serde_json::Value::String(
-                            "The repository changed after .toimija/current.json was generated."
+                            "The repository changed after the selected packet was generated."
                                 .to_string(),
                         ),
                     );
@@ -1251,8 +1414,7 @@ impl VerifyStatus {
                     map.insert(
                         "message".to_string(),
                         serde_json::Value::String(
-                            ".toimija/current.json does not contain a consistency block."
-                                .to_string(),
+                            "The selected packet does not contain a consistency block.".to_string(),
                         ),
                     );
                 }
@@ -1278,11 +1440,11 @@ impl VerifyStatus {
                 format!("unsupported_consistency_algorithm: {algorithm}")
             }
             VerifyStatus::StalePacket { .. } => {
-                "stale_packet: repository changed after .toimija/current.json was generated"
+                "stale_packet: repository changed after the selected packet was generated"
                     .to_string()
             }
             VerifyStatus::SaumaDigestMismatch { .. } => {
-                "sauma_digest_mismatch: .toimija/current.json was tampered with".to_string()
+                "sauma_digest_mismatch: selected packet was tampered with".to_string()
             }
             VerifyStatus::UnsafeGitOperation { message, .. } => {
                 format!("unsafe_git_operation: {message}")
