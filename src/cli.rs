@@ -672,6 +672,13 @@ fn run_run(args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
+    let entry = match verify_run_entry(&runner, &cwd, &repo_root, &plan, entry, &session.id) {
+        Ok(entry) => entry,
+        Err(error) => {
+            close_session_after_startup_failure(&mut session);
+            return Err(error);
+        }
+    };
     print_agent_entry(&entry, &repo_root);
     // The branch and HEAD are known once the packet is built; record them.
     if let Err(error) = session.record_git(
@@ -680,38 +687,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
     ) {
         close_session_after_startup_failure(&mut session);
         return Err(error);
-    }
-
-    // Verify-before-launch: the wrapped agent must enter against a packet that
-    // matches the repo. The entry refresh just ran, so this is consistent by
-    // construction; we re-collect once and confirm, surfacing the verdict so a
-    // startup race (the repo moving between refresh and launch) is not silent.
-    if let Ok((mut live, _warnings)) = git::collect_git_state(&runner, &cwd) {
-        context::normalize_git_state(&mut live);
-        match entry.packet.consistency.verify(&live) {
-            Verdict::Consistent => {
-                info!(event = "toimija.run.packet_verified", session = %session.id)
-            }
-            Verdict::Stale {
-                packet_token,
-                current_token,
-            } => warn!(
-                event = "toimija.run.packet_raced",
-                session = %session.id,
-                packet_token = %packet_token,
-                current_token = %current_token,
-            ),
-            Verdict::UnsupportedConsistencyAlgorithm(algorithm) => warn!(
-                event = "toimija.run.packet_unsupported",
-                session = %session.id,
-                algorithm = %algorithm,
-            ),
-            Verdict::UnsafeGitOperation(operation) => warn!(
-                event = "toimija.run.packet_unsafe",
-                session = %session.id,
-                operation = ?operation,
-            ),
-        }
     }
 
     // 3. Start watching synchronously, so a watcher startup failure is reported
@@ -825,6 +800,53 @@ fn run_run(args: RunArgs) -> Result<i32> {
     //    Returned (not `process::exit`) so the command.finish bookend still runs.
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     Ok(wrapped_exit_code(status))
+}
+
+fn verify_run_entry(
+    runner: &impl crate::command::CommandRunner,
+    cwd: &std::path::Path,
+    repo_root: &std::path::Path,
+    plan: &refresh::Plan,
+    mut entry: refresh::Refreshed,
+    session_id: &str,
+) -> Result<refresh::Refreshed> {
+    for attempt in 0..=1 {
+        let (mut live, _warnings) = git::collect_git_state(runner, cwd)
+            .context("failed to verify the `run` entry packet")?;
+        context::normalize_git_state(&mut live);
+        match entry.packet.consistency.verify(&live) {
+            Verdict::Consistent => {
+                info!(event = "toimija.run.packet_verified", session = %session_id);
+                return Ok(entry);
+            }
+            Verdict::Stale {
+                packet_token,
+                current_token,
+            } if attempt == 0 => {
+                warn!(
+                    event = "toimija.run.packet_raced",
+                    session = %session_id,
+                    packet_token = %packet_token,
+                    current_token = %current_token,
+                    "refreshing once before launch"
+                );
+                entry = plan
+                    .run(runner, repo_root)
+                    .context("failed to refresh the raced `run` entry packet")?;
+            }
+            Verdict::Stale { .. } => anyhow::bail!(
+                "refusing to launch: the `run` entry packet changed again after one refresh"
+            ),
+            Verdict::UnsupportedConsistencyAlgorithm(algorithm) => anyhow::bail!(
+                "refusing to launch: unsupported entry consistency algorithm `{algorithm}`"
+            ),
+            Verdict::UnsafeGitOperation(operation) => anyhow::bail!(
+                "refusing to launch in unsafe Git state: {operation:?} ({} conflicted file(s))",
+                live.conflicted_files.len()
+            ),
+        }
+    }
+    unreachable!("the two-attempt entry gate always returns or errors")
 }
 
 fn close_session_after_startup_failure(session: &mut session::Session) {
