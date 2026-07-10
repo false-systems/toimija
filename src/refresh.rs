@@ -10,6 +10,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -18,6 +20,8 @@ use crate::config::DEFAULT_BUDGET;
 use crate::context::{self, ContextPacket};
 use crate::render;
 use crate::session;
+
+static NEXT_ARTIFACT: AtomicU64 = AtomicU64::new(0);
 
 /// Live agent packet, Markdown form. Regenerated each refresh; not committed.
 pub const CURRENT_MD: &str = ".toimija/current.md";
@@ -146,6 +150,7 @@ fn compute(
             scope: marker.scope,
         });
     }
+    packet.artifact_id = Some(artifact_id());
     let run = packet.session.as_ref().map(|session| session.id.clone());
     packet.attach_sauma(run)?;
     let budget = budget_override
@@ -163,9 +168,20 @@ fn write_packet(md_path: &Path, json_path: &Path, markdown: &str, json: &str) ->
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(md_path, markdown)
+    // JSON is authoritative if the process stops between these two atomic
+    // replacements; the shared artifact id makes that mismatch detectable.
+    crate::atomic_write::replace(md_path, markdown.as_bytes())
         .with_context(|| format!("failed to write {}", md_path.display()))?;
-    fs::write(json_path, format!("{json}\n"))
+    crate::atomic_write::replace(json_path, format!("{json}\n").as_bytes())
         .with_context(|| format!("failed to write {}", json_path.display()))?;
     Ok(())
+}
+
+fn artifact_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let sequence = NEXT_ARTIFACT.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos}-{}-{sequence}", std::process::id())
 }

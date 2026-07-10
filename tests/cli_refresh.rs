@@ -75,6 +75,13 @@ fn refresh_inside_a_run_session_targets_the_session_packet() {
     )
     .unwrap();
     assert_eq!(session_json["schema"], "toimija-context.v1");
+    let artifact_id = session_json["artifact_id"].as_str().unwrap();
+    assert!(
+        fs::read_to_string(&session_md)
+            .unwrap()
+            .contains(&format!("- artifact-id: {artifact_id}")),
+        "the Markdown and JSON session packets must identify the same refresh"
+    );
     assert_eq!(
         session_json["sauma"]["producer"]["run"].as_str(),
         Some("100-1")
@@ -128,6 +135,11 @@ fn refresh_writes_current_md_and_json() {
         serde_json::from_str(&json).expect("current.json must be valid JSON");
     assert!(value.is_object());
     assert_eq!(value["schema"], "toimija-context.v1");
+    let artifact_id = value["artifact_id"].as_str().unwrap();
+    assert!(
+        md.contains(&format!("- artifact-id: {artifact_id}")),
+        "the Markdown and JSON repo packets must identify the same refresh"
+    );
     assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v2");
     assert_eq!(value["sauma"]["envelope"], "sauma-envelope.v1");
     assert_eq!(value["sauma"]["schema"], "toimija-context.v1");

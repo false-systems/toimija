@@ -389,6 +389,9 @@ and `run`, and are git-ignored.
 
 The packet includes:
 
+- an **artifact ID** shared by the Markdown/JSON pair; each file is atomically
+  replaced, and JSON is authoritative if an interrupted refresh leaves IDs that
+  do not match
 - branch / HEAD / dirty state
 - staged / unstaged / untracked files
 - changed surface

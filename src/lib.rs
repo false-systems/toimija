@@ -1,4 +1,5 @@
 pub mod adapters;
+mod atomic_write;
 pub mod cli;
 pub mod command;
 pub mod config;

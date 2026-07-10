@@ -179,7 +179,7 @@ impl Session {
 
     fn write_marker(&self) -> Result<()> {
         let json = serde_json::to_string_pretty(&self.marker)?;
-        fs::write(&self.marker_path, format!("{json}\n"))
+        crate::atomic_write::replace(&self.marker_path, format!("{json}\n").as_bytes())
             .with_context(|| format!("failed to write {}", self.marker_path.display()))?;
         Ok(())
     }
@@ -234,7 +234,7 @@ pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
     }
     marker.last_seen_at = Some(now_secs());
     let json = serde_json::to_string_pretty(&marker)?;
-    fs::write(&marker_path, format!("{json}\n"))
+    crate::atomic_write::replace(&marker_path, format!("{json}\n").as_bytes())
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
     Ok(())
 }
@@ -295,7 +295,7 @@ pub fn declare_intent(
     // session that speaks is never simultaneously reported stale.
     marker.last_seen_at = Some(now_secs());
     let json = serde_json::to_string_pretty(&marker)?;
-    fs::write(&marker_path, format!("{json}\n"))
+    crate::atomic_write::replace(&marker_path, format!("{json}\n").as_bytes())
         .with_context(|| format!("failed to write {}", marker_path.display()))?;
     Ok(marker)
 }

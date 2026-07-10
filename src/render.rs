@@ -216,6 +216,9 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
 pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String {
     let mut output = String::new();
     writeln!(&mut output, "# Toimija Context").unwrap();
+    if let Some(artifact_id) = &packet.artifact_id {
+        writeln!(&mut output, "- artifact-id: {artifact_id}").unwrap();
+    }
     if packet.for_diff {
         writeln!(
             &mut output,
@@ -647,6 +650,7 @@ mod tests {
     fn packet() -> ContextPacket {
         ContextPacket {
             schema: crate::context::CONTEXT_SCHEMA.to_string(),
+            artifact_id: None,
             repo: RepoInfo {
                 name: "demo".to_string(),
                 role: Some("tool".to_string()),

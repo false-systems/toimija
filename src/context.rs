@@ -27,6 +27,9 @@ fn default_context_schema() -> String {
 pub struct ContextPacket {
     #[serde(default = "default_context_schema")]
     pub schema: String,
+    /// Identifies the two files produced by one persisted refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
     pub repo: RepoInfo,
     pub repo_kind: RepoKind,
     pub git: GitState,
@@ -198,6 +201,7 @@ pub fn build_context_packet(
     let consistency = Consistency::fingerprint(&git);
     let packet = ContextPacket {
         schema: CONTEXT_SCHEMA.to_string(),
+        artifact_id: None,
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
         git,
@@ -463,6 +467,7 @@ mod tests {
         let consistency = Consistency::fingerprint(&git);
         let packet = ContextPacket {
             schema: CONTEXT_SCHEMA.to_string(),
+            artifact_id: None,
             repo: RepoInfo {
                 name: "repo".to_string(),
                 role: None,
@@ -514,6 +519,7 @@ mod tests {
         };
         let packet = ContextPacket {
             schema: CONTEXT_SCHEMA.to_string(),
+            artifact_id: None,
             repo: RepoInfo {
                 name: "repo".to_string(),
                 role: None,
@@ -568,6 +574,7 @@ mod tests {
         let consistency = Consistency::fingerprint(&git);
         let mut packet = ContextPacket {
             schema: CONTEXT_SCHEMA.to_string(),
+            artifact_id: None,
             repo: RepoInfo {
                 name: "repo".to_string(),
                 role: None,
