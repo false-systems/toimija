@@ -89,12 +89,9 @@ fn owning_crate_name(repo_root: &Path, file: &Path) -> Option<String> {
             let contents = std::fs::read_to_string(&manifest).ok()?;
             return package_name(&contents);
         }
-        match current {
-            // `Some("")` is the repo root; its parent is `None`, so one more loop
-            // checked the root manifest above before we stop here.
-            None => return None,
-            Some(dir) => current = dir.parent(),
-        }
+        // `Some("")` is the repo root; its parent is `None`, so one more loop
+        // checked the root manifest above before we stop here.
+        current = current?.parent();
     }
 }
 
