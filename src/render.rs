@@ -270,6 +270,20 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         .unwrap();
     }
 
+    // Proposal 0005: the contract renders on every packet and early, so budget
+    // truncation can never silently drop the obligation while keeping the data.
+    write_h2(&mut output, "Workset contract");
+    writeln!(
+        &mut output,
+        "Work from this packet's Scope and Read order; they are your working set, not\n\
+         a preamble. Configured exclusions are do-not-scan. You MAY read outside the\n\
+         workset when a concrete unresolved dependency requires it — but you MUST\n\
+         declare the expansion first: `toimija intent \"<why>\" --scope <path>` (or, if\n\
+         you are not under a session, state the expansion and its reason in your\n\
+         visible output). Expansion is never forbidden; invisible expansion is."
+    )
+    .unwrap();
+
     write_h2(&mut output, "Git");
     writeln!(
         &mut output,
@@ -354,6 +368,10 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     write_risk(&mut output, packet);
 
     write_h2(&mut output, "Configured exclusions");
+    // Proposal 0005 D3: an instruction, not an inventory.
+    if !packet.safe_to_ignore.is_empty() {
+        writeln!(&mut output, "Do not scan:").unwrap();
+    }
     write_path_list(&mut output, &packet.safe_to_ignore, "none");
 
     if packet.for_diff {
@@ -723,6 +741,26 @@ mod tests {
     }
 
     #[test]
+    fn workset_contract_renders_on_every_packet() {
+        // Proposal 0005 D1: repo-level and per-session packets alike carry the
+        // contract, and it renders before Git so budget truncation keeps it.
+        let repo_level = render_context_markdown(&packet(), 4000);
+        assert!(repo_level.contains("## Workset contract"));
+        assert!(repo_level.contains("invisible expansion is."));
+
+        let mut with_session = packet();
+        with_session.session = Some(crate::context::SessionBlock {
+            id: "100-1".to_string(),
+            intent: None,
+            scope: Vec::new(),
+        });
+        let rendered = render_context_markdown(&with_session, 4000);
+        let contract = rendered.find("## Workset contract").unwrap();
+        assert!(rendered.find("## Session").unwrap() < contract);
+        assert!(contract < rendered.find("## Git\n").unwrap());
+    }
+
+    #[test]
     fn session_block_renders_identity_on_per_session_packets() {
         let mut packet = packet();
         packet.session = Some(crate::context::SessionBlock {
@@ -752,8 +790,14 @@ mod tests {
         packet.changed_surface = (0..40)
             .map(|i| PathBuf::from(format!("src/some/deep/module_{i:02}.rs")))
             .collect();
-        let rendered = render_context_markdown(&packet, 1000);
+        // 1000 bytes of headroom past the mandatory Workset contract block,
+        // which renders early by design (proposal 0005) and always survives.
+        let rendered = render_context_markdown(&packet, 1500);
         assert!(rendered.contains("Output truncated"));
+        assert!(
+            rendered.contains("## Workset contract"),
+            "contract must survive truncation"
+        );
         // Validation and Warnings precede the raw lists, so they survive.
         assert!(
             rendered.contains("## Validation plan"),
@@ -1012,6 +1056,14 @@ mod tests {
 - role: tool
 - not: (unset — add to .toimija/repo.yaml)
 - kind: Rust
+
+## Workset contract
+Work from this packet's Scope and Read order; they are your working set, not
+a preamble. Configured exclusions are do-not-scan. You MAY read outside the
+workset when a concrete unresolved dependency requires it — but you MUST
+declare the expansion first: `toimija intent "<why>" --scope <path>` (or, if
+you are not under a session, state the expansion and its reason in your
+visible output). Expansion is never forbidden; invisible expansion is.
 
 ## Git
 - branch: main

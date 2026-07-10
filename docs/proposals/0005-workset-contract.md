@@ -1,6 +1,8 @@
 # Proposal 0005 — Workset contract: from advice to obligation
 
-**Status:** DRAFT 2026-07-10 — awaiting Yair.
+**Status:** ACCEPTED 2026-07-10 — Yair resolved §7 same day: MUST-declare
+from the start, contract in every packet. Part A implemented alongside this
+doc; Part B remains follow-up sized.
 
 **Date:** 2026-07-10
 
@@ -59,12 +61,19 @@ sections, that reframes the existing sections as a contract:
 
 ```markdown
 ## Workset contract
-Work from this packet's Scope and Read order; they are your working set,
-not a preamble. Configured exclusions are do-not-scan. You MAY read outside
-the workset when a concrete unresolved dependency requires it — but you
-MUST declare it first: `toimija intent "<why>" --scope <path>`. Expansion
-is never forbidden; invisible expansion is.
+Work from this packet's Scope and Read order; they are your working set, not
+a preamble. Configured exclusions are do-not-scan. You MAY read outside the
+workset when a concrete unresolved dependency requires it — but you MUST
+declare the expansion first: `toimija intent "<why>" --scope <path>` (or, if
+you are not under a session, state the expansion and its reason in your
+visible output). Expansion is never forbidden; invisible expansion is.
 ```
+
+The parenthetical exists because `toimija intent` speaks for a wrapped
+session and errors without `TOIMIJA_SESSION` — but the contract renders in
+every packet (D1), including ones read by unwrapped agents. Same rule,
+degraded channel: the declaration lands in the agent's visible output
+instead of on a session marker.
 
 - **Permission and visibility are split.** A hard workset would break
   legitimate work and get ignored; a declared expansion keeps the agent
@@ -125,10 +134,11 @@ Recorded so they are not re-proposed after the next rate-limit incident:
   implementation.
 - **D5 — R1–R3 are rejected, not deferred.**
 
-## 7. Open questions for Yair
+## 7. Open questions — resolved 2026-07-10
 
-- Contract wording strength: is MUST-declare the right calibration, or
-  should first-render packets soften to SHOULD until we have dogfooding
-  evidence?
-- Does the contract block belong in `--for-diff` output only, or in every
-  packet including bare `toimija context`?
+- **Contract strength: MUST-declare from the start.** The
+  permission/visibility split already makes MUST safe (expansion itself is
+  never blocked), and a soft rule defeats the advice-vs-contract point.
+- **Placement: every packet.** Session packets, `enter`, and bare
+  `toimija context` all carry the block — one code path, no mode where the
+  contract silently vanishes.
