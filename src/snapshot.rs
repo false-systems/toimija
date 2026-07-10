@@ -197,9 +197,9 @@ fn run_git(
         )
         .with_context(|| format!("failed to run git {args:?}"))?;
     if output.status != 0 {
-        bail!("git {args:?} failed: {}", output.stderr.trim());
+        bail!("git {args:?} failed: {}", output.stderr_lossy().trim());
     }
-    Ok(output.stdout)
+    Ok(output.stdout_lossy().into_owned())
 }
 
 /// Run `git` against the ambient index (for read-only queries like rev-parse).
@@ -208,7 +208,7 @@ fn plain_git(runner: &impl CommandRunner, repo_root: &Path, args: &[&str]) -> Re
         .run(repo_root, "git", args)
         .with_context(|| format!("failed to run git {args:?}"))?;
     if output.status != 0 {
-        bail!("git {args:?} failed: {}", output.stderr.trim());
+        bail!("git {args:?} failed: {}", output.stderr_lossy().trim());
     }
-    Ok(output.stdout)
+    Ok(output.stdout_lossy().into_owned())
 }

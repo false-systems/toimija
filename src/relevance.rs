@@ -982,8 +982,8 @@ mod tests {
                 args.iter().map(|arg| arg.to_string()).collect(),
                 CommandOutput {
                     status: 0,
-                    stdout: stdout.to_string(),
-                    stderr: String::new(),
+                    stdout: stdout.as_bytes().to_vec(),
+                    stderr: Vec::new(),
                 },
             );
             self
@@ -999,8 +999,8 @@ mod tests {
                 .cloned()
                 .unwrap_or(CommandOutput {
                     status: 1,
-                    stdout: String::new(),
-                    stderr: String::new(),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
                 }))
         }
     }
