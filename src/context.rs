@@ -353,13 +353,13 @@ fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 /// output or vendored deps, not product source. Applied live every run.
 const BUILTIN_ARTIFACT_DIRS: &[&str] = &["target", "_build", "deps", "node_modules"];
 
-fn effective_ignore_rules(configured: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn effective_ignore_rules(configured: &[PathBuf]) -> Vec<PathBuf> {
     let mut rules: Vec<PathBuf> = configured.to_vec();
     rules.extend(BUILTIN_ARTIFACT_DIRS.iter().map(PathBuf::from));
     rules
 }
 
-fn matches_safe_to_ignore(path: &Path, rules: &[PathBuf]) -> bool {
+pub(crate) fn matches_safe_to_ignore(path: &Path, rules: &[PathBuf]) -> bool {
     let path_segments = normal_segments(path);
     rules
         .iter()

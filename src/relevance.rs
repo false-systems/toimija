@@ -226,7 +226,7 @@ pub fn compute_relevance(
 
 /// Default bounded history window for log mining. Conservative so the work stays
 /// cheap on large repos; overridable via config later.
-const DEFAULT_LOG_WINDOW_COMMITS: usize = 200;
+pub(crate) const DEFAULT_LOG_WINDOW_COMMITS: usize = 200;
 /// A missing history partner must co-change at least this many times to be
 /// worth surfacing.
 const MIN_COUPLING_COUNT: usize = 2;
@@ -423,7 +423,7 @@ fn young_file_action(has_test_missing: bool, has_test_in_diff: bool) -> String {
 /// Returns `None` when `git log` fails, `Some(vec![])` when there is no history.
 /// The `@@` marker prefixes each commit hash so file paths (which never start
 /// with `@@`) parse unambiguously.
-fn mine_log_commits(
+pub(crate) fn mine_log_commits(
     runner: &impl CommandRunner,
     repo_root: &Path,
     start_ref: &str,
