@@ -323,6 +323,7 @@ mod tests {
             .collect();
         ContextPacket {
             schema: crate::context::CONTEXT_SCHEMA.to_string(),
+            artifact_id: None,
             repo: RepoInfo {
                 name: "repo".to_string(),
                 role: Some("role".to_string()),

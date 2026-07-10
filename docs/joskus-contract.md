@@ -15,10 +15,12 @@ prompts, apply model patches, or run model-requested validation.
 (written under `.toimija/sessions/<id>/` by `toimija run`) it also carries a
 `session` block — `{ "id": "...", "intent": "..."|null, "scope": [...] }` —
 additive per the contract's evolution rule; a harness infers the session's
-declared intent from it. It includes:
+declared intent from it. Persisted Markdown/JSON pairs share an `artifact_id`;
+JSON is authoritative when an interrupted refresh leaves mismatched IDs. It includes:
 
 ```json
 {
+  "artifact_id": "...",
   "consistency": {
     "algorithm": "toimija-consistency-v2",
     "head": { "kind": "normal", "branch": "main", "oid": "..." },
