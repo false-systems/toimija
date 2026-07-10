@@ -283,6 +283,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
          visible output). Expansion is never forbidden; invisible expansion is."
     )
     .unwrap();
+    let mandatory_end = output.len();
 
     write_h2(&mut output, "Git");
     writeln!(
@@ -381,7 +382,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     }
     write_changed_surface(&mut output, packet);
 
-    truncate_to_budget(output, budget)
+    truncate_to_budget(output, budget, mandatory_end)
 }
 
 /// Render the Coupling section: companions that are absent from the current
@@ -624,7 +625,7 @@ fn relevance_source_label(source: RelevanceSource) -> &'static str {
     }
 }
 
-fn truncate_to_budget(mut output: String, budget: usize) -> String {
+fn truncate_to_budget(mut output: String, budget: usize, mandatory_end: usize) -> String {
     if output.len() <= budget {
         return output;
     }
@@ -635,7 +636,10 @@ fn truncate_to_budget(mut output: String, budget: usize) -> String {
     // char (—, ↔) would panic in String::truncate. '\n' is a single byte that
     // never appears inside a multi-byte UTF-8 sequence, so scanning raw bytes is
     // safe and the resulting index is always a char boundary.
-    let upper = keep.min(output.len());
+    // Keep the complete mandatory prefix even when the caller's budget is too
+    // small to include it. The budget is approximate by design; dropping the
+    // contract would make the packet contradict its own output guarantee.
+    let upper = keep.max(mandatory_end).min(output.len());
     let cut = output.as_bytes()[..upper]
         .iter()
         .rposition(|&byte| byte == b'\n')
@@ -895,6 +899,8 @@ mod tests {
     fn budget_truncation_does_not_panic() {
         let rendered = render_context_markdown(&packet(), 100);
         assert!(rendered.contains("Output truncated"));
+        assert!(rendered.contains("## Workset contract"));
+        assert!(rendered.contains("invisible expansion is."));
     }
 
     #[test]
