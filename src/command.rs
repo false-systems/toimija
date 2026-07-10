@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
@@ -8,8 +9,18 @@ use tracing::{debug, info};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
     pub status: i32,
-    pub stdout: String,
-    pub stderr: String,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+impl CommandOutput {
+    pub fn stdout_lossy(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.stdout)
+    }
+
+    pub fn stderr_lossy(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.stderr)
+    }
 }
 
 pub trait CommandRunner {
@@ -87,8 +98,6 @@ impl CommandRunner for ProcessCommandRunner {
         command.envs(env.iter().copied());
         let output = command.output()?;
         let status = output.status.code().unwrap_or(-1);
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         debug!(
             event = "toimija.git.command.finish",
             command = program,
@@ -101,8 +110,8 @@ impl CommandRunner for ProcessCommandRunner {
         );
         Ok(CommandOutput {
             status,
-            stdout,
-            stderr,
+            stdout: output.stdout,
+            stderr: output.stderr,
         })
     }
 }
@@ -167,8 +176,19 @@ mod tests {
         unsafe { std::env::remove_var("GIT_DIR") };
 
         // Resolve symlinks (macOS /var -> /private/var) before comparing.
-        let seen = std::fs::canonicalize(toplevel.stdout.trim()).unwrap();
+        let seen = std::fs::canonicalize(toplevel.stdout_lossy().trim()).unwrap();
         let want = std::fs::canonicalize(&repo_a).unwrap();
         assert_eq!(seen, want, "leaked GIT_DIR must not override cwd");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runner_preserves_invalid_utf8_until_text_is_requested() {
+        let output = ProcessCommandRunner
+            .run(Path::new("."), "sh", &["-c", "printf '\\377'"])
+            .unwrap();
+
+        assert_eq!(output.stdout, vec![0xff]);
+        assert_eq!(output.stdout_lossy(), "�");
     }
 }

@@ -76,7 +76,7 @@ pub fn discover_repo_root(
     if output.status != 0 {
         return Err(ToimijaError::NotGitRepo);
     }
-    Ok(PathBuf::from(output.stdout.trim()))
+    Ok(PathBuf::from(output.stdout_lossy().trim()))
 }
 
 pub fn collect_git_state(
@@ -257,14 +257,14 @@ fn run_git_required(
             status: output.status,
         });
     }
-    Ok(output.stdout)
+    Ok(output.stdout_lossy().into_owned())
 }
 
 /// Run a git command, returning its stdout only on success. Shared with the
 /// relevance layer for bounded history mining.
 pub(crate) fn run_git_ok(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> Option<String> {
     let output = runner.run(cwd, "git", args).ok()?;
-    (output.status == 0).then_some(output.stdout)
+    (output.status == 0).then(|| output.stdout_lossy().into_owned())
 }
 
 pub fn parse_porcelain_v2(text: &str) -> ParsedStatus {
@@ -426,8 +426,8 @@ mod tests {
                 args.iter().map(|arg| arg.to_string()).collect(),
                 CommandOutput {
                     status,
-                    stdout: stdout.to_string(),
-                    stderr: String::new(),
+                    stdout: stdout.as_bytes().to_vec(),
+                    stderr: Vec::new(),
                 },
             );
             self
@@ -443,8 +443,8 @@ mod tests {
                 .cloned()
                 .unwrap_or(CommandOutput {
                     status: 1,
-                    stdout: String::new(),
-                    stderr: String::new(),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
                 }))
         }
     }
