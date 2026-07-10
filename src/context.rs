@@ -68,7 +68,7 @@ pub struct SessionBlock {
 
 /// Where the changed surface came from. Named honestly: the surface either
 /// reflects the whole branch (diff since the merge-base) or only the local
-/// working tree and index, and we never claim branch intent we cannot derive.
+/// working tree and index, and we never claim branch-diff evidence we lack.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangedSurfaceSource {
@@ -231,14 +231,14 @@ pub fn build_context_packet(
 }
 
 /// Decide how to describe the changed surface. A merge-base means we can speak
-/// to whole-branch intent; otherwise we only have the working tree and index;
+/// to the branch surface; otherwise we only have the working tree and index;
 /// with neither HEAD nor local changes there is nothing to source from.
 fn changed_surface_source(git: &GitState) -> ChangedSurfaceSource {
     let has_local_changes = !git.staged_files.is_empty()
         || !git.unstaged_files.is_empty()
         || !git.untracked_files.is_empty()
         || !git.branch_files.is_empty();
-    // The surface reflects branch intent only when commits since the merge-base
+    // The surface reflects the branch diff only when commits since the merge-base
     // actually contributed files. A merge-base that equals HEAD (branch sitting
     // at its base) with only working-tree dirt is working-tree, not branch diff.
     if !git.branch_files.is_empty() {

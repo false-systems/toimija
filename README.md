@@ -69,19 +69,19 @@ Every coding agent enters a repo the same way: glob, grep, read, guess. That
 cold crawl is slow, costs tokens, and is wrong the moment the repo moves. Yet
 every repo already ships a database that knows exactly what is going on — Git.
 Toimija reads it once, compiles it into a small packet, keeps that packet
-provably fresh, and hands it to the agent. The agent starts oriented instead of
-archaeologizing.
+verifiable against local Git state, and hands it to the agent as a bounded
+starting point instead of a cold crawl.
 
 What you get:
 
 | | |
 |---|---|
 | **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed on every relevant change while the agent works. |
-| **Git-derived relevance** | What to read first, what co-changes, what is risky, what is mechanical dep-bump ripple to skip. No parsing, no index — just Git, used well. |
+| **Git-derived relevance** | What to inspect first, what co-changes, what is risky, and which changes may be dependency-related. Heuristic and advisory; no source parsing. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
 | **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, explicit handoff records, 7-day GC. Visibility, never orchestration. |
 | **Chain of custody** | Every packet and handoff carries a sauma envelope — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
-| **Honest validation** | `validate --plan` prints the repo's real gates (including a focused tier derived from the diff). Toimija never runs them for you. |
+| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance. It does not discover every CI requirement or run commands. |
 | **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
 
 ## What Toimija is
@@ -110,7 +110,7 @@ Most agent tools make the model rediscover the repo from files.
 
 Toimija starts from the one truth database every repo already has: Git. HEAD, refs, index, merge-base, staged and unstaged changes, dirty state, branch divergence, and reflog are not just metadata. They are the repo's working state machine.
 
-Toimija reads that state machine first, then compiles it into a small context packet: what changed, what is risky, what to read, what to ignore, and what validation can honestly prove.
+Toimija reads that state machine first, then compiles it into a small context packet: what changed, heuristic read priorities and risks, configured exclusions, and a validation plan with explicit provenance.
 
 Git is not a save button here. Git is the substrate.
 
@@ -506,14 +506,15 @@ need to fill, and at `toimija snippet preflight` to seed your agent docs.
 ## Git-derived relevance
 
 Toimija does not only report Git state. It also uses bounded Git history to help
-an agent decide what to read first and what to ignore:
+an agent decide what to inspect first:
 
 - changed areas since merge-base, and areas untouched by the branch (`Scope`)
 - changed files ranked by likely relevance with a short reason (`Read order`);
   source churn corroborated as dependency-bump fallout (a changed manifest whose
   ecosystem lockfile changed in the same diff, e.g. `Cargo.toml` + `Cargo.lock`)
-  is tagged `mechanical ripple` and ranked dead last — read the intent, skip the
-  ripple unless it fails to compile. Conservative by design: a manifest or
+  is tagged `possible dependency-related change` and ranked after the manifest
+  for inspection. This is a weak heuristic, never evidence that source is safe
+  to skip. Conservative by design: a manifest or
   lockfile edit alone tags nothing, and files the branch itself added are always
   authored intent, never ripple.
 - companion files that are missing from the current diff (`Coupling`)
@@ -628,7 +629,7 @@ renders like this:
 ## Git state
 Toimija starts from Git's state machine: HEAD, index, working tree, branch, and merge-base.
 
-## Branch intent
+## Branch surface
 - compared against: origin/main
 - merge-base: def456
 - files changed since merge-base: 3
@@ -640,7 +641,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 ## Scope
 - source: branch diff since merge-base
 - in play: README.md, src, tests
-- out of scope this branch: .github, fixtures, xtask
+- unchanged top-level areas: .github, fixtures, xtask
 
 ## Read order
 1. README.md — changed docs
@@ -679,7 +680,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - src/render.rs — high churn — 9 commits in the last 200 commits; hot file — keep the change small and well-tested
 - tests/git_state.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage
 
-## Safe to ignore
+## Configured exclusions
 - target/
 
 ## Working tree
