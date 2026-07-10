@@ -1017,7 +1017,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
 
     // Release a held lease.
     if let Some(id) = &args.release {
-        snapshot::release_lease(&repo_root, id)?;
+        snapshot::release_lease(&runner, &repo_root, id)?;
         println!("released snapshot lease {id}");
         return Ok(());
     }
@@ -1055,7 +1055,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
             mixed.join(", ")
         );
     }
-    let tree = snapshot::materialize(&repo_root)?;
+    let tree = snapshot::materialize(&runner, &repo_root)?;
 
     if args.lease {
         // Tie the lease to the session when wrapped by `toimija run`; otherwise
@@ -1070,7 +1070,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
                     .unwrap_or(0);
                 format!("{secs}-{}", std::process::id())
             });
-        let lease = snapshot::acquire_lease(&repo_root, &id, &tree, &consistency.token)?;
+        let lease = snapshot::acquire_lease(&runner, &repo_root, &id, &tree, &consistency.token)?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&lease)?);
         } else {

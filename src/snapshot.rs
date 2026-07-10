@@ -16,11 +16,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+
+use crate::command::CommandRunner;
 
 /// Toimija's own generated outputs, dropped from the snapshot tree so a
 /// materialization never captures the packet it is about to describe (mirrors the
@@ -32,36 +33,37 @@ const GENERATED_DIRS: &[&str] = &[".toimija/sessions", ".toimija/snapshots"];
 /// honoring `.gitignore`) as a git tree object; return its oid. Uses a throwaway
 /// index, so the real index is untouched. Toimija's generated output is excluded
 /// so the tree matches what the consistency token fingerprints.
-pub fn materialize(repo_root: &Path) -> Result<String> {
+pub fn materialize(runner: &impl CommandRunner, repo_root: &Path) -> Result<String> {
     // A *unique* throwaway index per run: concurrent `toimija snapshot`
     // invocations in one repo must not clobber or delete each other's index.
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
-    let index = git_dir(repo_root)?.join(format!(
+    let index = git_dir(runner, repo_root)?.join(format!(
         "toimija-snapshot-{}-{nanos}.index",
         std::process::id()
     ));
 
-    let tree = materialize_into(repo_root, &index);
+    let tree = materialize_into(runner, repo_root, &index);
     // Always remove the throwaway index — on success and on failure.
     let _ = std::fs::remove_file(&index);
     tree
 }
 
-fn materialize_into(repo_root: &Path, index: &Path) -> Result<String> {
+fn materialize_into(runner: &impl CommandRunner, repo_root: &Path, index: &Path) -> Result<String> {
     // Seed the scratch index from HEAD first, so *tracked* files are present even
     // when they match `.gitignore` — then overlay the worktree with `add -A`.
     // Into an empty index, `add -A` treats every path as untracked and applies
     // `.gitignore`, which would drop committed-but-ignored content from the tree.
     // `read-tree` errors harmlessly on an unborn HEAD (no tracked files yet).
-    let _ = run_git(repo_root, index, &["read-tree", "HEAD"]);
+    let _ = run_git(runner, repo_root, index, &["read-tree", "HEAD"]);
     // Overlay worktree changes (modifications, additions, deletions), then drop
     // generated output. `--ignore-unmatch` keeps `rm` quiet when absent.
-    run_git(repo_root, index, &["add", "-A"])?;
+    run_git(runner, repo_root, index, &["add", "-A"])?;
     for file in GENERATED_FILES {
         let _ = run_git(
+            runner,
             repo_root,
             index,
             &["rm", "--cached", "--ignore-unmatch", file],
@@ -69,12 +71,13 @@ fn materialize_into(repo_root: &Path, index: &Path) -> Result<String> {
     }
     for dir in GENERATED_DIRS {
         let _ = run_git(
+            runner,
             repo_root,
             index,
             &["rm", "--cached", "-r", "--ignore-unmatch", dir],
         );
     }
-    Ok(run_git(repo_root, index, &["write-tree"])?
+    Ok(run_git(runner, repo_root, index, &["write-tree"])?
         .trim()
         .to_string())
 }
@@ -102,8 +105,14 @@ pub fn lease_ref(id: &str) -> String {
 /// Acquire a lease on `tree`: pin it with a git ref so `git gc` retains it while
 /// held, and record a marker. This is AHTI's `begin_snapshot` — but the "active
 /// reader refcount that blocks reclamation" is git reachability, cross-process.
-pub fn acquire_lease(repo_root: &Path, id: &str, tree: &str, token: &str) -> Result<SnapshotLease> {
-    plain_git(repo_root, &["update-ref", &lease_ref(id), tree])?;
+pub fn acquire_lease(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    id: &str,
+    tree: &str,
+    token: &str,
+) -> Result<SnapshotLease> {
+    plain_git(runner, repo_root, &["update-ref", &lease_ref(id), tree])?;
     let lease = SnapshotLease {
         id: id.to_string(),
         tree: tree.to_string(),
@@ -122,9 +131,9 @@ pub fn acquire_lease(repo_root: &Path, id: &str, tree: &str, token: &str) -> Res
 
 /// Release a lease: delete the ref (git gc may now reclaim the tree if nothing
 /// else references it) and remove the marker. Idempotent.
-pub fn release_lease(repo_root: &Path, id: &str) -> Result<()> {
+pub fn release_lease(runner: &impl CommandRunner, repo_root: &Path, id: &str) -> Result<()> {
     // Ignore a missing ref so release is idempotent.
-    let _ = plain_git(repo_root, &["update-ref", "-d", &lease_ref(id)]);
+    let _ = plain_git(runner, repo_root, &["update-ref", "-d", &lease_ref(id)]);
     let _ = fs::remove_file(repo_root.join(SNAPSHOTS_SUBDIR).join(format!("{id}.json")));
     Ok(())
 }
@@ -167,40 +176,39 @@ fn now_secs() -> u64 {
 }
 
 /// Absolute git dir (handles linked worktrees, where `.git` is a file).
-fn git_dir(repo_root: &Path) -> Result<PathBuf> {
-    let output = plain_git(repo_root, &["rev-parse", "--absolute-git-dir"])?;
+fn git_dir(runner: &impl CommandRunner, repo_root: &Path) -> Result<PathBuf> {
+    let output = plain_git(runner, repo_root, &["rev-parse", "--absolute-git-dir"])?;
     Ok(PathBuf::from(output.trim()))
 }
 
 /// Run `git` with a throwaway `GIT_INDEX_FILE`, capturing stdout.
-fn run_git(repo_root: &Path, index: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo_root)
-        .env("GIT_INDEX_FILE", index)
-        .output()
+fn run_git(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    index: &Path,
+    args: &[&str],
+) -> Result<String> {
+    let output = runner
+        .run_with_env(
+            repo_root,
+            "git",
+            args,
+            &[("GIT_INDEX_FILE", index.as_os_str())],
+        )
         .with_context(|| format!("failed to run git {args:?}"))?;
-    if !output.status.success() {
-        bail!(
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    if output.status != 0 {
+        bail!("git {args:?} failed: {}", output.stderr.trim());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
 /// Run `git` against the ambient index (for read-only queries like rev-parse).
-fn plain_git(repo_root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo_root)
-        .output()
+fn plain_git(runner: &impl CommandRunner, repo_root: &Path, args: &[&str]) -> Result<String> {
+    let output = runner
+        .run(repo_root, "git", args)
         .with_context(|| format!("failed to run git {args:?}"))?;
-    if !output.status.success() {
-        bail!(
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    if output.status != 0 {
+        bail!("git {args:?} failed: {}", output.stderr.trim());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }

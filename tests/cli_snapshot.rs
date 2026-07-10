@@ -172,3 +172,62 @@ fn a_tracked_file_that_matches_gitignore_stays_in_the_tree() {
         "tracked-but-ignored file was dropped from the tree: {listing}"
     );
 }
+
+#[test]
+fn inherited_git_location_cannot_redirect_snapshot_objects_or_refs() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let repo_a = temp.path().join("a");
+    let repo_b = temp.path().join("b");
+    fs::create_dir_all(&repo_a).unwrap();
+    fs::create_dir_all(&repo_b).unwrap();
+    init_repo(&repo_a);
+    init_repo(&repo_b);
+    fs::write(repo_a.join("only-a.txt"), "snapshot me\n").unwrap();
+
+    let leaked_index = repo_b.join("leaked.index");
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(&repo_a)
+        .env("GIT_DIR", repo_b.join(".git"))
+        .env("GIT_WORK_TREE", &repo_b)
+        .env("GIT_INDEX_FILE", &leaked_index)
+        .args(["snapshot", "--lease", "--json"])
+        .assert()
+        .success();
+    let lease: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    let id = lease["id"].as_str().unwrap();
+    let tree = lease["tree"].as_str().unwrap();
+    let snapshot_ref = format!("refs/toimija/snapshots/{id}");
+
+    let listing = git_stdout(&repo_a, &["cat-file", "-p", tree]);
+    assert!(listing.contains("only-a.txt"), "{listing}");
+    assert_eq!(
+        git_stdout(&repo_a, &["rev-parse", &snapshot_ref]).trim(),
+        tree
+    );
+    assert!(
+        !common::git_at(&repo_b)
+            .args(["cat-file", "-e", tree])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "snapshot objects must not be written to the inherited GIT_DIR"
+    );
+    assert!(
+        !common::git_at(&repo_b)
+            .args(["rev-parse", "--verify", &snapshot_ref])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "snapshot refs must not be written to the inherited GIT_DIR"
+    );
+    assert!(
+        !leaked_index.exists(),
+        "the inherited scratch index path must not be used"
+    );
+}
