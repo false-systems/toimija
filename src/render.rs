@@ -316,7 +316,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     )
     .unwrap();
 
-    write_branch_intent(&mut output, packet);
+    write_branch_surface(&mut output, packet);
     write_recent_commits(&mut output, packet);
     // Section order is also the budget-priority order: the raw changed-file
     // lists are emitted LAST so a large diff can never starve the high-value
@@ -350,7 +350,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     write_coupling(&mut output, packet);
     write_risk(&mut output, packet);
 
-    write_h2(&mut output, "Safe to ignore");
+    write_h2(&mut output, "Configured exclusions");
     write_path_list(&mut output, &packet.safe_to_ignore, "none");
 
     if packet.for_diff {
@@ -413,10 +413,10 @@ fn merge_base_label(packet: &ContextPacket) -> String {
     }
 }
 
-/// Branch intent is what the whole branch is about (its diff since the
-/// merge-base), as opposed to dirty state, which is only what changed now.
-fn write_branch_intent(output: &mut String, packet: &ContextPacket) {
-    write_h2(output, "Branch intent");
+/// The branch surface is the observed diff since the selected merge-base, as
+/// opposed to dirty state, which is only what changed in the worktree now.
+fn write_branch_surface(output: &mut String, packet: &ContextPacket) {
+    write_h2(output, "Branch surface");
     match packet.git.merge_base.as_deref() {
         Some(merge_base) => {
             writeln!(
@@ -476,7 +476,7 @@ fn write_worktree_breakdown(output: &mut String, packet: &ContextPacket) {
 }
 
 /// The changed surface, labelled with the source it was derived from so the
-/// reader knows whether branch intent informed it.
+/// reader knows whether branch-diff evidence informed it.
 fn write_changed_surface(output: &mut String, packet: &ContextPacket) {
     write_h2(output, "Changed surface");
     writeln!(
@@ -557,7 +557,7 @@ fn write_scope(output: &mut String, packet: &ContextPacket) {
             .map(|area| area.label.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(output, "- out of scope this branch: {out}").unwrap();
+        writeln!(output, "- unchanged top-level areas: {out}").unwrap();
     }
 }
 
@@ -1024,7 +1024,7 @@ mod tests {
 ## Git state
 Toimija starts from Git’s state machine: HEAD, index, working tree, branch, and merge-base.
 
-## Branch intent
+## Branch surface
 - unavailable: no merge-base with origin/main
 
 ## Recent commits
@@ -1050,7 +1050,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 ## Warnings
 - No upstream detected. Branch divergence is unavailable.
 
-## Safe to ignore
+## Configured exclusions
 - none
 
 ## Working tree

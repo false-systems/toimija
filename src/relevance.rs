@@ -636,11 +636,13 @@ impl ReadCategory {
             ReadCategory::Manifest => "manifest / dependency source",
             ReadCategory::Tests => "tests",
             ReadCategory::Source => "source files",
-            ReadCategory::Lockfile => "lockfile — dependency ripple, read after the manifest",
+            ReadCategory::Lockfile => {
+                "lockfile — possible dependency-related change; inspect after the manifest"
+            }
             ReadCategory::Generated => "generated or unknown",
             ReadCategory::MechanicalRipple => {
-                "mechanical ripple — source under a manifest whose lockfile changed in the \
-                 same diff (dependency bump); read last, skip unless it fails to compile"
+                "possible dependency-related change — source under a manifest whose lockfile \
+                 changed in the same diff; inspect after the manifest"
             }
         }
     }
@@ -1459,9 +1461,10 @@ mod tests {
         ];
         let order = compute_read_order(&changed, &[]);
         let reasons: Vec<&str> = order.iter().map(|entry| entry.reason.as_str()).collect();
-        // packaging, docs, manifest, source, lockfile — manifest before its ripple.
+        // packaging, docs, manifest, source, lockfile — manifest before a
+        // possible dependency-related change.
         // (src/cold_scan.rs is outside ahti-query/, the bumped manifest's
-        // subtree, so it is ordinary source, not a mechanical ripple.)
+        // subtree, so it is ordinary source, not a dependency-related candidate.)
         assert_eq!(
             reasons,
             vec![
@@ -1469,7 +1472,7 @@ mod tests {
                 "changed docs",
                 "manifest / dependency source",
                 "source files",
-                "lockfile — dependency ripple, read after the manifest",
+                "lockfile — possible dependency-related change; inspect after the manifest",
             ]
         );
         // priorities are strictly increasing.
@@ -1497,11 +1500,12 @@ mod tests {
             PathBuf::from("README.md"),
         ];
         let order = compute_read_order(&changed, &[]);
-        assert!(group_of(&order, "src/query.rs").contains("mechanical ripple"));
-        assert!(group_of(&order, "src/scan.rs").contains("mechanical ripple"));
+        assert!(group_of(&order, "src/query.rs").contains("possible dependency-related change"));
+        assert!(group_of(&order, "src/scan.rs").contains("possible dependency-related change"));
         // The ripple group is dead last, after even the lockfile.
         let last = order.last().unwrap();
-        assert!(last.reason.contains("mechanical ripple"));
+        assert!(last.reason.contains("possible dependency-related change"));
+        assert!(!last.reason.contains("skip"));
         assert_eq!(last.paths.len(), 2);
     }
 
@@ -1531,7 +1535,10 @@ mod tests {
             PathBuf::from("crates/bar/src/lib.rs"),
         ];
         let order = compute_read_order(&changed, &[]);
-        assert!(group_of(&order, "crates/foo/src/lib.rs").contains("mechanical ripple"));
+        assert!(
+            group_of(&order, "crates/foo/src/lib.rs")
+                .contains("possible dependency-related change")
+        );
         assert_eq!(group_of(&order, "crates/bar/src/lib.rs"), "source files");
     }
 
@@ -1548,7 +1555,7 @@ mod tests {
         let branch_added = vec![PathBuf::from("src/new_feature.rs")];
         let order = compute_read_order(&changed, &branch_added);
         assert_eq!(group_of(&order, "src/new_feature.rs"), "source files");
-        assert!(group_of(&order, "src/query.rs").contains("mechanical ripple"));
+        assert!(group_of(&order, "src/query.rs").contains("possible dependency-related change"));
     }
 
     #[test]

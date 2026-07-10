@@ -189,17 +189,17 @@ fn committed_branch_change_appears_in_surface_with_clean_tree() {
         .success()
         .stdout(predicate::str::contains("dirty: false"))
         .stdout(predicate::str::contains("feature.txt"))
-        // Changed surface is sourced from the branch diff, and branch intent is
+        // Changed surface is sourced from the branch diff, and branch surface is
         // rendered because a merge-base exists.
         .stdout(predicate::str::contains(
             "source: branch diff since merge-base",
         ))
-        .stdout(predicate::str::contains("## Branch intent"))
+        .stdout(predicate::str::contains("## Branch surface"))
         .stdout(predicate::str::contains("files changed since merge-base:"));
 }
 
 #[test]
-fn branch_intent_uses_trunk_not_feature_upstream() {
+fn branch_surface_uses_trunk_not_feature_upstream() {
     if !git_available() {
         return;
     }
@@ -298,10 +298,10 @@ fn unborn_branch_reports_head_and_merge_base_unavailable() {
         .stdout(predicate::str::contains(
             "HEAD unavailable; branch has no commits yet.",
         ))
-        // No HEAD and no base: branch intent is unavailable and the changed
+        // No HEAD and no base: branch surface is unavailable and the changed
         // surface has no source to derive from.
         .stdout(predicate::str::contains(
-            "No base branch detected. Branch intent is unavailable.",
+            "No base branch detected. Branch surface is unavailable.",
         ))
         .stdout(predicate::str::contains(
             "- unavailable: no merge-base with",
@@ -360,7 +360,7 @@ fn changed_surface_falls_back_to_working_tree_without_a_base() {
     init_repo(temp.path());
     // Rename the branch away from main/master so no base candidate resolves.
     // HEAD exists but there is no merge-base, so the surface source is the
-    // working tree and index, not branch intent.
+    // working tree and index, not a branch diff.
     run_git(temp.path(), &["branch", "-M", "wip"]);
     fs::write(temp.path().join("scratch.txt"), "scratch\n").unwrap();
     Command::cargo_bin("toimija")
@@ -371,7 +371,7 @@ fn changed_surface_falls_back_to_working_tree_without_a_base() {
         .success()
         .stdout(predicate::str::contains("source: working tree and index"))
         .stdout(predicate::str::contains(
-            "No base branch detected. Branch intent is unavailable.",
+            "No base branch detected. Branch surface is unavailable.",
         ));
 }
 

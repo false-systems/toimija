@@ -1,8 +1,8 @@
 # Joskus Contract
 
-Toimija prepares the repo. Joskus drives the session.
+Toimija compiles and verifies modeled local repo state. Joskus drives the session.
 
-Toimija owns repo truth: it reads Git state, compiles context, writes
+Toimija owns that local state packet: it reads Git state, compiles context, writes
 `.toimija/current.md`, writes `.toimija/current.json`, and verifies the packet
 against the live repository. Toimija does not talk to model providers, own
 prompts, apply model patches, or run model-requested validation.

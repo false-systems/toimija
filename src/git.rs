@@ -136,10 +136,10 @@ pub fn collect_git_state(
         );
         match base.as_deref() {
             Some(base) => warnings.push(format!(
-                "No merge-base with {base}. Branch intent is unavailable."
+                "No merge-base with {base}. Branch surface is unavailable."
             )),
             None => {
-                warnings.push("No base branch detected. Branch intent is unavailable.".to_string())
+                warnings.push("No base branch detected. Branch surface is unavailable.".to_string())
             }
         }
     }
@@ -217,7 +217,7 @@ pub fn collect_git_state(
 }
 
 fn discover_base(runner: &impl CommandRunner, repo_root: &Path) -> Option<String> {
-    // Branch intent compares against the integration trunk, not the branch's
+    // Branch surface compares against the integration trunk, not the branch's
     // push/pull upstream. A pushed feature branch commonly tracks
     // origin/<feature>, which would make merge-base collapse to HEAD.
     if let Some(default_remote) = run_git_ok(
