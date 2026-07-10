@@ -33,14 +33,19 @@ pub struct HandoffRecord {
     pub entry_head: Option<String>,
     pub head: Option<String>,
     pub merge_base: Option<String>,
+    #[serde(with = "crate::path_codec::vec")]
     pub staged: Vec<PathBuf>,
     pub staged_total: usize,
+    #[serde(with = "crate::path_codec::vec")]
     pub unstaged: Vec<PathBuf>,
     pub unstaged_total: usize,
+    #[serde(with = "crate::path_codec::vec")]
     pub untracked: Vec<PathBuf>,
     pub untracked_total: usize,
+    #[serde(with = "crate::path_codec::vec")]
     pub conflicts: Vec<PathBuf>,
     pub conflicts_total: usize,
+    #[serde(with = "crate::path_codec::vec")]
     pub branch_scope: Vec<PathBuf>,
     pub branch_scope_total: usize,
     pub suggested_validation: Vec<String>,
@@ -349,11 +354,14 @@ mod tests {
                         path,
                         status: ChangeStatus::Modified,
                         index_entry: None,
+                        original_path: None,
+                        similarity: None,
                     })
                     .collect(),
                 unstaged_files: Vec::new(),
                 untracked_files: paths.clone(),
                 conflicted_files: paths.clone(),
+                conflict_entries: Vec::new(),
                 branch_files: Vec::new(),
                 recent_commits: Vec::new(),
             },

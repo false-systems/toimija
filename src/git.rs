@@ -10,7 +10,9 @@ use crate::error::ToimijaError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitState {
+    #[serde(with = "crate::path_codec::one")]
     pub repo_root: PathBuf,
+    #[serde(default, with = "crate::path_codec::option")]
     pub git_dir: Option<PathBuf>,
     pub branch: Option<String>,
     pub head_oid: Option<String>,
@@ -21,8 +23,12 @@ pub struct GitState {
     pub dirty: bool,
     pub staged_files: Vec<ChangedFile>,
     pub unstaged_files: Vec<ChangedFile>,
+    #[serde(with = "crate::path_codec::vec")]
     pub untracked_files: Vec<PathBuf>,
+    #[serde(with = "crate::path_codec::vec")]
     pub conflicted_files: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflict_entries: Vec<ConflictEntry>,
     /// Files changed by commits on this branch since `merge_base`
     /// (`git diff --name-status <merge_base> HEAD`). Empty when there is no
     /// merge-base or the branch adds no commits beyond it.
@@ -32,10 +38,33 @@ pub struct GitState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChangedFile {
+    #[serde(with = "crate::path_codec::one")]
     pub path: PathBuf,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::path_codec::option"
+    )]
+    pub original_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<u8>,
     pub status: ChangeStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_entry: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConflictEntry {
+    #[serde(with = "crate::path_codec::one")]
+    pub path: PathBuf,
+    pub stages: Vec<ConflictStage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConflictStage {
+    pub stage: u8,
+    pub mode: String,
+    pub oid: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,6 +93,7 @@ pub struct ParsedStatus {
     pub unstaged_files: Vec<ChangedFile>,
     pub untracked_files: Vec<PathBuf>,
     pub conflicted_files: Vec<PathBuf>,
+    pub conflict_entries: Vec<ConflictEntry>,
 }
 
 pub fn discover_repo_root(
@@ -76,7 +106,9 @@ pub fn discover_repo_root(
     if output.status != 0 {
         return Err(ToimijaError::NotGitRepo);
     }
-    Ok(PathBuf::from(output.stdout_lossy().trim()))
+    Ok(crate::path_codec::from_git_bytes(trim_ascii_end(
+        &output.stdout,
+    )))
 }
 
 pub fn collect_git_state(
@@ -85,8 +117,8 @@ pub fn collect_git_state(
 ) -> Result<(GitState, Vec<String>), ToimijaError> {
     let mut warnings = Vec::new();
     let repo_root = discover_repo_root(runner, cwd)?;
-    let git_dir = run_git_ok(runner, &repo_root, &["rev-parse", "--git-dir"])
-        .map(|text| PathBuf::from(text.trim()));
+    let git_dir = run_git_ok_bytes(runner, &repo_root, &["rev-parse", "--git-dir"])
+        .map(|bytes| crate::path_codec::from_git_bytes(trim_ascii_end(&bytes)));
     let head_oid =
         run_git_ok(runner, &repo_root, &["rev-parse", "HEAD"]).map(|text| text.trim().to_string());
     let branch = run_git_ok(
@@ -96,7 +128,7 @@ pub fn collect_git_state(
     )
     .map(|text| text.trim().to_string());
     let status_started = Instant::now();
-    let status_output = run_git_required(
+    let status_output = run_git_required_bytes(
         runner,
         &repo_root,
         &[
@@ -104,10 +136,11 @@ pub fn collect_git_state(
             "--porcelain=v2",
             "--branch",
             "--untracked-files=all",
+            "-z",
         ],
     )?;
     let status_duration_ms = status_started.elapsed().as_millis();
-    let mut parsed = parse_porcelain_v2(&status_output);
+    let mut parsed = parse_porcelain_v2_bytes(&status_output);
     if parsed.branch.is_none() {
         parsed.branch = branch.clone();
     }
@@ -144,12 +177,12 @@ pub fn collect_git_state(
         }
     }
     let branch_files = match (merge_base.as_deref(), head_oid.as_deref()) {
-        (Some(base_oid), Some(head)) if base_oid != head => run_git_ok(
+        (Some(base_oid), Some(head)) if base_oid != head => run_git_ok_bytes(
             runner,
             &repo_root,
-            &["diff", "--name-status", base_oid, head],
+            &["diff", "--name-status", "-z", base_oid, head],
         )
-        .map(|text| parse_name_status(&text))
+        .map(|bytes| parse_name_status_bytes(&bytes))
         .unwrap_or_default(),
         _ => Vec::new(),
     };
@@ -209,6 +242,7 @@ pub fn collect_git_state(
             unstaged_files: parsed.unstaged_files,
             untracked_files: parsed.untracked_files,
             conflicted_files: parsed.conflicted_files,
+            conflict_entries: parsed.conflict_entries,
             branch_files,
             recent_commits,
         },
@@ -243,11 +277,11 @@ fn discover_base(runner: &impl CommandRunner, repo_root: &Path) -> Option<String
     None
 }
 
-fn run_git_required(
+fn run_git_required_bytes(
     runner: &impl CommandRunner,
     cwd: &Path,
     args: &[&str],
-) -> Result<String, ToimijaError> {
+) -> Result<Vec<u8>, ToimijaError> {
     let output = runner
         .run(cwd, "git", args)
         .map_err(|_| ToimijaError::CommandNotFound("git".to_string()))?;
@@ -257,80 +291,123 @@ fn run_git_required(
             status: output.status,
         });
     }
-    Ok(output.stdout_lossy().into_owned())
+    Ok(output.stdout)
 }
 
 /// Run a git command, returning its stdout only on success. Shared with the
 /// relevance layer for bounded history mining.
 pub(crate) fn run_git_ok(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = runner.run(cwd, "git", args).ok()?;
-    (output.status == 0).then(|| output.stdout_lossy().into_owned())
+    run_git_ok_bytes(runner, cwd, args).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
-pub fn parse_porcelain_v2(text: &str) -> ParsedStatus {
+fn run_git_ok_bytes(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let output = runner.run(cwd, "git", args).ok()?;
+    (output.status == 0).then_some(output.stdout)
+}
+
+#[cfg(test)]
+fn parse_porcelain_v2(text: &str) -> ParsedStatus {
+    let nul = text.replace(['\n', '\t'], "\0");
+    parse_porcelain_v2_bytes(nul.as_bytes())
+}
+
+pub(crate) fn parse_porcelain_v2_bytes(bytes: &[u8]) -> ParsedStatus {
     let mut parsed = ParsedStatus::default();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("# branch.head ") {
+    let mut records = bytes
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty());
+    while let Some(record) = records.next() {
+        if let Some(rest) = record.strip_prefix(b"# branch.head ") {
+            let rest = String::from_utf8_lossy(rest);
             if rest == "(detached)" {
                 parsed.detached = true;
             } else {
-                parsed.branch = Some(rest.to_string());
+                parsed.branch = Some(rest.into_owned());
             }
             continue;
         }
-        if let Some(rest) = line.strip_prefix("# branch.upstream ") {
-            parsed.upstream = Some(rest.to_string());
+        if let Some(rest) = record.strip_prefix(b"# branch.upstream ") {
+            parsed.upstream = Some(String::from_utf8_lossy(rest).into_owned());
             continue;
         }
-        if let Some(rest) = line.strip_prefix("? ") {
-            parsed.untracked_files.push(PathBuf::from(rest));
+        if let Some(rest) = record.strip_prefix(b"? ") {
+            parsed
+                .untracked_files
+                .push(crate::path_codec::from_git_bytes(rest));
             continue;
         }
-        if let Some(rest) = line.strip_prefix("u ") {
-            if let Some(path) = rest.split_whitespace().last() {
-                parsed.conflicted_files.push(PathBuf::from(path));
+        if record.starts_with(b"u ") {
+            let parts = splitn_bytes(record, 11);
+            if let Some(path) = parts.get(10) {
+                let path = crate::path_codec::from_git_bytes(path);
+                parsed.conflicted_files.push(path.clone());
+                if parts.len() == 11 {
+                    parsed.conflict_entries.push(ConflictEntry {
+                        path,
+                        stages: (0..3)
+                            .map(|index| ConflictStage {
+                                stage: index as u8 + 1,
+                                mode: String::from_utf8_lossy(parts[index + 3]).into_owned(),
+                                oid: String::from_utf8_lossy(parts[index + 7]).into_owned(),
+                            })
+                            .collect(),
+                    });
+                }
             }
             continue;
         }
-        if line.starts_with("1 ") || line.starts_with("2 ") {
-            parse_changed_line(line, &mut parsed);
+        if record.starts_with(b"1 ") {
+            parse_changed_record(record, None, &mut parsed);
+        } else if record.starts_with(b"2 ") {
+            parse_changed_record(record, records.next(), &mut parsed);
         }
     }
     dedupe(&mut parsed);
     parsed
 }
 
-fn parse_changed_line(line: &str, parsed: &mut ParsedStatus) {
-    let (xy, index_entry, path) = if line.starts_with("2 ") {
-        let parts: Vec<&str> = line.splitn(10, ' ').collect();
+fn parse_changed_record(record: &[u8], original: Option<&[u8]>, parsed: &mut ParsedStatus) {
+    let (xy, index_entry, path, similarity) = if record.starts_with(b"2 ") {
+        let parts = splitn_bytes(record, 10);
         if parts.len() < 10 {
             return;
         }
-        let path = parts[9].split_once('\t').map_or(parts[9], |(path, _)| path);
         (
             parts[1],
-            Some(format!("{} {}", parts[4], parts[7])),
-            PathBuf::from(path),
+            Some(format!(
+                "{} {}",
+                String::from_utf8_lossy(parts[4]),
+                String::from_utf8_lossy(parts[7])
+            )),
+            crate::path_codec::from_git_bytes(parts[9]),
+            similarity_score(parts[8]),
         )
     } else {
-        let parts: Vec<&str> = line.splitn(9, ' ').collect();
+        let parts = splitn_bytes(record, 9);
         if parts.len() < 9 {
             return;
         }
         (
             parts[1],
-            Some(format!("{} {}", parts[4], parts[7])),
-            PathBuf::from(parts[8]),
+            Some(format!(
+                "{} {}",
+                String::from_utf8_lossy(parts[4]),
+                String::from_utf8_lossy(parts[7])
+            )),
+            crate::path_codec::from_git_bytes(parts[8]),
+            None,
         )
     };
-    let mut chars = xy.chars();
-    let staged = chars.next().unwrap_or('.');
-    let unstaged = chars.next().unwrap_or('.');
+    let staged = xy.first().copied().unwrap_or(b'.') as char;
+    let unstaged = xy.get(1).copied().unwrap_or(b'.') as char;
+    let original_path = original.map(crate::path_codec::from_git_bytes);
     if staged != '.' {
         parsed.staged_files.push(ChangedFile {
             path: path.clone(),
             status: status_from_char(staged),
             index_entry: index_entry.clone(),
+            original_path: original_path.clone(),
+            similarity,
         });
     }
     if unstaged != '.' {
@@ -338,6 +415,8 @@ fn parse_changed_line(line: &str, parsed: &mut ParsedStatus) {
             path,
             status: status_from_char(unstaged),
             index_entry: None,
+            original_path,
+            similarity,
         });
     }
 }
@@ -357,29 +436,57 @@ fn status_from_char(value: char) -> ChangeStatus {
 /// Parse `git diff --name-status` output. Each line is a status column
 /// followed by tab-separated path(s); renames and copies (`R100`, `C075`)
 /// carry an old and a new path, and we keep the new one.
-pub fn parse_name_status(text: &str) -> Vec<ChangedFile> {
+#[cfg(test)]
+fn parse_name_status(text: &str) -> Vec<ChangedFile> {
+    let nul = text.replace(['\n', '\t'], "\0");
+    parse_name_status_bytes(nul.as_bytes())
+}
+
+pub(crate) fn parse_name_status_bytes(bytes: &[u8]) -> Vec<ChangedFile> {
     let mut files = Vec::new();
-    for line in text.lines() {
-        let mut fields = line.split('\t');
-        let Some(status) = fields.next() else {
+    let mut fields = bytes
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    while let Some(status) = fields.next() {
+        let Some(code) = status.first().copied().map(char::from) else {
             continue;
         };
-        let Some(code) = status.chars().next() else {
-            continue;
+        let first = match fields.next() {
+            Some(path) => path,
+            None => break,
         };
-        let Some(path) = fields.next_back() else {
-            continue;
+        let (original_path, path) = if matches!(code, 'R' | 'C') {
+            let Some(new_path) = fields.next() else { break };
+            (Some(crate::path_codec::from_git_bytes(first)), new_path)
+        } else {
+            (None, first)
         };
-        if path.is_empty() {
-            continue;
-        }
         files.push(ChangedFile {
-            path: PathBuf::from(path),
+            path: crate::path_codec::from_git_bytes(path),
             status: status_from_char(code),
             index_entry: None,
+            original_path,
+            similarity: similarity_score(status),
         });
     }
     files
+}
+
+fn splitn_bytes(bytes: &[u8], count: usize) -> Vec<&[u8]> {
+    bytes.splitn(count, |byte| *byte == b' ').collect()
+}
+
+fn similarity_score(status: &[u8]) -> Option<u8> {
+    matches!(status.first(), Some(b'R' | b'C'))
+        .then(|| std::str::from_utf8(status.get(1..)?).ok()?.parse().ok())
+        .flatten()
+}
+
+fn trim_ascii_end(mut bytes: &[u8]) -> &[u8] {
+    while matches!(bytes.last(), Some(b'\n' | b'\r' | 0)) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
 }
 
 fn parse_recent_commits(text: &str) -> Vec<RecentCommit> {
@@ -495,8 +602,59 @@ u UU N... 100644 100644 100644 100644 a b c src/lib.rs
             parsed.staged_files[0].path,
             PathBuf::from("src/new name.rs")
         );
+        assert_eq!(
+            parsed.staged_files[0].original_path.as_deref(),
+            Some(Path::new("src/old name.rs"))
+        );
+        assert_eq!(parsed.staged_files[0].similarity, Some(100));
         assert_eq!(parsed.staged_files[1].status, ChangeStatus::Copied);
         assert_eq!(parsed.staged_files[1].path, PathBuf::from("src/copied.rs"));
+        assert_eq!(
+            parsed.staged_files[1].original_path.as_deref(),
+            Some(Path::new("src/source.rs"))
+        );
+        assert_eq!(parsed.staged_files[1].similarity, Some(75));
+    }
+
+    #[test]
+    fn nul_porcelain_preserves_control_bytes_and_conflict_spaces() {
+        let bytes = b"2 R. N... 100644 100644 100644 a b R87 new\tname.rs\0old\nname.rs\0u UU N... 100644 100644 100644 100644 a b c conflict path.rs\0? line\nname.txt\0";
+        let parsed = parse_porcelain_v2_bytes(bytes);
+
+        assert_eq!(parsed.staged_files[0].path, PathBuf::from("new\tname.rs"));
+        assert_eq!(
+            parsed.staged_files[0].original_path.as_deref(),
+            Some(Path::new("old\nname.rs"))
+        );
+        assert_eq!(parsed.staged_files[0].similarity, Some(87));
+        assert_eq!(
+            parsed.conflicted_files[0],
+            PathBuf::from("conflict path.rs")
+        );
+        assert_eq!(
+            parsed.conflict_entries[0].path,
+            PathBuf::from("conflict path.rs")
+        );
+        assert_eq!(parsed.conflict_entries[0].stages[0].stage, 1);
+        assert_eq!(parsed.conflict_entries[0].stages[0].mode, "100644");
+        assert_eq!(parsed.conflict_entries[0].stages[0].oid, "a");
+        assert_eq!(parsed.conflict_entries[0].stages[2].stage, 3);
+        assert_eq!(parsed.conflict_entries[0].stages[2].oid, "c");
+        assert_eq!(parsed.untracked_files[0], PathBuf::from("line\nname.txt"));
+    }
+
+    #[test]
+    fn nul_name_status_preserves_rename_and_copy_origins() {
+        let files =
+            parse_name_status_bytes(b"R094\0old\nname.rs\0new\tname.rs\0C75\0source.rs\0copy.rs\0");
+
+        assert_eq!(files[0].status, ChangeStatus::Renamed);
+        assert_eq!(files[0].path, PathBuf::from("new\tname.rs"));
+        assert_eq!(files[0].original_path, Some(PathBuf::from("old\nname.rs")));
+        assert_eq!(files[0].similarity, Some(94));
+        assert_eq!(files[1].status, ChangeStatus::Copied);
+        assert_eq!(files[1].original_path, Some(PathBuf::from("source.rs")));
+        assert_eq!(files[1].similarity, Some(75));
     }
 
     #[test]
@@ -515,21 +673,29 @@ R094\tsrc/old.rs\tsrc/renamed.rs
                     path: PathBuf::from("src/lib.rs"),
                     status: ChangeStatus::Modified,
                     index_entry: None,
+                    original_path: None,
+                    similarity: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/new.rs"),
                     status: ChangeStatus::Added,
                     index_entry: None,
+                    original_path: None,
+                    similarity: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/gone.rs"),
                     status: ChangeStatus::Deleted,
                     index_entry: None,
+                    original_path: None,
+                    similarity: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/renamed.rs"),
                     status: ChangeStatus::Renamed,
                     index_entry: None,
+                    original_path: Some(PathBuf::from("src/old.rs")),
+                    similarity: Some(94),
                 },
             ]
         );

@@ -394,6 +394,8 @@ The packet includes:
   do not match
 - branch / HEAD / dirty state
 - staged / unstaged / untracked files
+- rename/copy origin paths and similarity when Git reports them, plus conflict
+  index stages (mode and object ID)
 - changed surface
 - scope
 - read order
@@ -801,6 +803,10 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - high-value Markdown sections (`Scope`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Coupling`, `Risk`) render before the raw working-tree and changed-surface lists
 - Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections
 - empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
+- Git paths are read from NUL-delimited byte output. JSON keeps existing UTF-8
+  paths as strings; on Unix, a non-UTF-8 path is encoded as
+  `{ "bytes_hex": "..." }`. Markdown escapes tabs, newlines, control characters,
+  backslashes, and invalid bytes so a filename cannot forge output structure.
 - Markdown and pretty JSON output have exact regression tests
 
 `toimija context --for-diff` adds a diff-focused Markdown section that separates committed files changed since the selected merge-base, staged, unstaged, untracked, and conflicted files.

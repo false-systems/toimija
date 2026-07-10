@@ -34,6 +34,13 @@ JSON is authoritative when an interrupted refresh leaves mismatched IDs. It incl
 }
 ```
 
+Path fields remain JSON strings when they are valid UTF-8. Unix paths that are
+not valid UTF-8 use `{ "bytes_hex": "..." }`, preserving the exact bytes without
+replacement characters. Consumers must accept both forms.
+Changed-file objects may include `original_path` and `similarity` for Git
+renames/copies. `git.conflict_entries` preserves stages 1/2/3 with their mode
+and object ID while the existing `conflicted_files` list remains available.
+
 The token proves freshness of the packet against the current Git working state.
 v2 uses deterministic Git status classes, normalized paths, file type, file
 mode, and a **SHA-256 content hash** of each changed and untracked file

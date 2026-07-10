@@ -1671,6 +1671,7 @@ mod tests {
             unstaged_files: Vec::new(),
             untracked_files: Vec::new(),
             conflicted_files: Vec::new(),
+            conflict_entries: Vec::new(),
             branch_files: Vec::new(),
             recent_commits: Vec::new(),
         }
