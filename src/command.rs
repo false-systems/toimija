@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -13,6 +14,23 @@ pub struct CommandOutput {
 
 pub trait CommandRunner {
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput>;
+
+    fn run_with_env(
+        &self,
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &OsStr)],
+    ) -> std::io::Result<CommandOutput> {
+        if env.is_empty() {
+            self.run(cwd, program, args)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "command runner does not support environment assignments",
+            ))
+        }
+    }
 }
 
 /// Git resolves the repository from these environment variables *before* it
@@ -46,6 +64,16 @@ pub struct ProcessCommandRunner;
 
 impl CommandRunner for ProcessCommandRunner {
     fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
+        self.run_with_env(cwd, program, args, &[])
+    }
+
+    fn run_with_env(
+        &self,
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &OsStr)],
+    ) -> std::io::Result<CommandOutput> {
         let started = Instant::now();
         debug!(
             event = "toimija.git.command.start",
@@ -56,6 +84,7 @@ impl CommandRunner for ProcessCommandRunner {
         let mut command = Command::new(program);
         command.args(args).current_dir(cwd);
         scrub_git_location_env(&mut command);
+        command.envs(env.iter().copied());
         let output = command.output()?;
         let status = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
