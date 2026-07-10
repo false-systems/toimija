@@ -309,8 +309,9 @@ flowchart LR
    non-zero, with reasons, when the packet is stale, missing, unsupported,
    unsafe, or unverifiable. A harness calls this before *every* packet read:
    pass → trust the packet; fail → refresh first. `run` performs the same check
-   on its own entry packet before launching the agent, so a startup race is
-   surfaced, never silent.
+   on its own entry packet before launching the agent. It retries one startup
+   race, then refuses to launch if the packet is still stale, unverifiable, or
+   Git is in an in-progress operation or conflict state.
 3. **Freeze.** When "fresh right now" is not enough — a reader that must see
    one coherent version while the worktree keeps moving — `toimija snapshot`
    materializes the working tree (untracked included) as an immutable,

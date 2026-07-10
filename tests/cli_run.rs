@@ -18,6 +18,42 @@ fn init_git_repo(path: &Path) {
     run_git(path, &["commit", "-m", "init"]);
 }
 
+fn run_git_expect_failure(path: &Path, args: &[&str]) {
+    let output = common::git_at(path).args(args).output().unwrap();
+    assert!(
+        !output.status.success(),
+        "git {args:?} unexpectedly succeeded"
+    );
+}
+
+fn assert_run_refuses(path: &Path) {
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(path)
+        .args(["run", "--", "sh", "-c", "touch CHILD_RAN"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Toimija agent entry").not())
+        .stderr(predicate::str::contains(
+            "refusing to launch in unsafe Git state",
+        ));
+    assert!(
+        !path.join("CHILD_RAN").exists(),
+        "the wrapped child must not run from an unsafe entry packet"
+    );
+    let session_dir = fs::read_dir(path.join(".toimija/sessions"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let marker = fs::read_to_string(session_dir.join("session.json")).unwrap();
+    assert!(
+        marker.contains("\"status\": \"closed\""),
+        "a refused startup must close its session marker: {marker}"
+    );
+}
+
 #[test]
 fn run_exits_with_the_wrapped_command_status() {
     if !git_available() {
@@ -88,6 +124,63 @@ fn run_enters_then_launches_the_command() {
     // ... and entry refreshed the live packet.
     assert!(temp.path().join(".toimija/current.md").exists());
     assert!(temp.path().join(".toimija/current.json").exists());
+}
+
+#[test]
+fn run_refuses_a_merge_in_progress() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    run_git(temp.path(), &["switch", "-c", "feature"]);
+    fs::write(temp.path().join("feature.txt"), "feature\n").unwrap();
+    run_git(temp.path(), &["add", "feature.txt"]);
+    run_git(temp.path(), &["commit", "-m", "feature"]);
+    run_git(temp.path(), &["switch", "-"]);
+    fs::write(temp.path().join("main.txt"), "main\n").unwrap();
+    run_git(temp.path(), &["add", "main.txt"]);
+    run_git(temp.path(), &["commit", "-m", "main"]);
+    run_git(temp.path(), &["merge", "--no-commit", "feature"]);
+
+    assert_run_refuses(temp.path());
+}
+
+#[test]
+fn run_refuses_conflicted_files() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    run_git(temp.path(), &["switch", "-c", "feature"]);
+    fs::write(temp.path().join("a.txt"), "feature\n").unwrap();
+    run_git(temp.path(), &["commit", "-am", "feature"]);
+    run_git(temp.path(), &["switch", "-"]);
+    fs::write(temp.path().join("a.txt"), "main\n").unwrap();
+    run_git(temp.path(), &["commit", "-am", "main"]);
+    run_git_expect_failure(temp.path(), &["merge", "feature"]);
+
+    assert_run_refuses(temp.path());
+}
+
+#[test]
+fn run_refuses_a_rebase_in_progress() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    run_git(temp.path(), &["switch", "-c", "feature"]);
+    fs::write(temp.path().join("a.txt"), "feature\n").unwrap();
+    run_git(temp.path(), &["commit", "-am", "feature"]);
+    run_git(temp.path(), &["switch", "-"]);
+    fs::write(temp.path().join("a.txt"), "main\n").unwrap();
+    run_git(temp.path(), &["commit", "-am", "main"]);
+    run_git(temp.path(), &["switch", "feature"]);
+    run_git_expect_failure(temp.path(), &["rebase", "-"]);
+
+    assert_run_refuses(temp.path());
 }
 
 #[test]
