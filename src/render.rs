@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use crate::audit_plan::{AuditPlan, AuditSurface};
 use crate::config::InitReport;
 use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
@@ -288,17 +289,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     // Proposal 0005: the contract renders on every packet and early, so budget
     // truncation can never silently drop the obligation while keeping the data.
-    write_h2(&mut output, "Workset contract");
-    writeln!(
-        &mut output,
-        "Work from this packet's Scope and Read order; they are your working set, not\n\
-         a preamble. Configured exclusions are do-not-scan. You MAY read outside the\n\
-         workset when a concrete unresolved dependency requires it — but you MUST\n\
-         declare the expansion first: `toimija intent \"<why>\" --scope <path>` (or, if\n\
-         you are not under a session, state the expansion and its reason in your\n\
-         visible output). Expansion is never forbidden; invisible expansion is."
-    )
-    .unwrap();
+    write_workset_contract(&mut output);
     let mandatory_end = output.len();
 
     write_h2(&mut output, "Git");
@@ -405,6 +396,133 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     write_changed_surface(&mut output, packet);
 
     truncate_to_budget(output, budget, mandatory_end)
+}
+
+pub fn render_audit_plan(plan: &AuditPlan, budget: usize, surface: Option<usize>) -> String {
+    let mut output = String::new();
+    if let Some(index) = surface {
+        let selected = &plan.surfaces[index - 1];
+        writeln!(
+            &mut output,
+            "# Toimija Audit Surface {index}/{}",
+            plan.surfaces.len()
+        )
+        .unwrap();
+        writeln!(
+            &mut output,
+            "- HEAD: {}",
+            plan.head.as_deref().unwrap_or("unavailable")
+        )
+        .unwrap();
+        writeln!(&mut output, "- consistency: {}", plan.consistency).unwrap();
+        write_workset_contract(&mut output);
+        write_audit_surface(&mut output, selected);
+        write_prior_findings(&mut output, plan);
+        output.push_str(&render_validation_plan(&plan.validation_plan));
+        write_h2(&mut output, "Warnings");
+        write_str_list(&mut output, &plan.warnings, "none");
+        let mandatory_end = mandatory_surface_end(&output);
+        return truncate_to_budget(output, budget, mandatory_end);
+    }
+
+    writeln!(&mut output, "# Toimija Audit Plan").unwrap();
+    writeln!(
+        &mut output,
+        "- HEAD: {}",
+        plan.head.as_deref().unwrap_or("unavailable")
+    )
+    .unwrap();
+    writeln!(&mut output, "- consistency: {}", plan.consistency).unwrap();
+    write_h2(&mut output, "Surfaces");
+    for (index, surface) in plan.surfaces.iter().enumerate() {
+        let areas = surface
+            .areas
+            .iter()
+            .map(|area| area.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let findings = plan
+            .findings_root
+            .as_ref()
+            .map_or_else(|| "none".to_string(), |path| path.display().to_string());
+        writeln!(
+            &mut output,
+            "surface {}/{} — {} — ~files: {} — churn: {} — findings: {findings}",
+            index + 1,
+            plan.surfaces.len(),
+            areas,
+            surface.files,
+            surface.churn
+        )
+        .unwrap();
+    }
+    writeln!(
+        &mut output,
+        "\nRequest one workset: `toimija audit-plan --surface K`"
+    )
+    .unwrap();
+    if let Some(path) = &plan.findings_root {
+        writeln!(&mut output, "Prior findings: {}", path.display()).unwrap();
+    } else {
+        writeln!(&mut output, "Prior findings: none").unwrap();
+    }
+    truncate_to_budget(output, budget, 0)
+}
+
+fn write_workset_contract(output: &mut String) {
+    write_h2(output, "Workset contract");
+    writeln!(
+        output,
+        "Work from this packet's Scope and Read order; they are your working set, not\n\
+         a preamble. Configured exclusions are do-not-scan. You MAY read outside the\n\
+         workset when a concrete unresolved dependency requires it — but you MUST\n\
+         declare the expansion first: `toimija intent \"<why>\" --scope <path>` (or, if\n\
+         you are not under a session, state the expansion and its reason in your\n\
+         visible output). Expansion is never forbidden; invisible expansion is."
+    )
+    .unwrap();
+}
+
+fn write_audit_surface(output: &mut String, surface: &AuditSurface) {
+    write_h2(output, "Surface");
+    writeln!(
+        output,
+        "- boundary: everything outside this surface belongs to another pass"
+    )
+    .unwrap();
+    writeln!(output, "- files: {}", surface.files).unwrap();
+    writeln!(
+        output,
+        "- churn: {} (last 200 non-merge commits)",
+        surface.churn
+    )
+    .unwrap();
+    for area in &surface.areas {
+        writeln!(
+            output,
+            "- {} — {} files — {} churn",
+            area.label, area.files, area.churn
+        )
+        .unwrap();
+    }
+}
+
+fn write_prior_findings(output: &mut String, plan: &AuditPlan) {
+    write_h2(output, "Prior findings");
+    if plan.prior_findings.is_empty() {
+        writeln!(output, "- none").unwrap();
+    } else {
+        writeln!(
+            output,
+            "Read these before re-deriving anything they already conclude:"
+        )
+        .unwrap();
+        write_path_list(output, &plan.prior_findings, "none");
+    }
+}
+
+fn mandatory_surface_end(output: &str) -> usize {
+    output.find("\n## Prior findings").unwrap_or(output.len())
 }
 
 /// Render the Coupling section: companions that are absent from the current
@@ -647,7 +765,11 @@ fn relevance_source_label(source: RelevanceSource) -> &'static str {
     }
 }
 
-fn truncate_to_budget(mut output: String, budget: usize, mandatory_end: usize) -> String {
+pub(crate) fn truncate_to_budget(
+    mut output: String,
+    budget: usize,
+    mandatory_end: usize,
+) -> String {
     if output.len() <= budget {
         return output;
     }

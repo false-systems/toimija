@@ -438,6 +438,8 @@ toimija current --write    # synchronously write current.md/current.json
 toimija current --verify --json  # machine-readable verify-before-read gate
 toimija verify             # does the selected session/repo packet still match?
 toimija snapshot           # freeze the worktree as an immutable git tree (content @ version)
+toimija audit-plan         # derive bounded, read-only audit surfaces from Git
+toimija audit-plan --surface 3 --budget 4000  # print one audit workset packet
 toimija validate --plan    # print the validation plan; never runs it
 toimija doctor             # check Toimija setup
 toimija init               # create .toimija/repo.yaml if missing
@@ -457,6 +459,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `context` | Print the context packet without wrapping an agent. |
 | `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified. `--json` includes the selected path, digest, and token. |
 | `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; `--json` emits the snapshot record. Refuses in an unsafe git state. |
+| `audit-plan` | Derive deterministic, bounded audit surfaces from the committed Git tree; `--surface K` prints one contract-framed workset, and prior findings are read-only pointers to the latest committed `docs/audit/<date>/` directory. No plan or findings are written. |
 | `validate --plan` | Print the validation plan; never runs validation. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
@@ -467,6 +470,25 @@ toimija init               # create .toimija/repo.yaml if missing
 (`context`, `enter`, `refresh`) to JSON. Global options: `-v/--verbose`,
 `-q/--quiet`, `--log-format text|json`, `--no-color`. Logs go to stderr; command
 output goes to stdout.
+
+## Staged audit breadth (`toimija audit-plan`)
+
+For a repository-wide audit, use one bounded pass at a time. The plan derives
+top-level Git tree areas, file counts, and churn from the last 200 non-merge
+commits, then greedily packs them into deterministic surfaces (at most eight
+by default, targeting roughly 150 files each):
+
+```bash
+toimija audit-plan
+toimija audit-plan --surface 3 --budget 4000
+```
+
+The surface packet carries the same Workset contract as the context packet, a
+consistency token, its authoritative area boundary, the inferred validation
+plan, and warnings. It also lists files from the lexicographically latest
+committed `docs/audit/<date>/` directory so a later pass can read conclusions
+before re-deriving them. `audit-plan` never writes a plan or findings; the
+auditing agent commits findings to Git. Configured exclusions remain do-not-scan.
 
 ## Boundaries / non-goals
 

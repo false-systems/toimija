@@ -1,5 +1,6 @@
 pub mod adapters;
 mod atomic_write;
+pub(crate) mod audit_plan;
 pub mod cli;
 pub mod command;
 pub mod config;
