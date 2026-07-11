@@ -305,8 +305,9 @@ fn run_git_ok_bytes(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> O
     (output.status == 0).then_some(output.stdout)
 }
 
-#[cfg(test)]
-fn parse_porcelain_v2(text: &str) -> ParsedStatus {
+/// Compatibility parser for callers that provide line-delimited porcelain v2.
+/// Git collection uses [`parse_porcelain_v2_bytes`] so paths remain lossless.
+pub fn parse_porcelain_v2(text: &str) -> ParsedStatus {
     let nul = text.replace(['\n', '\t'], "\0");
     parse_porcelain_v2_bytes(nul.as_bytes())
 }
@@ -436,8 +437,9 @@ fn status_from_char(value: char) -> ChangeStatus {
 /// Parse `git diff --name-status` output. Each line is a status column
 /// followed by tab-separated path(s); renames and copies (`R100`, `C075`)
 /// carry an old and a new path, and we keep the new one.
-#[cfg(test)]
-fn parse_name_status(text: &str) -> Vec<ChangedFile> {
+/// Compatibility parser for callers that provide line-delimited name-status.
+/// Git collection uses [`parse_name_status_bytes`] so paths remain lossless.
+pub fn parse_name_status(text: &str) -> Vec<ChangedFile> {
     let nul = text.replace(['\n', '\t'], "\0");
     parse_name_status_bytes(nul.as_bytes())
 }
