@@ -72,6 +72,7 @@ fn every_subcommand_help_says_when_to_use_it() {
         "verify",
         "snapshot",
         "audit-plan",
+        "adopt",
     ] {
         Command::cargo_bin("toimija")
             .unwrap()
@@ -101,6 +102,7 @@ fn high_traffic_subcommands_carry_examples() {
         ("snapshot", "toimija snapshot --lease"),
         ("context", "toimija context --for-diff"),
         ("audit-plan", "toimija audit-plan --surface"),
+        ("adopt", "toimija adopt --hooks"),
     ] {
         Command::cargo_bin("toimija")
             .unwrap()

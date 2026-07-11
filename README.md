@@ -440,6 +440,8 @@ toimija verify             # does the selected session/repo packet still match?
 toimija snapshot           # freeze the worktree as an immutable git tree (content @ version)
 toimija audit-plan         # derive bounded, read-only audit surfaces from Git
 toimija audit-plan --surface 3 --budget 4000  # print one audit workset packet
+toimija adopt              # install the canonical agent-entry preamble
+toimija adopt --hooks      # also install best-effort Git refresh hooks
 toimija validate --plan    # print the validation plan; never runs it
 toimija doctor             # check Toimija setup
 toimija init               # create .toimija/repo.yaml if missing
@@ -460,6 +462,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified. `--json` includes the selected path, digest, and token. |
 | `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; `--json` emits the snapshot record. Refuses in an unsafe git state. |
 | `audit-plan` | Derive deterministic, bounded audit surfaces from the committed Git tree; `--surface K` prints one contract-framed workset, and prior findings are read-only pointers to the latest committed `docs/audit/<date>/` directory. No plan or findings are written. |
+| `adopt` | Install the same marker-delimited Toimija preamble in every known entry file already present, creating `AGENTS.md` only when none exists; `--hooks` adds best-effort Git refresh hooks and prints harness snippets for you to place. |
 | `validate --plan` | Print the validation plan; never runs validation. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
@@ -580,10 +583,29 @@ drift guard — no AI, no semantic comparison. It checks:
 - each boundary sentence still appears in the agent docs
   (`AGENTS.md` / `CLAUDE.md` / `important_docs`), matched case- and
   whitespace-insensitively so re-wrapping a line does not trip the gate
+- every known agent entry file that exists carries the current `toimija adopt`
+  preamble
 
 ```bash
 toimija doctor --strict
 ```
+
+## Adopt the entry layer (`toimija adopt`)
+
+Adoption puts one unconditional instruction in the entry files agents already
+use. It is marker-delimited and idempotent; rerunning the command replaces only
+Toimija's block. If no known entry file exists, it creates `AGENTS.md`; otherwise
+it amends only files already present:
+
+```bash
+toimija adopt
+toimija adopt --hooks
+```
+
+With `--hooks`, `post-checkout`, `post-merge`, and `post-commit` run
+`toimija refresh` best-effort with Git repository-location variables scrubbed.
+Foreign hooks are never overwritten. Any harness-side SessionStart snippet is
+printed for you to place; Toimija does not edit files outside the repository.
 
 ## Did the work land? (`toimija landed`)
 

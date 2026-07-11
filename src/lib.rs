@@ -1,4 +1,5 @@
 pub mod adapters;
+pub(crate) mod adoption;
 mod atomic_write;
 pub(crate) mod audit_plan;
 pub mod cli;
