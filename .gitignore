@@ -10,6 +10,7 @@
 # Harness run transcripts (e.g. kisko) — generated, never committed. Ignored so
 # a harness writing its own transcript does not invalidate the packet it verified.
 .toimija/runs/
+.toimija/kisko_history
 
 # Claude Code local settings and its atomic-write temp files
 .claude/settings.local.json

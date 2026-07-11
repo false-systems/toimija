@@ -184,11 +184,15 @@ mod tests {
                 path: PathBuf::from("src/foo.rs"),
                 status: ChangeStatus::Modified,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
             ChangedFile {
                 path: PathBuf::from("src/foo/bar.rs"),
                 status: ChangeStatus::Modified,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
         ];
         let hints = RustAdapter.read_first_hints(temp.path(), &changed);
@@ -304,6 +308,8 @@ name = \"not-this\"
             path: PathBuf::from("src/foo/mod.rs"),
             status: ChangeStatus::Modified,
             index_entry: None,
+            original_path: None,
+            similarity: None,
         }];
         let hints = RustAdapter.read_first_hints(temp.path(), &changed);
         assert_eq!(hints[0].0, PathBuf::from("tests/foo_test.rs"));

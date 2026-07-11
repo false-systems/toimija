@@ -33,9 +33,11 @@ pub struct ContextPacket {
     pub repo: RepoInfo,
     pub repo_kind: RepoKind,
     pub git: GitState,
+    #[serde(with = "crate::path_codec::vec")]
     pub changed_surface: Vec<PathBuf>,
     pub changed_surface_source: ChangedSurfaceSource,
     pub read_first: Vec<ReadFirstEntry>,
+    #[serde(with = "crate::path_codec::vec")]
     pub safe_to_ignore: Vec<PathBuf>,
     pub validation_plan: ValidationPlan,
     pub warnings: Vec<String>,
@@ -85,6 +87,7 @@ pub enum ChangedSurfaceSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReadFirstEntry {
+    #[serde(with = "crate::path_codec::one")]
     pub path: PathBuf,
     pub reason: String,
 }
@@ -285,6 +288,8 @@ fn all_changed(git: &GitState) -> Vec<ChangedFile> {
             path,
             status: git::ChangeStatus::Untracked,
             index_entry: None,
+            original_path: None,
+            similarity: None,
         }))
     {
         if seen.insert(file.path.clone()) {
@@ -308,6 +313,10 @@ pub(crate) fn normalize_git_state(git: &mut GitState) {
     sort_changed_files(&mut git.branch_files);
     git.untracked_files = stable_paths(std::mem::take(&mut git.untracked_files));
     git.conflicted_files = stable_paths(std::mem::take(&mut git.conflicted_files));
+    git.conflict_entries
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    git.conflict_entries
+        .dedup_by(|left, right| left.path == right.path);
 }
 
 fn sort_changed_files(files: &mut Vec<ChangedFile>) {
@@ -461,6 +470,7 @@ mod tests {
             unstaged_files: Vec::new(),
             untracked_files: Vec::new(),
             conflicted_files: Vec::new(),
+            conflict_entries: Vec::new(),
             branch_files: Vec::new(),
             recent_commits: Vec::new(),
         };
@@ -514,6 +524,7 @@ mod tests {
             unstaged_files: Vec::new(),
             untracked_files: Vec::new(),
             conflicted_files: Vec::new(),
+            conflict_entries: Vec::new(),
             branch_files: Vec::new(),
             recent_commits: Vec::new(),
         };
@@ -568,6 +579,7 @@ mod tests {
             unstaged_files: Vec::new(),
             untracked_files: Vec::new(),
             conflicted_files: Vec::new(),
+            conflict_entries: Vec::new(),
             branch_files: Vec::new(),
             recent_commits: Vec::new(),
         };
@@ -634,6 +646,8 @@ mod tests {
             path: PathBuf::from("src/lib.rs"),
             status: ChangeStatus::Modified,
             index_entry: None,
+            original_path: None,
+            similarity: None,
         }];
         let mut warnings = Vec::new();
         let entries = read_first(
@@ -682,16 +696,22 @@ mod tests {
                 path: PathBuf::from("src/lib.rs"),
                 status: ChangeStatus::Modified,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
             ChangedFile {
                 path: PathBuf::from("target/debug/build.log"),
                 status: ChangeStatus::Untracked,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
             ChangedFile {
                 path: PathBuf::from("_build/dev/app.beam"),
                 status: ChangeStatus::Untracked,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
         ];
 
@@ -776,30 +796,41 @@ mod tests {
                     path: PathBuf::from("src/z.rs"),
                     status: ChangeStatus::Modified,
                     index_entry: None,
+                    original_path: None,
+                    similarity: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/a.rs"),
                     status: ChangeStatus::Added,
                     index_entry: None,
+                    original_path: None,
+                    similarity: None,
                 },
             ],
             unstaged_files: vec![ChangedFile {
                 path: PathBuf::from("src/a.rs"),
                 status: ChangeStatus::Modified,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             }],
             untracked_files: vec![PathBuf::from("notes.md"), PathBuf::from("notes.md")],
             conflicted_files: vec![PathBuf::from("b.txt"), PathBuf::from("a.txt")],
+            conflict_entries: Vec::new(),
             branch_files: vec![
                 ChangedFile {
                     path: PathBuf::from("src/z.rs"),
                     status: ChangeStatus::Modified,
                     index_entry: None,
+                    original_path: None,
+                    similarity: None,
                 },
                 ChangedFile {
                     path: PathBuf::from("src/a.rs"),
                     status: ChangeStatus::Added,
                     index_entry: None,
+                    original_path: None,
+                    similarity: None,
                 },
             ],
             recent_commits: Vec::new(),

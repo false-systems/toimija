@@ -5,6 +5,21 @@
   "description": "A Toimija session handoff record. Evolution rules: new optional fields are additive within v1; any breaking change requires docs/schemas/handoff-record.v2.schema.json plus a version bump. Readers must tolerate unknown optional fields, matching SessionMarker's additive reader discipline.",
   "type": "object",
   "additionalProperties": true,
+  "$defs": {
+    "path": {
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bytes_hex"],
+          "properties": {
+            "bytes_hex": { "type": "string", "pattern": "^[0-9a-f]*$" }
+          }
+        }
+      ]
+    }
+  },
   "required": [
     "version",
     "session_id",
@@ -84,7 +99,7 @@
     "staged": {
       "description": "Capped paths staged in the index at handoff time.",
       "type": "array",
-      "items": { "type": "string" },
+      "items": { "$ref": "#/$defs/path" },
       "maxItems": 25
     },
     "staged_total": {
@@ -95,7 +110,7 @@
     "unstaged": {
       "description": "Capped paths modified in the worktree at handoff time.",
       "type": "array",
-      "items": { "type": "string" },
+      "items": { "$ref": "#/$defs/path" },
       "maxItems": 25
     },
     "unstaged_total": {
@@ -106,7 +121,7 @@
     "untracked": {
       "description": "Capped untracked paths at handoff time.",
       "type": "array",
-      "items": { "type": "string" },
+      "items": { "$ref": "#/$defs/path" },
       "maxItems": 25
     },
     "untracked_total": {
@@ -117,7 +132,7 @@
     "conflicts": {
       "description": "Capped conflicted paths at handoff time.",
       "type": "array",
-      "items": { "type": "string" },
+      "items": { "$ref": "#/$defs/path" },
       "maxItems": 25
     },
     "conflicts_total": {
@@ -128,7 +143,7 @@
     "branch_scope": {
       "description": "Capped changed surface from the context packet.",
       "type": "array",
-      "items": { "type": "string" },
+      "items": { "$ref": "#/$defs/path" },
       "maxItems": 25
     },
     "branch_scope_total": {

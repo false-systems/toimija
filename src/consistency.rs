@@ -35,6 +35,7 @@ pub enum HeadState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConflictState {
     pub has_conflicts: bool,
+    #[serde(with = "crate::path_codec::vec")]
     pub files: Vec<PathBuf>,
 }
 
@@ -283,10 +284,7 @@ fn mode(_meta: &fs::Metadata) -> u32 {
 }
 
 fn normalize_path(path: &Path) -> String {
-    path.components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    crate::path_codec::fingerprint(path)
 }
 
 fn status(status: &ChangeStatus) -> String {
@@ -343,6 +341,7 @@ mod tests {
             unstaged_files: Vec::new(),
             untracked_files: Vec::new(),
             conflicted_files: Vec::new(),
+            conflict_entries: Vec::new(),
             branch_files: Vec::new(),
             recent_commits: Vec::new(),
         }
@@ -445,6 +444,8 @@ mod tests {
             path: PathBuf::from("src/lib.rs"),
             status: ChangeStatus::Modified,
             index_entry: None,
+            original_path: None,
+            similarity: None,
         });
         match stored.verify(&live) {
             Verdict::Stale {
@@ -489,6 +490,8 @@ mod tests {
             path: PathBuf::from(".toimija/repo.yaml"),
             status: ChangeStatus::Modified,
             index_entry: None,
+            original_path: None,
+            similarity: None,
         });
         live.untracked_files
             .push(PathBuf::from(".toimija/runs/kisko.jsonl"));
@@ -503,11 +506,15 @@ mod tests {
                 path: PathBuf::from("a.rs"),
                 status: ChangeStatus::Added,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
             ChangedFile {
                 path: PathBuf::from("b.rs"),
                 status: ChangeStatus::Modified,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
         ];
         let mut b = git_state();
@@ -516,11 +523,15 @@ mod tests {
                 path: PathBuf::from("b.rs"),
                 status: ChangeStatus::Modified,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
             ChangedFile {
                 path: PathBuf::from("a.rs"),
                 status: ChangeStatus::Added,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             },
         ];
         assert_eq!(

@@ -10,6 +10,7 @@ pub mod git;
 pub mod handoff;
 pub mod landed;
 pub mod logging;
+mod path_codec;
 pub mod refresh;
 pub mod relevance;
 pub mod render;

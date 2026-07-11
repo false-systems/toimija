@@ -60,6 +60,7 @@ pub struct ScopeHints {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScopeArea {
     pub label: String,
+    #[serde(with = "crate::path_codec::vec")]
     pub paths: Vec<PathBuf>,
     pub reason: String,
 }
@@ -67,6 +68,7 @@ pub struct ScopeArea {
 /// One ranked group of paths to read, lower `priority` first.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReadOrderEntry {
+    #[serde(with = "crate::path_codec::vec")]
     pub paths: Vec<PathBuf>,
     pub reason: String,
     pub priority: u8,
@@ -76,7 +78,9 @@ pub struct ReadOrderEntry {
 /// A changed file with a companion that is absent from this diff.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CouplingHint {
+    #[serde(with = "crate::path_codec::one")]
     pub changed: PathBuf,
+    #[serde(with = "crate::path_codec::one")]
     pub missing: PathBuf,
     pub reason: String,
     pub source: RelevanceSource,
@@ -85,6 +89,7 @@ pub struct CouplingHint {
 /// A file flagged as risky by a cheap, bounded Git-history heuristic.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RiskHint {
+    #[serde(with = "crate::path_codec::one")]
     pub path: PathBuf,
     pub kind: RiskKind,
     pub reason: String,

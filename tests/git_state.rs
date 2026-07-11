@@ -405,3 +405,151 @@ fn working_tree_dirt_at_base_is_not_labelled_branch_diff() {
         "relevance scope must mirror the real surface source"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn adversarial_git_paths_round_trip_without_forging_markdown() {
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt as _;
+
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    let mut names = vec![
+        std::ffi::OsString::from("space name.txt"),
+        std::ffi::OsString::from("tab\tname.txt"),
+        std::ffi::OsString::from("line\n## FORGED HEADING.txt"),
+        std::ffi::OsString::from("-leading-dash.txt"),
+        std::ffi::OsString::from("unicode-λ.txt"),
+        std::ffi::OsString::from("escape\u{1b}[31m.txt"),
+    ];
+    if cfg!(target_os = "linux") {
+        names.push(std::ffi::OsString::from_vec(b"invalid-\xff.txt".to_vec()));
+    }
+    for name in names {
+        fs::write(temp.path().join(name), "x\n").unwrap();
+    }
+
+    let json = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--json"])
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let paths = value["git"]["untracked_files"].as_array().unwrap();
+    for expected in [
+        "space name.txt",
+        "tab\tname.txt",
+        "line\n## FORGED HEADING.txt",
+        "-leading-dash.txt",
+        "unicode-λ.txt",
+        "escape\u{1b}[31m.txt",
+    ] {
+        assert!(
+            paths.iter().any(|path| path == expected),
+            "missing {expected:?}: {paths:?}"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    assert!(
+        paths
+            .iter()
+            .any(|path| { path["bytes_hex"] == "696e76616c69642dff2e747874" })
+    );
+
+    let markdown = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .output()
+        .unwrap();
+    assert!(markdown.status.success());
+    let markdown = String::from_utf8(markdown.stdout).unwrap();
+    assert!(markdown.contains(r"tab\tname.txt"), "{markdown}");
+    assert!(
+        markdown.contains(r"line\n## FORGED HEADING.txt"),
+        "{markdown}"
+    );
+    assert!(!markdown.contains("\n## FORGED HEADING.txt"), "{markdown}");
+    assert!(markdown.contains(r"escape\u{1b}[31m.txt"), "{markdown}");
+    #[cfg(target_os = "linux")]
+    assert!(markdown.contains(r"invalid-\xff.txt"), "{markdown}");
+}
+
+#[test]
+fn staged_rename_keeps_old_and_new_paths_in_json() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::rename(
+        temp.path().join("README.md"),
+        temp.path().join("renamed README.md"),
+    )
+    .unwrap();
+    run_git(temp.path(), &["add", "-A"]);
+
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let renamed = value["git"]["staged_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["status"] == "Renamed")
+        .expect("one staged rename");
+    assert_eq!(renamed["path"], "renamed README.md");
+    assert_eq!(renamed["original_path"], "README.md");
+    assert_eq!(renamed["similarity"], 100);
+}
+
+#[test]
+fn conflict_json_keeps_index_stages_for_a_spaced_path() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::write(temp.path().join("conflict path.txt"), "base\n").unwrap();
+    run_git(temp.path(), &["add", "conflict path.txt"]);
+    run_git(temp.path(), &["commit", "-m", "add conflict path"]);
+    run_git(temp.path(), &["switch", "-c", "feature"]);
+    fs::write(temp.path().join("conflict path.txt"), "feature\n").unwrap();
+    run_git(temp.path(), &["commit", "-am", "feature"]);
+    run_git(temp.path(), &["switch", "-"]);
+    fs::write(temp.path().join("conflict path.txt"), "main\n").unwrap();
+    run_git(temp.path(), &["commit", "-am", "main"]);
+    let merge = common::git_at(temp.path())
+        .args(["merge", "feature"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "merge should stop on a conflict");
+
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let conflict = &value["git"]["conflict_entries"][0];
+    assert_eq!(conflict["path"], "conflict path.txt");
+    let stages = conflict["stages"].as_array().unwrap();
+    assert_eq!(stages.len(), 3);
+    for (index, stage) in stages.iter().enumerate() {
+        assert_eq!(stage["stage"], index + 1);
+        assert_eq!(stage["mode"], "100644");
+        assert_eq!(stage["oid"].as_str().unwrap().len(), 40);
+    }
+}

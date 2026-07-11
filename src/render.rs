@@ -16,13 +16,13 @@ pub fn render_init_report(report: &InitReport) -> String {
     } else {
         writeln!(&mut output, "\nCreated:").unwrap();
         for path in &report.created {
-            writeln!(&mut output, "- {}", path.display()).unwrap();
+            writeln!(&mut output, "- {}", crate::path_codec::display(path)).unwrap();
         }
     }
     if !report.existing.is_empty() {
         writeln!(&mut output, "\nRefused to overwrite:").unwrap();
         for path in &report.existing {
-            writeln!(&mut output, "- {}", path.display()).unwrap();
+            writeln!(&mut output, "- {}", crate::path_codec::display(path)).unwrap();
         }
     }
     if !report.guidance.is_empty() {
@@ -153,7 +153,7 @@ fn write_path_list(output: &mut String, items: &[std::path::PathBuf], empty: &st
         writeln!(output, "- {empty}").unwrap();
     } else {
         for item in items.iter().take(MAX_LIST_SHOWN) {
-            writeln!(output, "- {}", item.display()).unwrap();
+            writeln!(output, "- {}", crate::path_codec::display(item)).unwrap();
         }
         write_more_line(output, items.len(), MAX_LIST_SHOWN, "");
     }
@@ -164,13 +164,29 @@ fn write_changed_list(output: &mut String, items: &[ChangedFile], empty: &str) {
         writeln!(output, "- {empty}").unwrap();
     } else {
         for item in items.iter().take(MAX_LIST_SHOWN) {
-            writeln!(
-                output,
-                "- {} {}",
-                status_label(&item.status),
-                item.path.display()
-            )
-            .unwrap();
+            if let Some(original) = &item.original_path {
+                let similarity = item
+                    .similarity
+                    .map(|score| format!(" ({score}%)"))
+                    .unwrap_or_default();
+                writeln!(
+                    output,
+                    "- {} {} -> {}{}",
+                    status_label(&item.status),
+                    crate::path_codec::display(original),
+                    crate::path_codec::display(&item.path),
+                    similarity
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    output,
+                    "- {} {}",
+                    status_label(&item.status),
+                    crate::path_codec::display(&item.path)
+                )
+                .unwrap();
+            }
         }
         write_more_line(output, items.len(), MAX_LIST_SHOWN, "");
     }
@@ -352,7 +368,13 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         writeln!(&mut output, "- none").unwrap();
     } else {
         for entry in read_first.iter().take(MAX_LIST_SHOWN) {
-            writeln!(&mut output, "- {} ({})", entry.path.display(), entry.reason).unwrap();
+            writeln!(
+                &mut output,
+                "- {} ({})",
+                crate::path_codec::display(&entry.path),
+                entry.reason
+            )
+            .unwrap();
         }
         write_more_line(&mut output, read_first.len(), MAX_LIST_SHOWN, "");
     }
@@ -397,8 +419,8 @@ fn write_coupling(output: &mut String, packet: &ContextPacket) {
         writeln!(
             output,
             "- {} changed, but {} was not — {}",
-            hint.changed.display(),
-            hint.missing.display(),
+            crate::path_codec::display(&hint.changed),
+            crate::path_codec::display(&hint.missing),
             hint.reason
         )
         .unwrap();
@@ -417,7 +439,7 @@ fn write_risk(output: &mut String, packet: &ContextPacket) {
         writeln!(
             output,
             "- {} — {}; {}",
-            hint.path.display(),
+            crate::path_codec::display(&hint.path),
             hint.reason,
             hint.action
         )
@@ -568,7 +590,7 @@ fn write_scope(output: &mut String, packet: &ContextPacket) {
     let in_play = scope
         .in_play
         .iter()
-        .map(|area| area.label.as_str())
+        .map(|area| crate::path_codec::display(std::path::Path::new(&area.label)))
         .collect::<Vec<_>>()
         .join(", ");
     writeln!(output, "- in play: {in_play}").unwrap();
@@ -576,7 +598,7 @@ fn write_scope(output: &mut String, packet: &ContextPacket) {
         let out = scope
             .out_of_scope
             .iter()
-            .map(|area| area.label.as_str())
+            .map(|area| crate::path_codec::display(std::path::Path::new(&area.label)))
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(output, "- unchanged top-level areas: {out}").unwrap();
@@ -598,7 +620,7 @@ fn write_read_order(output: &mut String, packet: &ContextPacket) {
             .paths
             .iter()
             .take(PATHS_PER_ENTRY)
-            .map(|path| path.display().to_string())
+            .map(|path| crate::path_codec::display(path))
             .collect();
         if entry.paths.len() > PATHS_PER_ENTRY {
             shown.push(format!("+{} more", entry.paths.len() - PATHS_PER_ENTRY));
@@ -695,6 +717,7 @@ mod tests {
                 unstaged_files: Vec::new(),
                 untracked_files: Vec::new(),
                 conflicted_files: Vec::new(),
+                conflict_entries: Vec::new(),
                 branch_files: Vec::new(),
                 recent_commits: Vec::new(),
             },
@@ -725,6 +748,7 @@ mod tests {
                 unstaged_files: Vec::new(),
                 untracked_files: Vec::new(),
                 conflicted_files: Vec::new(),
+                conflict_entries: Vec::new(),
                 branch_files: Vec::new(),
                 recent_commits: Vec::new(),
             }),
@@ -789,6 +813,8 @@ mod tests {
                 path: PathBuf::from(format!("src/some/deep/module_{i:02}.rs")),
                 status: ChangeStatus::Modified,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             })
             .collect();
         packet.changed_surface = (0..40)
@@ -862,6 +888,8 @@ mod tests {
                 path: PathBuf::from(format!("apps/core/lib/some/deep/path/module_{i:02}.ex")),
                 status: ChangeStatus::Modified,
                 index_entry: None,
+                original_path: None,
+                similarity: None,
             })
             .collect();
 
@@ -1024,16 +1052,22 @@ mod tests {
             path: PathBuf::from("src/committed.rs"),
             status: ChangeStatus::Modified,
             index_entry: None,
+            original_path: None,
+            similarity: None,
         }];
         packet.git.staged_files = vec![ChangedFile {
             path: PathBuf::from("src/staged.rs"),
             status: ChangeStatus::Added,
             index_entry: None,
+            original_path: None,
+            similarity: None,
         }];
         packet.git.unstaged_files = vec![ChangedFile {
             path: PathBuf::from("src/unstaged.rs"),
             status: ChangeStatus::Deleted,
             index_entry: None,
+            original_path: None,
+            similarity: None,
         }];
         packet.git.untracked_files = vec![PathBuf::from("notes.txt")];
         packet.git.conflicted_files = vec![PathBuf::from("src/conflict.rs")];
