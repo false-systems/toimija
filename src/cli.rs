@@ -143,15 +143,17 @@ pub enum Command {
     /// session: it opens a per-session packet directory under
     /// `.toimija/sessions/<id>/`, prints the entry packet, keeps it fresh while
     /// the command runs, mirrors `.toimija/current.*`, and exits with the
-    /// wrapped command's status (128+signal preserved). The child inherits a
-    /// TOIMIJA_* env handshake (TOIMIJA_LIVE, TOIMIJA_SESSION, …) so a wrapped
-    /// agent can discover its own continuously-refreshed packet. Use `--intent`
-    /// and `--scope` to tell sibling sessions why you are here — advisory,
-    /// never an assignment.
+    /// wrapped command's status (128+signal preserved). `--intent` is required
+    /// (proposal 0006: declaring why the session exists is the entry fee;
+    /// `--intent unknown` is the explicit escape hatch). Known agents (claude,
+    /// codex) get the packet inlined in their launch prompt — pass the task via
+    /// `--task`; other commands keep the TOIMIJA_* env handshake behind an
+    /// honest banner. `--scope` tells sibling sessions what you expect to touch
+    /// — advisory, never an assignment.
     #[command(
-        after_help = "Examples:\n  toimija run -- claude                                        # wrap an agent, adopt its exit code\n  \
+        after_help = "Examples:\n  toimija run --intent \"fix #51\" --task \"fix the login redirect\" -- claude   # packet + task in the launch prompt\n  \
         toimija run --intent \"fix #51\" --scope src/cli.rs -- codex   # declare intent/scope for siblings\n  \
-        toimija run --for-diff --budget 4000 -- sh -c '…'            # tune the packet the child sees"
+        toimija run --intent unknown --for-diff --budget 4000 -- sh -c '…'   # tune the packet the child sees"
     )]
     Run(RunArgs),
     /// Declare or update this session's intent — tell siblings why you are here.
@@ -312,6 +314,11 @@ pub struct RunArgs {
     /// lock. Absence renders as `unknown`.
     #[arg(long = "scope", value_name = "PATH")]
     pub scope: Vec<String>,
+    /// The task for the agent, delivered inside the composed launch prompt of a
+    /// known agent (`claude`, `codex`). Pass the task here, not as the agent's
+    /// own positional argument.
+    #[arg(long)]
+    pub task: Option<String>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
@@ -691,6 +698,15 @@ fn run_run(args: RunArgs) -> Result<i32> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    // Proposal 0006 D6: declaring why the session exists is the entry fee of
+    // the envelope. Refused before any session state is touched.
+    if args.intent.is_none() {
+        anyhow::bail!(
+            "declare why this session exists: `toimija run --intent \"<why>\" -- <agent>` \
+             (use `--intent unknown` if you genuinely cannot say)"
+        );
+    }
+
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
@@ -800,12 +816,40 @@ fn run_run(args: RunArgs) -> Result<i32> {
         .command
         .split_first()
         .expect("clap `required = true` guarantees at least one argument");
+    // Proposal 0006 Part C: for a known agent the packet travels in argv — in
+    // context by construction. Anything else keeps the env-var handshake, and
+    // says so instead of silently degrading.
+    let live_packet = session.dir.join("current.md");
+    let composed = crate::adapters::agents::compose_launch_prompt(
+        program,
+        &entry.markdown,
+        &live_packet,
+        args.task.as_deref(),
+    );
+    match &composed {
+        Some(_) => eprintln!(
+            "toimija run: delivery: launch prompt with the packet inlined for `{program}`"
+        ),
+        None => {
+            eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
+            if args.task.is_some() {
+                eprintln!(
+                    "toimija run: --task travels in the composed launch prompt and `{program}` \
+                     is not a known agent; give it its task yourself"
+                );
+            }
+        }
+    }
     eprintln!(
         "toimija run: launching `{program}` (session {}, watching for changes)",
         session.id
     );
-    let launched = std::process::Command::new(program)
-        .args(rest)
+    let mut child = std::process::Command::new(program);
+    child.args(rest);
+    if let Some(prompt) = &composed {
+        child.arg(prompt);
+    }
+    let launched = child
         .current_dir(&cwd)
         .envs(session.env(&repo_root))
         .status();
@@ -847,6 +891,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
     // Skip the exit summary if the command never launched — there is nothing to
     // summarize, and the launch error is surfaced below.
     if launched.is_ok() {
+        let consumption = collect_consumption(&repo_root, &session, &args);
         match plan.run(&runner, &repo_root) {
             Ok(exit) => eprint!(
                 "\n{}",
@@ -854,6 +899,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
                     &entry.packet.git,
                     &exit.packet.git,
                     refreshes.load(Ordering::Relaxed),
+                    &consumption,
                 )
             ),
             Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
@@ -921,12 +967,52 @@ fn close_session_after_startup_failure(session: &mut session::Session) {
     }
 }
 
+/// What the session consumed of toimija — and nothing else. Proposal 0006 D7:
+/// built only from toimija-owned state (the session marker and handoff
+/// records); nothing observed about the agent's behavior or file access.
+struct Consumption {
+    intent: String,
+    intent_source: &'static str,
+    expansions: usize,
+    handoffs: usize,
+}
+
+fn collect_consumption(
+    repo_root: &std::path::Path,
+    session: &session::Session,
+    args: &RunArgs,
+) -> Consumption {
+    let marker = session::load_marker(&session.dir).ok();
+    let launch_intent = args.intent.clone().unwrap_or_default();
+    let (intent, intent_source) = match marker.as_ref().and_then(|m| m.intent.clone()) {
+        Some(text) if text == launch_intent => (text, "declared at launch"),
+        Some(text) => (text, "updated mid-session"),
+        None => (launch_intent, "declared at launch"),
+    };
+    let expansions = marker
+        .map(|m| m.scope.len().saturating_sub(args.scope.len()))
+        .unwrap_or(0);
+    let handoffs = handoff::count(repo_root, &session.id).unwrap_or(0);
+    Consumption {
+        intent,
+        intent_source,
+        expansions,
+        handoffs,
+    }
+}
+
 /// Bookend a `run` session: a compact, stderr-bound summary of what the wrapped
 /// command did to the repo, by diffing the Git state captured on entry against
 /// the state at exit. Only the deltas worth a glance are shown — a switched
 /// branch, a moved HEAD (commits made), the working tree at exit, branch scope
-/// since the merge-base, and how many times the live packet refreshed.
-fn render_run_summary(entry: &git::GitState, exit: &git::GitState, refreshes: usize) -> String {
+/// since the merge-base, how many times the live packet refreshed, and what
+/// the session consumed of toimija (intent, declared expansions, handoff).
+fn render_run_summary(
+    entry: &git::GitState,
+    exit: &git::GitState,
+    refreshes: usize,
+    consumption: &Consumption,
+) -> String {
     use std::fmt::Write;
 
     let mut out = String::new();
@@ -976,6 +1062,26 @@ fn render_run_summary(entry: &git::GitState, exit: &git::GitState, refreshes: us
         exit.branch_files.len(),
     );
     let _ = writeln!(out, "  refreshed: {refreshes} time(s) while you worked");
+
+    let _ = writeln!(
+        out,
+        "  intent:    \"{}\" ({})",
+        consumption.intent, consumption.intent_source
+    );
+    if consumption.expansions == 0 {
+        let _ = writeln!(out, "  expansions: none declared");
+    } else {
+        let _ = writeln!(
+            out,
+            "  expansions: {} scope path(s) declared while working",
+            consumption.expansions
+        );
+    }
+    if consumption.handoffs == 0 {
+        let _ = writeln!(out, "  handoff:   none recorded");
+    } else {
+        let _ = writeln!(out, "  handoff:   {} record(s)", consumption.handoffs);
+    }
     out
 }
 
@@ -1766,11 +1872,20 @@ mod tests {
         }
     }
 
+    fn quiet_consumption() -> Consumption {
+        Consumption {
+            intent: "test".to_string(),
+            intent_source: "declared at launch",
+            expansions: 0,
+            handoffs: 0,
+        }
+    }
+
     #[test]
     fn summary_flags_a_moved_head_and_branch_switch() {
         let entry = state("main", "aaaaaaaaaa");
         let exit = state("feature", "bbbbbbbbbb");
-        let out = render_run_summary(&entry, &exit, 3);
+        let out = render_run_summary(&entry, &exit, 3, &quiet_consumption());
         assert!(out.contains("branch:    main → feature"), "{out}");
         assert!(
             out.contains("HEAD:      aaaaaaa → bbbbbbb (moved)"),
@@ -1782,7 +1897,7 @@ mod tests {
     #[test]
     fn summary_omits_head_line_when_head_is_unchanged() {
         let unchanged = state("main", "abc1234");
-        let out = render_run_summary(&unchanged, &unchanged, 0);
+        let out = render_run_summary(&unchanged, &unchanged, 0, &quiet_consumption());
         // No commits landed → no HEAD line, and no spurious "→" on the branch.
         assert!(!out.contains("HEAD:"), "{out}");
         assert!(out.contains("branch:    main\n"), "{out}");
@@ -1790,6 +1905,35 @@ mod tests {
             out.contains("worktree:  0 staged, 0 unstaged, 0 untracked"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn summary_reports_consumption_honestly_in_both_directions() {
+        let unchanged = state("main", "abc1234");
+        let quiet = render_run_summary(&unchanged, &unchanged, 0, &quiet_consumption());
+        assert!(
+            quiet.contains("intent:    \"test\" (declared at launch)"),
+            "{quiet}"
+        );
+        assert!(quiet.contains("expansions: none declared"), "{quiet}");
+        assert!(quiet.contains("handoff:   none recorded"), "{quiet}");
+
+        let busy = Consumption {
+            intent: "widened".to_string(),
+            intent_source: "updated mid-session",
+            expansions: 2,
+            handoffs: 1,
+        };
+        let out = render_run_summary(&unchanged, &unchanged, 0, &busy);
+        assert!(
+            out.contains("intent:    \"widened\" (updated mid-session)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("expansions: 2 scope path(s) declared while working"),
+            "{out}"
+        );
+        assert!(out.contains("handoff:   1 record(s)"), "{out}");
     }
 
     #[test]

@@ -30,7 +30,15 @@ fn assert_run_refuses(path: &Path) {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(path)
-        .args(["run", "--", "sh", "-c", "touch CHILD_RAN"])
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "touch CHILD_RAN",
+        ])
         .assert()
         .failure()
         .stdout(predicate::str::contains("Toimija agent entry").not())
@@ -66,7 +74,7 @@ fn run_exits_with_the_wrapped_command_status() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--", "sh", "-c", "exit 7"])
+        .args(["run", "--intent", "test", "--", "sh", "-c", "exit 7"])
         .assert()
         .code(7);
 
@@ -74,7 +82,7 @@ fn run_exits_with_the_wrapped_command_status() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--", "sh", "-c", "exit 0"])
+        .args(["run", "--intent", "test", "--", "sh", "-c", "exit 0"])
         .assert()
         .code(0);
 }
@@ -93,7 +101,7 @@ fn run_preserves_signal_termination_as_128_plus_signal() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--", "sh", "-c", "kill -TERM $$"])
+        .args(["run", "--intent", "test", "--", "sh", "-c", "kill -TERM $$"])
         .assert()
         .code(143);
 }
@@ -109,7 +117,15 @@ fn run_enters_then_launches_the_command() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--", "sh", "-c", "echo hi > ran.txt"])
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "echo hi > ran.txt",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Toimija agent entry"));
@@ -124,6 +140,120 @@ fn run_enters_then_launches_the_command() {
     // ... and entry refreshed the live packet.
     assert!(temp.path().join(".toimija/current.md").exists());
     assert!(temp.path().join(".toimija/current.json").exists());
+}
+
+#[test]
+fn run_refuses_to_launch_without_intent() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["run", "--", "sh", "-c", "touch SHOULD_NOT_RUN"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("declare why this session exists"))
+        .stderr(predicate::str::contains("--intent unknown"));
+    // Refused before launch: the child never ran, no session opened.
+    assert!(!temp.path().join("SHOULD_NOT_RUN").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn run_inlines_the_packet_into_a_known_agents_launch_prompt() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // A stub named `claude`: writes its last positional argument (the composed
+    // prompt appended by `run`) so the test can inspect exactly what the agent
+    // was launched with.
+    let stub = temp.path().join("claude");
+    fs::write(
+        &stub,
+        "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > launch-arg\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&stub).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&stub, permissions).unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--task",
+            "paint it beige",
+            "--",
+            stub.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "delivery: launch prompt with the packet inlined",
+        ));
+
+    let arg = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    assert!(
+        arg.starts_with("Your toimija session packet is below."),
+        "{arg}"
+    );
+    assert!(arg.contains("# Toimija Context"), "{arg}");
+    assert!(arg.contains("## Workset contract"), "{arg}");
+    assert!(arg.contains(".toimija/sessions/"), "{arg}");
+    assert!(arg.trim_end().ends_with("Task: paint it beige"), "{arg}");
+}
+
+#[test]
+fn run_banners_env_var_only_delivery_for_unknown_agents() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run", "--intent", "test", "--task", "t", "--", "sh", "-c", "true",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "delivery: env-var only — not guaranteed for `sh`",
+        ))
+        .stderr(predicate::str::contains("give it its task yourself"));
+}
+
+#[test]
+fn run_exit_summary_reports_consumption() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["run", "--intent", "fix the roof", "--", "sh", "-c", "true"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "intent:    \"fix the roof\" (declared at launch)",
+        ))
+        .stderr(predicate::str::contains("expansions: none declared"))
+        .stderr(predicate::str::contains("handoff:   none recorded"));
 }
 
 #[test]
@@ -194,7 +324,7 @@ fn run_writes_a_per_session_packet_and_closes_the_marker() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--", "true"])
+        .args(["run", "--intent", "test", "--", "true"])
         .assert()
         .success();
 
@@ -289,6 +419,8 @@ fn run_hands_the_child_a_per_session_handshake() {
         .current_dir(temp.path())
         .args([
             "run",
+            "--intent",
+            "test",
             "--",
             "sh",
             "-c",
@@ -337,7 +469,13 @@ fn run_closes_the_session_marker_when_the_child_fails_to_launch() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--", "__definitely_not_a_toimija_test_command__"])
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "__definitely_not_a_toimija_test_command__",
+        ])
         .assert()
         .failure();
 
@@ -373,7 +511,7 @@ fn run_does_not_execute_the_validation_plan() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--", "true"])
+        .args(["run", "--intent", "test", "--", "true"])
         .assert()
         .success();
 
