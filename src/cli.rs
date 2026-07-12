@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing::{info, info_span, warn};
 
+use crate::adoption;
 use crate::audit_plan;
 use crate::command::ProcessCommandRunner;
 use crate::config::{self, RepoConfig};
@@ -66,6 +67,15 @@ pub enum Command {
     /// Use this once per repo to seed the config. It never overwrites an
     /// existing file. Writes only .toimija/repo.yaml.
     Init,
+    /// Install the canonical Toimija preamble in the repo's agent entry files.
+    ///
+    /// Use this once when adopting Toimija into an existing repository. With
+    /// `--hooks`, also install best-effort Git freshness hooks.
+    #[command(
+        after_help = "Examples:\n  toimija adopt             # adopt existing entry files\n  \
+        toimija adopt --hooks  # adopt and install refresh hooks"
+    )]
+    Adopt(AdoptArgs),
     /// Check Toimija setup: git, config, repo kind, and agent docs.
     ///
     /// Use this when setting up a repo or gating CI: it verifies git is
@@ -251,6 +261,13 @@ pub struct ContextArgs {
     /// Approximate output cap in characters; long lists are truncated.
     #[arg(long)]
     pub budget: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct AdoptArgs {
+    /// Install post-checkout, post-merge, and post-commit refresh hooks.
+    #[arg(long)]
+    pub hooks: bool,
 }
 
 #[derive(Debug, Args)]
@@ -445,6 +462,7 @@ pub fn run(cli: Cli) -> Result<i32> {
 
     let result = match cli.command {
         Command::Init => run_init().map(|()| 0),
+        Command::Adopt(args) => run_adopt(args).map(|()| 0),
         Command::Doctor(args) => run_doctor(args).map(|()| 0),
         Command::Context(args) => run_context(args).map(|()| 0),
         Command::Current(args) => run_current(args),
@@ -483,6 +501,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Init => "init",
+            Command::Adopt(_) => "adopt",
             Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
             Command::Current(_) => "current",
@@ -509,6 +528,27 @@ fn run_init() -> Result<()> {
     let repo_root = git::discover_repo_root(&runner, &cwd).unwrap_or(cwd);
     let report = config::init_repo(&repo_root)?;
     println!("{}", render::render_init_report(&report));
+    Ok(())
+}
+
+fn run_adopt(args: AdoptArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let report = adoption::adopt(&repo_root, args.hooks)?;
+    for path in &report.files {
+        println!("adopted {}", rel_display(path, &repo_root));
+    }
+    if report.created_agents {
+        println!("created AGENTS.md because no known entry file existed");
+    }
+    if !report.hooks.is_empty() {
+        println!("installed Git hooks: {}", report.hooks.join(", "));
+        println!(
+            "note: hooks live in this clone's Git hooks directory and are shared by every worktree of this clone"
+        );
+        println!("{}", adoption::harness_snippet());
+    }
     Ok(())
 }
 

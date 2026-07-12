@@ -257,6 +257,49 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         },
     ));
 
+    // An unreadable entry file is a warning, not a silent pass: swallowing the
+    // error here would let strict mode green-light a repo it could not check.
+    match crate::adoption::adoption_status(&repo_root) {
+        Ok((adopted_files, stale_adoption)) => {
+            checks.push(check(
+                "adoption",
+                if stale_adoption.is_empty() {
+                    DoctorStatus::Ok
+                } else {
+                    DoctorStatus::Warning
+                },
+                if stale_adoption.is_empty() {
+                    if adopted_files == 0 {
+                        "no known entry files; `toimija adopt` will create AGENTS.md"
+                    } else {
+                        "agent entry files carry the current Toimija preamble"
+                    }
+                } else {
+                    "stale or missing Toimija preamble in:"
+                },
+            ));
+            if !stale_adoption.is_empty() {
+                checks.push(check(
+                    "adoption files",
+                    DoctorStatus::Warning,
+                    &format!(
+                        "run `toimija adopt`; stale files: {}",
+                        stale_adoption
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+        }
+        Err(err) => checks.push(check(
+            "adoption",
+            DoctorStatus::Warning,
+            &format!("adoption status unavailable: {err:#}"),
+        )),
+    }
+
     let missing_docs: Vec<&PathBuf> = config
         .context
         .important_docs
@@ -340,7 +383,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
 /// a Toimija preflight. `enter` is the recommended entry command; `context` is
 /// the underlying one it shares — either satisfies the guard. Deliberately the
 /// command stem, not a full sentence, so wording around it can vary.
-const PREFLIGHT_MARKERS: [&str; 2] = ["toimija enter", "toimija context"];
+const PREFLIGHT_MARKERS: [&str; 3] = ["toimija enter", "toimija context", ".toimija/current.md"];
 
 /// Concatenated bodies of the docs that form the agent contract: AGENTS.md,
 /// CLAUDE.md, and whatever `important_docs` nominates as load-bearing. Unreadable

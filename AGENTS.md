@@ -1,5 +1,9 @@
 # Agent guide
 
+<!-- toimija:adopt:v1:begin -->
+Read `.toimija/current.md` before reading anything else in this repo; it is your workset contract. Under a toimija session your launch prompt names your live packet — that file supersedes this one.
+<!-- toimija:adopt:v1:end -->
+
 This repo is Toimija, an internal False Systems Rust CLI.
 
 Before inspecting files broadly: if `$TOIMIJA_LIVE` is set you are wrapped by `toimija run` — read that file (your session's continuously-refreshed packet) and re-read it after Git-state changes; otherwise run `toimija enter --for-diff --budget 4000` (the recommended agent preflight; it shares the `toimija context` code path, and under a session it targets your session packet). Toimija starts from Git state — branch, HEAD, index, merge-base, staged/unstaged/untracked files — so use that packet, and especially its Git and Branch intent sections, before reading the repo cold. The packet also carries Git-derived relevance hints (Scope, Read order, Coupling, Risk) mined from bounded Git history — advisory, not semantic truth, but use them to read the right files first.
