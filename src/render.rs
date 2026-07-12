@@ -236,6 +236,18 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     if let Some(artifact_id) = &packet.artifact_id {
         writeln!(&mut output, "- artifact-id: {artifact_id}").unwrap();
     }
+    // Proposal 0006: demonstrate, not just assert, that reading the packet is
+    // cheaper than rediscovery. Honest counts from data already computed.
+    writeln!(
+        &mut output,
+        "- compiled-from: {} changed file(s), {} recent commit(s), {} relevance hint(s) — reading this replaces that discovery",
+        packet.changed_surface.len(),
+        packet.git.recent_commits.len(),
+        packet.relevance.read_order.len()
+            + packet.relevance.coupling.len()
+            + packet.relevance.risk.len(),
+    )
+    .unwrap();
     if packet.for_diff {
         writeln!(
             &mut output,
@@ -1212,6 +1224,7 @@ mod tests {
     fn markdown_context_snapshot_is_stable() {
         let rendered = render_context_markdown(&packet(), 4000);
         let expected = r#"# Toimija Context
+- compiled-from: 0 changed file(s), 0 recent commit(s), 0 relevance hint(s) — reading this replaces that discovery
 
 ## Repo
 - name: demo

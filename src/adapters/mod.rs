@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod elixir;
 pub mod generic;
 pub mod rust;

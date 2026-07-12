@@ -74,6 +74,8 @@ fn run_emits_the_command_finish_bookend_with_the_wrapped_exit_code() {
             "--log-format",
             "json",
             "run",
+            "--intent",
+            "test",
             "--",
             "sh",
             "-c",
