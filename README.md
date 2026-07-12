@@ -11,12 +11,13 @@
 *Toimija* is Finnish for "the one who acts" — an actor, an agent, an operative.
 This Toimija is the layer between a repo and the agents acting on it.
 
-Instead of running `codex` directly, run `toimija run codex`.
-Instead of running `claude` directly, run `toimija run claude`.
+Instead of running `codex` directly, run `toimija run --intent "<why>" -- codex`.
+Instead of running `claude` directly, run `toimija run --intent "<why>" -- claude`.
 
 Toimija refreshes the repo context, writes `.toimija/current.md` and
-`.toimija/current.json`, starts a watcher, launches the agent, keeps the packet
-fresh while the agent works, and exits with the wrapped command's status.
+`.toimija/current.json`, starts a watcher, launches the agent — for known
+agents with the packet inlined in the launch prompt — keeps the packet fresh
+while the agent works, and exits with the wrapped command's status.
 
 > We do not ask the model to understand the repo first. We ask Git what state the repo is in.
 
@@ -26,7 +27,7 @@ fresh while the agent works, and exits with the wrapped command's status.
 cargo install --path .          # or grab the release artifact
 cd /path/to/repo
 toimija init                    # once per repo: seed .toimija/repo.yaml
-toimija run claude              # every time: wrap the agent
+toimija run --intent "<why>" -- claude   # every time: wrap the agent
 ```
 
 ```mermaid
@@ -120,12 +121,12 @@ Git is not a save button here. Git is the substrate.
 
 ```bash
 cd /path/to/repo
-toimija run codex
+toimija run --intent "fix #51" --task "fix the login redirect" -- codex
 ```
 
 ```bash
 cd /path/to/repo
-toimija run claude
+toimija run --intent "explore the failing CI" -- claude
 ```
 
 `run` is the recommended agent entrypoint. It runs `enter`, starts `watch`,
@@ -133,15 +134,26 @@ launches the agent command, stops watching when the agent exits, and returns the
 agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
 143).
 
+**Wrapped means used** (proposal 0006). `run` refuses to launch without
+`--intent` — declaring why the session exists is the entry fee of the envelope
+(`--intent unknown` is the explicit escape hatch). For known agents (`claude`,
+`codex` — matched by basename) the packet is delivered **in the launch prompt
+itself**: `run` appends one positional argument carrying the contract framing,
+the entry packet inlined at the session budget, the live packet path, and your
+`--task`. The agent cannot not-see it. Pass the agent's task via `--task`, not
+as the agent's own positional argument. Unknown agents keep the env-var
+handshake behind an honest banner — `delivery: env-var only — not guaranteed` —
+never a silent degradation.
+
 ```mermaid
 sequenceDiagram
     participant Y as you
     participant T as toimija run
     participant A as the agent
 
-    Y->>T: toimija run codex
+    Y->>T: toimija run --intent "fix #51" -- codex
     T->>T: compile + verify the packet
-    T->>A: launch, with the TOIMIJA_* handshake
+    T->>A: launch — packet inlined in the prompt (known agents) + TOIMIJA_* handshake
     loop while the agent works
         T->>T: refresh the packet on every Git change
     end
@@ -161,7 +173,9 @@ no daemon survives the command. The repo-level `.toimija/current.*` is kept too,
 demoted to a last-writer-wins "latest" summary for sessionless readers.
 
 So the wrapped agent can *find* its live packet, `run` hands it an environment
-handshake — the only signal `run` injects into the child:
+handshake. For known agents this is the backup channel (the packet already
+travels in the launch prompt); for everything else it is the only signal `run`
+injects into the child:
 
 | Variable | Meaning |
 | --- | --- |
@@ -269,9 +283,11 @@ run.
 
 When the agent exits, `run` prints a one-glance session summary to stderr —
 diffing the Git state from entry to exit so you see what the session actually
-did: a switched branch, a moved HEAD (commits landed), the working tree it
-leaves behind, branch scope since the merge-base, and how many times the live
-packet refreshed:
+did (a switched branch, a moved HEAD, the working tree it leaves behind,
+branch scope since the merge-base, refresh count), plus a consumption report
+built purely from toimija-owned state — the session marker and handoff
+records, never anything observed about the agent — so non-use is visible
+instead of silent:
 
 ```
 toimija run: session summary
@@ -280,6 +296,9 @@ toimija run: session summary
   worktree:  2 staged, 1 unstaged, 0 untracked
   scope:     4 file(s) changed on this branch since merge-base
   refreshed: 12 time(s) while you worked
+  intent:    "add login flow" (declared at launch)
+  expansions: 2 scope path(s) declared while working
+  handoff:   1 record(s)
 ```
 
 ## Verify before read — the packet is a claim, not a hope
@@ -422,9 +441,9 @@ rendering.
 Ordered by workflow:
 
 ```bash
-toimija run codex          # agent entrypoint
-toimija run claude
-toimija run --intent "..." --scope src/x.rs codex  # declare why / what (advisory)
+toimija run --intent "..." -- codex   # agent entrypoint (intent is required)
+toimija run --intent "..." --task "..." -- claude  # task travels in the launch prompt
+toimija run --intent "..." --scope src/x.rs -- codex  # declare what you'll touch (advisory)
 toimija sessions           # who else is live in this repo (read-only awareness)
 toimija intent "..."       # wrapped agent declares why it is here (via TOIMIJA_SESSION)
 toimija handoff "..."      # wrapped agent appends a session handoff record
@@ -657,6 +676,7 @@ renders like this:
 
 ```text
 # Toimija Context
+- compiled-from: 3 changed file(s), 2 recent commit(s), 4 relevance hint(s) — reading this replaces that discovery
 
 ## Repo
 - name: toimija
