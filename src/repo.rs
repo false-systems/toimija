@@ -257,38 +257,47 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         },
     ));
 
-    let (adopted_files, stale_adoption) =
-        crate::adoption::adoption_status(&repo_root).unwrap_or((0, Vec::new()));
-    checks.push(check(
-        "adoption",
-        if stale_adoption.is_empty() {
-            DoctorStatus::Ok
-        } else {
-            DoctorStatus::Warning
-        },
-        if stale_adoption.is_empty() {
-            if adopted_files == 0 {
-                "no known entry files; `toimija adopt` will create AGENTS.md"
-            } else {
-                "agent entry files carry the current Toimija preamble"
+    // An unreadable entry file is a warning, not a silent pass: swallowing the
+    // error here would let strict mode green-light a repo it could not check.
+    match crate::adoption::adoption_status(&repo_root) {
+        Ok((adopted_files, stale_adoption)) => {
+            checks.push(check(
+                "adoption",
+                if stale_adoption.is_empty() {
+                    DoctorStatus::Ok
+                } else {
+                    DoctorStatus::Warning
+                },
+                if stale_adoption.is_empty() {
+                    if adopted_files == 0 {
+                        "no known entry files; `toimija adopt` will create AGENTS.md"
+                    } else {
+                        "agent entry files carry the current Toimija preamble"
+                    }
+                } else {
+                    "stale or missing Toimija preamble in:"
+                },
+            ));
+            if !stale_adoption.is_empty() {
+                checks.push(check(
+                    "adoption files",
+                    DoctorStatus::Warning,
+                    &format!(
+                        "run `toimija adopt`; stale files: {}",
+                        stale_adoption
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
             }
-        } else {
-            "stale or missing Toimija preamble in:"
-        },
-    ));
-    if !stale_adoption.is_empty() {
-        checks.push(check(
-            "adoption files",
+        }
+        Err(err) => checks.push(check(
+            "adoption",
             DoctorStatus::Warning,
-            &format!(
-                "run `toimija adopt`; stale files: {}",
-                stale_adoption
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ));
+            &format!("adoption status unavailable: {err:#}"),
+        )),
     }
 
     let missing_docs: Vec<&PathBuf> = config

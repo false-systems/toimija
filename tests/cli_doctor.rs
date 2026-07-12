@@ -201,10 +201,13 @@ fn doctor_boundaries_satisfied_by_repo_yaml_reference() {
 }
 
 #[test]
-fn doctor_strict_reports_unadopted_repo_until_pr2_dogfoods_it() {
+fn doctor_strict_passes_on_this_repo() {
     // Dogfood: the README tells people to run `toimija doctor --strict` as the
-    // PR/CI gate, so this repo must pass its own gate. Guards against boundary
-    // wording in .toimija/repo.yaml drifting from AGENTS.md/CLAUDE.md.
+    // PR/CI gate, so this repo must pass its own gate — including the adoption
+    // check this PR introduces, satisfied by running `toimija adopt` on this
+    // repo in the same PR. Guards against boundary wording in
+    // .toimija/repo.yaml drifting from AGENTS.md/CLAUDE.md and against the
+    // entry files losing the adopted preamble.
     if !git_available() {
         return;
     }
@@ -213,8 +216,13 @@ fn doctor_strict_reports_unadopted_repo_until_pr2_dogfoods_it() {
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(["doctor", "--strict"])
         .assert()
-        .failure()
-        .stdout(predicate::str::contains("adoption"));
+        .success()
+        .stdout(predicate::str::contains(
+            "ok: boundaries mirrored - boundaries appear in the agent docs",
+        ))
+        .stdout(predicate::str::contains(
+            "ok: adoption - agent entry files carry the current Toimija preamble",
+        ));
 }
 
 #[test]

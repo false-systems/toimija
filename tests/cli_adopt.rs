@@ -87,6 +87,27 @@ fn adopt_updates_existing_entry_files_and_doctor_accepts_them() {
 }
 
 #[test]
+fn adopt_refuses_to_clobber_an_unreadable_entry_file() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    // Non-UTF-8 bytes make the read fail; adopt must abort with the cause and
+    // leave the file byte-identical, never overwrite it with just the block.
+    let original: &[u8] = b"# Guide\n\xff\xfekeep these bytes\n";
+    fs::write(temp.path().join("AGENTS.md"), original).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("adopt")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to read"));
+    assert_eq!(fs::read(temp.path().join("AGENTS.md")).unwrap(), original);
+}
+
+#[test]
 fn adopt_hooks_install_refresh_hooks_and_refuse_foreign_hooks() {
     if !git_available() {
         return;
@@ -99,7 +120,11 @@ fn adopt_hooks_install_refresh_hooks_and_refuse_foreign_hooks() {
         .args(["adopt", "--hooks"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("For you to place"));
+        .stdout(predicate::str::contains("For you to place"))
+        .stdout(predicate::str::contains("SessionStart"))
+        .stdout(predicate::str::contains(
+            "shared by every worktree of this clone",
+        ));
     let hooks = temp.path().join(".git/hooks");
     for name in ["post-checkout", "post-merge", "post-commit"] {
         let text = fs::read_to_string(hooks.join(name)).unwrap();

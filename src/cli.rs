@@ -544,6 +544,9 @@ fn run_adopt(args: AdoptArgs) -> Result<()> {
     }
     if !report.hooks.is_empty() {
         println!("installed Git hooks: {}", report.hooks.join(", "));
+        println!(
+            "note: hooks live in this clone's Git hooks directory and are shared by every worktree of this clone"
+        );
         println!("{}", adoption::harness_snippet());
     }
     Ok(())

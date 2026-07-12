@@ -584,7 +584,8 @@ drift guard — no AI, no semantic comparison. It checks:
   (`AGENTS.md` / `CLAUDE.md` / `important_docs`), matched case- and
   whitespace-insensitively so re-wrapping a line does not trip the gate
 - every known agent entry file that exists carries the current `toimija adopt`
-  preamble
+  preamble, matched whitespace-insensitively like the boundary sentences, so a
+  formatter re-wrapping the preamble line does not trip the gate
 
 ```bash
 toimija doctor --strict

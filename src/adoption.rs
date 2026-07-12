@@ -44,7 +44,15 @@ pub fn adopt(repo_root: &Path, with_hooks: bool) -> Result<AdoptionReport> {
     };
 
     for path in &targets {
-        let old = fs::read_to_string(path).unwrap_or_default();
+        // A read failure (permissions, non-UTF-8) must abort, never default to
+        // empty: writing the block over a defaulted-empty read would replace
+        // the file's real content.
+        let old = if path.is_file() {
+            fs::read_to_string(path)
+                .with_context(|| format!("failed to read {}", path.display()))?
+        } else {
+            String::new()
+        };
         let new = apply_block(&old)?;
         if new != old {
             fs::write(path, new).with_context(|| format!("failed to write {}", path.display()))?;
@@ -78,7 +86,8 @@ pub fn adoption_status(repo_root: &Path) -> Result<(usize, Vec<PathBuf>)> {
             continue;
         }
         present += 1;
-        let text = fs::read_to_string(&path).unwrap_or_default();
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
         if !has_current_block(&text) {
             stale.push(PathBuf::from(relative));
         }
@@ -121,14 +130,22 @@ fn apply_block(text: &str) -> Result<String> {
     Ok(output)
 }
 
+/// Whitespace-insensitive, like the boundaries drift check: a formatter
+/// re-wrapping the preamble line must not read as drift. `adopt` still writes
+/// the canonical bytes; only the *check* tolerates re-wrapping.
 fn has_current_block(text: &str) -> bool {
     let Some(start) = text.find(BEGIN) else {
         return false;
     };
-    let Some(end) = text.find(END) else {
+    let after_begin = start + BEGIN.len();
+    let Some(end) = text[after_begin..].find(END) else {
         return false;
     };
-    end > start && text[start..=end + END.len() - 1] == format!("{BEGIN}\n{PREAMBLE}\n{END}")
+    normalized_ws(&text[after_begin..after_begin + end]) == normalized_ws(PREAMBLE)
+}
+
+fn normalized_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn install_hooks(repo_root: &Path) -> Result<Vec<String>> {
@@ -146,7 +163,8 @@ fn install_hooks(repo_root: &Path) -> Result<Vec<String>> {
     for name in HOOKS {
         let path = hooks_dir.join(name);
         if path.exists() {
-            let text = fs::read_to_string(&path).unwrap_or_default();
+            let text = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read existing hook {}", path.display()))?;
             if !text.contains(HOOK_MARKER) {
                 bail!(
                     "refusing to replace foreign Git hook {}. Add `toimija refresh >/dev/null 2>&1 || true` manually after scrubbing GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, and GIT_COMMON_DIR.",
@@ -182,7 +200,16 @@ fn make_executable(path: &Path) -> Result<()> {
 }
 
 pub fn harness_snippet() -> &'static str {
-    "For you to place in a Claude Code SessionStart hook (Toimija does not install this outside the repo):\n  toimija context --budget 4000"
+    r#"For you to place (Toimija never writes harness config for you):
+Claude Code — merge into .claude/settings.json so every session starts with the packet in context:
+  {
+    "hooks": {
+      "SessionStart": [
+        { "hooks": [ { "type": "command", "command": "toimija context --budget 4000" } ] }
+      ]
+    }
+  }
+The hook's stdout is injected into the session context: the packet is read without being asked."#
 }
 
 #[cfg(test)]
@@ -200,5 +227,18 @@ mod tests {
     #[test]
     fn malformed_markers_are_rejected() {
         assert!(apply_block("<!-- toimija:adopt:v1:begin -->\n").is_err());
+    }
+
+    #[test]
+    fn rewrapped_preamble_still_counts_as_current() {
+        let adopted = apply_block("# Guide\n").unwrap();
+        assert!(has_current_block(&adopted));
+        // A markdown formatter re-wraps the long preamble line; that is not drift.
+        let rewrapped = adopted.replace("workset contract. Under", "workset contract.\nUnder");
+        assert_ne!(adopted, rewrapped);
+        assert!(has_current_block(&rewrapped));
+        // A materially edited preamble is drift.
+        let edited = adopted.replace("workset contract", "old contract");
+        assert!(!has_current_block(&edited));
     }
 }
