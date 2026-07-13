@@ -13,6 +13,7 @@ use crate::git::ChangedFile;
 use crate::repo::RepoKind;
 use crate::validate::{self, ValidationPlan};
 
+#[derive(Debug)]
 pub struct MinimumLang {
     pub kind: RepoKind,
     /// Honest display label for notes and telemetry (e.g. "Go").
@@ -31,8 +32,10 @@ pub struct MinimumLang {
     /// the changed file. Candidates are existence-filtered, same as the full
     /// adapters — a hint never points at a file that is not there.
     pub companions: &'static [&'static str],
-    /// A changed file whose name contains one of these is already a test;
-    /// tests do not get companion hints for themselves.
+    /// A changed file whose name matches one of these is already a test;
+    /// tests do not get companion hints for themselves. Anchored glob-lite:
+    /// `test_*` = prefix, `*_test.go` = suffix, `*.test.*` = contains —
+    /// anchoring matters, or `latest_config.py` reads as a test.
     pub test_markers: &'static [&'static str],
 }
 
@@ -45,7 +48,7 @@ pub const MINIMUMS: &[MinimumLang] = &[
         strict: &["go vet ./..."],
         extensions: &["go"],
         companions: &["{dir}/{stem}_test.go"],
-        test_markers: &["_test"],
+        test_markers: &["*_test.go"],
     },
     MinimumLang {
         kind: RepoKind::Python,
@@ -55,7 +58,7 @@ pub const MINIMUMS: &[MinimumLang] = &[
         strict: &["ruff check ."],
         extensions: &["py"],
         companions: &["{dir}/test_{stem}.py", "tests/test_{stem}.py"],
-        test_markers: &["test_"],
+        test_markers: &["test_*"],
     },
     MinimumLang {
         kind: RepoKind::Node,
@@ -82,7 +85,7 @@ pub fn for_kind(kind: RepoKind) -> Option<&'static MinimumLang> {
 }
 
 /// One adapter serves every table row; which row is fixed at construction.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct MinimumAdapter(pub &'static MinimumLang);
 
 impl LanguageAdapter for MinimumAdapter {
@@ -131,7 +134,7 @@ impl LanguageAdapter for MinimumAdapter {
             .0
             .test_markers
             .iter()
-            .any(|marker| name.contains(marker))
+            .any(|marker| matches_marker(name, marker))
         {
             return Vec::new();
         }
@@ -148,6 +151,19 @@ impl LanguageAdapter for MinimumAdapter {
             .map(|template| expand_template(template, &dir, stem, ext))
             .filter(|candidate| repo_root.join(candidate).exists())
             .collect()
+    }
+}
+
+/// Anchored glob-lite for test markers: `test_*` matches a prefix,
+/// `*_test.go` a suffix, `*.test.*` a substring, and a bare word exactly.
+/// Anchoring is the point — a plain `contains` would mark `latest_config.py`
+/// as a test and silently drop its companion hint.
+fn matches_marker(name: &str, marker: &str) -> bool {
+    match (marker.strip_prefix('*'), marker.strip_suffix('*')) {
+        (Some(_), Some(_)) => name.contains(marker.trim_matches('*')),
+        (Some(suffix), None) => name.ends_with(suffix),
+        (None, Some(prefix)) => name.starts_with(prefix),
+        (None, None) => name == marker,
     }
 }
 
@@ -208,6 +224,34 @@ mod tests {
             go.companion_tests(temp.path(), Path::new("pkg/README.md"))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn markers_are_anchored_not_substring() {
+        // `latest_config.py` contains "test_" but is not a test — it must
+        // still get its companion hint.
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("tests")).unwrap();
+        std::fs::write(temp.path().join("tests/test_latest_config.py"), "").unwrap();
+        let python = adapter(RepoKind::Python);
+        assert_eq!(
+            python.companion_tests(temp.path(), Path::new("latest_config.py")),
+            vec![PathBuf::from("tests/test_latest_config.py")]
+        );
+        // `my_tester.go` contains "_test" but is not `*_test.go` — hinted too.
+        std::fs::write(temp.path().join("my_tester_test.go"), "").unwrap();
+        let go = adapter(RepoKind::Go);
+        assert_eq!(
+            go.companion_tests(temp.path(), Path::new("my_tester.go")),
+            vec![PathBuf::from("my_tester_test.go")]
+        );
+
+        assert!(matches_marker("test_foo.py", "test_*"));
+        assert!(!matches_marker("latest_config.py", "test_*"));
+        assert!(matches_marker("foo_test.go", "*_test.go"));
+        assert!(!matches_marker("my_tester.go", "*_test.go"));
+        assert!(matches_marker("app.test.ts", "*.test.*"));
+        assert!(!matches_marker("apptest.ts", "*.test.*"));
     }
 
     #[test]
