@@ -598,6 +598,27 @@ minimum-pack plans carry the honest `minimum language pack` note, and
 one table row in `src/adapters/minimum.rs` — the adapter *code* surface stays
 frozen at two.
 
+Other languages are still useful through repository configuration. For example,
+a Java repository can keep its build tool's commands explicit in
+`.toimija/repo.yaml`:
+
+```yaml
+validation:
+  fast:
+    - ./gradlew test
+  strict:
+    - ./gradlew check
+  full:
+    - ./gradlew build
+```
+
+Maven repositories can use `./mvnw test`, `./mvnw verify`, and
+`./mvnw package` instead. This keeps validation honest: Toimija renders the
+commands but never runs them. A built-in Java minimum pack, or support for
+another language, should add one data row with its root manifest, test and lint
+commands, source extensions, and existence-checked companion-test templates;
+do not add a language-specific adapter module.
+
 The `Focused (from changed surface)` tier is derived, not configured: for a Rust repo it maps changed `.rs` files to their owning crate (the nearest enclosing `Cargo.toml`) and emits `cargo test -p <crate>` for a fast first pass, deduped per crate and rendered above the authoritative `Fast` tier. For an Elixir umbrella it maps changed `.ex`/`.exs` files to their owning app (`apps/<name>/`) and emits `mix test apps/<name>/test`; a single-app mix repo gets no focused tier, since `mix test` already is the whole run. It is advisory and additive — never a substitute for the full run. When only manifests or docs change, or a change spans more units than the cap, the tier is omitted and the whole-repo command stands.
 
 ## `doctor --strict` — the drift guard
