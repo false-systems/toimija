@@ -20,6 +20,15 @@ fn main() -> ExitCode {
             std::process::exit(code);
         }
         Err(error) => {
+            // A refusal is a formatted conversation with the human: print it
+            // as-is (no context-chain flattening) and exit 2, the usage-error
+            // convention, so scripts can tell "you asked wrong" from "it broke".
+            if error.downcast_ref::<cli::Refusal>().is_some() {
+                eprintln!("{error}");
+                std::io::stdout().flush().ok();
+                std::io::stderr().flush().ok();
+                std::process::exit(2);
+            }
             eprintln!("{error:#}");
             ExitCode::FAILURE
         }

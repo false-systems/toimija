@@ -494,6 +494,14 @@ pub fn run(cli: Cli) -> Result<i32> {
             duration_ms = started.elapsed().as_millis() as u64,
             exit_code
         ),
+        // A refusal is the human's conversation, not an operational failure:
+        // log a compact event instead of echoing the whole message as a WARN
+        // right above where the message itself prints.
+        Err(error) if error.downcast_ref::<Refusal>().is_some() => info!(
+            event = "toimija.command.refused",
+            duration_ms = started.elapsed().as_millis() as u64,
+            reason = error.downcast_ref::<Refusal>().map(|r| r.reason)
+        ),
         Err(error) => warn!(
             event = "toimija.command.finish",
             duration_ms = started.elapsed().as_millis() as u64,
@@ -502,6 +510,63 @@ pub fn run(cli: Cli) -> Result<i32> {
     }
 
     result
+}
+
+/// A usage refusal: toimija deliberately will not proceed without more input
+/// from the human. Distinct from an operational failure — it renders as a
+/// friendly multi-line message (no context chain, no telemetry echo) and
+/// exits 2, the usage-error convention, so scripts can tell "you asked wrong"
+/// from "it broke".
+#[derive(Debug)]
+pub struct Refusal {
+    /// Compact machine label for telemetry (e.g. `missing-intent`).
+    pub reason: &'static str,
+    /// The full human-facing message, already formatted for the terminal.
+    pub message: String,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Refusal {}
+
+/// Quote a word for display inside a suggested shell command, so a copied
+/// suggestion still parses (`sh -c 'echo hi'`, not `sh -c echo hi`).
+fn shell_word(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@".contains(c))
+    {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+fn refuse_missing_intent(command: &[String]) -> Refusal {
+    let agent = command
+        .iter()
+        .map(|word| shell_word(word))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Refusal {
+        reason: "missing-intent",
+        message: format!(
+            "toimija run: missing --intent — every session declares why it exists.\n\
+             It is shown to sibling sessions (`toimija sessions`) and scored in the exit report.\n\
+             \n\
+             Try:\n\
+             \x20\x20toimija run --intent \"<why>\" -- {agent}\n\
+             \x20\x20toimija run --intent \"<why>\" --task \"<what to do>\" -- {agent}\n\
+             \n\
+             Genuinely can't say yet?\n\
+             \x20\x20toimija run --intent unknown -- {agent}"
+        ),
+    }
 }
 
 impl Command {
@@ -701,10 +766,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
     // Proposal 0006 D6: declaring why the session exists is the entry fee of
     // the envelope. Refused before any session state is touched.
     if args.intent.is_none() {
-        anyhow::bail!(
-            "declare why this session exists: `toimija run --intent \"<why>\" -- <agent>` \
-             (use `--intent unknown` if you genuinely cannot say)"
-        );
+        return Err(refuse_missing_intent(&args.command).into());
     }
 
     let cwd = std::env::current_dir().context("failed to read current directory")?;
@@ -1934,6 +1996,31 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("handoff:   1 record(s)"), "{out}");
+    }
+
+    #[test]
+    fn refusal_suggestion_is_copy_pasteable() {
+        let refusal =
+            refuse_missing_intent(&["sh".to_string(), "-c".to_string(), "echo hi".to_string()]);
+        assert_eq!(refusal.reason, "missing-intent");
+        // Multi-word arguments come back shell-quoted so the suggestion parses.
+        assert!(
+            refusal
+                .message
+                .contains("toimija run --intent \"<why>\" -- sh -c 'echo hi'"),
+            "{}",
+            refusal.message
+        );
+        assert!(refusal.message.contains("--intent unknown"));
+    }
+
+    #[test]
+    fn shell_word_quotes_only_when_needed() {
+        assert_eq!(shell_word("codex"), "codex");
+        assert_eq!(shell_word("./bin/agent-2"), "./bin/agent-2");
+        assert_eq!(shell_word("echo hi"), "'echo hi'");
+        assert_eq!(shell_word("it's"), r"'it'\''s'");
+        assert_eq!(shell_word(""), "''");
     }
 
     #[test]
