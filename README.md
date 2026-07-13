@@ -582,8 +582,42 @@ These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, a
 
 The plan has tiers — `Focused` (derived from the changed surface), `Fast`,
 `Strict`, `Full`, and `Privileged` — drawn from `.toimija/repo.yaml`'s
-`validation` section, or inferred from the repo kind (Rust/Elixir) when the config
-leaves them empty. The agent runs the commands itself and reports the exact output.
+`validation` section, or inferred from the repo kind when the config leaves
+them empty. The agent runs the commands itself and reports the exact output.
+
+Two languages have full adapters (Rust, Elixir: inferred tiers plus the
+focused per-unit heuristics below). Go, Python, and JS/TS get the **minimum
+language pack** — a data table, not a module: manifest detection (`go.mod`,
+`pyproject.toml`/`setup.py`, `package.json`), inferred test + lint tiers
+(`go test ./...`/`go vet ./...`, `pytest`/`ruff check .`, `npm test`/`npm run
+lint`), and companion-test hints (`foo.go` → `foo_test.go`, `foo.py` →
+`test_foo.py` or `tests/test_foo.py`, `foo.ts` → `foo.test.ts`/`foo.spec.ts`,
+existence-checked). Full adapters outrank minimum packs in polyglot repos,
+minimum-pack plans carry the honest `minimum language pack` note, and
+`repo.yaml` validation config beats inference everywhere. Adding a language is
+one table row in `src/adapters/minimum.rs` — the adapter *code* surface stays
+frozen at two.
+
+Other languages are still useful through repository configuration. For example,
+a Java repository can keep its build tool's commands explicit in
+`.toimija/repo.yaml`:
+
+```yaml
+validation:
+  fast:
+    - ./gradlew test
+  strict:
+    - ./gradlew check
+  full:
+    - ./gradlew build
+```
+
+Maven repositories can use `./mvnw test`, `./mvnw verify`, and
+`./mvnw package` instead. This keeps validation honest: Toimija renders the
+commands but never runs them. A built-in Java minimum pack, or support for
+another language, should add one data row with its root manifest, test and lint
+commands, source extensions, and existence-checked companion-test templates;
+do not add a language-specific adapter module.
 
 The `Focused (from changed surface)` tier is derived, not configured: for a Rust repo it maps changed `.rs` files to their owning crate (the nearest enclosing `Cargo.toml`) and emits `cargo test -p <crate>` for a fast first pass, deduped per crate and rendered above the authoritative `Fast` tier. For an Elixir umbrella it maps changed `.ex`/`.exs` files to their owning app (`apps/<name>/`) and emits `mix test apps/<name>/test`; a single-app mix repo gets no focused tier, since `mix test` already is the whole run. It is advisory and additive — never a substitute for the full run. When only manifests or docs change, or a change spans more units than the cap, the tier is omitted and the whole-repo command stands.
 
@@ -859,7 +893,7 @@ editing `xtask`.
 - Git state is collected through the Git CLI, not Git internals.
 - Merge-base is attempted against the selected base candidate.
 - Validation plans are rendered only; commands are not executed.
-- Rust and Elixir detection use simple marker files.
+- Language detection uses simple marker files (Cargo.toml, mix.exs, go.mod, pyproject.toml/setup.py, package.json); full adapters outrank minimum packs.
 - Context budgets are approximate character caps, not token counts.
 - Impact analysis is not yet available.
 - Upstream and merge-base may be unavailable in shallow, unborn, detached, or local-only repos.

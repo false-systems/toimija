@@ -89,6 +89,28 @@ fn inferred_plan(kind: RepoKind) -> ValidationPlan {
             privileged: Vec::new(),
             notes: vec!["validation unavailable for generic repo without repo config".to_string()],
         },
+        // Minimum-pack languages: tiers come from the data table, with the
+        // same honest "inferred, not proven" note as the full adapters.
+        minimum_kind => {
+            let Some(lang) = crate::adapters::minimum::for_kind(minimum_kind) else {
+                // A kind with neither a full adapter nor a table row would be
+                // a wiring bug; degrade to the generic (unknown) plan.
+                return inferred_plan(RepoKind::Generic);
+            };
+            info!(event = "toimija.validation.inferred", repo_kind = lang.name);
+            ValidationPlan {
+                source: ValidationSource::Inferred,
+                focused: Vec::new(),
+                fast: lang.fast.iter().map(|s| s.to_string()).collect(),
+                strict: lang.strict.iter().map(|s| s.to_string()).collect(),
+                full: lang.fast.iter().map(|s| s.to_string()).collect(),
+                privileged: Vec::new(),
+                notes: vec![format!(
+                    "Validation inferred from {} repo shape (minimum language pack), not proven by Sykli",
+                    lang.name
+                )],
+            }
+        }
     }
 }
 

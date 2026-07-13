@@ -272,6 +272,12 @@ fn adapter_for(kind: RepoKind) -> Box<dyn LanguageAdapter> {
         RepoKind::Rust => Box::new(RustAdapter),
         RepoKind::Elixir => Box::new(ElixirAdapter),
         RepoKind::Generic => Box::new(GenericAdapter),
+        // Minimum-pack kinds share one engine; a kind without a table row
+        // would be a wiring bug — degrade honestly to generic.
+        minimum_kind => match crate::adapters::minimum::for_kind(minimum_kind) {
+            Some(lang) => Box::new(crate::adapters::minimum::MinimumAdapter(lang)),
+            None => Box::new(GenericAdapter),
+        },
     }
 }
 

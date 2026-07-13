@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod elixir;
 pub mod generic;
+pub mod minimum;
 pub mod rust;
 
 use std::path::{Path, PathBuf};
