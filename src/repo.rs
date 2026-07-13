@@ -12,6 +12,10 @@ use crate::{
 pub enum RepoKind {
     Rust,
     Elixir,
+    // Minimum-pack languages: data rows in `adapters::minimum`, not modules.
+    Go,
+    Python,
+    Node,
     Generic,
 }
 
@@ -76,13 +80,18 @@ impl RepoInfo {
 }
 
 pub fn detect_repo_kind(repo_root: &Path) -> RepoKind {
-    let rust = repo_root.join("Cargo.toml").exists();
-    let elixir = repo_root.join("mix.exs").exists();
-    match (rust, elixir) {
-        (true, _) => RepoKind::Rust,
-        (false, true) => RepoKind::Elixir,
-        (false, false) => RepoKind::Generic,
+    // Full adapters outrank minimum packs; both outrank generic. A polyglot
+    // repo gets the strongest adapter whose manifest is present.
+    if repo_root.join("Cargo.toml").exists() {
+        return RepoKind::Rust;
     }
+    if repo_root.join("mix.exs").exists() {
+        return RepoKind::Elixir;
+    }
+    if let Some(lang) = crate::adapters::minimum::detect(repo_root) {
+        return lang.kind;
+    }
+    RepoKind::Generic
 }
 
 pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> DoctorReport {
@@ -196,6 +205,9 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         match kind {
             RepoKind::Rust => "Rust repo detected",
             RepoKind::Elixir => "Elixir repo detected",
+            RepoKind::Go => "Go repo detected (minimum language pack)",
+            RepoKind::Python => "Python repo detected (minimum language pack)",
+            RepoKind::Node => "JS/TS repo detected (minimum language pack)",
             RepoKind::Generic => "generic repo",
         },
     ));
