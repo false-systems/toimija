@@ -155,9 +155,19 @@ fn run_refuses_to_launch_without_intent() {
         .current_dir(temp.path())
         .args(["run", "--", "sh", "-c", "touch SHOULD_NOT_RUN"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("declare why this session exists"))
-        .stderr(predicate::str::contains("--intent unknown"));
+        .code(2)
+        .stderr(predicate::str::contains(
+            "missing --intent — every session declares why it exists",
+        ))
+        // The suggestion echoes the user's own command back, shell-quoted, so
+        // it can be copied verbatim.
+        .stderr(predicate::str::contains(
+            "toimija run --intent \"<why>\" -- sh -c 'touch SHOULD_NOT_RUN'",
+        ))
+        .stderr(predicate::str::contains("--intent unknown"))
+        // The refusal renders exactly once: no WARN telemetry echo above it.
+        .stderr(predicate::str::contains("toimija.command.finish").not())
+        .stderr(predicate::str::contains("missing --intent").count(1));
     // Refused before launch: the child never ran, no session opened.
     assert!(!temp.path().join("SHOULD_NOT_RUN").exists());
 }
