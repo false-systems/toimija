@@ -92,7 +92,10 @@ jobs:
           $sudo_cmd apt-get update
           $sudo_cmd apt-get install -y --no-install-recommends build-essential ca-certificates
 
+      # @main deliberately: the v0.9.0-rc.1 tag's action predates the composite
+      # rewrite — it builds from source and then runs sykli in its own build
+      # directory instead of the workspace. Pin to the next tagged release.
       - name: Run the sykli contract
-        uses: false-systems/sykli@v0.9.0-rc.1
+        uses: false-systems/sykli@main
         with:
-          version: v0.9.0-rc.1
+          path: .
