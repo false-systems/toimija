@@ -78,11 +78,15 @@ What you get:
 | | |
 |---|---|
 | **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed on every relevant change while the agent works. |
+| **A workset contract** | Every packet opens with a normative contract: work from Scope and Read order, exclusions are do-not-scan, and any expansion outside the workset is declared — *expansion is never forbidden; invisible expansion is.* |
+| **Wrapped means used** | Under `run`, using toimija is not voluntary: intent is required to launch, known agents get the packet **in their launch prompt** (argv — they cannot not-see it), and the exit summary reports what the session actually consumed. |
+| **Ambient adoption** | `toimija adopt` maintains one flat instruction in every agent entry file convention, drift-guarded by `doctor --strict`; `--hooks` keeps the packet fresh on every checkout/merge/commit. |
 | **Git-derived relevance** | What to inspect first, what co-changes, what is risky, and which changes may be dependency-related. Heuristic and advisory; no source parsing. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
 | **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, explicit handoff records, 7-day GC. Visibility, never orchestration. |
+| **Staged audit breadth** | `toimija audit-plan` partitions the repo into bounded, deterministic audit surfaces; committed findings are the cross-run cache — no more one enormous session re-deriving everything. |
 | **Chain of custody** | Every packet and handoff carries a sauma envelope — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
-| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance. It does not discover every CI requirement or run commands. |
+| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS. It never runs commands. |
 | **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
 
 ## What Toimija is
@@ -104,14 +108,6 @@ into:
 - `.toimija/current.json` — the machine-readable live packet
 
 Agents should work from those files instead of reading the repo cold.
-
-## Git as the starting point
-
-Most agent tools make the model rediscover the repo from files.
-
-Toimija starts from the one truth database every repo already has: Git. HEAD, refs, index, merge-base, staged and unstaged changes, dirty state, branch divergence, and reflog are not just metadata. They are the repo's working state machine.
-
-Toimija reads that state machine first, then compiles it into a small context packet: what changed, heuristic read priorities and risks, configured exclusions, and a validation plan with explicit provenance.
 
 Git is not a save button here. Git is the substrate.
 
@@ -162,7 +158,7 @@ sequenceDiagram
 ```
 
 Use `--` before the wrapped command when you need to pass flags through
-unambiguously, for example `toimija run -- codex --help`.
+unambiguously, for example `toimija run --intent unknown -- codex --help`.
 
 Each `run` opens a **session** with its own live packet under
 `.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
@@ -209,7 +205,7 @@ Declare why you're here (and optionally what you'll touch) when you launch — i
 advisory, never an assignment or a lock:
 
 ```bash
-toimija run --intent "add sessions command" --scope src/sessions.rs codex
+toimija run --intent "add sessions command" --scope src/sessions.rs -- codex
 ```
 
 The wrapped agent can also speak for itself, mid-session — it finds its own
@@ -383,20 +379,22 @@ mismatches without walking through them.
 ## One-time repo setup
 
 ```bash
-toimija init
+toimija init            # seed .toimija/repo.yaml (never overwrites)
+toimija adopt --hooks   # preamble into agent entry files + refresh hooks
 ```
 
-`init` creates Toimija-owned files only:
+`init` creates the durable repo manifest, `.toimija/repo.yaml` — fill in
+`role`, `not`, and `boundaries`; only a human can supply the repo's purpose
+and limits. The generated packets (`.toimija/current.*`) belong in
+`.gitignore`; they are not committed.
 
-- `.toimija/repo.yaml` — the durable repo manifest. Fill in `role`, `not`, and
-  `boundaries`; only a human can supply the repo's purpose and limits.
-- `.toimija/current.md` / `.toimija/current.json` — generated on every run. Add
-  them to `.gitignore`; they are not committed.
-
-Toimija does not own root agent policy files by default. To seed
-`AGENTS.md`/`CLAUDE.md`, run `toimija snippet preflight` and paste the output into
-whichever doc your agents read; `toimija snippet script` prints a
-`scripts/agent-enter` stub.
+`adopt` puts one unconditional instruction — read `.toimija/current.md`
+first — into every agent entry file already present (`AGENTS.md`,
+`CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md`, `GEMINI.md`,
+`.rules`), inside a marker-delimited block it maintains idempotently. See
+**Adopt the entry layer** below. `toimija snippet preflight` still prints
+extra preflight prose to paste by hand, and `toimija snippet script` prints a
+`scripts/agent-enter` stub — both optional once a repo is adopted.
 
 > repo.yaml gives durable meaning. Git gives live work state. Toimija compiles both into current context.
 
@@ -468,7 +466,7 @@ toimija init               # create .toimija/repo.yaml if missing
 
 | Command | What it does |
 |---|---|
-| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. Use `--` before child flags when needed. `--intent`/`--scope` declare why/what (advisory). |
+| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. |
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` removes closed/stale sessions past the 7-day retention. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `handoff ["<note>"]` | Wrapped agent appends an explicit JSONL handoff record for its own session. `--show <id>` reads records, including closed sessions; `--json` emits the written record or all shown records. |
@@ -525,7 +523,10 @@ Toimija does not:
 - auto-commit or auto-stash
 - fetch from the network
 - run as a hidden daemon (`watch`/`run` are foreground-only and explicitly invoked)
-- own `AGENTS.md` / `CLAUDE.md` by default
+- own `AGENTS.md` / `CLAUDE.md` (the explicitly-invoked `adopt` maintains one
+  marker-delimited block inside them; the prose around it stays yours)
+- observe or police what a wrapped agent reads or does mid-session — delivery
+  is structural at launch, evidence is reported at exit, nothing in between
 - parse code with Tree-sitter
 - use LSP / SCIP / Kythe / MCP in the current workflow
 
@@ -542,15 +543,18 @@ a live, repo-aware context layer an agent asks for before it works.
 .toimija/current.md     owned by Toimija    repo-level live packet / latest summary (regenerated, git-ignored)
 .toimija/current.json   owned by Toimija    repo-level machine-readable packet (regenerated, git-ignored)
 .toimija/sessions/      owned by Toimija    per-session live packets, markers, handoff records from `run`/`handoff` (regenerated, git-ignored)
-AGENTS.md               owned by you        agent policy — Toimija only suggests text
-CLAUDE.md               owned by you        agent policy — Toimija only suggests text
+AGENTS.md               owned by you        agent policy — Toimija maintains only its marker-delimited `adopt` preamble inside it
+CLAUDE.md               owned by you        agent policy — same: your prose around Toimija's markers
 scripts/                owned by you        e.g. agent-enter — Toimija only suggests text
 ```
 
-`toimija init` writes `.toimija/repo.yaml` and nothing else. It does **not**
-create `AGENTS.md` or `CLAUDE.md` — those are human-owned policy. On a fresh
-config it prints a **Next steps** line pointing at the identity fields you still
-need to fill, and at `toimija snippet preflight` to seed your agent docs.
+`toimija init` writes `.toimija/repo.yaml` and nothing else; on a fresh config
+it prints a **Next steps** line pointing at the identity fields you still need
+to fill. Agent policy files stay human-owned: `toimija adopt` (explicitly
+invoked, never automatic) maintains exactly one marker-delimited block inside
+them — everything outside the markers is yours, malformed markers are refused
+rather than rewritten, and `adopt` creates `AGENTS.md` only when no known
+entry file exists at all.
 
 ## Git-derived relevance
 
@@ -778,7 +782,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 ### Privileged
 - none
 ### Notes
-- validation inferred from Rust repo shape, not proven by Sykli
+- Validation inferred from Rust repo shape, not proven by Sykli
 
 ## Warnings
 - No upstream detected. Branch divergence is unavailable.
@@ -935,6 +939,12 @@ Elixir:
 - changed Elixir files are included directly
 - `lib/foo/bar.ex` may point to `test/foo/bar_test.exs` if present
 - `mix.exs` may point to `test/test_helper.exs` if present
+
+Minimum language packs (Go, Python, JS/TS) use existence-checked path
+templates: `pkg/foo.go` → `pkg/foo_test.go`; `src/foo.py` → `src/test_foo.py`
+or `tests/test_foo.py`; `app/foo.ts` → `app/foo.test.ts` or `app/foo.spec.ts`.
+Files that are themselves tests (matched by anchored patterns, e.g.
+`*_test.go`) are never hinted at themselves.
 
 ## Future drawer
 
