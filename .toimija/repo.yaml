@@ -13,6 +13,7 @@ context:
   important_docs:
     - README.md
     - AGENTS.md
+    - docs/reference.md
   read_first: []
   safe_to_ignore:
     - target/
