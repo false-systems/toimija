@@ -165,9 +165,15 @@ Each `run` opens a **session** with its own live packet under
 `.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
 shared file. While the agent works, that session packet stays fresh: every
 relevant filesystem or Git-state change re-runs the refresh after a short
-debounce. The watcher is foreground-only and stops the moment the agent exits —
+debounce. The watcher uses a bounded 500 ms polling scan and therefore adds
+roughly 500 ms plus debounce latency, with full-tree stat cost while `watch` or
+`run` is active. It is foreground-only and stops the moment the agent exits —
 no daemon survives the command. The repo-level `.toimija/current.*` is kept too,
 demoted to a last-writer-wins "latest" summary for sessionless readers.
+
+The polling backend is the boring reliability baseline: a future optimization
+can restore native events with a polling catch-up tick once measurements prove
+the safety margin.
 
 So the wrapped agent can *find* its live packet, `run` hands it an environment
 handshake. For known agents this is the backup channel (the packet already

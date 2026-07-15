@@ -11,7 +11,7 @@ fixture, and a test that survives implementation changes.
 | P0-001 | Staged and unstaged intent must not collapse | tests/qa_p0.rs | protected |
 | P0-002 | Merge in progress cannot verify as safe | tests/qa_p0.rs | protected |
 | P0-003 | JSON stdout remains parseable with diagnostics | tests/qa_p0.rs | protected |
-| P0-004 | Watch observes relevant changes within a bounded deadline | tests/cli_watch.rs | flaky; release blocker — issue #143 |
+| P0-004 | Watch observes relevant changes within a bounded deadline | tests/cli_watch.rs | protected: post-registration catch-up plus `watcher armed` handshake and bounded polling; issue #143 |
 
 When a new bug is found, first add the smallest reproducer, then change
 production code only if the intended contract says the behaviour is wrong.
