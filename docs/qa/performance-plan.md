@@ -26,9 +26,16 @@ OS, CPU, RAM, Rust/Git versions, repository generator seed, file count, changed
 count, untracked count, and output bytes. Report median and p95, not one run.
 
 Measure cold/warm startup, discovery, Git collection, context JSON, refresh,
-verify, validation-plan generation, watcher update latency, peak RSS, child
-process count, and external Git command count. Keep correctness and benchmark
-jobs separate.
+verify, validation-plan generation, watcher update latency, watcher idle CPU,
+peak RSS, child process count, and external Git command count. Watch and run
+now use a 500 ms full-tree polling scan; the Large and Pathological profiles
+must measure whether scan time exceeds that interval and whether the 5-second
+startup probe deadline can false-fail on a large initial scan. Keep correctness
+and benchmark jobs separate.
+
+The current polling backend is a reliability baseline. Revisit native events
+plus a polling catch-up tick only after these measurements establish a safe
+freshness margin.
 
 ## Profiles
 

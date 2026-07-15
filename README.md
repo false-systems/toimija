@@ -36,10 +36,83 @@ agent works, and exits with the agent's status plus an honest report: what
 changed, and what of toimija the session actually used.
 
 ```mermaid
-flowchart LR
-    GIT["Git<br/>HEAD · index · history"] -- "plumbing reads" --> T{{"toimija"}}
-    T --> P["the live packet"]
-    P -- "in the launch prompt" --> A["the agent"]
+sequenceDiagram
+    participant Y as you
+    participant T as toimija run
+    participant A as the agent
+
+    Y->>T: toimija run --intent "fix #51" -- codex
+    T->>T: compile + verify the packet
+    T->>A: launch — packet inlined in the prompt (known agents) + TOIMIJA_* handshake
+    loop while the agent works
+        T->>T: refresh the packet on every Git change
+    end
+    A-->>T: exit
+    T-->>Y: entry→exit summary · agent's exit code
+```
+
+Use `--` before the wrapped command when you need to pass flags through
+unambiguously, for example `toimija run --intent unknown -- codex --help`.
+
+Each `run` opens a **session** with its own live packet under
+`.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
+shared file. While the agent works, that session packet stays fresh: every
+relevant filesystem or Git-state change re-runs the refresh after a short
+debounce. The watcher uses a bounded 500 ms polling scan and therefore adds
+roughly 500 ms plus debounce latency, with full-tree stat cost while `watch` or
+`run` is active. It is foreground-only and stops the moment the agent exits —
+no daemon survives the command. The repo-level `.toimija/current.*` is kept too,
+demoted to a last-writer-wins "latest" summary for sessionless readers.
+
+The polling backend is the boring reliability baseline: a future optimization
+can restore native events with a polling catch-up tick once measurements prove
+the safety margin.
+
+So the wrapped agent can *find* its live packet, `run` hands it an environment
+handshake. For known agents this is the backup channel (the packet already
+travels in the launch prompt); for everything else it is the only signal `run`
+injects into the child:
+
+| Variable | Meaning |
+| --- | --- |
+| `TOIMIJA_RUN=1` | The agent is under `run`; a watcher is keeping the packet fresh. |
+| `TOIMIJA_SESSION` | This session's id (`<unix-secs>-<pid>`). `toimija intent`, `enter`, and `refresh` use it to find the session. |
+| `TOIMIJA_LIVE` | Absolute path to this session's live `current.md` (authoritative). |
+| `TOIMIJA_LIVE_JSON` | Absolute path to this session's live `current.json`. |
+| `TOIMIJA_CURRENT_MD` | Alias of `TOIMIJA_LIVE`, for harnesses that key on the file name. |
+| `TOIMIJA_CURRENT_JSON` | Alias of `TOIMIJA_LIVE_JSON`. |
+| `TOIMIJA_REPO_ROOT` | Absolute path of the repo root the session runs in. |
+| `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
+| `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
+
+An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after Git-state
+changes instead of re-running `enter`. `toimija snippet preflight` already tells
+agents to do this.
+
+Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
+agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
+auto-closes on exit. The marker is what `toimija sessions` reads (below) and the
+foundation for the `toimija handoff` record designed in
+`docs/proposals/0001-sessions-awareness-handoff.md`.
+
+## Multi-agent sessions
+
+Several agents can work one repo at once without trampling each other's context.
+Each wrapped agent gets its **own** session packet, and `toimija sessions` makes
+the others visible.
+
+Declare why you're here (and optionally what you'll touch) when you launch — it's
+advisory, never an assignment or a lock:
+
+```bash
+toimija run --intent "add sessions command" --scope src/sessions.rs -- codex
+```
+
+The wrapped agent can also speak for itself, mid-session — it finds its own
+marker through the `TOIMIJA_SESSION` handshake:
+
+```bash
+toimija intent "migrating the auth module" --scope src/auth/
 ```
 
 ## The magic

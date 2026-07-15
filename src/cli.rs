@@ -848,6 +848,11 @@ fn run_run(args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
+    if let Err(error) = watch_session.catch_up(&runner, &repo_root, &plan) {
+        close_session_after_startup_failure(&mut session);
+        return Err(error).context("failed to refresh after arming the file watcher");
+    }
+    eprintln!("toimija run: watcher armed");
 
     // 4. Run the watch loop in the background, refreshing the SESSION packet
     //    while the agent works. The stop flag is flipped once the command exits.

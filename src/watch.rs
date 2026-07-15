@@ -8,13 +8,14 @@
 //! the live packet — `.toimija/current.*`, or a per-session
 //! `.toimija/sessions/<id>/current.*` under `run` — never re-triggers a refresh.
 
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use notify::{Event, RecursiveMode, Watcher};
+use notify::{Config, Event, RecursiveMode, Watcher};
 
 use crate::command::CommandRunner;
 use crate::{consistency, refresh};
@@ -26,12 +27,14 @@ const TICK: Duration = Duration::from_millis(200);
 /// Directories whose churn must never trigger a refresh.
 const IGNORED_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
 
+type BackendWatcher = notify::PollWatcher;
+
 /// An active filesystem watch. The fallible OS setup is done in [`start`], so a
 /// caller can report a startup failure *before* doing other work; the blocking
 /// refresh loop is [`Session::run`]. Dropping the session stops watching.
 pub struct Session {
     // Held only to keep the OS watch alive; dropping it unregisters the watch.
-    _watcher: notify::RecommendedWatcher,
+    _watcher: BackendWatcher,
     rx: mpsc::Receiver<notify::Result<Event>>,
 }
 
@@ -40,20 +43,53 @@ pub struct Session {
 /// reported to the caller rather than swallowed by a background loop.
 pub fn start(repo_root: &Path) -> Result<Session> {
     let (tx, rx) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |res| {
-        let _ = tx.send(res);
-    })
+    // ponytail: native backends can miss the first event in CI/temp volumes;
+    // bounded polling keeps freshness observable at the cost of scan work.
+    let mut watcher = BackendWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        watcher_config(),
+    )
     .context("failed to create filesystem watcher")?;
     watcher
         .watch(repo_root, RecursiveMode::Recursive)
         .with_context(|| format!("failed to watch {}", repo_root.display()))?;
+    let probe = repo_root.join(format!("toimija-watch-probe-{}", std::process::id()));
+    fs::write(&probe, b"watch readiness probe")
+        .with_context(|| format!("failed to arm watcher at {}", repo_root.display()))?;
+    let ready = loop {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(event)) if event.paths.iter().any(|path| path == &probe) => break true,
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => break false,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
+        }
+    };
+    let _ = fs::remove_file(&probe);
+    anyhow::ensure!(ready, "filesystem watcher did not report readiness");
     Ok(Session {
         _watcher: watcher,
         rx,
     })
 }
 
+fn watcher_config() -> Config {
+    Config::default().with_poll_interval(Duration::from_millis(500))
+}
+
 impl Session {
+    /// Refresh once after the OS watcher is registered. This closes the gap
+    /// between the caller's baseline refresh and watcher readiness.
+    pub fn catch_up(
+        &self,
+        runner: &impl CommandRunner,
+        repo_root: &Path,
+        plan: &refresh::Plan,
+    ) -> Result<()> {
+        plan.run(runner, repo_root).map(|_| ())
+    }
+
     /// Refresh the live packet on every relevant change until `stop` is set. The
     /// `plan` decides what is written (per-session vs. repo-level). `on_refresh`
     /// is called after each refresh (for status logging).
@@ -100,7 +136,8 @@ impl Session {
 }
 
 /// Convenience for the standalone `watch` command: baseline refresh, then start
-/// and run the loop. Startup failures propagate via `?`.
+/// and catch up after registration before running the loop. Startup failures
+/// propagate via `?`.
 pub fn watch(
     runner: &impl CommandRunner,
     repo_root: &Path,
@@ -111,6 +148,8 @@ pub fn watch(
     // Baseline so the live packet exists immediately, before any event.
     plan.run(runner, repo_root)?;
     let session = start(repo_root)?;
+    session.catch_up(runner, repo_root, plan)?;
+    eprintln!("toimija watch: armed");
     session.run(runner, repo_root, plan, stop, on_refresh)
 }
 

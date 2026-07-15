@@ -4,7 +4,7 @@ This is the capability matrix used for release decisions. Implemented means
 there is a meaningful test on the branch or in main; Partial means coverage
 does not yet prove the full contract. The P-tier orders implementation
 priority; the Blocking column alone decides release gating — a P2 row can
-block (P2-05 does, tracked as issue #143) and a P3 row can not.
+block (P2-05 protects the watch release gate) and a P3 row can not.
 
 | ID | Subsystem | Scenario | Level | Fixture/test | Expected behaviour | Platform | Implemented | CI tier | Blocking |
 |---|---|---|---|---|---|---|---|---|---|
@@ -26,7 +26,7 @@ block (P2-05 does, tracked as issue #143) and a P3 row can not.
 | P2-02 | history | shallow clone/no base | component | clone fixture | unavailable is explicit | primary | Partial | PR | No |
 | P2-03 | repository | sparse checkout | component | Git fixture | no false completeness | primary | Gap | scheduled | No |
 | P2-04 | repository | submodule states | component | Git fixture | gitlink/dirty state explicit | primary | Gap | scheduled | No |
-| P2-05 | watch | burst/create/delete/rename | system | tests/cli_watch.rs | bounded eventual refresh | primary | Flaky | PR | Yes |
+| P2-05 | watch | post-registration create event | system | tests/cli_watch.rs (`/private/tmp` fixture) | one write after `watcher armed` causes bounded refresh through the polling backend | primary | Implemented | PR | Yes |
 | P2-06 | concurrency | two refresh writers | stress | generated fixture | safe old/new result | primary | Gap | scheduled | Yes |
 | P3-01 | scale | 20/1k/25k/100k files | benchmark | generated repos | budgets recorded | primary | Gap | scheduled | No |
 | P3-02 | fuzz | porcelain/path/config parsers | fuzz | corpus targets | no panic/traversal | primary | Gap | scheduled | Yes |
