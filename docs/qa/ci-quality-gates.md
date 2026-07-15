@@ -7,7 +7,7 @@ existing workflow without agreeing on support and runtime budgets.
 |---|---|---|---|---|---|
 | rust-core | every PR | fmt, clippy, unit/component/CLI tests | short | test log | required |
 | qa-p0 | every PR | cargo test --test qa_p0 and state/JSON regressions | short | JSON fixtures/logs | required |
-| qa-corpus | every PR | bounded parser corpus/property cases | short | failing seed | required |
+| qa-corpus | every PR | bounded parser corpus/property cases | short | failing seed | required once the corpus exists (P3-02); not yet wired |
 | platform-macos | PR/main | release smoke + core tests | medium | binary/logs | required if supported |
 | platform-linux | PR/main | release smoke + core tests | medium | binary/logs | required |
 | platform-windows | scheduled/RC | compatibility smoke if supported | medium | binary/logs | required before claiming support |

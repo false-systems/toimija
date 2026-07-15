@@ -8,7 +8,11 @@ Environment: local macOS worktree, stable toolchain, warm Cargo artifacts.
   test waited 30s after a missed event and failed; immediate isolated rerun
   passed in 1.52s.
 - Release build: 14.52s wall, 4.2 MiB target/release/toimija.
-- Release toimija --version: 0.29s wall.
+- Release toimija --version: below /usr/bin/time's 10ms display resolution
+  (median of 10 runs after 3 warmups, per the method below). A single earlier
+  cold run showed 0.29s wall — first-execution overhead (macOS Gatekeeper
+  scan), not steady-state startup; kept here as a reminder that one-run
+  numbers lie.
 - Release toimija --help: below the timer's displayed resolution.
 
 The full-suite number is not a performance claim; it is evidence that the

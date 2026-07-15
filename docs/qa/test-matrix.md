@@ -2,7 +2,9 @@
 
 This is the capability matrix used for release decisions. Implemented means
 there is a meaningful test on the branch or in main; Partial means coverage
-does not yet prove the full contract.
+does not yet prove the full contract. The P-tier orders implementation
+priority; the Blocking column alone decides release gating — a P2 row can
+block (P2-05 does, tracked as issue #143) and a P3 row can not.
 
 | ID | Subsystem | Scenario | Level | Fixture/test | Expected behaviour | Platform | Implemented | CI tier | Blocking |
 |---|---|---|---|---|---|---|---|---|---|

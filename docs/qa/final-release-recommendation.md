@@ -15,8 +15,9 @@
 6. **Experimental commands:** watch, run, adopt, audit-plan, snapshot,
    sessions, handoff, and platform-sensitive repository shapes.
 7. **Honest performance envelope:** only the measured local baseline is known:
-   release startup is about 0.29s for version output and the binary is 4.2 MiB.
-   No repository-size latency or memory claim is valid yet.
+   release `--version` startup is sub-10ms (median of 10 warm runs; a single
+   cold first run showed 0.29s of one-time macOS Gatekeeper overhead) and the
+   binary is 4.2 MiB. No repository-size latency or memory claim is valid yet.
 8. **Supported shapes:** ordinary checked-out, non-bare Git repositories with
    a local worktree and available Git; Rust/Elixir plus the currently declared
    minimum language packs.
