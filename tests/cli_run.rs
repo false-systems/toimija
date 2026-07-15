@@ -223,6 +223,45 @@ fn run_inlines_the_packet_into_a_known_agents_launch_prompt() {
     assert!(arg.trim_end().ends_with("Task: paint it beige"), "{arg}");
 }
 
+#[cfg(unix)]
+#[test]
+fn run_inlines_the_packet_for_gemini() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let stub = temp.path().join("gemini");
+    fs::write(
+        &stub,
+        "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > launch-arg\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&stub).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&stub, permissions).unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--task",
+            "check gemini",
+            "--",
+            stub.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let arg = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    assert!(arg.contains("# Toimija Context"), "{arg}");
+    assert!(arg.trim_end().ends_with("Task: check gemini"), "{arg}");
+}
+
 #[test]
 fn run_banners_env_var_only_delivery_for_unknown_agents() {
     if !git_available() {

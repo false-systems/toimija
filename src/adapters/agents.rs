@@ -6,13 +6,29 @@
 
 use std::path::Path;
 
-/// Agent CLIs that accept a positional prompt, matched by the launched
-/// program's basename. Deliberately a short explicit list (proposal 0006 D5);
-/// unknown agents keep the env-var handshake behind an honest banner.
-const KNOWN_AGENTS: &[&str] = &["claude", "codex"];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptStyle {
+    Positional,
+}
+
+/// Agent CLIs and their delivery style, matched by basename. Deliberately a
+/// short explicit table; unknown agents keep the env-var handshake behind an
+/// honest banner.
+const KNOWN_AGENTS: &[(&str, PromptStyle)] = &[
+    ("claude", PromptStyle::Positional),
+    ("codex", PromptStyle::Positional),
+    ("gemini", PromptStyle::Positional),
+];
+
+fn prompt_style(program: &str) -> Option<PromptStyle> {
+    KNOWN_AGENTS
+        .iter()
+        .find(|(name, _)| *name == basename(program))
+        .map(|(_, style)| *style)
+}
 
 pub fn is_known_agent(program: &str) -> bool {
-    KNOWN_AGENTS.contains(&basename(program))
+    prompt_style(program).is_some()
 }
 
 fn basename(program: &str) -> &str {
@@ -31,9 +47,7 @@ pub fn compose_launch_prompt(
     live_packet: &Path,
     task: Option<&str>,
 ) -> Option<String> {
-    if !is_known_agent(program) {
-        return None;
-    }
+    let style = prompt_style(program)?;
     let mut prompt = String::new();
     prompt.push_str(
         "Your toimija session packet is below. It is your workset contract: work from it, \
@@ -49,7 +63,9 @@ pub fn compose_launch_prompt(
     if let Some(task) = task {
         prompt.push_str(&format!("\nTask: {task}\n"));
     }
-    Some(prompt)
+    match style {
+        PromptStyle::Positional => Some(prompt),
+    }
 }
 
 #[cfg(test)]
@@ -61,6 +77,7 @@ mod tests {
     fn known_agents_match_by_basename_only() {
         assert!(is_known_agent("claude"));
         assert!(is_known_agent("/usr/local/bin/codex"));
+        assert!(is_known_agent("gemini"));
         assert!(!is_known_agent("sh"));
         assert!(!is_known_agent("/usr/bin/claudette"));
     }
