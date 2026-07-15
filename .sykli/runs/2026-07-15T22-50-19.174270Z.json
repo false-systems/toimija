@@ -1,0 +1,72 @@
+{
+  "id": "01KXKZJK56G5W823GW3XBTXYRK",
+  "timestamp": "2026-07-15T22:50:19.174270Z",
+  "overall": "failed",
+  "tasks": [
+    {
+      "name": "fmt",
+      "status": "passed",
+      "kind": "task",
+      "cached": false,
+      "duration_ms": 178,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 1,
+      "inputs": []
+    },
+    {
+      "name": "clippy",
+      "status": "passed",
+      "kind": "task",
+      "cached": true,
+      "duration_ms": 8,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 2,
+      "inputs": []
+    },
+    {
+      "name": "test",
+      "status": "passed",
+      "kind": "task",
+      "cached": true,
+      "duration_ms": 8,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 2,
+      "inputs": []
+    },
+    {
+      "error": "task_failed: task 'doctor' failed",
+      "name": "doctor",
+      "status": "failed",
+      "kind": "task",
+      "cached": false,
+      "duration_ms": 25,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "failure_semantics": {
+        "class": "runtime_failure",
+        "details": {
+          "code": "task_failed",
+          "duration_ms": 21,
+          "exit_code": 101,
+          "step": "run",
+          "task": "doctor"
+        },
+        "message": "task 'doctor' failed",
+        "reason": "command_failed",
+        "retryable": false,
+        "source": "target"
+      },
+      "streak": 0,
+      "inputs": []
+    }
+  ],
+  "git_ref": "1b5ec57",
+  "git_branch": "feat/sykli-ci"
+}

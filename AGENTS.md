@@ -18,7 +18,7 @@ These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if
 they drift apart. Edit both together.
 
 - Keep v0.0 as one Rust crate.
-- Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Sykli, Vaisto, or Kerto integration yet.
+- Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Vaisto, or Kerto integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.rs contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.
 - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
 - Agent coordination — per-session live packets, sibling-session awareness, and session handoff records — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
 
@@ -29,6 +29,10 @@ cargo fmt
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
+
+or equivalently `sykli run` — the same gate as a typed execution contract
+(`sykli.rs`), with cached task results and structured failures.
+
 
 Install the git pre-commit hook once per clone (it lives in `.git/`, which is
 not tracked, so it does not arrive with a fresh checkout):

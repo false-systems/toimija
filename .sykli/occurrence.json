@@ -1,0 +1,191 @@
+{
+  "context": {
+    "labels": {
+      "sykli.node": "nonode@nohost",
+      "sykli.run_id": "01KXKZKCXZ5Y2F6Z27K6HTW42K"
+    }
+  },
+  "data": {
+    "git": {
+      "branch": "feat/sykli-ci",
+      "changed_files": [
+        "Cargo.lock",
+        "Cargo.toml",
+        ".sykli/",
+        "sykli.rs"
+      ],
+      "recent_commits": [
+        {
+          "author": "Yair Etziony",
+          "message": "fix(watch): prove readiness before reporting armed (#144)",
+          "sha": "1b5ec57"
+        },
+        {
+          "author": "Yair Etziony",
+          "message": "docs: re-land the README split — pitch + reference, reconciled (#145)",
+          "sha": "e6eb989"
+        },
+        {
+          "author": "Yair Etziony",
+          "message": "test(qa): establish public release quality foundations (#142)",
+          "sha": "44e6132"
+        },
+        {
+          "author": "Yair Etziony",
+          "message": "feat(adopt): close proposal 0006 enforcement gaps (#139)",
+          "sha": "6d9ed74"
+        },
+        {
+          "author": "Yair Etziony",
+          "message": "docs: make the README fit the new toimija (#140)",
+          "sha": "66681cc"
+        }
+      ],
+      "remote_url": "***MASKED***",
+      "sha": "1b5ec57"
+    },
+    "recent_outcomes": {
+      "clippy": [
+        "pass",
+        "pass"
+      ],
+      "doctor": [
+        "fail",
+        "skip"
+      ],
+      "fmt": [
+        "pass",
+        "fail"
+      ],
+      "test": [
+        "pass",
+        "pass"
+      ]
+    },
+    "summary": {
+      "cached": 3,
+      "errored": 0,
+      "failed": 0,
+      "passed": 4,
+      "skipped": 0
+    },
+    "tasks": [
+      {
+        "cached": true,
+        "command": "cargo clippy --all-targets -- -D warnings",
+        "contract_slice": {
+          "kind": "task"
+        },
+        "duration_ms": 9,
+        "history": {
+          "avg_duration_ms": 6269,
+          "pass_rate": 1.0,
+          "streak": 2
+        },
+        "name": "clippy",
+        "status": "cached"
+      },
+      {
+        "blocks": [
+          "doctor"
+        ],
+        "cached": true,
+        "command": "cargo test",
+        "contract_slice": {
+          "kind": "task"
+        },
+        "duration_ms": 9,
+        "history": {
+          "avg_duration_ms": 16473,
+          "pass_rate": 1.0,
+          "streak": 2
+        },
+        "name": "test",
+        "status": "cached"
+      },
+      {
+        "cached": true,
+        "command": "cargo fmt --check",
+        "contract_slice": {
+          "kind": "task"
+        },
+        "duration_ms": 9,
+        "history": {
+          "avg_duration_ms": 223,
+          "failure_patterns": [
+            "task_failed: task 'fmt' failed"
+          ],
+          "flaky": true,
+          "last_failure": "2026-07-15T22:50:01.256278Z",
+          "pass_rate": 0.5,
+          "streak": 1
+        },
+        "name": "fmt",
+        "status": "cached"
+      },
+      {
+        "cached": false,
+        "command": "cargo run --quiet -- doctor --strict",
+        "contract_slice": {
+          "kind": "task"
+        },
+        "depends_on": [
+          "test"
+        ],
+        "duration_ms": 6083,
+        "history": {
+          "avg_duration_ms": 13,
+          "failure_patterns": [
+            "task_failed: task 'doctor' failed"
+          ],
+          "last_failure": "2026-07-15T22:50:19.174270Z",
+          "pass_rate": 0.0,
+          "streak": -1
+        },
+        "log": ".sykli/logs/01KXKZKCXZ5Y2F6Z27K6HTW42K/doctor.log",
+        "name": "doctor",
+        "status": "passed"
+      }
+    ]
+  },
+  "history": {
+    "duration_ms": 6110,
+    "steps": [
+      {
+        "action": "clippy",
+        "description": "cargo clippy --all-targets -- -D warnings",
+        "duration_ms": 9,
+        "outcome": "success",
+        "timestamp": "2026-07-15T22:50:45.567126Z"
+      },
+      {
+        "action": "test",
+        "description": "cargo test",
+        "duration_ms": 9,
+        "outcome": "success",
+        "timestamp": "2026-07-15T22:50:45.576126Z"
+      },
+      {
+        "action": "fmt",
+        "description": "cargo fmt --check",
+        "duration_ms": 9,
+        "outcome": "success",
+        "timestamp": "2026-07-15T22:50:45.585126Z"
+      },
+      {
+        "action": "doctor",
+        "description": "cargo run --quiet -- doctor --strict",
+        "duration_ms": 6083,
+        "outcome": "success",
+        "timestamp": "2026-07-15T22:50:45.594126Z"
+      }
+    ]
+  },
+  "id": "01KXKZKCY10WQPM0CE2GPJR73N",
+  "outcome": "success",
+  "protocol_version": "1.0",
+  "severity": "info",
+  "source": "sykli",
+  "timestamp": "2026-07-15T22:50:45.567126Z",
+  "type": "ci.run.passed"
+}

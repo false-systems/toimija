@@ -1,0 +1,80 @@
+{
+  "id": "01KXKZJ1N8KYQ44TD1M3CSEWXM",
+  "timestamp": "2026-07-15T22:50:01.256278Z",
+  "overall": "failed",
+  "tasks": [
+    {
+      "name": "clippy",
+      "status": "passed",
+      "kind": "task",
+      "cached": false,
+      "duration_ms": 12530,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 1,
+      "inputs": []
+    },
+    {
+      "error": "task_failed: task 'fmt' failed",
+      "name": "fmt",
+      "status": "failed",
+      "kind": "task",
+      "cached": false,
+      "duration_ms": 268,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "failure_semantics": {
+        "class": "runtime_failure",
+        "details": {
+          "code": "task_failed",
+          "duration_ms": 228,
+          "exit_code": 1,
+          "step": "run",
+          "task": "fmt"
+        },
+        "message": "task 'fmt' failed",
+        "reason": "command_failed",
+        "retryable": false,
+        "source": "target"
+      },
+      "streak": 0,
+      "inputs": []
+    },
+    {
+      "name": "test",
+      "status": "passed",
+      "kind": "task",
+      "cached": false,
+      "duration_ms": 32938,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 1,
+      "inputs": []
+    },
+    {
+      "error": "dependency_failed",
+      "name": "doctor",
+      "status": "skipped",
+      "kind": "task",
+      "cached": false,
+      "duration_ms": 0,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "failure_semantics": {
+        "class": "dependency_failure",
+        "message": "blocked by failed dependency",
+        "reason": "dependency_failed",
+        "retryable": false,
+        "source": "dependency"
+      },
+      "streak": 0,
+      "inputs": []
+    }
+  ],
+  "git_ref": "1b5ec57",
+  "git_branch": "feat/sykli-ci"
+}

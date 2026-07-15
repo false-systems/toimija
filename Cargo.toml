@@ -8,8 +8,23 @@ default-members = ["."]
 name = "toimija"
 version = "0.1.1"
 edition = "2024"
+# The sykli CI bin exists alongside the CLI; bare `cargo run` stays toimija.
+default-run = "toimija"
+
+[features]
+# The sykli CI contract (sykli.rs) — off by default so ordinary builds and
+# tests never compile the SDK. The sykli CLI falls back to
+# `cargo run --features sykli --bin sykli -- --emit` automatically.
+sykli = ["dep:sykli"]
+
+[[bin]]
+name = "sykli"
+path = "sykli.rs"
+required-features = ["sykli"]
 
 [dependencies]
+# Pinned to the tag matching the sykli CLI (RC SDKs are not on crates.io).
+sykli = { git = "https://github.com/false-systems/sykli", tag = "v0.9.0-rc.1", optional = true }
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
 clap = { version = "4", features = ["derive"] }

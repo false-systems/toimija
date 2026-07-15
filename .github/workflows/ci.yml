@@ -52,3 +52,47 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+
+  # The same gate as a sykli execution contract (sykli.rs). Advisory while it
+  # proves itself on these runners; the `rust` job above stays the required
+  # gate until branch protection is flipped deliberately
+  # (docs/qa/ci-quality-gates.md: never silently swap a required gate).
+  sykli:
+    name: Sykli
+    runs-on: arc-arm64
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install build prerequisites
+        run: |
+          set -euo pipefail
+          if command -v cc >/dev/null 2>&1; then
+            exit 0
+          fi
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::runner is missing cc and apt-get; install a C toolchain on the arc-arm64 runner image"
+            exit 1
+          fi
+          sudo_cmd=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if ! command -v sudo >/dev/null 2>&1; then
+              echo "::error::runner is missing cc and needs sudo or root to install build-essential"
+              exit 1
+            fi
+            sudo_cmd="sudo"
+          fi
+          $sudo_cmd apt-get update
+          $sudo_cmd apt-get install -y --no-install-recommends build-essential ca-certificates
+
+      - name: Run the sykli contract
+        uses: false-systems/sykli@v0.9.0-rc.1
+        with:
+          version: v0.9.0-rc.1

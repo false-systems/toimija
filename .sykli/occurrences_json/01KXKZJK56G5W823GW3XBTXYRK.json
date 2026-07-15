@@ -1,0 +1,256 @@
+{
+  "context": {
+    "labels": {
+      "sykli.node": "nonode@nohost",
+      "sykli.run_id": "01KXKZJK56G5W823GW3XBTXYRK"
+    }
+  },
+  "data": {
+    "error_details": [
+      {
+        "exit_code": 101,
+        "output": "error: `cargo run` could not determine which binary to run. Use the `--bin` option to specify a binary, or the `default-run` manifest key.\navailable binaries: sykli, toimija\n",
+        "task": "doctor"
+      }
+    ],
+    "git": {
+      "branch": "feat/sykli-ci",
+      "changed_files": [
+        "Cargo.lock",
+        "Cargo.toml",
+        ".sykli/",
+        "sykli.rs"
+      ],
+      "recent_commits": [
+        {
+          "author": "Yair Etziony",
+          "message": "fix(watch): prove readiness before reporting armed (#144)",
+          "sha": "1b5ec57"
+        },
+        {
+          "author": "Yair Etziony",
+          "message": "docs: re-land the README split — pitch + reference, reconciled (#145)",
+          "sha": "e6eb989"
+        },
+        {
+          "author": "Yair Etziony",
+          "message": "test(qa): establish public release quality foundations (#142)",
+          "sha": "44e6132"
+        },
+        {
+          "author": "Yair Etziony",
+          "message": "feat(adopt): close proposal 0006 enforcement gaps (#139)",
+          "sha": "6d9ed74"
+        },
+        {
+          "author": "Yair Etziony",
+          "message": "docs: make the README fit the new toimija (#140)",
+          "sha": "66681cc"
+        }
+      ],
+      "remote_url": "***MASKED***",
+      "sha": "1b5ec57"
+    },
+    "reasoning_details": {
+      "tasks": {
+        "doctor": {
+          "changed_files": [],
+          "explanation": "no direct file correlation"
+        }
+      }
+    },
+    "recent_outcomes": {
+      "clippy": [
+        "pass"
+      ],
+      "doctor": [
+        "skip"
+      ],
+      "fmt": [
+        "fail"
+      ],
+      "test": [
+        "pass"
+      ]
+    },
+    "summary": {
+      "cached": 2,
+      "errored": 0,
+      "failed": 1,
+      "passed": 3,
+      "skipped": 0
+    },
+    "tasks": [
+      {
+        "cached": false,
+        "command": "cargo fmt --check",
+        "contract_slice": {
+          "kind": "task"
+        },
+        "duration_ms": 178,
+        "history": {
+          "avg_duration_ms": 268,
+          "failure_patterns": [
+            "task_failed: task 'fmt' failed"
+          ],
+          "last_failure": "2026-07-15T22:50:01.256278Z",
+          "pass_rate": 0.0,
+          "streak": -1
+        },
+        "name": "fmt",
+        "status": "passed"
+      },
+      {
+        "cached": true,
+        "command": "cargo clippy --all-targets -- -D warnings",
+        "contract_slice": {
+          "kind": "task"
+        },
+        "duration_ms": 8,
+        "history": {
+          "avg_duration_ms": 12530,
+          "pass_rate": 1.0,
+          "streak": 1
+        },
+        "name": "clippy",
+        "status": "cached"
+      },
+      {
+        "blocks": [
+          "doctor"
+        ],
+        "cached": true,
+        "command": "cargo test",
+        "contract_slice": {
+          "kind": "task"
+        },
+        "duration_ms": 8,
+        "history": {
+          "avg_duration_ms": 32938,
+          "pass_rate": 1.0,
+          "streak": 1
+        },
+        "name": "test",
+        "status": "cached"
+      },
+      {
+        "agent_hints": {
+          "inspect_contract": false,
+          "inspect_dependencies": false,
+          "inspect_target": true,
+          "requires_human_decision": false,
+          "retry_may_help": false,
+          "unknown_failure_class": false
+        },
+        "cached": false,
+        "command": "cargo run --quiet -- doctor --strict",
+        "contract_slice": {
+          "kind": "task"
+        },
+        "depends_on": [
+          "test"
+        ],
+        "duration_ms": 25,
+        "error": {
+          "code": "task_failed",
+          "exit_code": 101,
+          "message": "task 'doctor' failed",
+          "notes": [
+            "task ran for 21ms before failing"
+          ],
+          "output": "error: `cargo run` could not determine which binary to run. Use the `--bin` option to specify a binary, or the `default-run` manifest key.\navailable binaries: sykli, toimija\n"
+        },
+        "failure_semantics": {
+          "class": "runtime_failure",
+          "details": {
+            "code": "task_failed",
+            "duration_ms": 21,
+            "exit_code": 101,
+            "step": "run",
+            "task": "doctor"
+          },
+          "message": "task 'doctor' failed",
+          "reason": "command_failed",
+          "retryable": false,
+          "source": "target"
+        },
+        "history": {
+          "avg_duration_ms": 0,
+          "pass_rate": 0.0,
+          "streak": -1
+        },
+        "log": ".sykli/logs/01KXKZJK56G5W823GW3XBTXYRK/doctor.log",
+        "name": "doctor",
+        "status": "failed"
+      }
+    ]
+  },
+  "error": {
+    "code": "task_failed",
+    "message": "task 'doctor' failed",
+    "what_failed": "task 'doctor' command: cargo run --quiet -- doctor --strict"
+  },
+  "history": {
+    "duration_ms": 219,
+    "steps": [
+      {
+        "action": "fmt",
+        "description": "cargo fmt --check",
+        "duration_ms": 178,
+        "outcome": "success",
+        "timestamp": "2026-07-15T22:50:19.174270Z"
+      },
+      {
+        "action": "clippy",
+        "description": "cargo clippy --all-targets -- -D warnings",
+        "duration_ms": 8,
+        "outcome": "success",
+        "timestamp": "2026-07-15T22:50:19.352270Z"
+      },
+      {
+        "action": "test",
+        "description": "cargo test",
+        "duration_ms": 8,
+        "outcome": "success",
+        "timestamp": "2026-07-15T22:50:19.360270Z"
+      },
+      {
+        "action": "doctor",
+        "description": "cargo run --quiet -- doctor --strict",
+        "duration_ms": 25,
+        "error": {
+          "code": "task_failed",
+          "failure_semantics": {
+            "class": "runtime_failure",
+            "details": {
+              "code": "task_failed",
+              "duration_ms": 21,
+              "exit_code": 101,
+              "step": "run",
+              "task": "doctor"
+            },
+            "message": "task 'doctor' failed",
+            "reason": "command_failed",
+            "retryable": false,
+            "source": "target"
+          },
+          "what_failed": "task 'doctor' failed"
+        },
+        "outcome": "failure",
+        "timestamp": "2026-07-15T22:50:19.368270Z"
+      }
+    ]
+  },
+  "id": "01KXKZJK58B8AWEC0N7RMB9FNH",
+  "outcome": "failure",
+  "protocol_version": "1.0",
+  "reasoning": {
+    "confidence": 0.2,
+    "explanation": "The doctor task failed. no direct file correlation.",
+    "summary": "doctor failed — cause unclear, may be environmental"
+  },
+  "severity": "error",
+  "source": "sykli",
+  "timestamp": "2026-07-15T22:50:19.174270Z",
+  "type": "ci.run.failed"
+}
