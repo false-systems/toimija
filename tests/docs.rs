@@ -17,10 +17,20 @@ fn readme_states_the_git_state_thesis() {
 }
 
 #[test]
-fn readme_has_a_git_starting_point_section() {
+fn readme_states_git_is_the_substrate() {
+    // The dedicated "Git as the starting point" section was folded into the
+    // identity block (it triple-stated the thesis); the guarantee is the
+    // substance, verbatim, not the heading.
     assert!(
-        README.contains("## Git as the starting point"),
-        "README.md must keep the Git-as-the-starting-point section"
+        README.contains("Git is not a save button here. Git is the substrate."),
+        "README.md must keep the Git-substrate statement"
+    );
+    assert!(
+        README.contains(
+            "Git gives us the graph of what happened. \
+             Toimija turns that graph into operational context for agents."
+        ),
+        "README.md must keep the graph-to-context sentence"
     );
 }
 
