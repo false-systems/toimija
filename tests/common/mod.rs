@@ -16,6 +16,8 @@
 use std::path::Path;
 use std::process::Command;
 
+pub mod fixture;
+
 /// Git environment variables that redirect git at a specific repo, index, or
 /// worktree. A leaked value (e.g. inherited from a pre-commit hook) would make a
 /// fixture's `git` operate on the ambient repo instead of its own `cwd`.
