@@ -14,9 +14,12 @@ coverage. That is a foundation, not public-release qualification.
 
 The baseline suite exposed an existing reliability problem:
 tests/cli_watch.rs::watch_refreshes_on_a_file_change_then_stops failed once
-after a 30-second event deadline and passed on immediate rerun. A flaky
-freshness test is release-blocking because stale context is the product's
-central safety failure.
+after a 30-second event deadline and passed on immediate rerun. The failure
+was an unobservable watcher-registration gap, compounded by native watcher
+behaviour under temporary volumes. The watch path now waits for a real probe
+event before reporting `armed` and uses bounded polling so the probe and
+subsequent changes are observable rather than silently stale. The regression
+test uses a stable local temporary volume.
 
 ## What is actually guaranteed today
 
@@ -42,14 +45,12 @@ central safety failure.
 
 ## Release blockers
 
-1. Make the watch test deterministic and fix or explicitly bound the observed
-   missed-event behaviour.
-2. Complete the P0 state-preservation and stale-state matrix in
+1. Complete the P0 state-preservation and stale-state matrix in
    docs/qa/test-matrix.md and tests/qa_p0.rs.
-3. Define the JSON schema/version and stdout/stderr/exit-code contract.
-4. Add property/fuzz coverage for Git output and path codecs.
-5. Add release-mode package smoke tests and an upgrade policy.
-6. Measure representative repositories before publishing performance claims.
+2. Define the JSON schema/version and stdout/stderr/exit-code contract.
+3. Add property/fuzz coverage for Git output and path codecs.
+4. Add release-mode package smoke tests and an upgrade policy.
+5. Measure representative repositories before publishing performance claims.
 
 ## Highest-risk surfaces
 
