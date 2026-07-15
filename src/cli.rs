@@ -146,7 +146,7 @@ pub enum Command {
     /// wrapped command's status (128+signal preserved). `--intent` is required
     /// (proposal 0006: declaring why the session exists is the entry fee;
     /// `--intent unknown` is the explicit escape hatch). Known agents (claude,
-    /// codex) get the packet inlined in their launch prompt — pass the task via
+    /// codex, gemini) get the packet inlined in their launch prompt — pass the task via
     /// `--task`; other commands keep the TOIMIJA_* env handshake behind an
     /// honest banner. `--scope` tells sibling sessions what you expect to touch
     /// — advisory, never an assignment.
@@ -315,7 +315,7 @@ pub struct RunArgs {
     #[arg(long = "scope", value_name = "PATH")]
     pub scope: Vec<String>,
     /// The task for the agent, delivered inside the composed launch prompt of a
-    /// known agent (`claude`, `codex`). Pass the task here, not as the agent's
+    /// known agent (`claude`, `codex`, `gemini`). Pass the task here, not as the agent's
     /// own positional argument.
     #[arg(long)]
     pub task: Option<String>,
@@ -619,7 +619,12 @@ fn run_adopt(args: AdoptArgs) -> Result<()> {
         println!(
             "note: hooks live in this clone's Git hooks directory and are shared by every worktree of this clone"
         );
-        println!("{}", adoption::harness_snippet());
+        if report.settings_written {
+            println!("wrote .claude/settings.json (SessionStart: toimija context)");
+        }
+        println!(
+            "note: toimija never writes config outside this repo; ~/.claude/settings.json stays yours"
+        );
     }
     Ok(())
 }

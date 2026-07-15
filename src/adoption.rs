@@ -3,9 +3,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use serde_json::{Value, json};
 use tracing::info;
 
+use crate::cli::Refusal;
 use crate::command::ProcessCommandRunner;
 use crate::git;
 
@@ -29,6 +31,7 @@ pub struct AdoptionReport {
     pub files: Vec<PathBuf>,
     pub created_agents: bool,
     pub hooks: Vec<String>,
+    pub settings_written: bool,
 }
 
 pub fn adopt(repo_root: &Path, with_hooks: bool) -> Result<AdoptionReport> {
@@ -41,6 +44,11 @@ pub fn adopt(repo_root: &Path, with_hooks: bool) -> Result<AdoptionReport> {
         (vec![repo_root.join("AGENTS.md")], true)
     } else {
         (existing, false)
+    };
+    let hook_plan = if with_hooks {
+        Some(preflight_hooks(repo_root)?)
+    } else {
+        None
     };
 
     for path in &targets {
@@ -60,20 +68,28 @@ pub fn adopt(repo_root: &Path, with_hooks: bool) -> Result<AdoptionReport> {
     }
 
     let hooks = if with_hooks {
-        install_hooks(repo_root)?
+        let hooks_dir = &hook_plan.as_ref().expect("hooks requested").hooks_dir;
+        install_hooks(hooks_dir)?
     } else {
         Vec::new()
+    };
+    let settings_written = if let Some(plan) = hook_plan {
+        write_settings(&plan)?
+    } else {
+        false
     };
     info!(
         event = "toimija.adopt.applied",
         files = targets.len(),
         created_agents,
-        hooks = hooks.len()
+        hooks = hooks.len(),
+        settings_written
     );
     Ok(AdoptionReport {
         files: targets,
         created_agents,
         hooks,
+        settings_written,
     })
 }
 
@@ -148,7 +164,17 @@ fn normalized_ws(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn install_hooks(repo_root: &Path) -> Result<Vec<String>> {
+struct HookPlan {
+    hooks_dir: PathBuf,
+    settings: SettingsUpdate,
+}
+
+struct SettingsUpdate {
+    path: PathBuf,
+    content: Option<Vec<u8>>,
+}
+
+fn preflight_hooks(repo_root: &Path) -> Result<HookPlan> {
     let runner = ProcessCommandRunner;
     let raw = git::run_git_ok(&runner, repo_root, &["rev-parse", "--git-path", "hooks"])
         .context("failed to locate the Git hooks directory")?;
@@ -158,8 +184,15 @@ fn install_hooks(repo_root: &Path) -> Result<Vec<String>> {
     } else {
         repo_root.join(hooks_dir)
     };
-    fs::create_dir_all(&hooks_dir)
-        .with_context(|| format!("failed to create {}", hooks_dir.display()))?;
+    scan_foreign_hooks(&hooks_dir)?;
+    let settings = prepare_settings(repo_root)?;
+    Ok(HookPlan {
+        hooks_dir,
+        settings,
+    })
+}
+
+fn scan_foreign_hooks(hooks_dir: &Path) -> Result<()> {
     for name in HOOKS {
         let path = hooks_dir.join(name);
         if path.exists() {
@@ -173,6 +206,12 @@ fn install_hooks(repo_root: &Path) -> Result<Vec<String>> {
             }
         }
     }
+    Ok(())
+}
+
+fn install_hooks(hooks_dir: &Path) -> Result<Vec<String>> {
+    fs::create_dir_all(hooks_dir)
+        .with_context(|| format!("failed to create {}", hooks_dir.display()))?;
     let mut installed = Vec::new();
     for name in HOOKS {
         let path = hooks_dir.join(name);
@@ -182,6 +221,98 @@ fn install_hooks(repo_root: &Path) -> Result<Vec<String>> {
         installed.push((*name).to_string());
     }
     Ok(installed)
+}
+
+fn prepare_settings(repo_root: &Path) -> Result<SettingsUpdate> {
+    let path = repo_root.join(".claude/settings.json");
+    if !path.exists() {
+        return Ok(SettingsUpdate {
+            path,
+            content: Some(serialized_settings(&json!({
+                "hooks": { "SessionStart": [session_start_hook()] }
+            }))?),
+        });
+    }
+
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut settings: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| malformed_settings(&path, format!("JSON parse error: {error}")))?;
+    let object = settings
+        .as_object_mut()
+        .ok_or_else(|| malformed_settings(&path, "the top level must be a JSON object"))?;
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| malformed_settings(&path, "the `hooks` value must be an object"))?;
+    let session_start = hooks
+        .entry("SessionStart")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| {
+            malformed_settings(&path, "the `hooks.SessionStart` value must be an array")
+        })?;
+    if session_start.iter().any(session_start_contains_toimija) {
+        return Ok(SettingsUpdate {
+            path,
+            content: None,
+        });
+    }
+    session_start.push(session_start_hook());
+    Ok(SettingsUpdate {
+        path,
+        content: Some(serialized_settings(&settings)?),
+    })
+}
+
+fn session_start_hook() -> Value {
+    json!({
+        "hooks": [{
+            "type": "command",
+            "command": "toimija context --budget 4000"
+        }]
+    })
+}
+
+fn session_start_contains_toimija(entry: &Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|hook| hook.get("command").and_then(Value::as_str))
+        .any(|command| command.contains("toimija context"))
+}
+
+fn serialized_settings(settings: &Value) -> Result<Vec<u8>> {
+    let mut bytes =
+        serde_json::to_vec_pretty(settings).context("failed to render Claude settings")?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn malformed_settings(path: &Path, detail: impl Into<String>) -> anyhow::Error {
+    anyhow!(Refusal {
+        reason: "malformed-settings",
+        message: format!(
+            "toimija adopt --hooks: malformed-settings — cannot update {} because it is not usable JSON settings.\n{}\nFix that file manually, then rerun `toimija adopt --hooks`; it was not overwritten.",
+            path.display(),
+            detail.into()
+        ),
+    })
+}
+
+fn write_settings(plan: &HookPlan) -> Result<bool> {
+    let Some(content) = &plan.settings.content else {
+        return Ok(false);
+    };
+    if let Some(parent) = plan.settings.path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&plan.settings.path, content)
+        .with_context(|| format!("failed to write {}", plan.settings.path.display()))?;
+    Ok(true)
 }
 
 fn hook_script() -> &'static str {
@@ -197,19 +328,6 @@ fn make_executable(path: &Path) -> Result<()> {
         fs::set_permissions(path, permissions)?;
     }
     Ok(())
-}
-
-pub fn harness_snippet() -> &'static str {
-    r#"For you to place (Toimija never writes harness config for you):
-Claude Code — merge into .claude/settings.json so every session starts with the packet in context:
-  {
-    "hooks": {
-      "SessionStart": [
-        { "hooks": [ { "type": "command", "command": "toimija context --budget 4000" } ] }
-      ]
-    }
-  }
-The hook's stdout is injected into the session context: the packet is read without being asked."#
 }
 
 #[cfg(test)]

@@ -120,11 +120,27 @@ fn adopt_hooks_install_refresh_hooks_and_refuse_foreign_hooks() {
         .args(["adopt", "--hooks"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("For you to place"))
-        .stdout(predicate::str::contains("SessionStart"))
         .stdout(predicate::str::contains(
-            "shared by every worktree of this clone",
+            "wrote .claude/settings.json (SessionStart: toimija context)",
+        ))
+        .stdout(predicate::str::contains(
+            "~/.claude/settings.json stays yours",
         ));
+    let settings = fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap();
+    assert!(settings.contains("toimija context --budget 4000"));
+    assert!(settings.contains("\"SessionStart\""));
+    assert!(!settings.contains("For you to place"));
+    let first_settings = settings.clone();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["adopt", "--hooks"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
+        first_settings
+    );
     let hooks = temp.path().join(".git/hooks");
     for name in ["post-checkout", "post-merge", "post-commit"] {
         let text = fs::read_to_string(hooks.join(name)).unwrap();
@@ -146,6 +162,90 @@ fn adopt_hooks_install_refresh_hooks_and_refuse_foreign_hooks() {
         fs::read_to_string(hooks.join("post-commit")).unwrap(),
         "#!/bin/sh\necho foreign\n"
     );
+}
+
+#[test]
+fn adopt_hooks_merges_foreign_settings_and_preserves_their_values() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".claude")).unwrap();
+    let original = r#"{"theme":"dark","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hello"}]}]}}
+"#;
+    fs::write(temp.path().join(".claude/settings.json"), original).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["adopt", "--hooks"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "wrote .claude/settings.json (SessionStart: toimija context)",
+        ));
+    let merged: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(merged["theme"], "dark");
+    assert_eq!(merged["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
+    assert!(
+        merged["hooks"]["SessionStart"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.to_string().contains("toimija context"))
+    );
+}
+
+#[test]
+fn adopt_hooks_refuses_malformed_settings_without_writing() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".claude")).unwrap();
+    let original = b"{ not json";
+    fs::write(temp.path().join(".claude/settings.json"), original).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["adopt", "--hooks"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("malformed-settings"))
+        .stderr(predicate::str::contains("not overwritten"));
+    assert_eq!(
+        fs::read(temp.path().join(".claude/settings.json")).unwrap(),
+        original
+    );
+    assert!(!temp.path().join(".git/hooks/post-commit").exists());
+}
+
+#[test]
+fn adopt_hooks_preflights_foreign_hooks_before_creating_settings() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::write(
+        temp.path().join(".git/hooks/post-commit"),
+        "#!/bin/sh\necho foreign\n",
+    )
+    .unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["adopt", "--hooks"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "refusing to replace foreign Git hook",
+        ));
+    assert!(!temp.path().join(".claude/settings.json").exists());
 }
 
 #[cfg(unix)]
