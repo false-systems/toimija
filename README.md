@@ -133,7 +133,8 @@ agent command's exit status (signal termination is preserved too, e.g. SIGTERM �
 **Wrapped means used** (proposal 0006). `run` refuses to launch without
 `--intent` — declaring why the session exists is the entry fee of the envelope
 (`--intent unknown` is the explicit escape hatch). For known agents (`claude`,
-`codex` — matched by basename) the packet is delivered **in the launch prompt
+`codex`, `gemini` — matched by basename; all use positional prompt delivery)
+the packet is delivered **in the launch prompt
 itself**: `run` appends one positional argument carrying the contract framing,
 the entry packet inlined at the session budget, the live packet path, and your
 `--task`. The agent cannot not-see it. Pass the agent's task via `--task`, not
@@ -662,8 +663,18 @@ toimija adopt --hooks
 
 With `--hooks`, `post-checkout`, `post-merge`, and `post-commit` run
 `toimija refresh` best-effort with Git repository-location variables scrubbed.
-Foreign hooks are never overwritten. Any harness-side SessionStart snippet is
-printed for you to place; Toimija does not edit files outside the repository.
+Foreign hooks are never overwritten. The command also creates or merges the
+repo-local `.claude/settings.json` SessionStart hook:
+
+```text
+wrote .claude/settings.json (SessionStart: toimija context)
+```
+
+Existing settings and hooks are preserved, and rerunning is byte-for-byte
+idempotent once the hook exists. Malformed settings are refused without
+rewriting the file. Toimija never writes config outside the repository;
+`~/.claude/settings.json` stays yours. A doctor drift check for this settings
+hook is deliberately deferred until adoption evidence shows it is useful.
 
 ## Did the work land? (`toimija landed`)
 

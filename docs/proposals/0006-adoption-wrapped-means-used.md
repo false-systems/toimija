@@ -74,10 +74,9 @@ post-commit) that run `toimija refresh` synchronously, so
 `.toimija/current.md` is always true and Part A's flat instruction never
 points at stale state. Hooks live in `.git/` (untracked), installed
 per-clone like the existing pre-commit hook; the hook is a no-op outside a
-toimija-configured repo. `adopt --hooks` also prints (not installs)
-harness-side snippets — e.g. a Claude Code SessionStart hook that emits the
-packet straight into session context — for the human to place; toimija does
-not edit files outside the repo.
+toimija-configured repo. `adopt --hooks` writes or merges the repo-local
+`.claude/settings.json` SessionStart hook because that file is inside R3's
+write surface; it does not edit config outside the repo.
 
 ### Part C — guaranteed delivery under `run`
 
