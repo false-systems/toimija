@@ -289,9 +289,9 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         .unwrap();
         writeln!(
             &mut output,
-            "- scope: {}",
+            "- declared scope: {}",
             if session.scope.is_empty() {
-                "unknown".to_string()
+                "none".to_string()
             } else {
                 session.scope.join(", ")
             }
@@ -358,7 +358,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     // Section order is also the budget-priority order: the raw changed-file
     // lists are emitted LAST so a large diff can never starve the high-value
     // sections (scope, read order, validation, warnings) under a tight budget.
-    write_scope(&mut output, packet);
+    write_compiled_workset(&mut output, packet);
     write_read_order(&mut output, packet);
 
     write_h2(&mut output, "Read first");
@@ -485,8 +485,9 @@ fn write_workset_contract(output: &mut String) {
     write_h2(output, "Workset contract");
     writeln!(
         output,
-        "Work from this packet's Scope and Read order; they are your working set, not\n\
-         a preamble. Configured exclusions are do-not-scan. You MAY read outside the\n\
+        "Work from this packet's Compiled workset and Read order; they are your working\n\
+         set, not a preamble. A session's declared scope is intent, not evidence.\n\
+         Configured exclusions are do-not-scan. You MAY read outside the\n\
          workset when a concrete unresolved dependency requires it — but you MUST\n\
          declare the expansion first: `toimija intent \"<why>\" --scope <path>` (or, if\n\
          you are not under a session, state the expansion and its reason in your\n\
@@ -723,17 +724,17 @@ fn status_label(status: &ChangeStatus) -> &'static str {
     }
 }
 
-/// Render the Scope section: the areas this branch is touching versus the
+/// Render the compiled workset: the areas this branch is touching versus the
 /// areas it leaves alone. Advisory, Git-derived; omitted when there is nothing
 /// to say.
-fn write_scope(output: &mut String, packet: &ContextPacket) {
+fn write_compiled_workset(output: &mut String, packet: &ContextPacket) {
     let Some(scope) = &packet.relevance.scope else {
         return;
     };
     if scope.in_play.is_empty() {
         return;
     }
-    write_h2(output, "Scope");
+    write_h2(output, "Compiled workset");
     writeln!(output, "- source: {}", relevance_source_label(scope.source)).unwrap();
     let in_play = scope
         .in_play
@@ -977,7 +978,7 @@ mod tests {
         assert!(rendered.contains("## Session"));
         assert!(rendered.contains("- id: 100-1"));
         assert!(rendered.contains("- intent: test drive 2"));
-        assert!(rendered.contains("- scope: src/a.rs"));
+        assert!(rendered.contains("- declared scope: src/a.rs"));
     }
 
     #[test]
@@ -999,7 +1000,7 @@ mod tests {
             .collect();
         // 1000 bytes of headroom past the mandatory Workset contract block,
         // which renders early by design (proposal 0005) and always survives.
-        let rendered = render_context_markdown(&packet, 1500);
+        let rendered = render_context_markdown(&packet, 1600);
         assert!(rendered.contains("Output truncated"));
         assert!(
             rendered.contains("## Workset contract"),
@@ -1072,6 +1073,7 @@ mod tests {
 
         let rendered = render_context_markdown(&packet, DEFAULT_BUDGET);
         // Risk is the last relevance section; if it survives, all of them do.
+        assert!(rendered.contains("## Compiled workset"));
         assert!(
             rendered.contains("## Coupling"),
             "coupling must survive the default budget"
@@ -1276,8 +1278,9 @@ mod tests {
 - kind: Rust
 
 ## Workset contract
-Work from this packet's Scope and Read order; they are your working set, not
-a preamble. Configured exclusions are do-not-scan. You MAY read outside the
+Work from this packet's Compiled workset and Read order; they are your working
+set, not a preamble. A session's declared scope is intent, not evidence.
+Configured exclusions are do-not-scan. You MAY read outside the
 workset when a concrete unresolved dependency requires it — but you MUST
 declare the expansion first: `toimija intent "<why>" --scope <path>` (or, if
 you are not under a session, state the expansion and its reason in your

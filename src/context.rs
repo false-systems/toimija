@@ -63,7 +63,9 @@ pub struct ContextPacket {
 }
 
 /// The session half of a per-session packet: who this packet is for and why
-/// that session says it is here. Advisory, like the marker it mirrors.
+/// that session says it is here. `scope` is the agent's declaration, distinct
+/// from the Git-derived workset under `relevance.scope`. Advisory, like the
+/// marker it mirrors.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionBlock {
     pub id: String,

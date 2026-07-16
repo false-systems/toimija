@@ -54,7 +54,8 @@ impl RelevancePacket {
     }
 }
 
-/// What the branch is touching versus the areas it leaves alone.
+/// The compiled Git workset: what the branch is touching versus the areas it
+/// leaves alone. This is evidence, not the session's declared scope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScopeHints {
     pub in_play: Vec<ScopeArea>,

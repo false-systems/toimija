@@ -732,8 +732,9 @@ renders like this:
 - kind: Rust
 
 ## Workset contract
-Work from this packet's Scope and Read order; they are your working set, not
-a preamble. Configured exclusions are do-not-scan. You MAY read outside the
+Work from this packet's Compiled workset and Read order; they are your working
+set, not a preamble. A session's declared scope is intent, not evidence.
+Configured exclusions are do-not-scan. You MAY read outside the
 workset when a concrete unresolved dependency requires it — but you MUST
 declare the expansion first: `toimija intent "<why>" --scope <path>` (or, if
 you are not under a session, state the expansion and its reason in your
@@ -763,7 +764,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - abc123 feat: make Git state explicit
 - def456 feat: add config-driven context rules
 
-## Scope
+## Compiled workset
 - source: branch diff since merge-base
 - in play: README.md, src, tests
 - unchanged top-level areas: .github, fixtures, xtask
@@ -920,8 +921,8 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - read-first entries are grouped as changed files, matching-test hints, then configured docs
 - warnings are sorted and deduplicated
 - Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
-- every packet carries a normative `Workset contract` section (proposal 0005), rendered early so budget truncation cannot drop it: work from Scope and Read order, treat exclusions as do-not-scan, and declare any expansion outside the workset (`toimija intent --scope`) instead of reading invisibly
-- high-value Markdown sections (`Scope`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Coupling`, `Risk`) render before the raw working-tree and changed-surface lists
+- every packet carries a normative `Workset contract` section (proposal 0005), rendered early so budget truncation cannot drop it: work from the Git-derived Compiled workset and Read order, treat declared session scope as advisory intent, treat exclusions as do-not-scan, and declare any expansion outside the workset (`toimija intent --scope`) instead of reading invisibly
+- high-value Markdown sections (`Compiled workset`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Coupling`, `Risk`) render before the raw working-tree and changed-surface lists
 - Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections
 - empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
 - Git paths are read from NUL-delimited byte output. JSON keeps existing UTF-8

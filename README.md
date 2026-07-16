@@ -141,8 +141,9 @@ writing a line of infrastructure.
 
 Toimija does not hope agents read its context — it removes the choice:
 
-- Every packet opens with a **workset contract**: work from Scope and Read
-  order, exclusions are do-not-scan, declare any expansion. *Expansion is
+- Every packet opens with a **workset contract**: work from the Git-derived
+  Compiled workset and Read order; the session's declared scope remains
+  advisory intent. Exclusions are do-not-scan; declare any expansion. *Expansion is
   never forbidden; invisible expansion is.*
 - `run` **refuses to launch without `--intent`** — declaring why the session
   exists is the entry fee (`--intent unknown` is the escape hatch).
