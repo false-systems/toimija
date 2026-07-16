@@ -58,6 +58,9 @@ pub fn start(repo_root: &Path) -> Result<Session> {
     let probe = repo_root.join(format!("toimija-watch-probe-{}", std::process::id()));
     fs::write(&probe, b"watch readiness probe")
         .with_context(|| format!("failed to arm watcher at {}", repo_root.display()))?;
+    watcher
+        .poll()
+        .context("failed to request filesystem watcher readiness poll")?;
     let ready = loop {
         match rx.recv_timeout(Duration::from_secs(5)) {
             Ok(Ok(event)) if event.paths.iter().any(|path| path == &probe) => break true,

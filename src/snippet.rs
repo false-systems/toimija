@@ -30,8 +30,10 @@ Before editing, run `toimija enter --for-diff --budget 4000`.
 Use its output as the working state: current Git state, changed surface, scope,
 read order, coupling, risk, validation plan, repo boundaries, and safe-to-ignore.
 If `$TOIMIJA_LIVE` is set, you are running under `toimija run`: that file is your
-continuously-refreshed packet — re-read it after Git-state changes instead of
-re-running `enter`.
+continuously-refreshed packet — re-read it after HEAD, branch, index, or
+unfamiliar worktree changes instead of re-running `enter`. Your own expected
+source edits do not require a full re-read. Run `toimija verify` before commit
+or handoff.
 Do not broad-crawl the repo unless the packet is insufficient.
 If the packet contradicts the task, stop and report.
 Do not claim completion without running `toimija validate --plan`.
@@ -65,6 +67,8 @@ mod tests {
         // the live packet rather than re-run `enter`.
         let text = Snippet::Preflight.text();
         assert!(text.contains("$TOIMIJA_LIVE"));
+        assert!(text.contains("source edits do not require a full re-read"));
+        assert!(text.contains("`toimija verify` before commit"));
     }
 
     #[test]

@@ -181,9 +181,11 @@ injects into the child:
 | `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
 | `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
 
-An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after Git-state
-changes instead of re-running `enter`. `toimija snippet preflight` already tells
-agents to do this.
+An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after HEAD, branch,
+index, or unfamiliar worktree changes instead of re-running `enter`; its own
+expected source edits do not require a full re-read. Before commit or handoff,
+`toimija verify` is the freshness boundary. `toimija snippet preflight` carries
+the same rule.
 
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
 agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
