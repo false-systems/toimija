@@ -47,8 +47,8 @@ pub struct SessionMarker {
     #[serde(default)]
     pub worktree: String,
     pub branch: Option<String>,
-    /// HEAD commit at the latest refresh. Known after the first packet build,
-    /// like `branch`; `None` until then.
+    /// HEAD commit captured at session entry. Known after the first packet
+    /// build, like `branch`; it stays fixed so later packets can report drift.
     #[serde(default)]
     pub head: Option<String>,
     /// Free-text declaration of *why* the session is here. `None` renders as
@@ -135,8 +135,8 @@ impl Session {
         Ok(session)
     }
 
-    /// Record the branch and HEAD the session is working on (both known after the
-    /// first refresh), and rewrite the marker.
+    /// Record the entry branch and HEAD once they are known after the first
+    /// refresh, and rewrite the marker. Later refreshes do not overwrite them.
     pub fn record_git(&mut self, branch: Option<String>, head: Option<String>) -> Result<()> {
         self.marker.branch = branch;
         self.marker.head = head;

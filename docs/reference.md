@@ -192,6 +192,9 @@ agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run
 auto-closes on exit. The marker is what `toimija sessions` reads (below) and the
 foundation for the `toimija handoff` record designed in
 `docs/proposals/0001-sessions-awareness-handoff.md`.
+The entry branch and HEAD remain fixed in later packets; if current Git state
+moves, mandatory Markdown renders a `Session drift` block and JSON retains both
+the entry baseline and current `git` state.
 
 ## Multi-agent sessions
 

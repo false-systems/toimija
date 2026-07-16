@@ -71,6 +71,12 @@ pub struct SessionBlock {
     pub id: String,
     pub intent: Option<String>,
     pub scope: Vec<String>,
+    /// Branch and HEAD captured when `run` entered the session. They stay fixed
+    /// so later packets can report drift instead of overwriting the baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_head: Option<String>,
 }
 
 /// Where the changed surface came from. Named honestly: the surface either
@@ -625,6 +631,8 @@ mod tests {
                 id: "100-1".to_string(),
                 intent: None,
                 scope: Vec::new(),
+                entry_branch: None,
+                entry_head: None,
             }),
             sauma: None,
         };

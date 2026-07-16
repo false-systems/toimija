@@ -96,6 +96,8 @@ agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run
 auto-closes on exit. The marker is what `toimija sessions` reads (below) and the
 foundation for the `toimija handoff` record designed in
 `docs/proposals/0001-sessions-awareness-handoff.md`.
+Its entry branch and HEAD stay fixed; a later move appears as `Session drift` in
+the live packet instead of silently replacing the baseline.
 
 ## Multi-agent sessions
 

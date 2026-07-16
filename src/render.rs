@@ -351,6 +351,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     )
     .unwrap();
 
+    write_session_drift(&mut output, packet);
     write_branch_surface(&mut output, packet);
     write_compiled_workset(&mut output, packet);
     write_read_order(&mut output, packet);
@@ -681,6 +682,40 @@ fn write_branch_surface(output: &mut String, packet: &ContextPacket) {
     }
 }
 
+fn write_session_drift(output: &mut String, packet: &ContextPacket) {
+    let Some(session) = &packet.session else {
+        return;
+    };
+    let branch_moved = match (&session.entry_branch, &packet.git.branch) {
+        (Some(entry), Some(current)) if entry != current => Some((entry, current)),
+        _ => None,
+    };
+    let head_moved = match (&session.entry_head, &packet.git.head_oid) {
+        (Some(entry), Some(current)) if entry != current => Some((entry, current)),
+        _ => None,
+    };
+    if branch_moved.is_none() && head_moved.is_none() {
+        return;
+    }
+    write_h2(output, "Session drift");
+    if let Some((entry, current)) = branch_moved {
+        writeln!(output, "- branch: {entry} → {current} (moved since entry)").unwrap();
+    }
+    if let Some((entry, current)) = head_moved {
+        writeln!(
+            output,
+            "- HEAD: {} → {} (moved since entry)",
+            short_oid(entry),
+            short_oid(current)
+        )
+        .unwrap();
+    }
+}
+
+fn short_oid(oid: &str) -> &str {
+    &oid[..oid.len().min(7)]
+}
+
 /// A short window of recent history (capped), so an agent sees what the branch
 /// has been doing without running `git log` itself. Already collected in
 /// GitState; this only renders it.
@@ -1003,6 +1038,8 @@ mod tests {
             id: "100-1".to_string(),
             intent: None,
             scope: Vec::new(),
+            entry_branch: None,
+            entry_head: None,
         });
         let rendered = render_context_markdown(&with_session, 4000);
         let contract = rendered.find("## Workset contract").unwrap();
@@ -1017,12 +1054,37 @@ mod tests {
             id: "100-1".to_string(),
             intent: Some("test drive 2".to_string()),
             scope: vec!["src/a.rs".to_string()],
+            entry_branch: None,
+            entry_head: None,
         });
         let rendered = render_context_markdown(&packet, 4000);
         assert!(rendered.contains("## Session"));
         assert!(rendered.contains("- id: 100-1"));
         assert!(rendered.contains("- intent: test drive 2"));
         assert!(rendered.contains("- declared scope: src/a.rs"));
+    }
+
+    #[test]
+    fn session_drift_compares_entry_to_current_git_state() {
+        let mut packet = packet();
+        packet.git.branch = Some("feat/after".to_string());
+        packet.git.head_oid = Some("bbbbbbb222".to_string());
+        packet.session = Some(crate::context::SessionBlock {
+            id: "100-1".to_string(),
+            intent: Some("move safely".to_string()),
+            scope: Vec::new(),
+            entry_branch: Some("feat/before".to_string()),
+            entry_head: Some("aaaaaaa111".to_string()),
+        });
+
+        let rendered = render_context_markdown(&packet, 4000);
+        assert!(rendered.contains("## Session drift"));
+        assert!(rendered.contains("- branch: feat/before → feat/after (moved since entry)"));
+        assert!(rendered.contains("- HEAD: aaaaaaa → bbbbbbb (moved since entry)"));
+
+        packet.session.as_mut().unwrap().entry_branch = packet.git.branch.clone();
+        packet.session.as_mut().unwrap().entry_head = packet.git.head_oid.clone();
+        assert!(!render_context_markdown(&packet, 4000).contains("## Session drift"));
     }
 
     #[test]

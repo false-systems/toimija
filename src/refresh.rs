@@ -148,6 +148,8 @@ fn compute(
             id: marker.id,
             intent: marker.intent,
             scope: marker.scope,
+            entry_branch: marker.branch,
+            entry_head: marker.head,
         });
     }
     packet.artifact_id = Some(artifact_id());

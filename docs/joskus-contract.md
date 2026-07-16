@@ -13,9 +13,10 @@ prompts, apply model patches, or run model-requested validation.
 
 `.toimija/current.json` is the machine-readable packet. On per-session packets
 (written under `.toimija/sessions/<id>/` by `toimija run`) it also carries a
-`session` block — `{ "id": "...", "intent": "..."|null, "scope": [...] }` —
-additive per the contract's evolution rule; a harness infers the session's
-declared intent from it. Persisted Markdown/JSON pairs share an `artifact_id`;
+`session` block — `{ "id": "...", "intent": "..."|null, "scope": [...],
+"entry_branch": "...", "entry_head": "..." }` — additive per the contract's
+evolution rule; a harness gets declared intent and a fixed Git baseline from it.
+Persisted Markdown/JSON pairs share an `artifact_id`;
 JSON is authoritative when an interrupted refresh leaves mismatched IDs. It includes:
 
 ```json
