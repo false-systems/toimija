@@ -186,7 +186,7 @@ the human stays the orchestrator.
 | | |
 |---|---|
 | **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed while the agent works. |
-| **Git-derived relevance** | What to read first, what co-changes, what is risky. Advisory, no source parsing. |
+| **Git-derived relevance** | What to read first, what co-changes, what is risky — with visible evidence and confidence. Advisory, no source parsing. |
 | **Verifiable freshness** | A content-based token in every packet; `verify` before trust; `snapshot` to freeze. |
 | **Multi-agent awareness** | Sessions, overlap warnings, handoff records. |
 | **Chain of custody** | Sauma envelopes link artifacts across tools to the exact repo state they came from. |

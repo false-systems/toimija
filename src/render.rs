@@ -5,7 +5,7 @@ use crate::config::InitReport;
 use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
 use crate::landed::{LandedReport, LandedStatus};
-use crate::relevance::RelevanceSource;
+use crate::relevance::{HintConfidence, HintEvidence, RelevanceSource};
 use crate::repo::{DoctorReport, DoctorStatus};
 use crate::validate::{ValidationPlan, ValidationSource};
 
@@ -594,10 +594,11 @@ fn write_coupling(output: &mut String, packet: &ContextPacket) {
     for hint in coupling {
         writeln!(
             output,
-            "- {} changed, but {} was not — {}",
+            "- {} changed, but {} was not — {} [{}]",
             crate::path_codec::display(&hint.changed),
             crate::path_codec::display(&hint.missing),
-            hint.reason
+            hint.reason,
+            relevance_evidence_label(hint.source, &hint.evidence)
         )
         .unwrap();
     }
@@ -614,10 +615,11 @@ fn write_risk(output: &mut String, packet: &ContextPacket) {
     for hint in risk {
         writeln!(
             output,
-            "- {} — {}; {}",
+            "- {} — {}; {} [{}]",
             crate::path_codec::display(&hint.path),
             hint.reason,
-            hint.action
+            hint.action,
+            relevance_evidence_label(hint.source, &hint.evidence)
         )
         .unwrap();
     }
@@ -873,6 +875,20 @@ fn relevance_source_label(source: RelevanceSource) -> &'static str {
         RelevanceSource::Heuristic => "file-pattern heuristic",
         RelevanceSource::Unavailable => "unavailable",
     }
+}
+
+fn relevance_evidence_label(source: RelevanceSource, evidence: &HintEvidence) -> String {
+    let confidence = match evidence.confidence {
+        HintConfidence::Unrecorded => "unrecorded",
+        HintConfidence::Medium => "medium",
+        HintConfidence::High => "high",
+    };
+    format!(
+        "source: {}; evidence: {}/{}; confidence: {confidence}",
+        relevance_source_label(source),
+        evidence.support,
+        evidence.observations
+    )
 }
 
 pub(crate) fn truncate_to_budget(
@@ -1133,7 +1149,8 @@ mod tests {
     fn relevance_sections_survive_the_default_budget() {
         use crate::config::DEFAULT_BUDGET;
         use crate::relevance::{
-            CouplingHint, RelevanceSource, RiskHint, RiskKind, ScopeArea, ScopeHints,
+            CouplingHint, HintConfidence, HintEvidence, RelevanceSource, RiskHint, RiskKind,
+            ScopeArea, ScopeHints,
         };
         // A packet sized like a real feature branch: populated relevance plus a
         // sizable changed surface and working tree. Guards against the default
@@ -1159,6 +1176,11 @@ mod tests {
                 reason: "companion test exists but is not in this diff — confirm intentional"
                     .to_string(),
                 source: RelevanceSource::GitLog,
+                evidence: HintEvidence {
+                    support: 6,
+                    observations: 10,
+                    confidence: HintConfidence::Medium,
+                },
             })
             .collect();
         packet.relevance.risk = (0..5)
@@ -1168,6 +1190,11 @@ mod tests {
                 reason: "high churn — 9 commits in the last 200 commits".to_string(),
                 action: "hot file — keep the change small and well-tested".to_string(),
                 source: RelevanceSource::GitLog,
+                evidence: HintEvidence {
+                    support: 9,
+                    observations: 200,
+                    confidence: HintConfidence::High,
+                },
             })
             .collect();
         packet.changed_surface = (0..30)
@@ -1194,6 +1221,8 @@ mod tests {
             rendered.contains("## Risk"),
             "risk must survive the default budget"
         );
+        assert!(rendered.contains("source: git log history; evidence: 6/10; confidence: medium"));
+        assert!(rendered.contains("source: git log history; evidence: 9/200; confidence: high"));
     }
 
     #[test]

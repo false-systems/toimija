@@ -53,6 +53,14 @@ deserialize as `degraded` with reason `packet predates coverage reporting`.
 Coverage describes the collection, not the repo state, so it never feeds the
 consistency token.
 
+Coupling and risk hints carry structured provenance (additive): `source` names
+the collection or heuristic, while `evidence` contains numeric `support`,
+`observations`, and `confidence` (`unrecorded`, `medium`, or `high`). Packets
+written before evidence reporting deserialize with `unrecorded` evidence.
+Sauma verification hashes the raw JSON value before those additive defaults are
+materialized, so an older valid packet does not appear tampered to a newer
+reader.
+
 The token proves freshness of the packet against the current Git working state.
 v2 uses deterministic Git status classes, normalized paths, file type, file
 mode, and a **SHA-256 content hash** of each changed and untracked file

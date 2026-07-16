@@ -300,7 +300,9 @@ mod tests {
     use crate::consistency::{ConflictState, Consistency, GitOperationState, HeadState};
     use crate::context::{ChangedSurfaceSource, ContextPacket, ReadFirstEntry};
     use crate::git::{ChangeStatus, GitState};
-    use crate::relevance::{CouplingHint, RelevancePacket, RelevanceSource, RiskHint, RiskKind};
+    use crate::relevance::{
+        CouplingHint, HintEvidence, RelevancePacket, RelevanceSource, RiskHint, RiskKind,
+    };
     use crate::repo::{RepoInfo, RepoKind};
     use crate::validate::{ValidationPlan, ValidationSource};
 
@@ -390,6 +392,7 @@ mod tests {
                     missing: PathBuf::from("tests/lib.rs"),
                     reason: "changed together".to_string(),
                     source: RelevanceSource::GitLog,
+                    evidence: HintEvidence::default(),
                 }],
                 risk: vec![RiskHint {
                     path: PathBuf::from("src/lib.rs"),
@@ -397,6 +400,7 @@ mod tests {
                     reason: "high churn".to_string(),
                     action: "keep the change small".to_string(),
                     source: RelevanceSource::GitLog,
+                    evidence: HintEvidence::default(),
                 }],
                 warnings: Vec::new(),
                 history_coverage: crate::coverage::Coverage::unrecorded(),

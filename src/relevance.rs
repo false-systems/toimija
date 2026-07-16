@@ -92,6 +92,8 @@ pub struct CouplingHint {
     pub missing: PathBuf,
     pub reason: String,
     pub source: RelevanceSource,
+    #[serde(default)]
+    pub evidence: HintEvidence,
 }
 
 /// A file flagged as risky by a cheap, bounded Git-history heuristic.
@@ -103,6 +105,24 @@ pub struct RiskHint {
     pub reason: String,
     pub action: String,
     pub source: RelevanceSource,
+    #[serde(default)]
+    pub evidence: HintEvidence,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HintEvidence {
+    pub support: usize,
+    pub observations: usize,
+    pub confidence: HintConfidence,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HintConfidence {
+    #[default]
+    Unrecorded,
+    Medium,
+    High,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,6 +130,8 @@ pub struct RiskHint {
 pub enum RiskKind {
     HighChurn,
     YoungFile,
+    /// Retained for backward-compatible packet deserialization. New packets
+    /// do not infer importance from a file merely being untouched.
     OldLoadBearing,
 }
 
@@ -190,7 +212,6 @@ pub fn compute_relevance(
             // mining, but the youngest surface there is).
             let base_added =
                 mine_added_files(runner, repo_root, log_ref, DEFAULT_LOG_WINDOW_COMMITS);
-            let base_tracked = mine_tracked_files(runner, repo_root, log_ref);
             let branch_added_set: BTreeSet<String> = input
                 .branch_added
                 .iter()
@@ -199,7 +220,6 @@ pub fn compute_relevance(
             let risk = compute_risk(
                 commits,
                 &base_added,
-                &base_tracked,
                 &branch_added_set,
                 changed,
                 &companion_tests,
@@ -307,29 +327,6 @@ fn mine_added_files(
     .unwrap_or_default()
 }
 
-/// Files tracked at the mined base ref. Used to distinguish old/stable files
-/// from genuinely new or untracked paths that simply have no history.
-fn mine_tracked_files(
-    runner: &impl CommandRunner,
-    repo_root: &Path,
-    start_ref: &str,
-) -> BTreeSet<String> {
-    run_git_ok(
-        runner,
-        repo_root,
-        &["ls-tree", "-r", "--name-only", start_ref],
-    )
-    .map(|stdout| {
-        stdout
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect()
-    })
-    .unwrap_or_default()
-}
-
 fn companion_tests_by_changed(
     repo_root: &Path,
     adapter: &dyn LanguageAdapter,
@@ -356,7 +353,6 @@ fn companion_tests_by_changed(
 fn compute_risk(
     commits: &[Vec<String>],
     base_added: &BTreeSet<String>,
-    base_tracked: &BTreeSet<String>,
     branch_added: &BTreeSet<String>,
     changed: &[PathBuf],
     companion_tests: &BTreeMap<PathBuf, Vec<PathBuf>>,
@@ -389,12 +385,18 @@ fn compute_risk(
                 .iter()
                 .any(|test| !changed_set.contains(test.as_path()))
         });
-        let (rank, kind, reason, action) = if count >= HIGH_CHURN_THRESHOLD {
+        let (rank, kind, reason, action, source, evidence) = if count >= HIGH_CHURN_THRESHOLD {
             (
                 0,
                 RiskKind::HighChurn,
                 format!("high churn — {count} commits in the {window}"),
                 "hot file — keep the change small and well-tested".to_string(),
+                RelevanceSource::GitLog,
+                HintEvidence {
+                    support: count,
+                    observations: commits.len(),
+                    confidence: HintConfidence::High,
+                },
             )
         } else if branch_added.contains(key) {
             (
@@ -402,6 +404,12 @@ fn compute_risk(
                 RiskKind::YoungFile,
                 "added on this branch — new surface".to_string(),
                 young_file_action(has_test_missing, has_test_in_diff),
+                RelevanceSource::MergeBaseDiff,
+                HintEvidence {
+                    support: 1,
+                    observations: 1,
+                    confidence: HintConfidence::High,
+                },
             )
         } else if base_added.contains(key) {
             (
@@ -409,13 +417,12 @@ fn compute_risk(
                 RiskKind::YoungFile,
                 "recently added — young surface".to_string(),
                 young_file_action(has_test_missing, has_test_in_diff),
-            )
-        } else if count == 0 && base_tracked.contains(key) {
-            (
-                3,
-                RiskKind::OldLoadBearing,
-                format!("not touched in the {window} — stable/load-bearing surface"),
-                "stable file — read surrounding context before changing".to_string(),
+                RelevanceSource::GitLog,
+                HintEvidence {
+                    support: 1,
+                    observations: commits.len(),
+                    confidence: HintConfidence::Medium,
+                },
             )
         } else {
             continue;
@@ -427,7 +434,8 @@ fn compute_risk(
                 kind,
                 reason,
                 action,
-                source: RelevanceSource::GitLog,
+                source,
+                evidence,
             },
         ));
     }
@@ -521,6 +529,11 @@ fn compute_coupling(
                     reason: "companion test exists but is not in this diff — confirm intentional"
                         .to_string(),
                     source: RelevanceSource::Heuristic,
+                    evidence: HintEvidence {
+                        support: 1,
+                        observations: 1,
+                        confidence: HintConfidence::Medium,
+                    },
                 });
         }
     }
@@ -582,6 +595,15 @@ fn compute_coupling(
                         "changed together {count}/{edits} times in the {window}; missing from this diff — confirm intentional"
                     ),
                     source: RelevanceSource::GitLog,
+                    evidence: HintEvidence {
+                        support: count,
+                        observations: edits,
+                        confidence: if count * 4 >= edits * 3 {
+                            HintConfidence::High
+                        } else {
+                            HintConfidence::Medium
+                        },
+                    },
                 },
             ))
         })
@@ -1233,6 +1255,25 @@ mod tests {
         assert_eq!(hints[0].changed, PathBuf::from("src/foo.rs"));
         assert_eq!(hints[0].missing, PathBuf::from("tests/foo.rs"));
         assert_eq!(hints[0].source, RelevanceSource::Heuristic);
+        assert_eq!(hints[0].evidence.support, 1);
+        assert_eq!(hints[0].evidence.observations, 1);
+        assert_eq!(hints[0].evidence.confidence, HintConfidence::Medium);
+    }
+
+    #[test]
+    fn hints_from_older_packets_default_to_unrecorded_evidence() {
+        let hint: CouplingHint = serde_json::from_str(
+            r#"{
+                "changed":"src/foo.rs",
+                "missing":"tests/foo.rs",
+                "reason":"changed together",
+                "source":"git_log"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(hint.evidence, HintEvidence::default());
+        assert_eq!(hint.evidence.confidence, HintConfidence::Unrecorded);
     }
 
     #[test]
@@ -1263,6 +1304,9 @@ mod tests {
         assert_eq!(hints[0].changed, PathBuf::from("a.rs"));
         assert_eq!(hints[0].missing, PathBuf::from("b.rs"));
         assert_eq!(hints[0].source, RelevanceSource::GitLog);
+        assert_eq!(hints[0].evidence.support, 2);
+        assert_eq!(hints[0].evidence.observations, 3);
+        assert_eq!(hints[0].evidence.confidence, HintConfidence::Medium);
     }
 
     #[test]
@@ -1396,7 +1440,6 @@ mod tests {
         commits.push(vec!["calm.rs".to_string()]);
         commits.push(vec!["calm.rs".to_string()]);
         let added: BTreeSet<String> = ["new.rs".to_string()].into_iter().collect();
-        let base_tracked: BTreeSet<String> = ["cold.rs".to_string()].into_iter().collect();
         let changed = vec![
             PathBuf::from("hot.rs"),
             PathBuf::from("calm.rs"),
@@ -1406,7 +1449,6 @@ mod tests {
         let risk = compute_risk(
             &commits,
             &added,
-            &base_tracked,
             &BTreeSet::new(),
             &changed,
             &BTreeMap::new(),
@@ -1415,17 +1457,24 @@ mod tests {
             .iter()
             .map(|hint| (hint.path.to_str().unwrap(), hint.kind))
             .collect();
-        // hot.rs = high churn; new.rs = young; cold.rs = untouched in the
-        // history window; calm.rs (2 commits, not added) = neither.
+        // hot.rs = high churn; new.rs = young. A file merely being untouched
+        // is not evidence that it is stable or load-bearing.
         assert_eq!(
             summary,
             vec![
                 ("hot.rs", RiskKind::HighChurn),
                 ("new.rs", RiskKind::YoungFile),
-                ("cold.rs", RiskKind::OldLoadBearing)
             ]
         );
         assert!(risk[0].action.contains("keep the change small"));
+        assert_eq!(risk[0].source, RelevanceSource::GitLog);
+        assert_eq!(risk[0].evidence.support, 8);
+        assert_eq!(risk[0].evidence.observations, 10);
+        assert_eq!(risk[0].evidence.confidence, HintConfidence::High);
+        assert_eq!(risk[1].source, RelevanceSource::GitLog);
+        assert_eq!(risk[1].evidence.support, 1);
+        assert_eq!(risk[1].evidence.observations, 10);
+        assert_eq!(risk[1].evidence.confidence, HintConfidence::Medium);
     }
 
     #[test]
@@ -1435,7 +1484,6 @@ mod tests {
         let risk = compute_risk(
             &commits,
             &added,
-            &BTreeSet::new(),
             &BTreeSet::new(),
             &[PathBuf::from("both.rs")],
             &BTreeMap::new(),
@@ -1459,7 +1507,6 @@ mod tests {
         let risk = compute_risk(
             &commits,
             &BTreeSet::new(),
-            &BTreeSet::new(),
             &added,
             &changed,
             &companion_tests,
@@ -1467,6 +1514,8 @@ mod tests {
 
         assert_eq!(risk.len(), 1);
         assert_eq!(risk[0].kind, RiskKind::YoungFile);
+        assert_eq!(risk[0].source, RelevanceSource::MergeBaseDiff);
+        assert_eq!(risk[0].evidence.confidence, HintConfidence::High);
         assert!(risk[0].action.contains("consider adding coverage"));
     }
 

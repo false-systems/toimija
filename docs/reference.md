@@ -565,7 +565,8 @@ entry file exists at all.
 Toimija does not only report Git state. It also uses bounded Git history to help
 an agent decide what to inspect first:
 
-- changed areas since merge-base, and areas untouched by the branch (`Scope`)
+- changed areas since merge-base, and areas untouched by the branch
+  (`Compiled workset`)
 - changed files ranked by likely relevance with a short reason (`Read order`);
   source churn corroborated as dependency-bump fallout (a changed manifest whose
   ecosystem lockfile changed in the same diff, e.g. `Cargo.toml` + `Cargo.lock`)
@@ -575,14 +576,13 @@ an agent decide what to inspect first:
   lockfile edit alone tags nothing, and files the branch itself added are always
   authored intent, never ripple.
 - companion files that are missing from the current diff (`Coupling`)
-- files with high churn, young surface, or stable/load-bearing history, plus a
-  concrete action hint (`Risk`)
+- files with high churn or young surface, plus a concrete action hint (`Risk`)
 
 > This is not semantic code understanding. It is Git-derived work relevance.
 
 > Tree-sitter can help after you know where to look. Toimija uses Git to decide where looking is worth it.
 
-These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, and language adapter path heuristics (no source parsing, no network, no index), and every hint carries an honest source label. History mining is bounded: the last 200 non-merge commits, starting from the merge-base so the branch does not vote on its own relevance. Historical coupling needs a missing partner to co-change at least twice and in at least 60% of the changed file's edits; existing companion tests are surfaced through path heuristics. "High churn" means at least 8 commits touched the file in that window. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
+These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, and language adapter path heuristics (no source parsing, no network, no index). Every coupling and risk hint carries its source, supporting observations, total observations, and a conservative confidence grade; the same fields are structured in JSON as `evidence.support`, `evidence.observations`, and `evidence.confidence`. History mining is bounded: the last 200 non-merge commits, starting from the merge-base so the branch does not vote on its own relevance. Historical coupling needs a missing partner to co-change at least twice and in at least 60% of the changed file's edits; existing companion tests are surfaced through path heuristics. "High churn" means at least 8 commits touched the file in that window. A file being untouched is not enough evidence to call it stable or load-bearing, so Toimija stays silent. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
 
 ## Validation
 
@@ -808,11 +808,11 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - 3 files — see Read order
 
 ## Coupling
-- src/git.rs changed, but tests/git_state.rs was not — companion test exists but is not in this diff — confirm intentional
+- src/git.rs changed, but tests/git_state.rs was not — companion test exists but is not in this diff — confirm intentional [source: file-pattern heuristic; evidence: 1/1; confidence: medium]
 
 ## Risk
-- src/render.rs — high churn — 9 commits in the last 200 commits; hot file — keep the change small and well-tested
-- tests/git_state.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage
+- src/render.rs — high churn — 9 commits in the last 200 commits; hot file — keep the change small and well-tested [source: git log history; evidence: 9/200; confidence: high]
+- tests/git_state.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage [source: branch diff since merge-base; evidence: 1/1; confidence: high]
 
 ## Recent commits
 - abc123 feat: make Git state explicit
