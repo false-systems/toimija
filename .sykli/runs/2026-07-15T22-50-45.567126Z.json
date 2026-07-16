@@ -1,0 +1,57 @@
+{
+  "id": "01KXKZKCXZ5Y2F6Z27K6HTW42K",
+  "timestamp": "2026-07-15T22:50:45.567126Z",
+  "overall": "passed",
+  "tasks": [
+    {
+      "name": "clippy",
+      "status": "passed",
+      "kind": "task",
+      "cached": true,
+      "duration_ms": 9,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 3,
+      "inputs": []
+    },
+    {
+      "name": "test",
+      "status": "passed",
+      "kind": "task",
+      "cached": true,
+      "duration_ms": 9,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 3,
+      "inputs": []
+    },
+    {
+      "name": "fmt",
+      "status": "passed",
+      "kind": "task",
+      "cached": true,
+      "duration_ms": 9,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 2,
+      "inputs": []
+    },
+    {
+      "name": "doctor",
+      "status": "passed",
+      "kind": "task",
+      "cached": false,
+      "duration_ms": 6083,
+      "contract_slice": {
+        "kind": "task"
+      },
+      "streak": 1,
+      "inputs": []
+    }
+  ],
+  "git_ref": "1b5ec57",
+  "git_branch": "feat/sykli-ci"
+}
