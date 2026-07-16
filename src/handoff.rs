@@ -363,6 +363,7 @@ mod tests {
                 conflicted_files: paths.clone(),
                 conflict_entries: Vec::new(),
                 branch_files: Vec::new(),
+                branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
                 recent_commits: Vec::new(),
             },
             changed_surface: paths,
@@ -398,6 +399,7 @@ mod tests {
                     source: RelevanceSource::GitLog,
                 }],
                 warnings: Vec::new(),
+                history_coverage: crate::coverage::Coverage::unrecorded(),
             },
             consistency: Consistency {
                 algorithm: "test".to_string(),

@@ -600,12 +600,30 @@ fn write_branch_surface(output: &mut String, packet: &ContextPacket) {
             )
             .unwrap();
             writeln!(output, "- merge-base: {merge_base}").unwrap();
-            writeln!(
-                output,
-                "- files changed since merge-base: {}",
-                packet.git.branch_files.len()
-            )
-            .unwrap();
+            // A failed branch diff must never read as "0 files changed" —
+            // render the blind spot instead of the count (R10, TA-005).
+            if packet.git.branch_diff_coverage.is_available() {
+                writeln!(
+                    output,
+                    "- files changed since merge-base: {}",
+                    packet.git.branch_files.len()
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    output,
+                    "- files changed since merge-base: unknown — collection {}{}",
+                    packet.git.branch_diff_coverage.status,
+                    packet
+                        .git
+                        .branch_diff_coverage
+                        .reason
+                        .as_deref()
+                        .map(|reason| format!(" ({reason})"))
+                        .unwrap_or_default()
+                )
+                .unwrap();
+            }
         }
         None => {
             writeln!(
@@ -853,6 +871,7 @@ mod tests {
                 conflicted_files: Vec::new(),
                 conflict_entries: Vec::new(),
                 branch_files: Vec::new(),
+                branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
                 recent_commits: Vec::new(),
             },
             changed_surface: Vec::new(),
@@ -884,6 +903,7 @@ mod tests {
                 conflicted_files: Vec::new(),
                 conflict_entries: Vec::new(),
                 branch_files: Vec::new(),
+                branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
                 recent_commits: Vec::new(),
             }),
             session: None,
@@ -900,6 +920,29 @@ mod tests {
         assert!(rendered.contains("## Validation plan"));
         // Repo-level packets carry no session identity.
         assert!(!rendered.contains("## Session"));
+    }
+
+    #[test]
+    fn failed_branch_diff_renders_unknown_not_zero() {
+        // R10 (TA-005): a failed collection must never read as "0 files
+        // changed" — the blind spot is rendered in place of the count.
+        let mut failed = packet();
+        failed.git.base = Some("origin/main".to_string());
+        failed.git.merge_base = Some("baseoid".to_string());
+        failed.git.branch_diff_coverage =
+            crate::coverage::Coverage::failed("git diff", "git exited with status 128");
+        let rendered = render_context_markdown(&failed, 4000);
+        assert!(rendered.contains(
+            "- files changed since merge-base: unknown — collection failed (git exited with status 128)"
+        ));
+        assert!(!rendered.contains("- files changed since merge-base: 0"));
+
+        let mut available = packet();
+        available.git.base = Some("origin/main".to_string());
+        available.git.merge_base = Some("baseoid".to_string());
+        available.git.branch_diff_coverage = crate::coverage::Coverage::available("git diff");
+        let rendered = render_context_markdown(&available, 4000);
+        assert!(rendered.contains("- files changed since merge-base: 0"));
     }
 
     #[test]
@@ -1329,6 +1372,11 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "untracked_files": [],
     "conflicted_files": [],
     "branch_files": [],
+    "branch_diff_coverage": {
+      "status": "degraded",
+      "reason": "packet predates coverage reporting",
+      "source": "unrecorded"
+    },
     "recent_commits": []
   },
   "changed_surface": [],
@@ -1363,7 +1411,12 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "read_order": [],
     "coupling": [],
     "risk": [],
-    "warnings": []
+    "warnings": [],
+    "history_coverage": {
+      "status": "degraded",
+      "reason": "packet predates coverage reporting",
+      "source": "unrecorded"
+    }
   },
   "consistency": {
     "algorithm": "toimija-consistency-v2",

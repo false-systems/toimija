@@ -478,6 +478,7 @@ mod tests {
             conflicted_files: Vec::new(),
             conflict_entries: Vec::new(),
             branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
         let consistency = Consistency::fingerprint(&git);
@@ -532,6 +533,7 @@ mod tests {
             conflicted_files: Vec::new(),
             conflict_entries: Vec::new(),
             branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
         let packet = ContextPacket {
@@ -587,6 +589,7 @@ mod tests {
             conflicted_files: Vec::new(),
             conflict_entries: Vec::new(),
             branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
         let consistency = Consistency::fingerprint(&git);
@@ -839,6 +842,7 @@ mod tests {
                     similarity: None,
                 },
             ],
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
 

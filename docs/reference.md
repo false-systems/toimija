@@ -219,7 +219,7 @@ Then, from anywhere in the repo, see who else is live:
 
 ```bash
 toimija sessions          # human listing: LIVE / STALE / CLOSED + warnings
-toimija sessions --json   # same, machine-readable
+toimija sessions --json   # same, machine-readable (carries marker-scan coverage)
 toimija sessions --prune  # remove closed/stale sessions older than 7 days
 ```
 
@@ -409,6 +409,9 @@ The packet includes:
 - staged / unstaged / untracked files
 - rename/copy origin paths and similarity when Git reports them, plus conflict
   index stages (mode and object ID)
+- collection **coverage** on the branch diff and history relevance stages
+  (`available` / `degraded` / `failed` with a reason and source), so an empty
+  list from a failed collection is never presented as a real observation
 - changed surface
 - scope
 - read order

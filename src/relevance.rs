@@ -16,7 +16,8 @@ use tracing::debug;
 
 use crate::adapters::LanguageAdapter;
 use crate::command::CommandRunner;
-use crate::git::run_git_ok;
+use crate::coverage::Coverage;
+use crate::git::{run_git_observed, run_git_ok};
 
 /// Top-level directories that hold many sibling projects. When a changed path
 /// sits under one, the scope area is the *second* level (`apps/foo`) rather than
@@ -33,6 +34,12 @@ pub struct RelevancePacket {
     pub coupling: Vec<CouplingHint>,
     pub risk: Vec<RiskHint>,
     pub warnings: Vec<String>,
+    /// Coverage of the bounded history mining behind `coupling` and `risk`
+    /// (R10, TA-005): empty hints with `available` coverage mean the history
+    /// really contains no signal; `failed` means `git log` did not deliver and
+    /// the hints are unavailable, not absent.
+    #[serde(default = "Coverage::unrecorded")]
+    pub history_coverage: Coverage,
 }
 
 impl RelevancePacket {
@@ -163,9 +170,13 @@ pub fn compute_relevance(
     // no merge-base. Bounded to one `git log` call, reused for coupling and risk.
     let log_ref = input.merge_base.unwrap_or("HEAD");
     let history = mine_log_commits(runner, repo_root, log_ref, DEFAULT_LOG_WINDOW_COMMITS);
+    let history_coverage = match &history {
+        Ok(_) => Coverage::available(HISTORY_SOURCE),
+        Err(reason) => Coverage::failed(HISTORY_SOURCE, reason.clone()),
+    };
     let mut warnings = Vec::new();
     let (coupling, risk) = match &history {
-        Some(commits) if !commits.is_empty() => {
+        Ok(commits) if !commits.is_empty() => {
             let companion_tests = companion_tests_by_changed(repo_root, input.adapter, changed);
             let coupling = compute_coupling(commits, changed, &companion_tests);
             debug!(
@@ -200,11 +211,26 @@ pub fn compute_relevance(
         }
         _ => (Vec::new(), Vec::new()),
     };
-    if !changed.is_empty() && history.as_ref().is_none_or(|commits| commits.is_empty()) {
-        debug!(event = "toimija.relevance.history.unavailable");
-        warnings.push(
-            "Relevance history unavailable: shallow or insufficient Git history.".to_string(),
-        );
+    if !changed.is_empty() {
+        match &history {
+            // Failure is a blind spot, not an empty observation — say so with
+            // words that cannot be read as "there is nothing to see".
+            Err(_) => {
+                debug!(event = "toimija.relevance.history.failed");
+                warnings.push(
+                    "Relevance history collection failed. Coupling and risk hints are unavailable, not absent."
+                        .to_string(),
+                );
+            }
+            Ok(commits) if commits.is_empty() => {
+                debug!(event = "toimija.relevance.history.unavailable");
+                warnings.push(
+                    "Relevance history unavailable: shallow or insufficient Git history."
+                        .to_string(),
+                );
+            }
+            Ok(_) => {}
+        }
     }
     debug!(
         event = "toimija.relevance.computed",
@@ -221,6 +247,7 @@ pub fn compute_relevance(
         coupling,
         risk,
         warnings,
+        history_coverage,
     }
 }
 
@@ -419,8 +446,12 @@ fn young_file_action(has_test_missing: bool, has_test_in_diff: bool) -> String {
     }
 }
 
+/// The coverage source label for bounded history mining.
+const HISTORY_SOURCE: &str = "git log --name-only (bounded window)";
+
 /// Mine the last `window` non-merge commits as lists of changed file paths.
-/// Returns `None` when `git log` fails, `Some(vec![])` when there is no history.
+/// Returns `Err` with a safe diagnostic when `git log` fails, `Ok(vec![])`
+/// when there is no history — the two must stay distinct (R10, TA-005).
 /// The `@@` marker prefixes each commit hash so file paths (which never start
 /// with `@@`) parse unambiguously.
 pub(crate) fn mine_log_commits(
@@ -428,9 +459,9 @@ pub(crate) fn mine_log_commits(
     repo_root: &Path,
     start_ref: &str,
     window: usize,
-) -> Option<Vec<Vec<String>>> {
+) -> Result<Vec<Vec<String>>, String> {
     let limit = window.to_string();
-    let stdout = run_git_ok(
+    let stdout = run_git_observed(
         runner,
         repo_root,
         &[
@@ -442,7 +473,8 @@ pub(crate) fn mine_log_commits(
             "--name-only",
             "--pretty=format:@@%H",
         ],
-    )?;
+    )
+    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())?;
     let mut commits: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = Vec::new();
     let mut started = false;
@@ -462,7 +494,7 @@ pub(crate) fn mine_log_commits(
     if started {
         commits.push(current);
     }
-    Some(commits)
+    Ok(commits)
 }
 
 /// Surface companions that are absent from the current diff. Primary hints come
@@ -1286,8 +1318,8 @@ mod tests {
     }
 
     #[test]
-    fn relevance_warns_on_unavailable_history() {
-        // FakeRunner returns failure for every command, so log mining yields None.
+    fn failed_history_mining_is_a_blind_spot_not_an_empty_observation() {
+        // FakeRunner exits nonzero for every command, so log mining fails.
         let runner = FakeRunner::default();
         let changed = vec![PathBuf::from("src/a.rs")];
         let packet = compute_relevance(
@@ -1303,6 +1335,50 @@ mod tests {
             },
         );
         assert!(packet.coupling.is_empty());
+        assert_eq!(
+            packet.history_coverage.status,
+            crate::coverage::CoverageStatus::Failed
+        );
+        assert!(
+            packet
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("unavailable, not absent")),
+            "expected a collection-failed warning, got {:?}",
+            packet.warnings
+        );
+    }
+
+    #[test]
+    fn empty_history_is_a_successful_observation_with_a_shallow_warning() {
+        // `git log` succeeds but reports no commits: coverage is available —
+        // the emptiness is real — and the shallow-history warning still shows.
+        let runner = FakeRunner::default().with(
+            &[
+                "log",
+                "base",
+                "--no-merges",
+                "-n",
+                "200",
+                "--name-only",
+                "--pretty=format:@@%H",
+            ],
+            "",
+        );
+        let changed = vec![PathBuf::from("src/a.rs")];
+        let packet = compute_relevance(
+            &runner,
+            Path::new("/repo"),
+            RelevanceInput {
+                adapter: &GenericAdapter,
+                changed: &changed,
+                branch_added: &[],
+                scope_source: RelevanceSource::MergeBaseDiff,
+                merge_base: Some("base"),
+                head_available: true,
+            },
+        );
+        assert!(packet.history_coverage.is_available());
         assert!(
             packet
                 .warnings

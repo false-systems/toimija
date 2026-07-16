@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::command::CommandRunner;
+use crate::coverage::Coverage;
 use crate::error::ToimijaError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,8 +32,16 @@ pub struct GitState {
     pub conflict_entries: Vec<ConflictEntry>,
     /// Files changed by commits on this branch since `merge_base`
     /// (`git diff --name-status <merge_base> HEAD`). Empty when there is no
-    /// merge-base or the branch adds no commits beyond it.
+    /// merge-base or the branch adds no commits beyond it — but only
+    /// `branch_diff_coverage` says whether an empty list is a real observation
+    /// or a blind spot.
     pub branch_files: Vec<ChangedFile>,
+    /// Coverage of the merge-base diff behind `branch_files` (R10, TA-005):
+    /// `available` means the (possibly empty) list is trustworthy; `degraded`
+    /// means the diff could not apply (no merge-base); `failed` means the diff
+    /// command itself failed and the list is unknown, not empty.
+    #[serde(default = "Coverage::unrecorded")]
+    pub branch_diff_coverage: Coverage,
     pub recent_commits: Vec<RecentCommit>,
 }
 
@@ -176,15 +185,36 @@ pub fn collect_git_state(
             }
         }
     }
-    let branch_files = match (merge_base.as_deref(), head_oid.as_deref()) {
-        (Some(base_oid), Some(head)) if base_oid != head => run_git_ok_bytes(
-            runner,
-            &repo_root,
-            &["diff", "--name-status", "-z", base_oid, head],
-        )
-        .map(|bytes| parse_name_status_bytes(&bytes))
-        .unwrap_or_default(),
-        _ => Vec::new(),
+    let (branch_files, branch_diff_coverage) = match (merge_base.as_deref(), head_oid.as_deref()) {
+        (Some(base_oid), Some(head)) if base_oid != head => {
+            match run_git_observed(
+                runner,
+                &repo_root,
+                &["diff", "--name-status", "-z", base_oid, head],
+            ) {
+                Ok(bytes) => (
+                    parse_name_status_bytes(&bytes),
+                    Coverage::available(BRANCH_DIFF_SOURCE),
+                ),
+                Err(reason) => {
+                    warnings.push(
+                        "Branch diff collection failed. Branch surface is unknown, not empty."
+                            .to_string(),
+                    );
+                    (Vec::new(), Coverage::failed(BRANCH_DIFF_SOURCE, reason))
+                }
+            }
+        }
+        // Merge-base equals HEAD: the branch adds no commits, so an empty list
+        // is a real observation, not a skipped one.
+        (Some(_), Some(_)) => (Vec::new(), Coverage::available(BRANCH_DIFF_SOURCE)),
+        _ => (
+            Vec::new(),
+            Coverage::degraded(
+                BRANCH_DIFF_SOURCE,
+                "no merge-base; branch surface unavailable",
+            ),
+        ),
     };
     let recent_commits = run_git_ok(runner, &repo_root, &["log", "-n", "10", "--oneline"])
         .map(|text| parse_recent_commits(&text))
@@ -244,6 +274,7 @@ pub fn collect_git_state(
             conflicted_files: parsed.conflicted_files,
             conflict_entries: parsed.conflict_entries,
             branch_files,
+            branch_diff_coverage,
             recent_commits,
         },
         warnings,
@@ -303,6 +334,24 @@ pub(crate) fn run_git_ok(runner: &impl CommandRunner, cwd: &Path, args: &[&str])
 fn run_git_ok_bytes(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let output = runner.run(cwd, "git", args).ok()?;
     (output.status == 0).then_some(output.stdout)
+}
+
+/// The coverage source label for the merge-base branch diff.
+const BRANCH_DIFF_SOURCE: &str = "git diff --name-status <merge-base> HEAD";
+
+/// Run a git command for a stage whose failure affects a product claim (R10):
+/// unlike [`run_git_ok_bytes`], spawn failure and a nonzero exit come back as
+/// distinct, safe diagnostics instead of collapsing into `None`.
+pub(crate) fn run_git_observed(
+    runner: &impl CommandRunner,
+    cwd: &Path,
+    args: &[&str],
+) -> Result<Vec<u8>, String> {
+    match runner.run(cwd, "git", args) {
+        Ok(output) if output.status == 0 => Ok(output.stdout),
+        Ok(output) => Err(format!("git exited with status {}", output.status)),
+        Err(error) => Err(format!("git failed to spawn: {}", error.kind())),
+    }
 }
 
 /// Compatibility parser for callers that provide line-delimited porcelain v2.
@@ -700,6 +749,143 @@ R094\tsrc/old.rs\tsrc/renamed.rs
                     similarity: Some(94),
                 },
             ]
+        );
+    }
+
+    /// A runner whose spawn always fails, for injecting the "git missing"
+    /// failure mode into coverage tests.
+    struct SpawnFailRunner;
+
+    impl CommandRunner for SpawnFailRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &str,
+            _args: &[&str],
+        ) -> std::io::Result<CommandOutput> {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+    }
+
+    #[test]
+    fn run_git_observed_distinguishes_exit_and_spawn_failure() {
+        // FakeRunner answers unknown args with exit status 1.
+        let exit = run_git_observed(&FakeRunner::default(), Path::new("."), &["status"]);
+        assert_eq!(exit, Err("git exited with status 1".to_string()));
+
+        let spawn = run_git_observed(&SpawnFailRunner, Path::new("."), &["status"]);
+        assert_eq!(
+            spawn,
+            Err("git failed to spawn: entity not found".to_string())
+        );
+    }
+
+    /// A runner primed with everything `collect_git_state` needs up to the
+    /// branch diff, so tests can vary only the diff outcome.
+    fn runner_with_merge_base() -> FakeRunner {
+        FakeRunner::default()
+            .with(&["rev-parse", "--show-toplevel"], 0, "/repo\n")
+            .with(&["rev-parse", "--git-dir"], 0, ".git\n")
+            .with(&["rev-parse", "HEAD"], 0, "headoid\n")
+            .with(
+                &["symbolic-ref", "--quiet", "--short", "HEAD"],
+                0,
+                "feat/x\n",
+            )
+            .with(
+                &[
+                    "status",
+                    "--porcelain=v2",
+                    "--branch",
+                    "--untracked-files=all",
+                    "-z",
+                ],
+                0,
+                "",
+            )
+            .with(
+                &[
+                    "symbolic-ref",
+                    "--quiet",
+                    "--short",
+                    "refs/remotes/origin/HEAD",
+                ],
+                0,
+                "origin/main\n",
+            )
+            .with(&["merge-base", "HEAD", "origin/main"], 0, "baseoid\n")
+    }
+
+    #[test]
+    fn empty_branch_diff_is_an_available_observation() {
+        let runner = runner_with_merge_base().with(
+            &["diff", "--name-status", "-z", "baseoid", "headoid"],
+            0,
+            "",
+        );
+        let (state, warnings) = collect_git_state(&runner, Path::new("/repo")).unwrap();
+        assert!(state.branch_files.is_empty());
+        assert!(state.branch_diff_coverage.is_available());
+        assert!(
+            !warnings
+                .iter()
+                .any(|warning| warning.contains("Branch diff collection failed"))
+        );
+    }
+
+    #[test]
+    fn failed_branch_diff_is_a_blind_spot_not_an_empty_observation() {
+        // No diff output primed: FakeRunner answers it with exit status 1.
+        let runner = runner_with_merge_base();
+        let (state, warnings) = collect_git_state(&runner, Path::new("/repo")).unwrap();
+        assert!(state.branch_files.is_empty());
+        assert_eq!(
+            state.branch_diff_coverage.status,
+            crate::coverage::CoverageStatus::Failed
+        );
+        assert_eq!(
+            state.branch_diff_coverage.reason.as_deref(),
+            Some("git exited with status 1")
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("Branch surface is unknown, not empty")),
+            "expected a branch-diff failure warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn missing_merge_base_degrades_branch_diff_coverage() {
+        // No base branch resolvable at all: coverage says why the surface is
+        // unavailable instead of presenting an empty list as an observation.
+        let runner = FakeRunner::default()
+            .with(&["rev-parse", "--show-toplevel"], 0, "/repo\n")
+            .with(&["rev-parse", "HEAD"], 0, "headoid\n")
+            .with(
+                &["symbolic-ref", "--quiet", "--short", "HEAD"],
+                0,
+                "feat/x\n",
+            )
+            .with(
+                &[
+                    "status",
+                    "--porcelain=v2",
+                    "--branch",
+                    "--untracked-files=all",
+                    "-z",
+                ],
+                0,
+                "",
+            );
+        let (state, _warnings) = collect_git_state(&runner, Path::new("/repo")).unwrap();
+        assert_eq!(
+            state.branch_diff_coverage.status,
+            crate::coverage::CoverageStatus::Degraded
+        );
+        assert_eq!(
+            state.branch_diff_coverage.reason.as_deref(),
+            Some("no merge-base; branch surface unavailable")
         );
     }
 

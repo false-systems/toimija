@@ -273,3 +273,76 @@ fn an_open_marker_with_a_dead_pid_is_stale_and_warned() {
         "a stale-but-open session should produce a descriptive warning"
     );
 }
+
+#[test]
+fn a_malformed_sibling_marker_is_visible_not_silent() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    write_marker(
+        temp.path(),
+        "100-1",
+        r#"{
+            "id": "100-1",
+            "pid": 1,
+            "agent": ["codex"],
+            "worktree": "/repo",
+            "branch": "feat/x",
+            "head": null,
+            "intent": "ship it",
+            "scope": [],
+            "started_at": 100,
+            "status": "closed",
+            "closed_at": 200,
+            "exit_status": 0
+        }"#,
+    );
+    // A sibling whose marker is corrupt: it must degrade the scan coverage and
+    // produce a warning naming the file — never shrink the listing silently.
+    write_marker(temp.path(), "100-2", "{corrupt");
+
+    let value = sessions_json(temp.path());
+    assert_eq!(value["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(value["coverage"]["status"], "degraded");
+    assert!(
+        value["coverage"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("1 session marker(s) unreadable")
+    );
+    let warnings = value["warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(|w| {
+            let message = w["message"].as_str().unwrap();
+            message.contains("session marker unreadable") && message.contains("100-2")
+        }),
+        "the malformed sibling must be named in the warnings"
+    );
+
+    // The default text listing shows the same blind spot.
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("sessions")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("session marker unreadable"));
+    assert!(stdout.contains("100-2"));
+}
+
+#[test]
+fn a_healthy_scan_reports_available_coverage() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    // Empty repo: no sessions at all is a successful empty observation.
+    let value = sessions_json(temp.path());
+    assert_eq!(value["sessions"].as_array().unwrap().len(), 0);
+    assert_eq!(value["coverage"]["status"], "available");
+}

@@ -1940,6 +1940,7 @@ mod tests {
             conflicted_files: Vec::new(),
             conflict_entries: Vec::new(),
             branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         }
     }

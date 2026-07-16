@@ -41,6 +41,17 @@ Changed-file objects may include `original_path` and `similarity` for Git
 renames/copies. `git.conflict_entries` preserves stages 1/2/3 with their mode
 and object ID while the existing `conflicted_files` list remains available.
 
+Collection stages carry coverage (additive, R10): `git.branch_diff_coverage`
+and `relevance.history_coverage` are `{ "status": "available"|"degraded"|
+"failed", "reason": "...", "source": "..." }` objects, and `toimija sessions
+--json` carries a top-level `coverage` for the marker scan. `available` means
+the (possibly empty) evidence is a real observation; `failed` means the
+collection did not deliver and no claim — positive or negative — may be derived
+from the empty list next to it. Packets written before these fields existed
+deserialize as `degraded` with reason `packet predates coverage reporting`.
+Coverage describes the collection, not the repo state, so it never feeds the
+consistency token.
+
 The token proves freshness of the packet against the current Git working state.
 v2 uses deterministic Git status classes, normalized paths, file type, file
 mode, and a **SHA-256 content hash** of each changed and untracked file
