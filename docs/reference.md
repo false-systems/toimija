@@ -760,10 +760,6 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - merge-base: def456
 - files changed since merge-base: 3
 
-## Recent commits
-- abc123 feat: make Git state explicit
-- def456 feat: add config-driven context rules
-
 ## Compiled workset
 - source: branch diff since merge-base
 - in play: README.md, src, tests
@@ -799,6 +795,13 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - Untracked files exist. They will not be committed unless added.
 - Working tree has unstaged changes.
 
+## Configured exclusions
+- target/
+
+## Changed surface
+- source: branch diff since merge-base
+- 3 files — see Read order
+
 ## Coupling
 - src/git.rs changed, but tests/git_state.rs was not — companion test exists but is not in this diff — confirm intentional
 
@@ -806,8 +809,9 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - src/render.rs — high churn — 9 commits in the last 200 commits; hot file — keep the change small and well-tested
 - tests/git_state.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage
 
-## Configured exclusions
-- target/
+## Recent commits
+- abc123 feat: make Git state explicit
+- def456 feat: add config-driven context rules
 
 ## Working tree
 ### Staged
@@ -820,9 +824,6 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 ### Conflicts
 - none
 
-## Changed surface
-- source: branch diff since merge-base
-- 4 files — see Read order
 ```
 
 ## Config
@@ -908,7 +909,11 @@ editing `xtask`.
 - Merge-base is attempted against the selected base candidate.
 - Validation plans are rendered only; commands are not executed.
 - Language detection uses simple marker files (Cargo.toml, mix.exs, go.mod, pyproject.toml/setup.py, package.json); full adapters outrank minimum packs.
-- Context budgets are approximate character caps, not token counts.
+- Context budgets are approximate UTF-8 byte caps, not token counts. Identity,
+  Git state, the workset contract, validation, warnings, exclusions, and the
+  changed-surface summary are mandatory and may exceed a very small budget.
+  Optional sections are included whole or named under `Budget omissions` with
+  exact item counts; the companion JSON packet remains complete.
 - Impact analysis is not yet available.
 - Upstream and merge-base may be unavailable in shallow, unborn, detached, or local-only repos.
 
@@ -922,7 +927,8 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - warnings are sorted and deduplicated
 - Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
 - every packet carries a normative `Workset contract` section (proposal 0005), rendered early so budget truncation cannot drop it: work from the Git-derived Compiled workset and Read order, treat declared session scope as advisory intent, treat exclusions as do-not-scan, and declare any expansion outside the workset (`toimija intent --scope`) instead of reading invisibly
-- high-value Markdown sections (`Compiled workset`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Coupling`, `Risk`) render before the raw working-tree and changed-surface lists
+- mandatory Markdown sections (`Git`, `Compiled workset`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Configured exclusions`, and `Changed surface`) are never displaced by optional history or working-tree detail
+- optional Markdown sections are selected atomically; omitted sections are named with exact item counts and the full JSON evidence path/command
 - Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections
 - empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
 - Git paths are read from NUL-delimited byte output. JSON keeps existing UTF-8

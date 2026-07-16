@@ -124,6 +124,8 @@ one. It is a git porcelain whose client is an agent instead of a human:
 
 - **Context** is compiled from plumbing reads — no index to keep fresh, no
   daemon, nothing to go stale. Fast because there is nothing to warm up.
+- **Budgets** never cut a path or hide safety state: optional sections are
+  omitted whole with exact counts, while the companion JSON stays complete.
 - **Freshness** is a content-based consistency token in every packet;
   `toimija verify` proves the packet still matches the repo before anyone
   trusts it. The packet is a claim, not a hope.

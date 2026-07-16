@@ -260,7 +260,7 @@ pub struct ContextArgs {
     /// Add a diff-focused section: committed, staged, unstaged, untracked, conflicts.
     #[arg(long)]
     pub for_diff: bool,
-    /// Approximate output cap in characters; long lists are truncated.
+    /// Approximate output cap in UTF-8 bytes; optional sections are omitted atomically.
     #[arg(long)]
     pub budget: Option<usize>,
 }
@@ -367,7 +367,7 @@ pub struct AuditPlanArgs {
     /// Print one 1-based surface workset instead of the summary.
     #[arg(long, value_name = "K")]
     pub surface: Option<usize>,
-    /// Approximate output cap in characters; long lists are truncated.
+    /// Approximate output cap in UTF-8 bytes; optional sections are omitted atomically.
     #[arg(long)]
     pub budget: Option<usize>,
 }

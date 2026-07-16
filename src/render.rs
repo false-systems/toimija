@@ -299,10 +299,8 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         .unwrap();
     }
 
-    // Proposal 0005: the contract renders on every packet and early, so budget
-    // truncation can never silently drop the obligation while keeping the data.
+    // Proposal 0005: the contract renders on every packet and early.
     write_workset_contract(&mut output);
-    let mandatory_end = output.len();
 
     write_h2(&mut output, "Git");
     writeln!(
@@ -354,10 +352,6 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     .unwrap();
 
     write_branch_surface(&mut output, packet);
-    write_recent_commits(&mut output, packet);
-    // Section order is also the budget-priority order: the raw changed-file
-    // lists are emitted LAST so a large diff can never starve the high-value
-    // sections (scope, read order, validation, warnings) under a tight budget.
     write_compiled_workset(&mut output, packet);
     write_read_order(&mut output, packet);
 
@@ -390,9 +384,6 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     warnings.extend(packet.relevance.warnings.iter().cloned());
     write_str_list(&mut output, &warnings, "none");
 
-    write_coupling(&mut output, packet);
-    write_risk(&mut output, packet);
-
     write_h2(&mut output, "Configured exclusions");
     // Proposal 0005 D3: an instruction, not an inventory.
     if !packet.safe_to_ignore.is_empty() {
@@ -400,14 +391,67 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     }
     write_path_list(&mut output, &packet.safe_to_ignore, "none");
 
-    if packet.for_diff {
-        write_diff_focus(&mut output, packet);
-    } else {
-        write_worktree_breakdown(&mut output, packet);
-    }
     write_changed_surface(&mut output, packet);
 
-    truncate_to_budget(output, budget, mandatory_end)
+    // Optional sections are selected atomically. A budget may omit a whole
+    // section, never cut a path or silently drop safety-critical state.
+    let mut optional = Vec::new();
+    if !packet.relevance.coupling.is_empty() {
+        let mut section = String::new();
+        write_coupling(&mut section, packet);
+        optional.push(("coupling hints", packet.relevance.coupling.len(), section));
+    }
+    if !packet.relevance.risk.is_empty() {
+        let mut section = String::new();
+        write_risk(&mut section, packet);
+        optional.push(("risk hints", packet.relevance.risk.len(), section));
+    }
+    let mut recent = String::new();
+    write_recent_commits(&mut recent, packet);
+    optional.push(("recent commits", packet.git.recent_commits.len(), recent));
+    let mut worktree = String::new();
+    if packet.for_diff {
+        write_diff_focus(&mut worktree, packet);
+    } else {
+        write_worktree_breakdown(&mut worktree, packet);
+    }
+    let worktree_items = packet.git.branch_files.len()
+        + packet.git.staged_files.len()
+        + packet.git.unstaged_files.len()
+        + packet.git.untracked_files.len()
+        + packet.git.conflicted_files.len();
+    optional.push(("working-tree details", worktree_items, worktree));
+
+    append_optional_sections(&mut output, budget, optional);
+    output
+}
+
+fn append_optional_sections(
+    output: &mut String,
+    budget: usize,
+    sections: Vec<(&'static str, usize, String)>,
+) {
+    let mut omitted = Vec::new();
+    for (name, count, section) in sections {
+        if output.len() + section.len() <= budget {
+            output.push_str(&section);
+        } else if count > 0 {
+            omitted.push((name, count));
+        }
+    }
+    if omitted.is_empty() {
+        return;
+    }
+    write_h2(output, "Budget omissions");
+    for (name, count) in omitted {
+        writeln!(output, "- {name}: {count} item(s)").unwrap();
+    }
+    writeln!(
+        output,
+        "- full evidence: use the companion JSON packet or `toimija context --json`\n\n\
+         Output truncated to fit approximate budget."
+    )
+    .unwrap();
 }
 
 pub fn render_audit_plan(plan: &AuditPlan, budget: usize, surface: Option<usize>) -> String {
@@ -1015,6 +1059,12 @@ mod tests {
             rendered.contains("## Warnings"),
             "warnings must survive truncation"
         );
+        assert!(rendered.contains("## Configured exclusions"));
+        assert!(rendered.contains("## Changed surface"));
+        assert!(rendered.contains("## Budget omissions"));
+        assert!(rendered.contains("- working-tree details: 40 item(s)"));
+        assert!(!rendered.contains("- recent commits: 0 item(s)"));
+        assert!(!rendered.contains("## Working tree"));
     }
 
     #[test]
@@ -1085,29 +1135,27 @@ mod tests {
     }
 
     #[test]
-    fn budget_truncation_cuts_on_line_boundary_without_splitting_chars() {
-        const MARKER: &str = "\n\nOutput truncated to fit approximate budget.\n";
-        // The fixture contains multi-byte chars (the em dash in the unset hint,
-        // the apostrophe in "Git’s state machine"). Sweeping budgets across them
-        // exercises cuts that a raw byte truncate would split (and panic on).
-        let packet = packet();
-        for budget in 30..600 {
-            let rendered = render_context_markdown(&packet, budget);
-            if let Some(kept) = rendered.strip_suffix(MARKER) {
-                assert!(
-                    kept.is_empty() || kept.ends_with('\n'),
-                    "kept content must end on a line boundary (no half-path) at budget {budget}"
-                );
-            }
-        }
+    fn small_budget_preserves_mandatory_context_without_fake_omissions() {
+        let rendered = render_context_markdown(&packet(), 100);
+        assert!(rendered.contains("## Workset contract"));
+        assert!(rendered.contains("invisible expansion is."));
+        assert!(!rendered.contains("## Budget omissions"));
+        assert!(!rendered.contains("Output truncated"));
     }
 
     #[test]
-    fn budget_truncation_does_not_panic() {
-        let rendered = render_context_markdown(&packet(), 100);
-        assert!(rendered.contains("Output truncated"));
-        assert!(rendered.contains("## Workset contract"));
-        assert!(rendered.contains("invisible expansion is."));
+    fn budget_truncation_cuts_on_line_boundary_without_splitting_chars() {
+        const MARKER: &str = "\n\nOutput truncated to fit approximate budget.\n";
+        let output = "surface 1/2 — src\nsurface 2/2 — docs\n".repeat(20);
+        for budget in 0..output.len() {
+            let rendered = truncate_to_budget(output.clone(), budget, 0);
+            if let Some(kept) = rendered.strip_suffix(MARKER) {
+                assert!(
+                    kept.is_empty() || kept.ends_with('\n'),
+                    "kept content must end on a line boundary at budget {budget}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1304,9 +1352,6 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 ## Branch surface
 - unavailable: no merge-base with origin/main
 
-## Recent commits
-- none
-
 ## Read first
 - none
 
@@ -1330,6 +1375,13 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 ## Configured exclusions
 - none
 
+## Changed surface
+- source: working tree and index
+- files: none
+
+## Recent commits
+- none
+
 ## Working tree
 ### Staged
 - none
@@ -1339,10 +1391,6 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 - none
 ### Conflicts
 - none
-
-## Changed surface
-- source: working tree and index
-- files: none
 "#;
         assert_eq!(rendered, expected);
     }
