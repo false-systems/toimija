@@ -231,6 +231,52 @@ fn prune_removes_old_closed_sessions_and_keeps_live_and_recent_ones() {
     assert!(!sessions_dir.join("old-closed").exists());
     assert!(sessions_dir.join("fresh-closed").exists());
     assert!(sessions_dir.join("live").exists());
+    let history = fs::read_to_string(temp.path().join(".toimija/history.jsonl")).unwrap();
+    let records: Vec<serde_json::Value> = history
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["id"], "old-closed");
+    assert_eq!(records[0]["end"], "closed");
+}
+
+#[test]
+fn prune_keeps_the_session_when_the_history_journal_cannot_be_opened() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let now = now_secs();
+    let id = "old-closed";
+    write_marker(
+        temp.path(),
+        id,
+        &format!(
+            r#"{{
+                "id": "{id}", "pid": 1, "agent": ["codex"],
+                "worktree": "/repo", "branch": "main", "head": null,
+                "intent": null, "scope": [],
+                "started_at": {started}, "status": "closed",
+                "closed_at": {closed}, "exit_status": 0
+            }}"#,
+            started = now - 9 * 24 * 60 * 60,
+            closed = now - 8 * 24 * 60 * 60,
+        ),
+    );
+    // A directory at the journal path makes append fail on every platform.
+    fs::create_dir_all(temp.path().join(".toimija/history.jsonl")).unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["sessions", "--prune"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("history.jsonl"));
+
+    assert!(temp.path().join(".toimija/sessions").join(id).exists());
 }
 
 #[test]
