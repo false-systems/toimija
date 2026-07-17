@@ -1,231 +1,218 @@
 # Toimija
 
-**The live entrance for agents into a repo. Simple, fast, smart.**
+**A Git-native context compiler and live entrypoint for coding agents.**
 
 ![Rust](https://img.shields.io/badge/rust-single_crate-orange)
 ![daemons](https://img.shields.io/badge/daemons-zero-success)
 ![network](https://img.shields.io/badge/network-never-success)
 ![source of truth](https://img.shields.io/badge/source_of_truth-git-8b5cf6)
 
-*Toimija* is Finnish for "the one who acts."
+*Toimija* is Finnish for “the one who acts.”
 
 > We do not ask the model to understand the repo first. We ask Git what state the repo is in.
 
-Every coding agent enters a repo the same way: glob, grep, read, guess. That
-cold crawl is slow, costs tokens, and is wrong the moment the repo moves. But
-every repo already ships a database that knows exactly what is going on — Git.
-Toimija compiles it into one small live packet, puts that packet in the
-agent's face, and tells you afterwards whether it was used.
+Coding agents usually enter a repository by globbing, grepping, reading, and
+guessing. That cold crawl costs time and tokens, duplicates work across agents,
+and can silently reason from stale or incomplete state.
+
+Toimija compiles the repository’s local Git state, history, configuration, and
+validation conventions into one bounded packet. The packet tells an agent what
+to read, what changed, how strong the evidence is, where collection failed, and
+whether the packet still matches the live worktree.
 
 Git is not a save button here. Git is the substrate.
 
-## 30 seconds
+> Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
+
+## Start in 30 seconds
 
 ```bash
 cargo install --path .
 cd /path/to/repo
 toimija init                              # once: seed .toimija/repo.yaml
-toimija adopt --hooks                     # once: agents learn to read the packet
-toimija run --intent "fix #51" -- codex   # every time: wrap the agent
+toimija adopt --hooks                     # once: teach agents the entry rule
+toimija run --intent "fix #51" -- codex   # every session: wrap the agent
 ```
 
-That is the whole workflow. `run` compiles the packet, verifies it against
-live Git state, launches the agent **with the packet inlined in its launch
-prompt** (`claude`, `codex`, `gemini`), keeps it fresh on every Git change while the
-agent works, and exits with the agent's status plus an honest report: what
-changed, and what of toimija the session actually used.
+`run` compiles and verifies a session packet, delivers it in the launch prompt
+for known agents (`claude`, `codex`, and `gemini`), keeps it fresh while the
+agent works, and exits with the wrapped command’s status plus an entry-to-exit
+summary.
+
+Use `--task` to include the concrete assignment:
+
+```bash
+toimija run \
+  --intent "fix authentication regression" \
+  --scope src/auth/ \
+  --task "repair the expired-session redirect" \
+  -- codex
+```
+
+## The packet is the product
+
+Every packet is available as readable Markdown and complete JSON:
+
+```text
+.toimija/current.md
+.toimija/current.json
+.toimija/sessions/<id>/current.md
+.toimija/sessions/<id>/current.json
+```
+
+It combines:
+
+- branch, HEAD, merge-base, index, worktree, conflicts, and untracked state;
+- the branch surface and recent commits;
+- a Git-derived workset and ordered reading plan;
+- coupling and risk hints with visible evidence and confidence;
+- collection coverage, including degraded and failed observations;
+- configured boundaries, exclusions, and validation commands;
+- session identity, declared intent, scope, and entry-state drift;
+- a content-based consistency token and provenance envelope.
+
+A typical agent sees the contract before the detail:
+
+```markdown
+## Workset contract
+Work from this packet's Scope and Read order; they are your working set, not a
+preamble. Configured exclusions are do-not-scan. You MAY read outside the
+workset when a concrete unresolved dependency requires it — but you MUST
+declare the expansion first. Expansion is never forbidden; invisible expansion
+is.
+```
+
+That changes the packet from helpful background into an operational boundary.
+The agent starts from compiled evidence and only widens its search when the task
+actually requires it.
+
+```mermaid
+flowchart LR
+    G["Git state + history"] --> C{{"toimija"}}
+    R["repo.yaml<br/>role · rules · validation"] --> C
+    C --> V["coverage<br/>available · degraded · failed"]
+    C --> E["evidence<br/>support · observations · confidence"]
+    V --> P["live packet<br/>Markdown + JSON"]
+    E --> P
+    P --> A["agent workset"]
+    P --> F["verify freshness"]
+```
+
+## Trust is explicit
+
+Toimija does not turn missing data into reassuring output.
+
+- **Collection coverage:** a collector reports `available`, `degraded`, or
+  `failed`. An empty successful observation is different from a failed
+  collection, and failed collection cannot support a positive or negative
+  claim.
+- **Evidence-backed relevance:** coupling and risk hints expose their source,
+  support, observation count, and confidence. Weak hints are suppressed instead
+  of padded into a longer list.
+- **Verifiable freshness:** `toimija verify` checks a content-based consistency
+  token against the current Git state. Same-size edits cannot hide behind file
+  metadata, and a bare timestamp change does not create false staleness.
+- **Honest budgets:** Markdown omits optional sections whole and reports exactly
+  what was omitted. JSON remains complete; safety state is never clipped to fit
+  a token budget.
+- **Fixed session baseline:** a session retains its entry branch and HEAD. Later
+  movement appears as drift rather than rewriting history.
+- **Chain of custody:** packets and handoffs carry a canonical sauma digest and
+  provenance edges tied to the repository state that produced them.
+
+The result is not merely a smaller prompt. It is a context artifact whose
+claims can be inspected and verified.
+
+## One live packet per agent
 
 ```mermaid
 sequenceDiagram
     participant Y as you
     participant T as toimija run
-    participant A as the agent
+    participant A as agent
 
-    Y->>T: toimija run --intent "fix #51" -- codex
-    T->>T: compile + verify the packet
-    T->>A: launch — packet inlined in the prompt (known agents) + TOIMIJA_* handshake
+    Y->>T: run --intent "fix #51" -- codex
+    T->>T: compile + verify session packet
+    T->>A: packet in launch prompt + discovery environment
     loop while the agent works
-        T->>T: refresh the packet on every Git change
+        T->>T: refresh on relevant Git/worktree change
     end
     A-->>T: exit
-    T-->>Y: entry→exit summary · agent's exit code
+    T-->>Y: entry→exit summary + agent exit code
 ```
 
-Use `--` before the wrapped command when you need to pass flags through
-unambiguously, for example `toimija run --intent unknown -- codex --help`.
+Each wrapped agent gets a packet under `.toimija/sessions/<id>/`; concurrent
+agents do not race on one shared context file. `toimija sessions` shows live,
+stale, and closed sessions plus overlap warnings. `toimija intent` records a
+mid-session scope expansion, and `toimija handoff` leaves a versioned record for
+whoever continues the work.
 
-Each `run` opens a **session** with its own live packet under
-`.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
-shared file. While the agent works, that session packet stays fresh: every
-relevant filesystem or Git-state change re-runs the refresh after a short
-debounce. The watcher uses a bounded 500 ms polling scan and therefore adds
-roughly 500 ms plus debounce latency, with full-tree stat cost while `watch` or
-`run` is active. It is foreground-only and stops the moment the agent exits —
-no daemon survives the command. The repo-level `.toimija/current.*` is kept too,
-demoted to a last-writer-wins "latest" summary for sessionless readers.
+This is awareness, not orchestration. Toimija never assigns work, dispatches an
+agent, blocks a sibling, or kills a process. Session state is read and written
+synchronously while an explicit command is running; the human remains the
+orchestrator.
 
-The polling backend is the boring reliability baseline: a future optimization
-can restore native events with a polling catch-up tick once measurements prove
-the safety margin.
-
-So the wrapped agent can *find* its live packet, `run` hands it an environment
-handshake. For known agents this is the backup channel (the packet already
-travels in the launch prompt); for everything else it is the only signal `run`
-injects into the child:
-
-| Variable | Meaning |
-| --- | --- |
-| `TOIMIJA_RUN=1` | The agent is under `run`; a watcher is keeping the packet fresh. |
-| `TOIMIJA_SESSION` | This session's id (`<unix-secs>-<pid>`). `toimija intent`, `enter`, and `refresh` use it to find the session. |
-| `TOIMIJA_LIVE` | Absolute path to this session's live `current.md` (authoritative). |
-| `TOIMIJA_LIVE_JSON` | Absolute path to this session's live `current.json`. |
-| `TOIMIJA_CURRENT_MD` | Alias of `TOIMIJA_LIVE`, for harnesses that key on the file name. |
-| `TOIMIJA_CURRENT_JSON` | Alias of `TOIMIJA_LIVE_JSON`. |
-| `TOIMIJA_REPO_ROOT` | Absolute path of the repo root the session runs in. |
-| `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
-| `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
-
-An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after HEAD, branch,
-index, or unfamiliar worktree changes instead of re-running `enter`; its own
-expected source edits do not require a full re-read. Before commit or handoff,
-`toimija verify` is the freshness boundary. `toimija snippet preflight` carries
-the same rule.
-
-Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
-agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
-auto-closes on exit. The marker is what `toimija sessions` reads (below) and the
-foundation for the `toimija handoff` record designed in
-`docs/proposals/0001-sessions-awareness-handoff.md`.
-Its entry branch and HEAD stay fixed; a later move appears as `Session drift` in
-the live packet instead of silently replacing the baseline.
-
-## Multi-agent sessions
-
-Several agents can work one repo at once without trampling each other's context.
-Each wrapped agent gets its **own** session packet, and `toimija sessions` makes
-the others visible.
-
-Declare why you're here (and optionally what you'll touch) when you launch — it's
-advisory, never an assignment or a lock:
+Before commit or handoff:
 
 ```bash
-toimija run --intent "add sessions command" --scope src/sessions.rs -- codex
+toimija verify
 ```
-
-The wrapped agent can also speak for itself, mid-session — it finds its own
-marker through the `TOIMIJA_SESSION` handshake:
-
-```bash
-toimija intent "migrating the auth module" --scope src/auth/
-```
-
-## The magic
-
-One idea, applied everywhere: **git is the database.** Every repo already
-ships a battle-tested, content-addressed, distributed database that every
-machine knows how to replicate — `.git`. Toimija refuses to build a second
-one. It is a git porcelain whose client is an agent instead of a human:
-
-- **Context** is compiled from plumbing reads — no index to keep fresh, no
-  daemon, nothing to go stale. Fast because there is nothing to warm up.
-- **Budgets** never cut a path or hide safety state: optional sections are
-  omitted whole with exact counts, while the companion JSON stays complete.
-- **Freshness** is a content-based consistency token in every packet;
-  `toimija verify` proves the packet still matches the repo before anyone
-  trusts it. The packet is a claim, not a hope.
-- **Snapshots** are `write-tree` plus a ref — an immutable version of the
-  worktree, garbage-collected by git itself.
-- **Provenance** is a canonical digest plus edges (the sauma envelope) —
-  passive files and a reader, the same shape as git.
-
-The design test for any new need: *"does git already store this?"* — before
-writing a line of infrastructure.
-
-> Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
-
-## Wrapped means used
-
-Toimija does not hope agents read its context — it removes the choice:
-
-- Every packet opens with a **workset contract**: work from the Git-derived
-  Compiled workset and Read order; the session's declared scope remains
-  advisory intent. Exclusions are do-not-scan; declare any expansion. *Expansion is
-  never forbidden; invisible expansion is.*
-- `run` **refuses to launch without `--intent`** — declaring why the session
-  exists is the entry fee (`--intent unknown` is the escape hatch).
-- Known agents get the packet **in their launch prompt** — argv, not an env
-  var they might check. They cannot not-see it. Your `--task` travels with it.
-- The exit summary reports **consumption**: intent, declared expansions,
-  handoff records. Non-use is visible, never silent.
-- `toimija adopt` maintains one flat instruction — read the packet first —
-  in every agent entry file convention (`AGENTS.md`, `CLAUDE.md`,
-  `.cursorrules`, …), drift-guarded by `doctor --strict`; `--hooks` adds Git
-  refresh hooks and the repo-local Claude Code SessionStart hook.
-
-```text
-toimija run: session summary
-  branch:    main → feature/login
-  HEAD:      a1b2c3d → e4f5a6b (moved)
-  refreshed: 12 time(s) while you worked
-  intent:    "add login flow" (declared at launch)
-  expansions: 2 scope path(s) declared while working
-  handoff:   1 record(s)
-```
-
-## Many agents, one repo
-
-Each wrapped agent gets its own live session packet — no trampling.
-`toimija sessions` shows who else is live (heartbeat-based, read-only),
-`toimija intent` lets an agent declare what it is doing mid-session, and
-`toimija handoff` leaves a versioned record for whoever continues the work.
-Visibility, never orchestration: toimija never assigns, blocks, or kills —
-the human stays the orchestrator.
-
-## What you get
-
-| | |
-|---|---|
-| **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed while the agent works. |
-| **Git-derived relevance** | What to read first, what co-changes, what is risky — with visible evidence and confidence. Advisory, no source parsing. |
-| **Verifiable freshness** | A content-based token in every packet; `verify` before trust; `snapshot` to freeze. |
-| **Multi-agent awareness** | Sessions, overlap warnings, handoff records. |
-| **Chain of custody** | Sauma envelopes link artifacts across tools to the exact repo state they came from. |
-| **Validation plans** | Inferred per language, overridden by config, never executed by toimija. |
-| **Staged audits** | `audit-plan` cuts a repo into bounded, deterministic audit surfaces. |
-| **Squash-proof landing checks** | `landed` answers "did this branch land?" by content, where ancestry lies. |
-
-Languages: **Rust** and **Elixir** have full adapters; **Go, Python, JS/TS**
-get the minimum language pack (detection, test + lint plan, companion-test
-hints — one data row each); anything else works via `repo.yaml` config.
 
 ## Commands
 
-```bash
-toimija run --intent "..." [--task "..."] -- <agent>   # the entrypoint
-toimija sessions | intent | handoff        # awareness · declaration · handoff
-toimija enter | context | refresh | watch  # the packet, on demand
-toimija verify | snapshot                  # trust, then freeze
-toimija audit-plan [--surface K]           # bounded audit worksets
-toimija adopt [--hooks] | init | doctor    # setup and the drift guard
-toimija validate --plan | landed           # validation plan · landing check
-```
+| Command | Purpose |
+| --- | --- |
+| `run --intent "..." -- <agent>` | Compile, deliver, refresh, and summarize a wrapped agent session. |
+| `enter`, `context`, `refresh`, `watch` | Produce or maintain the live packet directly. |
+| `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
+| `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
+| `audit-plan` | Partition broad reviews into bounded deterministic worksets. |
+| `validate --plan` | Render inferred and configured validation commands; never execute them. |
+| `landed` | Check whether branch content landed even when squash merges hide ancestry. |
+| `init`, `adopt`, `doctor` | Configure a repo, install the entry rule, and detect policy drift. |
 
-Every command, flag, and output guarantee: **[docs/reference.md](docs/reference.md)**.
+See the **[complete reference](docs/reference.md)** for every flag, environment
+variable, packet field, and output guarantee.
+
+## Language support
+
+Rust and Elixir have full adapters. Go, Python, and JavaScript/TypeScript receive
+the minimum language pack: repository detection, validation-plan hints, and
+companion-test discovery. Other repositories work through
+`.toimija/repo.yaml`.
+
+Adapters contribute hints; they do not parse source code. Git-derived context
+remains the common substrate across languages.
 
 ## Boundaries
 
-The boundaries are the feature. No network, ever. No daemons — `watch`/`run`
-live only while invoked. No source parsing, no MCP/LSP/Tree-sitter. No
-mid-session policing: delivery is structural at launch, evidence at exit,
-nothing in between. Advisory posture throughout; the one opt-in gate is
-`doctor --strict`, which fails CI when config and agent docs drift apart.
+The boundaries are part of the trust model:
 
-## Develop
+- no network calls or implicit fetches;
+- no background daemon—`watch` and `run` exist only while invoked;
+- no MCP, LSP, Tree-sitter, SCIP, Kythe, or hidden source index;
+- no model-provider calls, prompt ownership, or patch application;
+- no automatic execution of validation commands;
+- no task dispatch, assignment, or agent orchestration.
+
+Relevance remains file-level, heuristic, and advisory. Coverage describes what
+Toimija successfully observed, not omniscience about the repository. Those
+limits are rendered instead of hidden.
+
+## Development status
+
+Toimija is currently a v0.1 Rust CLI being prepared for public use. It is one
+crate, local-first, and intentionally small enough to audit. The Markdown packet
+is the human interface; JSON is the complete machine-readable contract and
+evolves additively within a schema version.
 
 ```bash
-cargo build && cargo test
-cargo xtask install-pre-commit-hook   # once per clone: fmt + clippy + test gate
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo xtask install-pre-commit-hook   # once per clone
 ```
 
-Full manual: **[docs/reference.md](docs/reference.md)** · design history:
-`docs/proposals/`
+Design history lives in [`docs/proposals/`](docs/proposals/). The cross-tool
+packet contract is documented in
+[`docs/joskus-contract.md`](docs/joskus-contract.md).
