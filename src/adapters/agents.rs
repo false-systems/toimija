@@ -55,7 +55,9 @@ pub fn compose_launch_prompt(
          reading outside it.\n",
     );
     prompt.push_str(&format!(
-        "Live packet (re-read after Git-state changes): {}\n\n",
+        "Live packet (re-read after HEAD, branch, index, or unfamiliar worktree changes; \
+         your own expected source edits do not require a full re-read; run `toimija verify` \
+         before commit or handoff): {}\n\n",
         live_packet.display()
     ));
     prompt.push_str(packet_markdown.trim_end());
@@ -94,6 +96,8 @@ mod tests {
         .unwrap();
         assert!(prompt.starts_with("Your toimija session packet is below."));
         assert!(prompt.contains("workset contract"));
+        assert!(prompt.contains("your own expected source edits do not require a full re-read"));
+        assert!(prompt.contains("run `toimija verify` before commit or handoff"));
         assert!(prompt.contains(".toimija/sessions/1-1/current.md"));
         assert!(prompt.contains("# Toimija Context"));
         assert!(prompt.ends_with("Task: fix #51\n"));

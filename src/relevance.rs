@@ -16,7 +16,8 @@ use tracing::debug;
 
 use crate::adapters::LanguageAdapter;
 use crate::command::CommandRunner;
-use crate::git::run_git_ok;
+use crate::coverage::Coverage;
+use crate::git::{run_git_observed, run_git_ok};
 
 /// Top-level directories that hold many sibling projects. When a changed path
 /// sits under one, the scope area is the *second* level (`apps/foo`) rather than
@@ -33,6 +34,12 @@ pub struct RelevancePacket {
     pub coupling: Vec<CouplingHint>,
     pub risk: Vec<RiskHint>,
     pub warnings: Vec<String>,
+    /// Coverage of the bounded history mining behind `coupling` and `risk`
+    /// (R10, TA-005): empty hints with `available` coverage mean the history
+    /// really contains no signal; `failed` means `git log` did not deliver and
+    /// the hints are unavailable, not absent.
+    #[serde(default = "Coverage::unrecorded")]
+    pub history_coverage: Coverage,
 }
 
 impl RelevancePacket {
@@ -47,7 +54,8 @@ impl RelevancePacket {
     }
 }
 
-/// What the branch is touching versus the areas it leaves alone.
+/// The compiled Git workset: what the branch is touching versus the areas it
+/// leaves alone. This is evidence, not the session's declared scope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScopeHints {
     pub in_play: Vec<ScopeArea>,
@@ -84,6 +92,8 @@ pub struct CouplingHint {
     pub missing: PathBuf,
     pub reason: String,
     pub source: RelevanceSource,
+    #[serde(default)]
+    pub evidence: HintEvidence,
 }
 
 /// A file flagged as risky by a cheap, bounded Git-history heuristic.
@@ -95,6 +105,24 @@ pub struct RiskHint {
     pub reason: String,
     pub action: String,
     pub source: RelevanceSource,
+    #[serde(default)]
+    pub evidence: HintEvidence,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HintEvidence {
+    pub support: usize,
+    pub observations: usize,
+    pub confidence: HintConfidence,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HintConfidence {
+    #[default]
+    Unrecorded,
+    Medium,
+    High,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,6 +130,8 @@ pub struct RiskHint {
 pub enum RiskKind {
     HighChurn,
     YoungFile,
+    /// Retained for backward-compatible packet deserialization. New packets
+    /// do not infer importance from a file merely being untouched.
     OldLoadBearing,
 }
 
@@ -163,9 +193,13 @@ pub fn compute_relevance(
     // no merge-base. Bounded to one `git log` call, reused for coupling and risk.
     let log_ref = input.merge_base.unwrap_or("HEAD");
     let history = mine_log_commits(runner, repo_root, log_ref, DEFAULT_LOG_WINDOW_COMMITS);
+    let history_coverage = match &history {
+        Ok(_) => Coverage::available(HISTORY_SOURCE),
+        Err(reason) => Coverage::failed(HISTORY_SOURCE, reason.clone()),
+    };
     let mut warnings = Vec::new();
     let (coupling, risk) = match &history {
-        Some(commits) if !commits.is_empty() => {
+        Ok(commits) if !commits.is_empty() => {
             let companion_tests = companion_tests_by_changed(repo_root, input.adapter, changed);
             let coupling = compute_coupling(commits, changed, &companion_tests);
             debug!(
@@ -178,7 +212,6 @@ pub fn compute_relevance(
             // mining, but the youngest surface there is).
             let base_added =
                 mine_added_files(runner, repo_root, log_ref, DEFAULT_LOG_WINDOW_COMMITS);
-            let base_tracked = mine_tracked_files(runner, repo_root, log_ref);
             let branch_added_set: BTreeSet<String> = input
                 .branch_added
                 .iter()
@@ -187,7 +220,6 @@ pub fn compute_relevance(
             let risk = compute_risk(
                 commits,
                 &base_added,
-                &base_tracked,
                 &branch_added_set,
                 changed,
                 &companion_tests,
@@ -200,11 +232,26 @@ pub fn compute_relevance(
         }
         _ => (Vec::new(), Vec::new()),
     };
-    if !changed.is_empty() && history.as_ref().is_none_or(|commits| commits.is_empty()) {
-        debug!(event = "toimija.relevance.history.unavailable");
-        warnings.push(
-            "Relevance history unavailable: shallow or insufficient Git history.".to_string(),
-        );
+    if !changed.is_empty() {
+        match &history {
+            // Failure is a blind spot, not an empty observation — say so with
+            // words that cannot be read as "there is nothing to see".
+            Err(_) => {
+                debug!(event = "toimija.relevance.history.failed");
+                warnings.push(
+                    "Relevance history collection failed. Coupling and risk hints are unavailable, not absent."
+                        .to_string(),
+                );
+            }
+            Ok(commits) if commits.is_empty() => {
+                debug!(event = "toimija.relevance.history.unavailable");
+                warnings.push(
+                    "Relevance history unavailable: shallow or insufficient Git history."
+                        .to_string(),
+                );
+            }
+            Ok(_) => {}
+        }
     }
     debug!(
         event = "toimija.relevance.computed",
@@ -221,6 +268,7 @@ pub fn compute_relevance(
         coupling,
         risk,
         warnings,
+        history_coverage,
     }
 }
 
@@ -279,29 +327,6 @@ fn mine_added_files(
     .unwrap_or_default()
 }
 
-/// Files tracked at the mined base ref. Used to distinguish old/stable files
-/// from genuinely new or untracked paths that simply have no history.
-fn mine_tracked_files(
-    runner: &impl CommandRunner,
-    repo_root: &Path,
-    start_ref: &str,
-) -> BTreeSet<String> {
-    run_git_ok(
-        runner,
-        repo_root,
-        &["ls-tree", "-r", "--name-only", start_ref],
-    )
-    .map(|stdout| {
-        stdout
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect()
-    })
-    .unwrap_or_default()
-}
-
 fn companion_tests_by_changed(
     repo_root: &Path,
     adapter: &dyn LanguageAdapter,
@@ -328,7 +353,6 @@ fn companion_tests_by_changed(
 fn compute_risk(
     commits: &[Vec<String>],
     base_added: &BTreeSet<String>,
-    base_tracked: &BTreeSet<String>,
     branch_added: &BTreeSet<String>,
     changed: &[PathBuf],
     companion_tests: &BTreeMap<PathBuf, Vec<PathBuf>>,
@@ -361,12 +385,18 @@ fn compute_risk(
                 .iter()
                 .any(|test| !changed_set.contains(test.as_path()))
         });
-        let (rank, kind, reason, action) = if count >= HIGH_CHURN_THRESHOLD {
+        let (rank, kind, reason, action, source, evidence) = if count >= HIGH_CHURN_THRESHOLD {
             (
                 0,
                 RiskKind::HighChurn,
                 format!("high churn — {count} commits in the {window}"),
                 "hot file — keep the change small and well-tested".to_string(),
+                RelevanceSource::GitLog,
+                HintEvidence {
+                    support: count,
+                    observations: commits.len(),
+                    confidence: HintConfidence::High,
+                },
             )
         } else if branch_added.contains(key) {
             (
@@ -374,6 +404,12 @@ fn compute_risk(
                 RiskKind::YoungFile,
                 "added on this branch — new surface".to_string(),
                 young_file_action(has_test_missing, has_test_in_diff),
+                RelevanceSource::MergeBaseDiff,
+                HintEvidence {
+                    support: 1,
+                    observations: 1,
+                    confidence: HintConfidence::High,
+                },
             )
         } else if base_added.contains(key) {
             (
@@ -381,13 +417,12 @@ fn compute_risk(
                 RiskKind::YoungFile,
                 "recently added — young surface".to_string(),
                 young_file_action(has_test_missing, has_test_in_diff),
-            )
-        } else if count == 0 && base_tracked.contains(key) {
-            (
-                3,
-                RiskKind::OldLoadBearing,
-                format!("not touched in the {window} — stable/load-bearing surface"),
-                "stable file — read surrounding context before changing".to_string(),
+                RelevanceSource::GitLog,
+                HintEvidence {
+                    support: 1,
+                    observations: commits.len(),
+                    confidence: HintConfidence::Medium,
+                },
             )
         } else {
             continue;
@@ -399,7 +434,8 @@ fn compute_risk(
                 kind,
                 reason,
                 action,
-                source: RelevanceSource::GitLog,
+                source,
+                evidence,
             },
         ));
     }
@@ -419,8 +455,12 @@ fn young_file_action(has_test_missing: bool, has_test_in_diff: bool) -> String {
     }
 }
 
+/// The coverage source label for bounded history mining.
+const HISTORY_SOURCE: &str = "git log --name-only (bounded window)";
+
 /// Mine the last `window` non-merge commits as lists of changed file paths.
-/// Returns `None` when `git log` fails, `Some(vec![])` when there is no history.
+/// Returns `Err` with a safe diagnostic when `git log` fails, `Ok(vec![])`
+/// when there is no history — the two must stay distinct (R10, TA-005).
 /// The `@@` marker prefixes each commit hash so file paths (which never start
 /// with `@@`) parse unambiguously.
 pub(crate) fn mine_log_commits(
@@ -428,9 +468,9 @@ pub(crate) fn mine_log_commits(
     repo_root: &Path,
     start_ref: &str,
     window: usize,
-) -> Option<Vec<Vec<String>>> {
+) -> Result<Vec<Vec<String>>, String> {
     let limit = window.to_string();
-    let stdout = run_git_ok(
+    let stdout = run_git_observed(
         runner,
         repo_root,
         &[
@@ -442,7 +482,8 @@ pub(crate) fn mine_log_commits(
             "--name-only",
             "--pretty=format:@@%H",
         ],
-    )?;
+    )
+    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())?;
     let mut commits: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = Vec::new();
     let mut started = false;
@@ -462,7 +503,7 @@ pub(crate) fn mine_log_commits(
     if started {
         commits.push(current);
     }
-    Some(commits)
+    Ok(commits)
 }
 
 /// Surface companions that are absent from the current diff. Primary hints come
@@ -488,6 +529,11 @@ fn compute_coupling(
                     reason: "companion test exists but is not in this diff — confirm intentional"
                         .to_string(),
                     source: RelevanceSource::Heuristic,
+                    evidence: HintEvidence {
+                        support: 1,
+                        observations: 1,
+                        confidence: HintConfidence::Medium,
+                    },
                 });
         }
     }
@@ -549,6 +595,15 @@ fn compute_coupling(
                         "changed together {count}/{edits} times in the {window}; missing from this diff — confirm intentional"
                     ),
                     source: RelevanceSource::GitLog,
+                    evidence: HintEvidence {
+                        support: count,
+                        observations: edits,
+                        confidence: if count * 4 >= edits * 3 {
+                            HintConfidence::High
+                        } else {
+                            HintConfidence::Medium
+                        },
+                    },
                 },
             ))
         })
@@ -1200,6 +1255,25 @@ mod tests {
         assert_eq!(hints[0].changed, PathBuf::from("src/foo.rs"));
         assert_eq!(hints[0].missing, PathBuf::from("tests/foo.rs"));
         assert_eq!(hints[0].source, RelevanceSource::Heuristic);
+        assert_eq!(hints[0].evidence.support, 1);
+        assert_eq!(hints[0].evidence.observations, 1);
+        assert_eq!(hints[0].evidence.confidence, HintConfidence::Medium);
+    }
+
+    #[test]
+    fn hints_from_older_packets_default_to_unrecorded_evidence() {
+        let hint: CouplingHint = serde_json::from_str(
+            r#"{
+                "changed":"src/foo.rs",
+                "missing":"tests/foo.rs",
+                "reason":"changed together",
+                "source":"git_log"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(hint.evidence, HintEvidence::default());
+        assert_eq!(hint.evidence.confidence, HintConfidence::Unrecorded);
     }
 
     #[test]
@@ -1230,6 +1304,9 @@ mod tests {
         assert_eq!(hints[0].changed, PathBuf::from("a.rs"));
         assert_eq!(hints[0].missing, PathBuf::from("b.rs"));
         assert_eq!(hints[0].source, RelevanceSource::GitLog);
+        assert_eq!(hints[0].evidence.support, 2);
+        assert_eq!(hints[0].evidence.observations, 3);
+        assert_eq!(hints[0].evidence.confidence, HintConfidence::Medium);
     }
 
     #[test]
@@ -1286,8 +1363,8 @@ mod tests {
     }
 
     #[test]
-    fn relevance_warns_on_unavailable_history() {
-        // FakeRunner returns failure for every command, so log mining yields None.
+    fn failed_history_mining_is_a_blind_spot_not_an_empty_observation() {
+        // FakeRunner exits nonzero for every command, so log mining fails.
         let runner = FakeRunner::default();
         let changed = vec![PathBuf::from("src/a.rs")];
         let packet = compute_relevance(
@@ -1303,6 +1380,50 @@ mod tests {
             },
         );
         assert!(packet.coupling.is_empty());
+        assert_eq!(
+            packet.history_coverage.status,
+            crate::coverage::CoverageStatus::Failed
+        );
+        assert!(
+            packet
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("unavailable, not absent")),
+            "expected a collection-failed warning, got {:?}",
+            packet.warnings
+        );
+    }
+
+    #[test]
+    fn empty_history_is_a_successful_observation_with_a_shallow_warning() {
+        // `git log` succeeds but reports no commits: coverage is available —
+        // the emptiness is real — and the shallow-history warning still shows.
+        let runner = FakeRunner::default().with(
+            &[
+                "log",
+                "base",
+                "--no-merges",
+                "-n",
+                "200",
+                "--name-only",
+                "--pretty=format:@@%H",
+            ],
+            "",
+        );
+        let changed = vec![PathBuf::from("src/a.rs")];
+        let packet = compute_relevance(
+            &runner,
+            Path::new("/repo"),
+            RelevanceInput {
+                adapter: &GenericAdapter,
+                changed: &changed,
+                branch_added: &[],
+                scope_source: RelevanceSource::MergeBaseDiff,
+                merge_base: Some("base"),
+                head_available: true,
+            },
+        );
+        assert!(packet.history_coverage.is_available());
         assert!(
             packet
                 .warnings
@@ -1319,7 +1440,6 @@ mod tests {
         commits.push(vec!["calm.rs".to_string()]);
         commits.push(vec!["calm.rs".to_string()]);
         let added: BTreeSet<String> = ["new.rs".to_string()].into_iter().collect();
-        let base_tracked: BTreeSet<String> = ["cold.rs".to_string()].into_iter().collect();
         let changed = vec![
             PathBuf::from("hot.rs"),
             PathBuf::from("calm.rs"),
@@ -1329,7 +1449,6 @@ mod tests {
         let risk = compute_risk(
             &commits,
             &added,
-            &base_tracked,
             &BTreeSet::new(),
             &changed,
             &BTreeMap::new(),
@@ -1338,17 +1457,24 @@ mod tests {
             .iter()
             .map(|hint| (hint.path.to_str().unwrap(), hint.kind))
             .collect();
-        // hot.rs = high churn; new.rs = young; cold.rs = untouched in the
-        // history window; calm.rs (2 commits, not added) = neither.
+        // hot.rs = high churn; new.rs = young. A file merely being untouched
+        // is not evidence that it is stable or load-bearing.
         assert_eq!(
             summary,
             vec![
                 ("hot.rs", RiskKind::HighChurn),
                 ("new.rs", RiskKind::YoungFile),
-                ("cold.rs", RiskKind::OldLoadBearing)
             ]
         );
         assert!(risk[0].action.contains("keep the change small"));
+        assert_eq!(risk[0].source, RelevanceSource::GitLog);
+        assert_eq!(risk[0].evidence.support, 8);
+        assert_eq!(risk[0].evidence.observations, 10);
+        assert_eq!(risk[0].evidence.confidence, HintConfidence::High);
+        assert_eq!(risk[1].source, RelevanceSource::GitLog);
+        assert_eq!(risk[1].evidence.support, 1);
+        assert_eq!(risk[1].evidence.observations, 10);
+        assert_eq!(risk[1].evidence.confidence, HintConfidence::Medium);
     }
 
     #[test]
@@ -1358,7 +1484,6 @@ mod tests {
         let risk = compute_risk(
             &commits,
             &added,
-            &BTreeSet::new(),
             &BTreeSet::new(),
             &[PathBuf::from("both.rs")],
             &BTreeMap::new(),
@@ -1382,7 +1507,6 @@ mod tests {
         let risk = compute_risk(
             &commits,
             &BTreeSet::new(),
-            &BTreeSet::new(),
             &added,
             &changed,
             &companion_tests,
@@ -1390,6 +1514,8 @@ mod tests {
 
         assert_eq!(risk.len(), 1);
         assert_eq!(risk[0].kind, RiskKind::YoungFile);
+        assert_eq!(risk[0].source, RelevanceSource::MergeBaseDiff);
+        assert_eq!(risk[0].evidence.confidence, HintConfidence::High);
         assert!(risk[0].action.contains("consider adding coverage"));
     }
 

@@ -13,9 +13,10 @@ prompts, apply model patches, or run model-requested validation.
 
 `.toimija/current.json` is the machine-readable packet. On per-session packets
 (written under `.toimija/sessions/<id>/` by `toimija run`) it also carries a
-`session` block — `{ "id": "...", "intent": "..."|null, "scope": [...] }` —
-additive per the contract's evolution rule; a harness infers the session's
-declared intent from it. Persisted Markdown/JSON pairs share an `artifact_id`;
+`session` block — `{ "id": "...", "intent": "..."|null, "scope": [...],
+"entry_branch": "...", "entry_head": "..." }` — additive per the contract's
+evolution rule; a harness gets declared intent and a fixed Git baseline from it.
+Persisted Markdown/JSON pairs share an `artifact_id`;
 JSON is authoritative when an interrupted refresh leaves mismatched IDs. It includes:
 
 ```json
@@ -40,6 +41,25 @@ replacement characters. Consumers must accept both forms.
 Changed-file objects may include `original_path` and `similarity` for Git
 renames/copies. `git.conflict_entries` preserves stages 1/2/3 with their mode
 and object ID while the existing `conflicted_files` list remains available.
+
+Collection stages carry coverage (additive, R10): `git.branch_diff_coverage`
+and `relevance.history_coverage` are `{ "status": "available"|"degraded"|
+"failed", "reason": "...", "source": "..." }` objects, and `toimija sessions
+--json` carries a top-level `coverage` for the marker scan. `available` means
+the (possibly empty) evidence is a real observation; `failed` means the
+collection did not deliver and no claim — positive or negative — may be derived
+from the empty list next to it. Packets written before these fields existed
+deserialize as `degraded` with reason `packet predates coverage reporting`.
+Coverage describes the collection, not the repo state, so it never feeds the
+consistency token.
+
+Coupling and risk hints carry structured provenance (additive): `source` names
+the collection or heuristic, while `evidence` contains numeric `support`,
+`observations`, and `confidence` (`unrecorded`, `medium`, or `high`). Packets
+written before evidence reporting deserialize with `unrecorded` evidence.
+Sauma verification hashes the raw JSON value before those additive defaults are
+materialized, so an older valid packet does not appear tampered to a newer
+reader.
 
 The token proves freshness of the packet against the current Git working state.
 v2 uses deterministic Git status classes, normalized paths, file type, file

@@ -6,7 +6,7 @@ use tracing::{debug, info};
 
 use crate::error::ToimijaError;
 
-/// Default character budget for the Markdown context packet. Sized so the full
+/// Default UTF-8 byte budget for the Markdown context packet. Sized so the full
 /// relevance layer (Scope, Read order, Coupling, Risk) survives on a real-repo
 /// packet; a tighter packet stays well under it. Raised from 4000 when the
 /// relevance layer (#12) enlarged the packet (#23).

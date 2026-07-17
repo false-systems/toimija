@@ -181,15 +181,20 @@ injects into the child:
 | `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
 | `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
 
-An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after Git-state
-changes instead of re-running `enter`. `toimija snippet preflight` already tells
-agents to do this.
+An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after HEAD, branch,
+index, or unfamiliar worktree changes instead of re-running `enter`; its own
+expected source edits do not require a full re-read. Before commit or handoff,
+`toimija verify` is the freshness boundary. `toimija snippet preflight` carries
+the same rule.
 
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
 agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
 auto-closes on exit. The marker is what `toimija sessions` reads (below) and the
 foundation for the `toimija handoff` record designed in
 `docs/proposals/0001-sessions-awareness-handoff.md`.
+The entry branch and HEAD remain fixed in later packets; if current Git state
+moves, mandatory Markdown renders a `Session drift` block and JSON retains both
+the entry baseline and current `git` state.
 
 ## Multi-agent sessions
 
@@ -219,7 +224,7 @@ Then, from anywhere in the repo, see who else is live:
 
 ```bash
 toimija sessions          # human listing: LIVE / STALE / CLOSED + warnings
-toimija sessions --json   # same, machine-readable
+toimija sessions --json   # same, machine-readable (carries marker-scan coverage)
 toimija sessions --prune  # remove closed/stale sessions older than 7 days
 ```
 
@@ -409,6 +414,9 @@ The packet includes:
 - staged / unstaged / untracked files
 - rename/copy origin paths and similarity when Git reports them, plus conflict
   index stages (mode and object ID)
+- collection **coverage** on the branch diff and history relevance stages
+  (`available` / `degraded` / `failed` with a reason and source), so an empty
+  list from a failed collection is never presented as a real observation
 - changed surface
 - scope
 - read order
@@ -557,7 +565,8 @@ entry file exists at all.
 Toimija does not only report Git state. It also uses bounded Git history to help
 an agent decide what to inspect first:
 
-- changed areas since merge-base, and areas untouched by the branch (`Scope`)
+- changed areas since merge-base, and areas untouched by the branch
+  (`Compiled workset`)
 - changed files ranked by likely relevance with a short reason (`Read order`);
   source churn corroborated as dependency-bump fallout (a changed manifest whose
   ecosystem lockfile changed in the same diff, e.g. `Cargo.toml` + `Cargo.lock`)
@@ -567,14 +576,13 @@ an agent decide what to inspect first:
   lockfile edit alone tags nothing, and files the branch itself added are always
   authored intent, never ripple.
 - companion files that are missing from the current diff (`Coupling`)
-- files with high churn, young surface, or stable/load-bearing history, plus a
-  concrete action hint (`Risk`)
+- files with high churn or young surface, plus a concrete action hint (`Risk`)
 
 > This is not semantic code understanding. It is Git-derived work relevance.
 
 > Tree-sitter can help after you know where to look. Toimija uses Git to decide where looking is worth it.
 
-These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, and language adapter path heuristics (no source parsing, no network, no index), and every hint carries an honest source label. History mining is bounded: the last 200 non-merge commits, starting from the merge-base so the branch does not vote on its own relevance. Historical coupling needs a missing partner to co-change at least twice and in at least 60% of the changed file's edits; existing companion tests are surfaced through path heuristics. "High churn" means at least 8 commits touched the file in that window. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
+These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, and language adapter path heuristics (no source parsing, no network, no index). Every coupling and risk hint carries its source, supporting observations, total observations, and a conservative confidence grade; the same fields are structured in JSON as `evidence.support`, `evidence.observations`, and `evidence.confidence`. History mining is bounded: the last 200 non-merge commits, starting from the merge-base so the branch does not vote on its own relevance. Historical coupling needs a missing partner to co-change at least twice and in at least 60% of the changed file's edits; existing companion tests are surfaced through path heuristics. "High churn" means at least 8 commits touched the file in that window. A file being untouched is not enough evidence to call it stable or load-bearing, so Toimija stays silent. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
 
 ## Validation
 
@@ -729,8 +737,9 @@ renders like this:
 - kind: Rust
 
 ## Workset contract
-Work from this packet's Scope and Read order; they are your working set, not
-a preamble. Configured exclusions are do-not-scan. You MAY read outside the
+Work from this packet's Compiled workset and Read order; they are your working
+set, not a preamble. A session's declared scope is intent, not evidence.
+Configured exclusions are do-not-scan. You MAY read outside the
 workset when a concrete unresolved dependency requires it — but you MUST
 declare the expansion first: `toimija intent "<why>" --scope <path>` (or, if
 you are not under a session, state the expansion and its reason in your
@@ -756,11 +765,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - merge-base: def456
 - files changed since merge-base: 3
 
-## Recent commits
-- abc123 feat: make Git state explicit
-- def456 feat: add config-driven context rules
-
-## Scope
+## Compiled workset
 - source: branch diff since merge-base
 - in play: README.md, src, tests
 - unchanged top-level areas: .github, fixtures, xtask
@@ -795,15 +800,23 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - Untracked files exist. They will not be committed unless added.
 - Working tree has unstaged changes.
 
-## Coupling
-- src/git.rs changed, but tests/git_state.rs was not — companion test exists but is not in this diff — confirm intentional
-
-## Risk
-- src/render.rs — high churn — 9 commits in the last 200 commits; hot file — keep the change small and well-tested
-- tests/git_state.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage
-
 ## Configured exclusions
 - target/
+
+## Changed surface
+- source: branch diff since merge-base
+- 3 files — see Read order
+
+## Coupling
+- src/git.rs changed, but tests/git_state.rs was not — companion test exists but is not in this diff — confirm intentional [source: file-pattern heuristic; evidence: 1/1; confidence: medium]
+
+## Risk
+- src/render.rs — high churn — 9 commits in the last 200 commits; hot file — keep the change small and well-tested [source: git log history; evidence: 9/200; confidence: high]
+- tests/git_state.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage [source: branch diff since merge-base; evidence: 1/1; confidence: high]
+
+## Recent commits
+- abc123 feat: make Git state explicit
+- def456 feat: add config-driven context rules
 
 ## Working tree
 ### Staged
@@ -816,9 +829,6 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 ### Conflicts
 - none
 
-## Changed surface
-- source: branch diff since merge-base
-- 4 files — see Read order
 ```
 
 ## Config
@@ -904,7 +914,11 @@ editing `xtask`.
 - Merge-base is attempted against the selected base candidate.
 - Validation plans are rendered only; commands are not executed.
 - Language detection uses simple marker files (Cargo.toml, mix.exs, go.mod, pyproject.toml/setup.py, package.json); full adapters outrank minimum packs.
-- Context budgets are approximate character caps, not token counts.
+- Context budgets are approximate UTF-8 byte caps, not token counts. Identity,
+  Git state, the workset contract, validation, warnings, exclusions, and the
+  changed-surface summary are mandatory and may exceed a very small budget.
+  Optional sections are included whole or named under `Budget omissions` with
+  exact item counts; the companion JSON packet remains complete.
 - Impact analysis is not yet available.
 - Upstream and merge-base may be unavailable in shallow, unborn, detached, or local-only repos.
 
@@ -917,8 +931,9 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 - read-first entries are grouped as changed files, matching-test hints, then configured docs
 - warnings are sorted and deduplicated
 - Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
-- every packet carries a normative `Workset contract` section (proposal 0005), rendered early so budget truncation cannot drop it: work from Scope and Read order, treat exclusions as do-not-scan, and declare any expansion outside the workset (`toimija intent --scope`) instead of reading invisibly
-- high-value Markdown sections (`Scope`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Coupling`, `Risk`) render before the raw working-tree and changed-surface lists
+- every packet carries a normative `Workset contract` section (proposal 0005), rendered early so budget truncation cannot drop it: work from the Git-derived Compiled workset and Read order, treat declared session scope as advisory intent, treat exclusions as do-not-scan, and declare any expansion outside the workset (`toimija intent --scope`) instead of reading invisibly
+- mandatory Markdown sections (`Git`, `Compiled workset`, `Read order`, `Read first`, `Validation plan`, `Warnings`, `Configured exclusions`, and `Changed surface`) are never displaced by optional history or working-tree detail
+- optional Markdown sections are selected atomically; omitted sections are named with exact item counts and the full JSON evidence path/command
 - Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections
 - empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
 - Git paths are read from NUL-delimited byte output. JSON keeps existing UTF-8

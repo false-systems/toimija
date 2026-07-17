@@ -44,7 +44,7 @@ The "missing contract" is mostly shipped:
 
 | Contract element        | Already in the packet                     |
 | ----------------------- | ----------------------------------------- |
-| Primary/supporting files| Scope (`in play` / `unchanged`), Read order |
+| Primary/supporting files| Compiled workset (`in play` / `unchanged`), Read order |
 | Read-first docs         | Read first                                |
 | Do-not-scan list        | Configured exclusions (from `repo.yaml`)  |
 | Known facts             | Coupling, Risk, Branch surface            |
@@ -61,8 +61,9 @@ sections, that reframes the existing sections as a contract:
 
 ```markdown
 ## Workset contract
-Work from this packet's Scope and Read order; they are your working set, not
-a preamble. Configured exclusions are do-not-scan. You MAY read outside the
+Work from this packet's Compiled workset and Read order; they are your working
+set, not a preamble. A session's declared scope is intent, not evidence.
+Configured exclusions are do-not-scan. You MAY read outside the
 workset when a concrete unresolved dependency requires it — but you MUST
 declare the expansion first: `toimija intent "<why>" --scope <path>` (or, if
 you are not under a session, state the expansion and its reason in your

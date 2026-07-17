@@ -118,6 +118,21 @@ pub fn verify<T: Carrier>(artifact: &mut T) -> serde_json::Result<Option<(String
     Ok((actual != envelope.digest).then_some((envelope.digest, actual)))
 }
 
+/// Verify a serialized artifact before typed deserialization can materialize
+/// defaults for additive fields that were absent when an older producer signed
+/// it. The digest covers the bytes' JSON value, not a newer reader's model.
+pub fn verify_value(mut value: serde_json::Value) -> serde_json::Result<Option<(String, String)>> {
+    let Some(envelope) = value
+        .as_object_mut()
+        .and_then(|object| object.remove("sauma"))
+    else {
+        return Ok(None);
+    };
+    let envelope: SaumaEnvelope = serde_json::from_value(envelope)?;
+    let actual = digest_value(&value);
+    Ok((actual != envelope.digest).then_some((envelope.digest, actual)))
+}
+
 pub fn envelope_from_canonical(
     schema: &str,
     canonical_json_without_sauma: &str,
@@ -149,5 +164,15 @@ mod tests {
             digest_json("{}"),
             "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
         );
+    }
+
+    #[test]
+    fn raw_verification_does_not_materialize_new_reader_defaults() {
+        let mut value = serde_json::json!({"schema": "old", "items": []});
+        let envelope =
+            envelope_from_canonical("old", &canonical_json(&value), Vec::new(), "token", None);
+        value["sauma"] = serde_json::to_value(envelope).unwrap();
+
+        assert_eq!(verify_value(value).unwrap(), None);
     }
 }

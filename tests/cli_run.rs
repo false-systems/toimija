@@ -441,6 +441,8 @@ fn run_intent_reaches_the_session_packet() {
             .unwrap();
     assert_eq!(json["session"]["intent"], "test drive 2");
     assert_eq!(json["session"]["scope"][0], "src/a.rs");
+    assert_eq!(json["session"]["entry_branch"], json["git"]["branch"]);
+    assert_eq!(json["session"]["entry_head"], json["git"]["head_oid"]);
     let md = fs::read_to_string(session_dir.join("current.md")).unwrap();
     assert!(md.contains("## Session"));
     assert!(md.contains("- intent: test drive 2"));

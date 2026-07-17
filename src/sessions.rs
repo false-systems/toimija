@@ -19,6 +19,7 @@ use serde::Serialize;
 use tracing::{debug, info};
 
 use crate::command::CommandRunner;
+use crate::coverage::Coverage;
 use crate::handoff;
 use crate::session::{SESSIONS_SUBDIR, SessionMarker, SessionStatus};
 
@@ -88,6 +89,10 @@ impl SessionView {
 pub struct SessionsReport {
     pub sessions: Vec<SessionView>,
     pub warnings: Vec<Warning>,
+    /// Coverage of the marker scan itself (R10, TA-005): `available` means
+    /// every sibling marker was read; `degraded` means at least one marker is
+    /// unreadable or malformed, so the listing may be missing a live sibling.
+    pub coverage: Coverage,
 }
 
 /// Read every session marker under `.toimija/sessions/`, resolve liveness, and
@@ -100,7 +105,8 @@ pub fn report(
 ) -> Result<SessionsReport> {
     let now = now_secs();
     let mut sessions = Vec::new();
-    for (_dir, marker) in read_markers(repo_root)? {
+    let scan = read_markers(repo_root)?;
+    for (_dir, marker) in scan.markers {
         let alive = pid_is_alive(runner, repo_root, marker.pid);
         let liveness = liveness(&marker, now, alive, stale_after_secs);
         debug!(
@@ -127,11 +133,31 @@ pub fn report(
             .then_with(|| a.marker.id.cmp(&b.marker.id))
     });
 
-    let warnings = overlap_warnings(&sessions);
+    let mut warnings = overlap_warnings(&sessions);
+    // A sibling that cannot be read is a blind spot, never a quiet absence:
+    // the human sees which marker is broken instead of a shorter listing.
+    for unreadable in &scan.unreadable {
+        warnings.push(Warning {
+            severity: Severity::Warning,
+            message: format!("session marker unreadable: {unreadable}"),
+        });
+    }
+    let coverage = if scan.unreadable.is_empty() {
+        Coverage::available(MARKER_SCAN_SOURCE)
+    } else {
+        Coverage::degraded(
+            MARKER_SCAN_SOURCE,
+            format!(
+                "{} session marker(s) unreadable; the listing may be missing a live sibling",
+                scan.unreadable.len()
+            ),
+        )
+    };
     info!(
         event = "toimija.sessions.listed",
         total = sessions.len(),
-        warnings = warnings.len()
+        warnings = warnings.len(),
+        unreadable = scan.unreadable.len()
     );
     if !warnings.is_empty() {
         info!(
@@ -139,38 +165,82 @@ pub fn report(
             count = warnings.len()
         );
     }
-    Ok(SessionsReport { sessions, warnings })
+    Ok(SessionsReport {
+        sessions,
+        warnings,
+        coverage,
+    })
+}
+
+/// The coverage source label for the sibling-marker scan.
+const MARKER_SCAN_SOURCE: &str = "session marker scan (.toimija/sessions/*/session.json)";
+
+/// The result of scanning `.toimija/sessions/`: the markers that parsed, and a
+/// safe diagnostic for each one that did not. Unreadable is not the same as
+/// absent (R10, TA-005) — a directory without a `session.json` is not a
+/// session, but a marker that exists and cannot be read is a blind spot.
+struct MarkerScan {
+    markers: Vec<(PathBuf, SessionMarker)>,
+    unreadable: Vec<String>,
 }
 
 /// Read and parse all `session.json` markers, each with the session directory
-/// it was found in. Missing directory → empty list.
-fn read_markers(repo_root: &Path) -> Result<Vec<(PathBuf, SessionMarker)>> {
+/// it was found in. Missing directory → empty scan.
+fn read_markers(repo_root: &Path) -> Result<MarkerScan> {
     let dir = repo_root.join(SESSIONS_SUBDIR);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(MarkerScan {
+                markers: Vec::new(),
+                unreadable: Vec::new(),
+            });
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("failed to read {}", dir.display()));
         }
     };
     let mut markers = Vec::new();
+    let mut unreadable = Vec::new();
     for entry in entries {
         let entry = entry?;
         let marker_path = entry.path().join("session.json");
         let raw = match fs::read_to_string(&marker_path) {
             Ok(raw) => raw,
-            Err(_) => continue, // no marker in this dir; skip quietly
+            // No marker in this directory: not a session, skip quietly.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                debug!(
+                    event = "toimija.session.marker_unreadable",
+                    path = %marker_path.display(),
+                    error = %error
+                );
+                unreadable.push(format!(
+                    "{} (read error: {})",
+                    marker_path.display(),
+                    error.kind()
+                ));
+                continue;
+            }
         };
         match serde_json::from_str::<SessionMarker>(&raw) {
             Ok(marker) => markers.push((entry.path(), marker)),
-            Err(error) => debug!(
-                event = "toimija.session.marker_unreadable",
-                path = %marker_path.display(),
-                error = %error
-            ),
+            Err(error) => {
+                debug!(
+                    event = "toimija.session.marker_unreadable",
+                    path = %marker_path.display(),
+                    error = %error
+                );
+                unreadable.push(format!("{} (malformed JSON)", marker_path.display()));
+            }
         }
     }
-    Ok(markers)
+    // read_dir order is platform-arbitrary; sort so diagnostics are stable.
+    unreadable.sort();
+    Ok(MarkerScan {
+        markers,
+        unreadable,
+    })
 }
 
 /// Resolve liveness from the marker, a process-liveness flag, and the staleness
@@ -221,8 +291,11 @@ pub fn prune(
 ) -> Result<PruneReport> {
     let now = now_secs();
     let mut removed = Vec::new();
-    let mut kept = 0;
-    for (dir, marker) in read_markers(repo_root)? {
+    // Unreadable markers are never pruned: deletion demands the certain
+    // signal, and an unreadable marker gives none. They count as kept.
+    let scan = read_markers(repo_root)?;
+    let mut kept = scan.unreadable.len();
+    for (dir, marker) in scan.markers {
         let alive = pid_is_alive(runner, repo_root, marker.pid);
         let liveness = liveness(&marker, now, alive, stale_after_secs);
         if prunable(liveness, &marker, alive, now, retention_secs) {
@@ -578,6 +651,33 @@ mod tests {
             closed_at: None,
             exit_status: None,
         }
+    }
+
+    #[test]
+    fn marker_scan_reports_malformed_markers_instead_of_skipping_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions_dir = temp.path().join(SESSIONS_SUBDIR);
+        let good = sessions_dir.join("100-1");
+        fs::create_dir_all(&good).unwrap();
+        fs::write(
+            good.join("session.json"),
+            serde_json::to_string(&marker("100-1", SessionStatus::Closed, 100)).unwrap(),
+        )
+        .unwrap();
+        let bad = sessions_dir.join("100-2");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("session.json"), "{not json").unwrap();
+        // A directory without a marker is not a session — quiet skip, not a
+        // blind spot.
+        fs::create_dir_all(sessions_dir.join("100-3")).unwrap();
+
+        let scan = read_markers(temp.path()).unwrap();
+
+        assert_eq!(scan.markers.len(), 1);
+        assert_eq!(scan.markers[0].1.id, "100-1");
+        assert_eq!(scan.unreadable.len(), 1);
+        assert!(scan.unreadable[0].contains("100-2"));
+        assert!(scan.unreadable[0].contains("malformed JSON"));
     }
 
     #[test]

@@ -99,6 +99,43 @@ fn fresh_packet_verifies_consistent_then_a_change_makes_it_stale() {
 }
 
 #[test]
+fn verify_accepts_valid_packet_from_older_additive_schema() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+    let path = temp.path().join(".toimija/current.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+    // Model an older producer that signed the same packet before additive
+    // coverage fields existed. Its digest is valid for its raw artifact; a
+    // newer reader must not hash defaults introduced by deserialization.
+    value["git"]
+        .as_object_mut()
+        .unwrap()
+        .remove("branch_diff_coverage");
+    value["relevance"]
+        .as_object_mut()
+        .unwrap()
+        .remove("history_coverage");
+    let mut envelope = value.as_object_mut().unwrap().remove("sauma").unwrap();
+    envelope["digest"] = serde_json::Value::String(toimija::sauma::digest_value(&value));
+    value["sauma"] = envelope;
+    fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    toimija(temp.path())
+        .args(["current", "--verify", "--json"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn verify_without_a_packet_is_missing_packet() {
     if !git_available() {
         return;

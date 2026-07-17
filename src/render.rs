@@ -5,7 +5,7 @@ use crate::config::InitReport;
 use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
 use crate::landed::{LandedReport, LandedStatus};
-use crate::relevance::RelevanceSource;
+use crate::relevance::{HintConfidence, HintEvidence, RelevanceSource};
 use crate::repo::{DoctorReport, DoctorStatus};
 use crate::validate::{ValidationPlan, ValidationSource};
 
@@ -289,9 +289,9 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         .unwrap();
         writeln!(
             &mut output,
-            "- scope: {}",
+            "- declared scope: {}",
             if session.scope.is_empty() {
-                "unknown".to_string()
+                "none".to_string()
             } else {
                 session.scope.join(", ")
             }
@@ -299,10 +299,8 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         .unwrap();
     }
 
-    // Proposal 0005: the contract renders on every packet and early, so budget
-    // truncation can never silently drop the obligation while keeping the data.
+    // Proposal 0005: the contract renders on every packet and early.
     write_workset_contract(&mut output);
-    let mandatory_end = output.len();
 
     write_h2(&mut output, "Git");
     writeln!(
@@ -353,12 +351,9 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     )
     .unwrap();
 
+    write_session_drift(&mut output, packet);
     write_branch_surface(&mut output, packet);
-    write_recent_commits(&mut output, packet);
-    // Section order is also the budget-priority order: the raw changed-file
-    // lists are emitted LAST so a large diff can never starve the high-value
-    // sections (scope, read order, validation, warnings) under a tight budget.
-    write_scope(&mut output, packet);
+    write_compiled_workset(&mut output, packet);
     write_read_order(&mut output, packet);
 
     write_h2(&mut output, "Read first");
@@ -390,9 +385,6 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     warnings.extend(packet.relevance.warnings.iter().cloned());
     write_str_list(&mut output, &warnings, "none");
 
-    write_coupling(&mut output, packet);
-    write_risk(&mut output, packet);
-
     write_h2(&mut output, "Configured exclusions");
     // Proposal 0005 D3: an instruction, not an inventory.
     if !packet.safe_to_ignore.is_empty() {
@@ -400,14 +392,67 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     }
     write_path_list(&mut output, &packet.safe_to_ignore, "none");
 
-    if packet.for_diff {
-        write_diff_focus(&mut output, packet);
-    } else {
-        write_worktree_breakdown(&mut output, packet);
-    }
     write_changed_surface(&mut output, packet);
 
-    truncate_to_budget(output, budget, mandatory_end)
+    // Optional sections are selected atomically. A budget may omit a whole
+    // section, never cut a path or silently drop safety-critical state.
+    let mut optional = Vec::new();
+    if !packet.relevance.coupling.is_empty() {
+        let mut section = String::new();
+        write_coupling(&mut section, packet);
+        optional.push(("coupling hints", packet.relevance.coupling.len(), section));
+    }
+    if !packet.relevance.risk.is_empty() {
+        let mut section = String::new();
+        write_risk(&mut section, packet);
+        optional.push(("risk hints", packet.relevance.risk.len(), section));
+    }
+    let mut recent = String::new();
+    write_recent_commits(&mut recent, packet);
+    optional.push(("recent commits", packet.git.recent_commits.len(), recent));
+    let mut worktree = String::new();
+    if packet.for_diff {
+        write_diff_focus(&mut worktree, packet);
+    } else {
+        write_worktree_breakdown(&mut worktree, packet);
+    }
+    let worktree_items = packet.git.branch_files.len()
+        + packet.git.staged_files.len()
+        + packet.git.unstaged_files.len()
+        + packet.git.untracked_files.len()
+        + packet.git.conflicted_files.len();
+    optional.push(("working-tree details", worktree_items, worktree));
+
+    append_optional_sections(&mut output, budget, optional);
+    output
+}
+
+fn append_optional_sections(
+    output: &mut String,
+    budget: usize,
+    sections: Vec<(&'static str, usize, String)>,
+) {
+    let mut omitted = Vec::new();
+    for (name, count, section) in sections {
+        if output.len() + section.len() <= budget {
+            output.push_str(&section);
+        } else if count > 0 {
+            omitted.push((name, count));
+        }
+    }
+    if omitted.is_empty() {
+        return;
+    }
+    write_h2(output, "Budget omissions");
+    for (name, count) in omitted {
+        writeln!(output, "- {name}: {count} item(s)").unwrap();
+    }
+    writeln!(
+        output,
+        "- full evidence: use the companion JSON packet or `toimija context --json`\n\n\
+         Output truncated to fit approximate budget."
+    )
+    .unwrap();
 }
 
 pub fn render_audit_plan(plan: &AuditPlan, budget: usize, surface: Option<usize>) -> String {
@@ -485,8 +530,9 @@ fn write_workset_contract(output: &mut String) {
     write_h2(output, "Workset contract");
     writeln!(
         output,
-        "Work from this packet's Scope and Read order; they are your working set, not\n\
-         a preamble. Configured exclusions are do-not-scan. You MAY read outside the\n\
+        "Work from this packet's Compiled workset and Read order; they are your working\n\
+         set, not a preamble. A session's declared scope is intent, not evidence.\n\
+         Configured exclusions are do-not-scan. You MAY read outside the\n\
          workset when a concrete unresolved dependency requires it — but you MUST\n\
          declare the expansion first: `toimija intent \"<why>\" --scope <path>` (or, if\n\
          you are not under a session, state the expansion and its reason in your\n\
@@ -548,10 +594,11 @@ fn write_coupling(output: &mut String, packet: &ContextPacket) {
     for hint in coupling {
         writeln!(
             output,
-            "- {} changed, but {} was not — {}",
+            "- {} changed, but {} was not — {} [{}]",
             crate::path_codec::display(&hint.changed),
             crate::path_codec::display(&hint.missing),
-            hint.reason
+            hint.reason,
+            relevance_evidence_label(hint.source, &hint.evidence)
         )
         .unwrap();
     }
@@ -568,10 +615,11 @@ fn write_risk(output: &mut String, packet: &ContextPacket) {
     for hint in risk {
         writeln!(
             output,
-            "- {} — {}; {}",
+            "- {} — {}; {} [{}]",
             crate::path_codec::display(&hint.path),
             hint.reason,
-            hint.action
+            hint.action,
+            relevance_evidence_label(hint.source, &hint.evidence)
         )
         .unwrap();
     }
@@ -600,12 +648,30 @@ fn write_branch_surface(output: &mut String, packet: &ContextPacket) {
             )
             .unwrap();
             writeln!(output, "- merge-base: {merge_base}").unwrap();
-            writeln!(
-                output,
-                "- files changed since merge-base: {}",
-                packet.git.branch_files.len()
-            )
-            .unwrap();
+            // A failed branch diff must never read as "0 files changed" —
+            // render the blind spot instead of the count (R10, TA-005).
+            if packet.git.branch_diff_coverage.is_available() {
+                writeln!(
+                    output,
+                    "- files changed since merge-base: {}",
+                    packet.git.branch_files.len()
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    output,
+                    "- files changed since merge-base: unknown — collection {}{}",
+                    packet.git.branch_diff_coverage.status,
+                    packet
+                        .git
+                        .branch_diff_coverage
+                        .reason
+                        .as_deref()
+                        .map(|reason| format!(" ({reason})"))
+                        .unwrap_or_default()
+                )
+                .unwrap();
+            }
         }
         None => {
             writeln!(
@@ -616,6 +682,40 @@ fn write_branch_surface(output: &mut String, packet: &ContextPacket) {
             .unwrap();
         }
     }
+}
+
+fn write_session_drift(output: &mut String, packet: &ContextPacket) {
+    let Some(session) = &packet.session else {
+        return;
+    };
+    let branch_moved = match (&session.entry_branch, &packet.git.branch) {
+        (Some(entry), Some(current)) if entry != current => Some((entry, current)),
+        _ => None,
+    };
+    let head_moved = match (&session.entry_head, &packet.git.head_oid) {
+        (Some(entry), Some(current)) if entry != current => Some((entry, current)),
+        _ => None,
+    };
+    if branch_moved.is_none() && head_moved.is_none() {
+        return;
+    }
+    write_h2(output, "Session drift");
+    if let Some((entry, current)) = branch_moved {
+        writeln!(output, "- branch: {entry} → {current} (moved since entry)").unwrap();
+    }
+    if let Some((entry, current)) = head_moved {
+        writeln!(
+            output,
+            "- HEAD: {} → {} (moved since entry)",
+            short_oid(entry),
+            short_oid(current)
+        )
+        .unwrap();
+    }
+}
+
+fn short_oid(oid: &str) -> &str {
+    &oid[..oid.len().min(7)]
 }
 
 /// A short window of recent history (capped), so an agent sees what the branch
@@ -705,17 +805,17 @@ fn status_label(status: &ChangeStatus) -> &'static str {
     }
 }
 
-/// Render the Scope section: the areas this branch is touching versus the
+/// Render the compiled workset: the areas this branch is touching versus the
 /// areas it leaves alone. Advisory, Git-derived; omitted when there is nothing
 /// to say.
-fn write_scope(output: &mut String, packet: &ContextPacket) {
+fn write_compiled_workset(output: &mut String, packet: &ContextPacket) {
     let Some(scope) = &packet.relevance.scope else {
         return;
     };
     if scope.in_play.is_empty() {
         return;
     }
-    write_h2(output, "Scope");
+    write_h2(output, "Compiled workset");
     writeln!(output, "- source: {}", relevance_source_label(scope.source)).unwrap();
     let in_play = scope
         .in_play
@@ -775,6 +875,20 @@ fn relevance_source_label(source: RelevanceSource) -> &'static str {
         RelevanceSource::Heuristic => "file-pattern heuristic",
         RelevanceSource::Unavailable => "unavailable",
     }
+}
+
+fn relevance_evidence_label(source: RelevanceSource, evidence: &HintEvidence) -> String {
+    let confidence = match evidence.confidence {
+        HintConfidence::Unrecorded => "unrecorded",
+        HintConfidence::Medium => "medium",
+        HintConfidence::High => "high",
+    };
+    format!(
+        "source: {}; evidence: {}/{}; confidence: {confidence}",
+        relevance_source_label(source),
+        evidence.support,
+        evidence.observations
+    )
 }
 
 pub(crate) fn truncate_to_budget(
@@ -853,6 +967,7 @@ mod tests {
                 conflicted_files: Vec::new(),
                 conflict_entries: Vec::new(),
                 branch_files: Vec::new(),
+                branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
                 recent_commits: Vec::new(),
             },
             changed_surface: Vec::new(),
@@ -884,6 +999,7 @@ mod tests {
                 conflicted_files: Vec::new(),
                 conflict_entries: Vec::new(),
                 branch_files: Vec::new(),
+                branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
                 recent_commits: Vec::new(),
             }),
             session: None,
@@ -903,6 +1019,29 @@ mod tests {
     }
 
     #[test]
+    fn failed_branch_diff_renders_unknown_not_zero() {
+        // R10 (TA-005): a failed collection must never read as "0 files
+        // changed" — the blind spot is rendered in place of the count.
+        let mut failed = packet();
+        failed.git.base = Some("origin/main".to_string());
+        failed.git.merge_base = Some("baseoid".to_string());
+        failed.git.branch_diff_coverage =
+            crate::coverage::Coverage::failed("git diff", "git exited with status 128");
+        let rendered = render_context_markdown(&failed, 4000);
+        assert!(rendered.contains(
+            "- files changed since merge-base: unknown — collection failed (git exited with status 128)"
+        ));
+        assert!(!rendered.contains("- files changed since merge-base: 0"));
+
+        let mut available = packet();
+        available.git.base = Some("origin/main".to_string());
+        available.git.merge_base = Some("baseoid".to_string());
+        available.git.branch_diff_coverage = crate::coverage::Coverage::available("git diff");
+        let rendered = render_context_markdown(&available, 4000);
+        assert!(rendered.contains("- files changed since merge-base: 0"));
+    }
+
+    #[test]
     fn workset_contract_renders_on_every_packet() {
         // Proposal 0005 D1: repo-level and per-session packets alike carry the
         // contract, and it renders before Git so budget truncation keeps it.
@@ -915,6 +1054,8 @@ mod tests {
             id: "100-1".to_string(),
             intent: None,
             scope: Vec::new(),
+            entry_branch: None,
+            entry_head: None,
         });
         let rendered = render_context_markdown(&with_session, 4000);
         let contract = rendered.find("## Workset contract").unwrap();
@@ -929,12 +1070,37 @@ mod tests {
             id: "100-1".to_string(),
             intent: Some("test drive 2".to_string()),
             scope: vec!["src/a.rs".to_string()],
+            entry_branch: None,
+            entry_head: None,
         });
         let rendered = render_context_markdown(&packet, 4000);
         assert!(rendered.contains("## Session"));
         assert!(rendered.contains("- id: 100-1"));
         assert!(rendered.contains("- intent: test drive 2"));
-        assert!(rendered.contains("- scope: src/a.rs"));
+        assert!(rendered.contains("- declared scope: src/a.rs"));
+    }
+
+    #[test]
+    fn session_drift_compares_entry_to_current_git_state() {
+        let mut packet = packet();
+        packet.git.branch = Some("feat/after".to_string());
+        packet.git.head_oid = Some("bbbbbbb222".to_string());
+        packet.session = Some(crate::context::SessionBlock {
+            id: "100-1".to_string(),
+            intent: Some("move safely".to_string()),
+            scope: Vec::new(),
+            entry_branch: Some("feat/before".to_string()),
+            entry_head: Some("aaaaaaa111".to_string()),
+        });
+
+        let rendered = render_context_markdown(&packet, 4000);
+        assert!(rendered.contains("## Session drift"));
+        assert!(rendered.contains("- branch: feat/before → feat/after (moved since entry)"));
+        assert!(rendered.contains("- HEAD: aaaaaaa → bbbbbbb (moved since entry)"));
+
+        packet.session.as_mut().unwrap().entry_branch = packet.git.branch.clone();
+        packet.session.as_mut().unwrap().entry_head = packet.git.head_oid.clone();
+        assert!(!render_context_markdown(&packet, 4000).contains("## Session drift"));
     }
 
     #[test]
@@ -956,7 +1122,7 @@ mod tests {
             .collect();
         // 1000 bytes of headroom past the mandatory Workset contract block,
         // which renders early by design (proposal 0005) and always survives.
-        let rendered = render_context_markdown(&packet, 1500);
+        let rendered = render_context_markdown(&packet, 1600);
         assert!(rendered.contains("Output truncated"));
         assert!(
             rendered.contains("## Workset contract"),
@@ -971,13 +1137,20 @@ mod tests {
             rendered.contains("## Warnings"),
             "warnings must survive truncation"
         );
+        assert!(rendered.contains("## Configured exclusions"));
+        assert!(rendered.contains("## Changed surface"));
+        assert!(rendered.contains("## Budget omissions"));
+        assert!(rendered.contains("- working-tree details: 40 item(s)"));
+        assert!(!rendered.contains("- recent commits: 0 item(s)"));
+        assert!(!rendered.contains("## Working tree"));
     }
 
     #[test]
     fn relevance_sections_survive_the_default_budget() {
         use crate::config::DEFAULT_BUDGET;
         use crate::relevance::{
-            CouplingHint, RelevanceSource, RiskHint, RiskKind, ScopeArea, ScopeHints,
+            CouplingHint, HintConfidence, HintEvidence, RelevanceSource, RiskHint, RiskKind,
+            ScopeArea, ScopeHints,
         };
         // A packet sized like a real feature branch: populated relevance plus a
         // sizable changed surface and working tree. Guards against the default
@@ -1003,6 +1176,11 @@ mod tests {
                 reason: "companion test exists but is not in this diff — confirm intentional"
                     .to_string(),
                 source: RelevanceSource::GitLog,
+                evidence: HintEvidence {
+                    support: 6,
+                    observations: 10,
+                    confidence: HintConfidence::Medium,
+                },
             })
             .collect();
         packet.relevance.risk = (0..5)
@@ -1012,6 +1190,11 @@ mod tests {
                 reason: "high churn — 9 commits in the last 200 commits".to_string(),
                 action: "hot file — keep the change small and well-tested".to_string(),
                 source: RelevanceSource::GitLog,
+                evidence: HintEvidence {
+                    support: 9,
+                    observations: 200,
+                    confidence: HintConfidence::High,
+                },
             })
             .collect();
         packet.changed_surface = (0..30)
@@ -1029,6 +1212,7 @@ mod tests {
 
         let rendered = render_context_markdown(&packet, DEFAULT_BUDGET);
         // Risk is the last relevance section; if it survives, all of them do.
+        assert!(rendered.contains("## Compiled workset"));
         assert!(
             rendered.contains("## Coupling"),
             "coupling must survive the default budget"
@@ -1037,32 +1221,32 @@ mod tests {
             rendered.contains("## Risk"),
             "risk must survive the default budget"
         );
+        assert!(rendered.contains("source: git log history; evidence: 6/10; confidence: medium"));
+        assert!(rendered.contains("source: git log history; evidence: 9/200; confidence: high"));
+    }
+
+    #[test]
+    fn small_budget_preserves_mandatory_context_without_fake_omissions() {
+        let rendered = render_context_markdown(&packet(), 100);
+        assert!(rendered.contains("## Workset contract"));
+        assert!(rendered.contains("invisible expansion is."));
+        assert!(!rendered.contains("## Budget omissions"));
+        assert!(!rendered.contains("Output truncated"));
     }
 
     #[test]
     fn budget_truncation_cuts_on_line_boundary_without_splitting_chars() {
         const MARKER: &str = "\n\nOutput truncated to fit approximate budget.\n";
-        // The fixture contains multi-byte chars (the em dash in the unset hint,
-        // the apostrophe in "Git’s state machine"). Sweeping budgets across them
-        // exercises cuts that a raw byte truncate would split (and panic on).
-        let packet = packet();
-        for budget in 30..600 {
-            let rendered = render_context_markdown(&packet, budget);
+        let output = "surface 1/2 — src\nsurface 2/2 — docs\n".repeat(20);
+        for budget in 0..output.len() {
+            let rendered = truncate_to_budget(output.clone(), budget, 0);
             if let Some(kept) = rendered.strip_suffix(MARKER) {
                 assert!(
                     kept.is_empty() || kept.ends_with('\n'),
-                    "kept content must end on a line boundary (no half-path) at budget {budget}"
+                    "kept content must end on a line boundary at budget {budget}"
                 );
             }
         }
-    }
-
-    #[test]
-    fn budget_truncation_does_not_panic() {
-        let rendered = render_context_markdown(&packet(), 100);
-        assert!(rendered.contains("Output truncated"));
-        assert!(rendered.contains("## Workset contract"));
-        assert!(rendered.contains("invisible expansion is."));
     }
 
     #[test]
@@ -1233,8 +1417,9 @@ mod tests {
 - kind: Rust
 
 ## Workset contract
-Work from this packet's Scope and Read order; they are your working set, not
-a preamble. Configured exclusions are do-not-scan. You MAY read outside the
+Work from this packet's Compiled workset and Read order; they are your working
+set, not a preamble. A session's declared scope is intent, not evidence.
+Configured exclusions are do-not-scan. You MAY read outside the
 workset when a concrete unresolved dependency requires it — but you MUST
 declare the expansion first: `toimija intent "<why>" --scope <path>` (or, if
 you are not under a session, state the expansion and its reason in your
@@ -1257,9 +1442,6 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 
 ## Branch surface
 - unavailable: no merge-base with origin/main
-
-## Recent commits
-- none
 
 ## Read first
 - none
@@ -1284,6 +1466,13 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 ## Configured exclusions
 - none
 
+## Changed surface
+- source: working tree and index
+- files: none
+
+## Recent commits
+- none
+
 ## Working tree
 ### Staged
 - none
@@ -1293,10 +1482,6 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
 - none
 ### Conflicts
 - none
-
-## Changed surface
-- source: working tree and index
-- files: none
 "#;
         assert_eq!(rendered, expected);
     }
@@ -1329,6 +1514,11 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "untracked_files": [],
     "conflicted_files": [],
     "branch_files": [],
+    "branch_diff_coverage": {
+      "status": "degraded",
+      "reason": "packet predates coverage reporting",
+      "source": "unrecorded"
+    },
     "recent_commits": []
   },
   "changed_surface": [],
@@ -1363,7 +1553,12 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "read_order": [],
     "coupling": [],
     "risk": [],
-    "warnings": []
+    "warnings": [],
+    "history_coverage": {
+      "status": "degraded",
+      "reason": "packet predates coverage reporting",
+      "source": "unrecorded"
+    }
   },
   "consistency": {
     "algorithm": "toimija-consistency-v2",

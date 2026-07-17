@@ -77,10 +77,14 @@ pub fn build(
     let tracked = tracked_files(runner, &git)?;
     let areas = area_stats(&tracked, &ignore_rules);
     let history = mine_log_commits(runner, &git.repo_root, "HEAD", DEFAULT_LOG_WINDOW_COMMITS);
-    if history.as_ref().is_none_or(Vec::is_empty) {
+    let history_empty = match &history {
+        Ok(commits) => commits.is_empty(),
+        Err(_) => true,
+    };
+    if history_empty {
         warnings.push(history_warning());
     }
-    let areas = with_churn(areas, history.as_deref());
+    let areas = with_churn(areas, history.as_deref().ok());
     let surface_count = requested_surfaces
         .map(|n| n.clamp(1, areas.len().max(1)))
         .unwrap_or_else(|| default_surface_count(&areas));

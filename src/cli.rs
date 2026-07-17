@@ -260,7 +260,7 @@ pub struct ContextArgs {
     /// Add a diff-focused section: committed, staged, unstaged, untracked, conflicts.
     #[arg(long)]
     pub for_diff: bool,
-    /// Approximate output cap in characters; long lists are truncated.
+    /// Approximate output cap in UTF-8 bytes; optional sections are omitted atomically.
     #[arg(long)]
     pub budget: Option<usize>,
 }
@@ -367,7 +367,7 @@ pub struct AuditPlanArgs {
     /// Print one 1-based surface workset instead of the summary.
     #[arg(long, value_name = "K")]
     pub surface: Option<usize>,
-    /// Approximate output cap in characters; long lists are truncated.
+    /// Approximate output cap in UTF-8 bytes; optional sections are omitted atomically.
     #[arg(long)]
     pub budget: Option<usize>,
 }
@@ -1416,13 +1416,13 @@ fn compute_verify_status(
 
 fn verify_status(packet_path: &std::path::Path, live: &git::GitState) -> VerifyStatus {
     match load_stored_packet(packet_path) {
-        StoredPacket::Ready(mut packet) => {
+        StoredPacket::Ready { packet, raw } => {
             if packet.consistency.algorithm != CONSISTENCY_ALGORITHM {
                 return VerifyStatus::UnsupportedConsistencyAlgorithm {
                     algorithm: packet.consistency.algorithm,
                 };
             }
-            match crate::sauma::verify(packet.as_mut()) {
+            match crate::sauma::verify_value(*raw) {
                 Ok(Some((expected, actual))) => {
                     return VerifyStatus::SaumaDigestMismatch { expected, actual };
                 }
@@ -1588,7 +1588,10 @@ impl VerifyReport {
 }
 
 enum StoredPacket {
-    Ready(Box<context::ContextPacket>),
+    Ready {
+        packet: Box<context::ContextPacket>,
+        raw: Box<serde_json::Value>,
+    },
     MissingPacket,
     InvalidPacket(String),
     MissingConsistency,
@@ -1610,11 +1613,14 @@ fn load_stored_packet(path: &std::path::Path) -> StoredPacket {
     if value.get("consistency").is_none() {
         return StoredPacket::MissingConsistency;
     }
-    let packet: context::ContextPacket = match serde_json::from_value(value) {
+    let packet: context::ContextPacket = match serde_json::from_value(value.clone()) {
         Ok(packet) => packet,
         Err(error) => return StoredPacket::InvalidPacket(error.to_string()),
     };
-    StoredPacket::Ready(Box::new(packet))
+    StoredPacket::Ready {
+        packet: Box::new(packet),
+        raw: Box::new(value),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1940,6 +1946,7 @@ mod tests {
             conflicted_files: Vec::new(),
             conflict_entries: Vec::new(),
             branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         }
     }

@@ -63,12 +63,20 @@ pub struct ContextPacket {
 }
 
 /// The session half of a per-session packet: who this packet is for and why
-/// that session says it is here. Advisory, like the marker it mirrors.
+/// that session says it is here. `scope` is the agent's declaration, distinct
+/// from the Git-derived workset under `relevance.scope`. Advisory, like the
+/// marker it mirrors.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionBlock {
     pub id: String,
     pub intent: Option<String>,
     pub scope: Vec<String>,
+    /// Branch and HEAD captured when `run` entered the session. They stay fixed
+    /// so later packets can report drift instead of overwriting the baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_head: Option<String>,
 }
 
 /// Where the changed surface came from. Named honestly: the surface either
@@ -478,6 +486,7 @@ mod tests {
             conflicted_files: Vec::new(),
             conflict_entries: Vec::new(),
             branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
         let consistency = Consistency::fingerprint(&git);
@@ -532,6 +541,7 @@ mod tests {
             conflicted_files: Vec::new(),
             conflict_entries: Vec::new(),
             branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
         let packet = ContextPacket {
@@ -587,6 +597,7 @@ mod tests {
             conflicted_files: Vec::new(),
             conflict_entries: Vec::new(),
             branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
         let consistency = Consistency::fingerprint(&git);
@@ -620,6 +631,8 @@ mod tests {
                 id: "100-1".to_string(),
                 intent: None,
                 scope: Vec::new(),
+                entry_branch: None,
+                entry_head: None,
             }),
             sauma: None,
         };
@@ -839,6 +852,7 @@ mod tests {
                     similarity: None,
                 },
             ],
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
 

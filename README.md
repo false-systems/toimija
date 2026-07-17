@@ -85,15 +85,19 @@ injects into the child:
 | `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
 | `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
 
-An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after Git-state
-changes instead of re-running `enter`. `toimija snippet preflight` already tells
-agents to do this.
+An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after HEAD, branch,
+index, or unfamiliar worktree changes instead of re-running `enter`; its own
+expected source edits do not require a full re-read. Before commit or handoff,
+`toimija verify` is the freshness boundary. `toimija snippet preflight` carries
+the same rule.
 
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
 agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
 auto-closes on exit. The marker is what `toimija sessions` reads (below) and the
 foundation for the `toimija handoff` record designed in
 `docs/proposals/0001-sessions-awareness-handoff.md`.
+Its entry branch and HEAD stay fixed; a later move appears as `Session drift` in
+the live packet instead of silently replacing the baseline.
 
 ## Multi-agent sessions
 
@@ -124,6 +128,8 @@ one. It is a git porcelain whose client is an agent instead of a human:
 
 - **Context** is compiled from plumbing reads — no index to keep fresh, no
   daemon, nothing to go stale. Fast because there is nothing to warm up.
+- **Budgets** never cut a path or hide safety state: optional sections are
+  omitted whole with exact counts, while the companion JSON stays complete.
 - **Freshness** is a content-based consistency token in every packet;
   `toimija verify` proves the packet still matches the repo before anyone
   trusts it. The packet is a claim, not a hope.
@@ -141,8 +147,9 @@ writing a line of infrastructure.
 
 Toimija does not hope agents read its context — it removes the choice:
 
-- Every packet opens with a **workset contract**: work from Scope and Read
-  order, exclusions are do-not-scan, declare any expansion. *Expansion is
+- Every packet opens with a **workset contract**: work from the Git-derived
+  Compiled workset and Read order; the session's declared scope remains
+  advisory intent. Exclusions are do-not-scan; declare any expansion. *Expansion is
   never forbidden; invisible expansion is.*
 - `run` **refuses to launch without `--intent`** — declaring why the session
   exists is the entry fee (`--intent unknown` is the escape hatch).
@@ -179,7 +186,7 @@ the human stays the orchestrator.
 | | |
 |---|---|
 | **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed while the agent works. |
-| **Git-derived relevance** | What to read first, what co-changes, what is risky. Advisory, no source parsing. |
+| **Git-derived relevance** | What to read first, what co-changes, what is risky — with visible evidence and confidence. Advisory, no source parsing. |
 | **Verifiable freshness** | A content-based token in every packet; `verify` before trust; `snapshot` to freeze. |
 | **Multi-agent awareness** | Sessions, overlap warnings, handoff records. |
 | **Chain of custody** | Sauma envelopes link artifacts across tools to the exact repo state they came from. |
