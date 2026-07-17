@@ -236,6 +236,7 @@ record for its own session:
 ```bash
 toimija handoff "auth migration half done; run cargo test -p auth next"
 toimija handoff --show 1782675584-99172
+toimija history
 ```
 
 Handoffs are append-only JSONL at `.toimija/sessions/<id>/handoff.jsonl`.
@@ -244,6 +245,14 @@ validation commands, coupling/risk hints, consistency token, and the note.
 The public record embeds `version: 1` and is documented by
 `docs/schemas/handoff-record.v1.schema.json`; optional fields may be added in
 v1, while breaking changes require a v2 schema and version bump.
+
+Concluded sessions are distilled into the append-only
+`.toimija/history.jsonl`. `run` records clean teardown immediately; pruning
+journals an unrecorded closed or stale session before removing its directory.
+Append failure keeps the directory. `toimija history` renders newest first;
+`--json` emits every valid record as an array. Malformed lines are counted and
+skipped. The v1 shape is documented by
+`docs/schemas/history-record.v1.schema.json`.
 
 ```
 LIVE
@@ -452,6 +461,7 @@ toimija sessions           # who else is live in this repo (read-only awareness)
 toimija intent "..."       # wrapped agent declares why it is here (via TOIMIJA_SESSION)
 toimija handoff "..."      # wrapped agent appends a session handoff record
 toimija handoff --show ID  # read a session's handoff records
+toimija history            # durable records of concluded sessions
 toimija enter              # refresh + print the packet as agent preflight
 toimija refresh            # recompute current.md/current.json
 toimija watch              # keep current.* fresh on Git/filesystem changes
@@ -476,6 +486,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` removes closed/stale sessions past the 7-day retention. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `handoff ["<note>"]` | Wrapped agent appends an explicit JSONL handoff record for its own session. `--show <id>` reads records, including closed sessions; `--json` emits the written record or all shown records. |
+| `history` | List durable concluded-session records newest first; `--json` emits every valid record. Malformed lines are counted and skipped. |
 | `enter` | Refresh and print the current packet as agent preflight. |
 | `refresh` | Recompute `current.md`/`current.json`. |
 | `current --write` | Joskus-facing alias for synchronous packet refresh. |
