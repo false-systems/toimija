@@ -171,6 +171,10 @@ toimija verify
 | `landed` | Check whether branch content landed even when squash merges hide ancestry. |
 | `init`, `adopt`, `doctor` | Configure a repo, install the entry rule, and detect policy drift. |
 
+The foreground watch loop survives laptop sleep: a resumed session re-proves
+itself within one tick through the same refresh and heartbeat path as a file
+change.
+
 See the **[complete reference](docs/reference.md)** for every flag, environment
 variable, packet field, and output guarantee.
 
