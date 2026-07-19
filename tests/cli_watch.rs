@@ -85,7 +85,10 @@ fn watch_refreshes_on_a_file_change_then_stops() {
     while let Ok(line) = stderr_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
     {
         diagnostics.push_str(&line);
-        if line.contains("watcher armed") || line.contains("watch: armed") {
+        if matches!(
+            line.trim(),
+            "toimija watch: armed (native)" | "toimija watch: armed (poll fallback)"
+        ) {
             armed = true;
             break;
         }

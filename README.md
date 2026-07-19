@@ -173,7 +173,7 @@ toimija verify
 
 The foreground watch loop survives laptop sleep: a resumed session re-proves
 itself within one tick through the same refresh and heartbeat path as a file
-change.
+change. Its armed line names the probe-proven native backend or polling fallback.
 
 See the **[complete reference](docs/reference.md)** for every flag, environment
 variable, packet field, and output guarantee.

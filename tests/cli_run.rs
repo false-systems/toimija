@@ -128,7 +128,12 @@ fn run_enters_then_launches_the_command() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Toimija agent entry"));
+        .stdout(predicate::str::contains("Toimija agent entry"))
+        .stderr(
+            predicate::str::contains("toimija run: watcher armed (native)").or(
+                predicate::str::contains("toimija run: watcher armed (poll fallback)"),
+            ),
+        );
 
     // The command ran ...
     assert_eq!(

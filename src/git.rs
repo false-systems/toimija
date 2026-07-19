@@ -137,10 +137,13 @@ pub fn collect_git_state(
     )
     .map(|text| text.trim().to_string());
     let status_started = Instant::now();
+    // Native watchers see Git's optional index-refresh lock. Disable it for
+    // this read-only status so refreshing a packet cannot trigger itself.
     let status_output = run_git_required_bytes(
         runner,
         &repo_root,
         &[
+            "--no-optional-locks",
             "status",
             "--porcelain=v2",
             "--branch",
@@ -794,6 +797,7 @@ R094\tsrc/old.rs\tsrc/renamed.rs
             )
             .with(
                 &[
+                    "--no-optional-locks",
                     "status",
                     "--porcelain=v2",
                     "--branch",
@@ -869,6 +873,7 @@ R094\tsrc/old.rs\tsrc/renamed.rs
             )
             .with(
                 &[
+                    "--no-optional-locks",
                     "status",
                     "--porcelain=v2",
                     "--branch",

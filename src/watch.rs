@@ -27,6 +27,8 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 const TICK: Duration = Duration::from_millis(200);
 /// A wall/monotonic disagreement this large is suspension, not scheduler jitter.
 const SUSPENSION_THRESHOLD: Duration = Duration::from_secs(30);
+/// How long a watcher has to report its readiness probe before fallback/failure.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Directories whose churn must never trigger a refresh.
 const IGNORED_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
 
@@ -46,14 +48,34 @@ fn detect_suspension(prev: &ClockPair, now: &ClockPair, threshold: Duration) -> 
     (slept >= threshold).then_some(slept)
 }
 
-type BackendWatcher = notify::PollWatcher;
+/// A probe-proven filesystem watcher: native when available, polling fallback
+/// when the native backend does not report readiness.
+enum Backend {
+    Native(notify::RecommendedWatcher),
+    Poll(notify::PollWatcher),
+}
+
+impl Backend {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Native(watcher) => {
+                let _ = watcher;
+                "native"
+            }
+            Self::Poll(watcher) => {
+                let _ = watcher;
+                "poll fallback"
+            }
+        }
+    }
+}
 
 /// An active filesystem watch. The fallible OS setup is done in [`start`], so a
 /// caller can report a startup failure *before* doing other work; the blocking
 /// refresh loop is [`Session::run`]. Dropping the session stops watching.
 pub struct Session {
     // Held only to keep the OS watch alive; dropping it unregisters the watch.
-    _watcher: BackendWatcher,
+    backend: Backend,
     rx: mpsc::Receiver<notify::Result<Event>>,
 }
 
@@ -61,27 +83,68 @@ pub struct Session {
 /// registering the path — happen here, synchronously, so a startup failure is
 /// reported to the caller rather than swallowed by a background loop.
 pub fn start(repo_root: &Path) -> Result<Session> {
+    start_with_probe(repo_root, prove_ready)
+}
+
+fn start_with_probe(
+    repo_root: &Path,
+    mut probe: impl FnMut(
+        &Path,
+        &mpsc::Receiver<notify::Result<Event>>,
+        Option<&notify::PollWatcher>,
+        &str,
+    ) -> Result<bool>,
+) -> Result<Session> {
+    let (native, rx) = arm::<notify::RecommendedWatcher>(repo_root, Config::default())?;
+    let (backend, rx) = if probe(repo_root, &rx, None, "native")? {
+        (Backend::Native(native), rx)
+    } else {
+        drop(native);
+        let (poll, rx) = arm::<notify::PollWatcher>(repo_root, watcher_config())?;
+        let ready = probe(repo_root, &rx, Some(&poll), "poll")?;
+        anyhow::ensure!(ready, "filesystem watcher did not report readiness");
+        (Backend::Poll(poll), rx)
+    };
+    info!(event = "toimija.watch.armed", backend = backend.label());
+    Ok(Session { backend, rx })
+}
+
+fn arm<W: Watcher>(
+    repo_root: &Path,
+    config: Config,
+) -> Result<(W, mpsc::Receiver<notify::Result<Event>>)> {
     let (tx, rx) = mpsc::channel();
-    // ponytail: native backends can miss the first event in CI/temp volumes;
-    // bounded polling keeps freshness observable at the cost of scan work.
-    let mut watcher = BackendWatcher::new(
+    let mut watcher = W::new(
         move |res| {
             let _ = tx.send(res);
         },
-        watcher_config(),
+        config,
     )
     .context("failed to create filesystem watcher")?;
     watcher
         .watch(repo_root, RecursiveMode::Recursive)
         .with_context(|| format!("failed to watch {}", repo_root.display()))?;
-    let probe = repo_root.join(format!("toimija-watch-probe-{}", std::process::id()));
+    Ok((watcher, rx))
+}
+
+fn prove_ready(
+    repo_root: &Path,
+    rx: &mpsc::Receiver<notify::Result<Event>>,
+    poll: Option<&notify::PollWatcher>,
+    backend: &str,
+) -> Result<bool> {
+    let probe = repo_root.join(format!(
+        "toimija-watch-probe-{}-{backend}",
+        std::process::id()
+    ));
     fs::write(&probe, b"watch readiness probe")
         .with_context(|| format!("failed to arm watcher at {}", repo_root.display()))?;
-    watcher
-        .poll()
-        .context("failed to request filesystem watcher readiness poll")?;
+    if let Some(poll) = poll {
+        poll.poll()
+            .context("failed to request filesystem watcher readiness poll")?;
+    }
     let ready = loop {
-        match rx.recv_timeout(Duration::from_secs(5)) {
+        match rx.recv_timeout(PROBE_TIMEOUT) {
             Ok(Ok(event)) if event.paths.iter().any(|path| path == &probe) => break true,
             Ok(_) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => break false,
@@ -89,11 +152,7 @@ pub fn start(repo_root: &Path) -> Result<Session> {
         }
     };
     let _ = fs::remove_file(&probe);
-    anyhow::ensure!(ready, "filesystem watcher did not report readiness");
-    Ok(Session {
-        _watcher: watcher,
-        rx,
-    })
+    Ok(ready)
 }
 
 fn watcher_config() -> Config {
@@ -101,6 +160,10 @@ fn watcher_config() -> Config {
 }
 
 impl Session {
+    pub fn backend_label(&self) -> &'static str {
+        self.backend.label()
+    }
+
     /// Refresh once after the OS watcher is registered. This closes the gap
     /// between the caller's baseline refresh and watcher readiness.
     pub fn catch_up(
@@ -204,7 +267,7 @@ pub fn watch(
     plan.run(runner, repo_root)?;
     let session = start(repo_root)?;
     session.catch_up(runner, repo_root, plan)?;
-    eprintln!("toimija watch: armed");
+    eprintln!("toimija watch: armed ({})", session.backend_label());
     session.run(runner, repo_root, plan, stop, on_refresh)
 }
 
@@ -266,7 +329,7 @@ mod tests {
                 ("git", ["rev-parse", "--show-toplevel"]) => {
                     (0, cwd.as_os_str().as_encoded_bytes().to_vec())
                 }
-                ("git", ["status", ..]) => {
+                ("git", ["--no-optional-locks", "status", ..]) => {
                     // A plan run collects Git status once, so this is the
                     // refresh-count proxy asserted below.
                     self.refreshes.set(self.refreshes.get() + 1);
@@ -295,12 +358,12 @@ mod tests {
     }
 
     fn idle_session() -> Session {
-        let watcher = BackendWatcher::new(|_| {}, watcher_config()).unwrap();
+        let watcher = notify::PollWatcher::new(|_| {}, watcher_config()).unwrap();
         let (tx, rx) = mpsc::channel();
         // The dropped sender makes the loop exit on its first quiet tick.
         drop(tx);
         Session {
-            _watcher: watcher,
+            backend: Backend::Poll(watcher),
             rx,
         }
     }
@@ -568,5 +631,20 @@ mod tests {
             Err(error) => error,
         };
         assert!(format!("{err:#}").contains("watch"));
+    }
+
+    #[test]
+    fn native_probe_timeout_arms_the_poll_fallback_and_says_so() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = start_with_probe(temp.path(), |repo_root, rx, poll, backend| {
+            if poll.is_none() {
+                Ok(false)
+            } else {
+                prove_ready(repo_root, rx, poll, backend)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(session.backend_label(), "poll fallback");
     }
 }
