@@ -292,9 +292,7 @@ pub fn prune(
 ) -> Result<PruneReport> {
     let now = now_secs();
     let mut removed = Vec::new();
-    // One bounded journal scan per pass. A session already remembered at
-    // teardown is removed without writing a duplicate record.
-    let mut recorded = footprint::recorded_session_ids(repo_root)?;
+    let mut journal = None;
     // Unreadable markers are never pruned: deletion demands the certain
     // signal, and an unreadable marker gives none. They count as kept.
     let scan = read_markers(repo_root)?;
@@ -308,7 +306,13 @@ pub fn prune(
                 Liveness::Stale => HistoryEnd::ReapedStale,
                 Liveness::Active => unreachable!("active sessions are never prunable"),
             };
-            footprint::reap(repo_root, &dir, &marker, end, now, &mut recorded)?;
+            // Open lazily so an empty pass does not create a journal. The guard
+            // holds one lock and one bounded index for the whole prune pass.
+            let journal = match &mut journal {
+                Some(journal) => journal,
+                None => journal.insert(footprint::Journal::open(repo_root)?),
+            };
+            footprint::reap(repo_root, &dir, &marker, end, now, journal)?;
             removed.push(marker.id);
         } else {
             kept += 1;

@@ -1070,14 +1070,7 @@ fn close_session_after_startup_failure(
 fn journal_closed_session(repo_root: &std::path::Path, session: &session::Session) {
     let result = (|| {
         let marker = session::load_marker(&session.dir)?;
-        let mut recorded = footprint::recorded_session_ids(repo_root)?;
-        footprint::journal_session(
-            repo_root,
-            &marker,
-            HistoryEnd::Closed,
-            now_secs(),
-            &mut recorded,
-        )?;
+        footprint::journal_session(repo_root, &marker, HistoryEnd::Closed, now_secs())?;
         Result::<()>::Ok(())
     })();
     if let Err(error) = result {

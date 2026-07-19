@@ -2,8 +2,8 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Seek, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -145,6 +145,59 @@ pub struct HistoryRead {
     pub malformed: usize,
 }
 
+/// An exclusively locked journal and its one-pass record index.
+pub struct Journal {
+    path: PathBuf,
+    file: fs::File,
+    recorded: BTreeSet<String>,
+}
+
+impl Journal {
+    pub fn open(repo_root: &Path) -> Result<Self> {
+        let (path, mut file) = open_history(repo_root)?;
+        file.lock()
+            .with_context(|| format!("failed to lock {}", path.display()))?;
+        let recorded = read_locked(&mut file, &path)?
+            .records
+            .into_iter()
+            .map(|record| record.id)
+            .collect();
+        Ok(Self {
+            path,
+            file,
+            recorded,
+        })
+    }
+
+    pub fn journal_session(
+        &mut self,
+        repo_root: &Path,
+        marker: &SessionMarker,
+        end: HistoryEnd,
+        recorded_at: u64,
+    ) -> Result<bool> {
+        if self.recorded.contains(&marker.id) {
+            return Ok(false);
+        }
+        let handoff_path = repo_root
+            .join(".toimija/sessions")
+            .join(&marker.id)
+            .join("handoff.jsonl");
+        let handoffs = if handoff_path.exists() {
+            handoff::read_all(repo_root, &marker.id)?
+        } else {
+            Vec::new()
+        };
+        append_locked(
+            &mut self.file,
+            &self.path,
+            &derive_record(marker, &handoffs, end, recorded_at),
+        )?;
+        self.recorded.insert(marker.id.clone());
+        Ok(true)
+    }
+}
+
 pub fn derive_record(
     marker: &SessionMarker,
     handoffs: &[handoff::HandoffRecord],
@@ -155,7 +208,7 @@ pub fn derive_record(
         .iter()
         .filter_map(|record| record.next_step.clone())
         .collect();
-    let handoffs_total = handoffs.len();
+    let handoffs_total = notes.len();
     HistoryRecord {
         version: HISTORY_VERSION,
         id: marker.id.clone(),
@@ -174,18 +227,30 @@ pub fn derive_record(
 }
 
 pub fn append_record(repo_root: &Path, record: &HistoryRecord) -> Result<()> {
+    let (path, mut file) = open_history(repo_root)?;
+    file.lock()
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+    append_locked(&mut file, &path, record)
+}
+
+fn open_history(repo_root: &Path) -> Result<(std::path::PathBuf, fs::File)> {
     let path = repo_root.join(HISTORY_PATH);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let mut line = serde_json::to_vec(record)?;
-    line.push(b'\n');
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
+        .read(true)
         .create(true)
         .append(true)
         .open(&path)
         .with_context(|| format!("failed to open {}", path.display()))?;
+    Ok((path, file))
+}
+
+fn append_locked(file: &mut fs::File, path: &Path, record: &HistoryRecord) -> Result<()> {
+    let mut line = serde_json::to_vec(record)?;
+    line.push(b'\n');
     file.write_all(&line)
         .with_context(|| format!("failed to append {}", path.display()))?;
     file.sync_all()
@@ -202,7 +267,7 @@ pub fn append_record(repo_root: &Path, record: &HistoryRecord) -> Result<()> {
 /// of hiding all remaining records.
 pub fn read_history(repo_root: &Path) -> Result<HistoryRead> {
     let path = repo_root.join(HISTORY_PATH);
-    let file = match fs::File::open(&path) {
+    let mut file = match fs::File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(HistoryRead {
@@ -214,6 +279,14 @@ pub fn read_history(repo_root: &Path) -> Result<HistoryRead> {
             return Err(error).with_context(|| format!("failed to open {}", path.display()));
         }
     };
+    file.lock_shared()
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+    read_locked(&mut file, &path)
+}
+
+fn read_locked(file: &mut fs::File, path: &Path) -> Result<HistoryRead> {
+    file.rewind()
+        .with_context(|| format!("failed to seek {}", path.display()))?;
     let mut records = Vec::new();
     let mut malformed = 0;
     for line in BufReader::new(file).lines() {
@@ -236,39 +309,13 @@ pub fn read_history(repo_root: &Path) -> Result<HistoryRead> {
     Ok(HistoryRead { records, malformed })
 }
 
-pub fn recorded_session_ids(repo_root: &Path) -> Result<BTreeSet<String>> {
-    Ok(read_history(repo_root)?
-        .records
-        .into_iter()
-        .map(|record| record.id)
-        .collect())
-}
-
 pub fn journal_session(
     repo_root: &Path,
     marker: &SessionMarker,
     end: HistoryEnd,
     recorded_at: u64,
-    recorded: &mut BTreeSet<String>,
 ) -> Result<bool> {
-    if recorded.contains(&marker.id) {
-        return Ok(false);
-    }
-    let handoff_path = repo_root
-        .join(".toimija/sessions")
-        .join(&marker.id)
-        .join("handoff.jsonl");
-    let handoffs = if handoff_path.exists() {
-        handoff::read_all(repo_root, &marker.id)?
-    } else {
-        Vec::new()
-    };
-    append_record(
-        repo_root,
-        &derive_record(marker, &handoffs, end, recorded_at),
-    )?;
-    recorded.insert(marker.id.clone());
-    Ok(true)
+    Journal::open(repo_root)?.journal_session(repo_root, marker, end, recorded_at)
 }
 
 /// Durably remember a concluded session, then and only then remove its dir.
@@ -278,9 +325,9 @@ pub fn reap(
     marker: &SessionMarker,
     end: HistoryEnd,
     recorded_at: u64,
-    recorded: &mut BTreeSet<String>,
+    journal: &mut Journal,
 ) -> Result<bool> {
-    let journaled = journal_session(repo_root, marker, end, recorded_at, recorded)?;
+    let journaled = journal.journal_session(repo_root, marker, end, recorded_at)?;
     fs::remove_dir_all(dir).with_context(|| format!("failed to remove {}", dir.display()))?;
     Ok(journaled)
 }
@@ -391,8 +438,8 @@ mod tests {
     }
 
     #[test]
-    fn derive_record_caps_handoff_notes_and_keeps_the_total() {
-        let handoffs: Vec<handoff::HandoffRecord> = (0..12)
+    fn derive_record_caps_handoff_notes_and_keeps_the_note_total() {
+        let handoffs: Vec<handoff::HandoffRecord> = (0..14)
             .map(|index| handoff::HandoffRecord {
                 version: 1,
                 session_id: "100-1".to_string(),
@@ -421,7 +468,7 @@ mod tests {
                 risk: Vec::new(),
                 risk_total: 0,
                 consistency_token: String::new(),
-                next_step: Some(format!("note {index}")),
+                next_step: (![0, 7].contains(&index)).then(|| format!("note {index}")),
                 sauma: None,
             })
             .collect();
@@ -431,12 +478,30 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_journaling_records_a_session_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = marker("100-1");
+        let barrier = std::sync::Barrier::new(8);
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    journal_session(temp.path(), &marker, HistoryEnd::Closed, 300).unwrap();
+                });
+            }
+        });
+
+        assert_eq!(read_history(temp.path()).unwrap().records.len(), 1);
+    }
+
+    #[test]
     fn reap_appends_the_record_before_removing_the_directory() {
         let temp = tempfile::tempdir().unwrap();
         let marker = marker("100-1");
         let dir = temp.path().join(".toimija/sessions/100-1");
         fs::create_dir_all(&dir).unwrap();
-        let mut recorded = BTreeSet::new();
+        let mut journal = Journal::open(temp.path()).unwrap();
 
         assert!(
             reap(
@@ -445,34 +510,23 @@ mod tests {
                 &marker,
                 HistoryEnd::Closed,
                 300,
-                &mut recorded
+                &mut journal
             )
             .unwrap()
         );
         assert!(!dir.exists());
+        drop(journal);
         assert_eq!(read_history(temp.path()).unwrap().records.len(), 1);
     }
 
     #[test]
-    fn failed_journal_append_keeps_the_session_directory() {
+    fn failed_journal_open_keeps_the_session_directory() {
         let temp = tempfile::tempdir().unwrap();
-        let marker = marker("100-1");
         let dir = temp.path().join(".toimija/sessions/100-1");
         fs::create_dir_all(&dir).unwrap();
         fs::create_dir_all(temp.path().join(HISTORY_PATH)).unwrap();
-        let mut recorded = BTreeSet::new();
 
-        assert!(
-            reap(
-                temp.path(),
-                &dir,
-                &marker,
-                HistoryEnd::Closed,
-                300,
-                &mut recorded
-            )
-            .is_err()
-        );
+        assert!(Journal::open(temp.path()).is_err());
         assert!(dir.exists());
     }
 
@@ -482,10 +536,12 @@ mod tests {
         let marker = marker("100-1");
         let dir = temp.path().join(".toimija/sessions/100-1");
         fs::create_dir_all(&dir).unwrap();
-        let mut recorded = BTreeSet::new();
+        let mut journal = Journal::open(temp.path()).unwrap();
 
         assert!(
-            journal_session(temp.path(), &marker, HistoryEnd::Closed, 200, &mut recorded,).unwrap()
+            journal
+                .journal_session(temp.path(), &marker, HistoryEnd::Closed, 200)
+                .unwrap()
         );
         assert!(
             !reap(
@@ -494,10 +550,11 @@ mod tests {
                 &marker,
                 HistoryEnd::Closed,
                 300,
-                &mut recorded,
+                &mut journal,
             )
             .unwrap()
         );
+        drop(journal);
         assert_eq!(read_history(temp.path()).unwrap().records.len(), 1);
         assert!(!dir.exists());
     }
