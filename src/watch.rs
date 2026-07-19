@@ -267,6 +267,8 @@ mod tests {
                     (0, cwd.as_os_str().as_encoded_bytes().to_vec())
                 }
                 ("git", ["status", ..]) => {
+                    // A plan run collects Git status once, so this is the
+                    // refresh-count proxy asserted below.
                     self.refreshes.set(self.refreshes.get() + 1);
                     (0, Vec::new())
                 }
@@ -295,6 +297,7 @@ mod tests {
     fn idle_session() -> Session {
         let watcher = BackendWatcher::new(|_| {}, watcher_config()).unwrap();
         let (tx, rx) = mpsc::channel();
+        // The dropped sender makes the loop exit on its first quiet tick.
         drop(tx);
         Session {
             _watcher: watcher,
@@ -404,15 +407,31 @@ mod tests {
                     heartbeats += 1;
                     stop.store(true, Ordering::Relaxed);
                 },
-                || clocks.next().unwrap(),
+                || {
+                    clocks
+                        .next()
+                        .expect("loop ran more ticks than the fabricated schedule")
+                },
             )
             .unwrap();
 
         assert_eq!(runner.refreshes.get(), 1);
         assert_eq!(heartbeats, 1);
+    }
 
-        runner.refreshes.set(0);
+    #[test]
+    fn jitter_under_threshold_triggers_no_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let runner = RefreshCountingRunner {
+            refreshes: Cell::new(0),
+        };
+        let plan = refresh::Plan {
+            for_diff: false,
+            budget: None,
+            session_dir: None,
+        };
         let stop = AtomicBool::new(false);
+        let mono = Instant::now();
         let mut clocks = [
             ClockPair {
                 wall: UNIX_EPOCH,
@@ -433,7 +452,11 @@ mod tests {
                 &plan,
                 &stop,
                 || heartbeats += 1,
-                || clocks.next().unwrap(),
+                || {
+                    clocks
+                        .next()
+                        .expect("loop ran more ticks than the fabricated schedule")
+                },
             )
             .unwrap();
 
@@ -478,7 +501,11 @@ mod tests {
                 &plan,
                 &stop,
                 || heartbeats += 1,
-                || clocks.next().unwrap(),
+                || {
+                    clocks
+                        .next()
+                        .expect("loop ran more ticks than the fabricated schedule")
+                },
             )
             .unwrap();
 
