@@ -873,7 +873,10 @@ fn run_run(args: RunArgs) -> Result<i32> {
         close_session_after_startup_failure(&repo_root, &mut session);
         return Err(error).context("failed to refresh after arming the file watcher");
     }
-    eprintln!("toimija run: watcher armed");
+    eprintln!(
+        "toimija run: watcher armed ({})",
+        watch_session.backend_label()
+    );
 
     // 4. Run the watch loop in the background, refreshing the SESSION packet
     //    while the agent works. The stop flag is flipped once the command exits.
