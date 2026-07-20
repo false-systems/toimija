@@ -1,10 +1,12 @@
 //! Minimum language packs: the floor every recognized language gets —
 //! detection by manifest, inferred test + lint tiers, companion-test hints.
 //! One engine, one table row per language. Full adapters (Rust, Elixir) stay
-//! the only per-language *code*; a new language here is data, not a module.
+//! the only per-language modules; bounded proof rules live beside this table.
 //! No source parsing — manifests and path templates only — and `repo.yaml`
 //! validation config still beats everything inferred from a row.
 
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::adapters::LanguageAdapter;
@@ -21,10 +23,10 @@ pub struct MinimumLang {
     /// Any of these at the repo root claims the repo (checked in table order,
     /// after the full adapters have had their chance).
     pub manifests: &'static [&'static str],
-    /// Fast-tier (test) commands. Also the Full tier, mirroring the full
-    /// adapters' shape.
+    /// Fast-tier (test) candidates. Proven commands also become the Full tier,
+    /// mirroring the full adapters' shape.
     pub fast: &'static [&'static str],
-    /// Strict-tier (lint/vet) commands.
+    /// Strict-tier (lint/vet) candidates.
     pub strict: &'static [&'static str],
     /// Source extensions the companion templates apply to.
     pub extensions: &'static [&'static str],
@@ -65,7 +67,7 @@ pub const MINIMUMS: &[MinimumLang] = &[
         name: "JS/TS",
         manifests: &["package.json"],
         fast: &["npm test"],
-        strict: &["npm run lint"],
+        strict: &["npm run lint", "npm run typecheck"],
         extensions: &["ts", "tsx", "js", "jsx"],
         companions: &["{dir}/{stem}.test.{ext}", "{dir}/{stem}.spec.{ext}"],
         test_markers: &[".test.", ".spec."],
@@ -82,6 +84,138 @@ pub fn detect(repo_root: &Path) -> Option<&'static MinimumLang> {
 
 pub fn for_kind(kind: RepoKind) -> Option<&'static MinimumLang> {
     MINIMUMS.iter().find(|lang| lang.kind == kind)
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ProvenCommands {
+    pub fast: Vec<String>,
+    pub strict: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+pub(crate) fn proven_commands(repo_root: &Path, lang: &MinimumLang) -> ProvenCommands {
+    match lang.kind {
+        RepoKind::Go => ProvenCommands {
+            fast: strings(lang.fast),
+            strict: strings(lang.strict),
+            notes: Vec::new(),
+        },
+        RepoKind::Node => node_commands(repo_root, lang),
+        RepoKind::Python => python_commands(repo_root, lang),
+        _ => ProvenCommands::default(),
+    }
+}
+
+fn node_commands(repo_root: &Path, lang: &MinimumLang) -> ProvenCommands {
+    let mut commands = ProvenCommands::default();
+    let scripts = match read_bounded(&repo_root.join("package.json")) {
+        Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
+            Ok(manifest) => manifest
+                .get("scripts")
+                .and_then(serde_json::Value::as_object)
+                .cloned(),
+            Err(_) => return all_dropped(lang, "package.json is malformed"),
+        },
+        Err(reason) => return all_dropped(lang, reason),
+    };
+
+    for command in lang.fast {
+        if has_string_script(scripts.as_ref(), "test") {
+            commands.fast.push((*command).to_string());
+        } else {
+            commands.notes.push(format!(
+                "{command} not inferred — no test script in package.json"
+            ));
+        }
+    }
+    for command in lang.strict {
+        let script = command.strip_prefix("npm run ").unwrap_or(command);
+        if has_string_script(scripts.as_ref(), script) {
+            commands.strict.push((*command).to_string());
+        } else {
+            commands.notes.push(format!(
+                "{command} not inferred — no {script} script in package.json"
+            ));
+        }
+    }
+    commands
+}
+
+fn python_commands(repo_root: &Path, lang: &MinimumLang) -> ProvenCommands {
+    let pyproject = read_bounded(&repo_root.join("pyproject.toml")).unwrap_or_default();
+    let mut commands = ProvenCommands::default();
+
+    if has_table(&pyproject, "tool.pytest.ini_options") || repo_root.join("pytest.ini").is_file() {
+        commands.fast = strings(lang.fast);
+    } else {
+        commands
+            .notes
+            .push("pytest not inferred — no [tool.pytest.ini_options] or pytest.ini".to_string());
+    }
+
+    if has_table(&pyproject, "tool.ruff")
+        || repo_root.join("ruff.toml").is_file()
+        || repo_root.join(".ruff.toml").is_file()
+    {
+        commands.strict = strings(lang.strict);
+    } else {
+        commands.notes.push(
+            "ruff check . not inferred — no [tool.ruff], ruff.toml, or .ruff.toml".to_string(),
+        );
+    }
+    commands
+}
+
+fn has_string_script(
+    scripts: Option<&serde_json::Map<String, serde_json::Value>>,
+    name: &str,
+) -> bool {
+    scripts
+        .and_then(|scripts| scripts.get(name))
+        .is_some_and(serde_json::Value::is_string)
+}
+
+fn has_table(contents: &str, expected: &str) -> bool {
+    contents.lines().any(|line| {
+        line.trim()
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+            .map(str::trim)
+            == Some(expected)
+    })
+}
+
+fn strings(commands: &[&str]) -> Vec<String> {
+    commands
+        .iter()
+        .map(|command| (*command).to_string())
+        .collect()
+}
+
+fn all_dropped(lang: &MinimumLang, reason: &str) -> ProvenCommands {
+    ProvenCommands {
+        notes: lang
+            .fast
+            .iter()
+            .chain(lang.strict)
+            .map(|command| format!("{command} not inferred — {reason}"))
+            .collect(),
+        ..ProvenCommands::default()
+    }
+}
+
+const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+
+fn read_bounded(path: &Path) -> Result<String, &'static str> {
+    let file = File::open(path).map_err(|_| "manifest could not be read")?;
+    let mut bytes = Vec::new();
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "manifest could not be read")?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err("manifest exceeds 256 KiB");
+    }
+    String::from_utf8(bytes).map_err(|_| "manifest is not UTF-8")
 }
 
 /// One adapter serves every table row; which row is fixed at construction.
@@ -283,5 +417,89 @@ mod tests {
             node.companion_tests(temp.path(), Path::new("app.test.ts"))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn node_commands_require_string_scripts() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("package.json"),
+            r#"{"scripts":{"test":"vitest","lint":"eslint .","typecheck":"tsc"}}"#,
+        )
+        .unwrap();
+
+        let commands = proven_commands(temp.path(), for_kind(RepoKind::Node).unwrap());
+        assert_eq!(commands.fast, ["npm test"]);
+        assert_eq!(commands.strict, ["npm run lint", "npm run typecheck"]);
+        assert!(commands.notes.is_empty());
+    }
+
+    #[test]
+    fn malformed_node_manifest_drops_each_candidate_once() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("package.json"), "{}").unwrap();
+        let missing = proven_commands(temp.path(), for_kind(RepoKind::Node).unwrap());
+        assert_eq!(missing.notes.len(), 3);
+        assert!(missing.notes.iter().all(|note| note.contains("no ")));
+
+        std::fs::write(temp.path().join("package.json"), "{").unwrap();
+
+        let commands = proven_commands(temp.path(), for_kind(RepoKind::Node).unwrap());
+        assert!(commands.fast.is_empty());
+        assert!(commands.strict.is_empty());
+        assert_eq!(commands.notes.len(), 3);
+        assert!(commands.notes.iter().all(|note| note.contains("malformed")));
+    }
+
+    #[test]
+    fn manifest_reads_are_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("package.json"),
+            vec![b' '; MAX_MANIFEST_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        let commands = proven_commands(temp.path(), for_kind(RepoKind::Node).unwrap());
+        assert_eq!(commands.notes.len(), 3);
+        assert!(commands.notes.iter().all(|note| note.contains("256 KiB")));
+    }
+
+    #[test]
+    fn python_commands_require_explicit_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("setup.py"),
+            "from setuptools import setup\n",
+        )
+        .unwrap();
+        std::fs::create_dir(temp.path().join("tests")).unwrap();
+        let python = for_kind(RepoKind::Python).unwrap();
+
+        let dropped = proven_commands(temp.path(), python);
+        assert!(dropped.fast.is_empty());
+        assert!(dropped.strict.is_empty());
+        assert_eq!(dropped.notes.len(), 2);
+
+        std::fs::write(temp.path().join("pytest.ini"), "[pytest]\n").unwrap();
+        std::fs::write(temp.path().join("ruff.toml"), "line-length = 100\n").unwrap();
+        let proven = proven_commands(temp.path(), python);
+        assert_eq!(proven.fast, ["pytest"]);
+        assert_eq!(proven.strict, ["ruff check ."]);
+        assert!(proven.notes.is_empty());
+    }
+
+    #[test]
+    fn python_tables_are_section_aware() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("pyproject.toml"),
+            "[tool.pytest.ini_options]\naddopts = \"-q\"\n[tool.ruff]\nline-length = 100\n",
+        )
+        .unwrap();
+
+        let commands = proven_commands(temp.path(), for_kind(RepoKind::Python).unwrap());
+        assert_eq!(commands.fast, ["pytest"]);
+        assert_eq!(commands.strict, ["ruff check ."]);
     }
 }

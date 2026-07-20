@@ -31,13 +31,14 @@ pub enum ValidationSource {
     Unknown,
 }
 
-pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -> ValidationPlan {
-    let mut inferred = inferred_plan(kind);
+pub fn validation_plan(repo_root: &Path, config: &RepoConfig, kind: RepoKind) -> ValidationPlan {
+    if config.has_validation() && (config.validation.replace_inferred || kind == RepoKind::Generic)
+    {
+        return configured_plan(config, config.validation.replace_inferred);
+    }
+    let mut inferred = inferred_plan(repo_root, kind);
     if !config.has_validation() {
         return inferred;
-    }
-    if config.validation.replace_inferred || kind == RepoKind::Generic {
-        return configured_plan(config, config.validation.replace_inferred);
     }
     extend_unique(&mut inferred.fast, &config.validation.fast);
     extend_unique(&mut inferred.strict, &config.validation.strict);
@@ -47,7 +48,7 @@ pub fn validation_plan(_repo_root: &Path, config: &RepoConfig, kind: RepoKind) -
     inferred
 }
 
-fn inferred_plan(kind: RepoKind) -> ValidationPlan {
+fn inferred_plan(repo_root: &Path, kind: RepoKind) -> ValidationPlan {
     match kind {
         RepoKind::Rust => {
             info!(event = "toimija.validation.inferred", repo_kind = "rust");
@@ -95,20 +96,23 @@ fn inferred_plan(kind: RepoKind) -> ValidationPlan {
             let Some(lang) = crate::adapters::minimum::for_kind(minimum_kind) else {
                 // A kind with neither a full adapter nor a table row would be
                 // a wiring bug; degrade to the generic (unknown) plan.
-                return inferred_plan(RepoKind::Generic);
+                return inferred_plan(repo_root, RepoKind::Generic);
             };
+            let commands = crate::adapters::minimum::proven_commands(repo_root, lang);
+            let mut notes = vec![format!(
+                "Validation inferred from {} repo shape (minimum language pack), not proven by Sykli",
+                lang.name
+            )];
+            notes.extend(commands.notes);
             info!(event = "toimija.validation.inferred", repo_kind = lang.name);
             ValidationPlan {
                 source: ValidationSource::Inferred,
                 focused: Vec::new(),
-                fast: lang.fast.iter().map(|s| s.to_string()).collect(),
-                strict: lang.strict.iter().map(|s| s.to_string()).collect(),
-                full: lang.fast.iter().map(|s| s.to_string()).collect(),
+                full: commands.fast.clone(),
+                fast: commands.fast,
+                strict: commands.strict,
                 privileged: Vec::new(),
-                notes: vec![format!(
-                    "Validation inferred from {} repo shape (minimum language pack), not proven by Sykli",
-                    lang.name
-                )],
+                notes,
             }
         }
     }

@@ -66,7 +66,10 @@ fn python_repo_gets_the_python_minimum_pack() {
     let temp = tempfile::tempdir().unwrap();
     init_repo(
         temp.path(),
-        &[("pyproject.toml", "[project]\nname = \"demo\"\n")],
+        &[(
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\n[tool.pytest.ini_options]\n[tool.ruff]\n",
+        )],
     );
     assert_packet_contains(temp.path(), &["- kind: Python", "pytest", "ruff check ."]);
 }
@@ -77,8 +80,40 @@ fn node_repo_gets_the_node_minimum_pack() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
+    init_repo(
+        temp.path(),
+        &[(
+            "package.json",
+            r#"{"scripts":{"test":"vitest","lint":"eslint .","typecheck":"tsc"}}"#,
+        )],
+    );
+    assert_packet_contains(
+        temp.path(),
+        &[
+            "- kind: Node",
+            "npm test",
+            "npm run lint",
+            "npm run typecheck",
+        ],
+    );
+}
+
+#[test]
+fn unproven_node_commands_are_dropped_with_notes() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
     init_repo(temp.path(), &[("package.json", "{}\n")]);
-    assert_packet_contains(temp.path(), &["- kind: Node", "npm test", "npm run lint"]);
+
+    assert_packet_contains(
+        temp.path(),
+        &[
+            "## Fast\n- none",
+            "## Strict\n- none",
+            "npm test not inferred — no test script in package.json",
+        ],
+    );
 }
 
 #[test]

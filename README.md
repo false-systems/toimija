@@ -193,8 +193,9 @@ variable, packet field, and output guarantee.
 ## Language support
 
 Rust and Elixir have full adapters. Go, Python, and JavaScript/TypeScript receive
-the minimum language pack: repository detection, validation-plan hints, and
-companion-test discovery. Other repositories work through
+the minimum language pack: repository detection, evidence-backed validation-plan
+hints, and companion-test discovery. Commands that their manifests do not prove
+are omitted with a note. Other repositories work through
 `.toimija/repo.yaml`.
 
 Packets also report recognized secondary languages from a bounded manifest
