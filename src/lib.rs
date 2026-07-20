@@ -9,6 +9,7 @@ pub mod consistency;
 pub mod context;
 pub mod coverage;
 pub mod error;
+pub mod footprint;
 pub mod git;
 pub mod handoff;
 pub mod landed;

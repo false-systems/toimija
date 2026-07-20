@@ -6,6 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+/// Stable marker shared with footprint classification for orphaned atomic
+/// writes. The full suffix is `.tmp-<pid>-<sequence>`.
+pub(crate) const TEMP_MARKER: &str = ".tmp-";
+
 pub(crate) fn replace(path: &Path, contents: &[u8]) -> io::Result<()> {
     replace_before_rename(path, contents, |_| Ok(()))
 }
@@ -45,7 +49,7 @@ fn temp_path(path: &Path) -> PathBuf {
         .file_name()
         .map_or_else(|| OsString::from("artifact"), OsString::from);
     let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-    name.push(format!(".tmp-{}-{sequence}", std::process::id()));
+    name.push(format!("{TEMP_MARKER}{}-{sequence}", std::process::id()));
     path.with_file_name(name)
 }
 

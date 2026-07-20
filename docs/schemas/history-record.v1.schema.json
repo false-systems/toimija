@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "docs/schemas/history-record.v1.schema.json",
+  "title": "Toimija history record v1",
+  "description": "A durable summary of one concluded Toimija session. New optional fields may be added within v1 and readers tolerate them; changing or removing a required field requires history-record.v2.schema.json and a version bump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "agent",
+    "intent",
+    "scope",
+    "branch",
+    "started_at",
+    "last_seen_at",
+    "end",
+    "exit_status",
+    "handoffs",
+    "handoffs_total",
+    "recorded_at"
+  ],
+  "properties": {
+    "version": {
+      "description": "Schema version. Version 1 is the only value emitted by this schema.",
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "description": "The concluded session id.",
+      "type": "string"
+    },
+    "agent": {
+      "description": "Wrapped command argv from the session marker.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "intent": {
+      "description": "The session's final declared intent, when known.",
+      "type": ["string", "null"]
+    },
+    "scope": {
+      "description": "Declared scope paths accumulated by the session.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "branch": {
+      "description": "Branch captured in the session marker, when known.",
+      "type": ["string", "null"]
+    },
+    "started_at": {
+      "description": "Unix timestamp in seconds when the session started.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_seen_at": {
+      "description": "Unix timestamp in seconds of the last heartbeat, when recorded.",
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "end": {
+      "description": "How the session concluded or became reclaimable.",
+      "type": "string",
+      "enum": ["closed", "reaped_stale"]
+    },
+    "exit_status": {
+      "description": "Wrapped command exit status, when the command launched and returned one.",
+      "type": ["integer", "null"]
+    },
+    "handoffs": {
+      "description": "Up to ten handoff notes retained from the live session directory.",
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 10
+    },
+    "handoffs_total": {
+      "description": "Full handoff-note count before the list was capped.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "recorded_at": {
+      "description": "Unix timestamp in seconds when this durable record was appended.",
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

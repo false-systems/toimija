@@ -3,6 +3,7 @@
 
 const README: &str = include_str!("../README.md");
 const HANDOFF_SCHEMA: &str = include_str!("../docs/schemas/handoff-record.v1.schema.json");
+const HISTORY_SCHEMA: &str = include_str!("../docs/schemas/history-record.v1.schema.json");
 const SAUMA_SCHEMA: &str = include_str!("../docs/schemas/sauma-envelope.v1.schema.json");
 
 #[test]
@@ -135,6 +136,52 @@ fn handoff_schema_permits_additive_fields_like_the_reader() {
         parsed.is_ok(),
         "tolerant reader must accept a record with an unknown optional field"
     );
+}
+
+#[test]
+fn history_schema_matches_emitted_record_fields() {
+    use std::collections::BTreeSet;
+
+    let schema: serde_json::Value = serde_json::from_str(HISTORY_SCHEMA).unwrap();
+    assert_eq!(
+        schema["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert_eq!(schema["$id"], "docs/schemas/history-record.v1.schema.json");
+    assert_eq!(schema["additionalProperties"], false);
+
+    let record = toimija::footprint::HistoryRecord {
+        version: 1,
+        id: "100-1".to_string(),
+        agent: vec!["codex".to_string()],
+        intent: None,
+        scope: Vec::new(),
+        branch: Some("main".to_string()),
+        started_at: 1,
+        last_seen_at: Some(2),
+        end: toimija::footprint::HistoryEnd::Closed,
+        exit_status: Some(0),
+        handoffs: Vec::new(),
+        handoffs_total: 0,
+        recorded_at: 3,
+    };
+    let emitted = serde_json::to_value(record).unwrap();
+    let emitted_keys: BTreeSet<_> = emitted.as_object().unwrap().keys().cloned().collect();
+    let property_keys: BTreeSet<_> = schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let required: BTreeSet<_> = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+
+    assert_eq!(emitted_keys, property_keys);
+    assert_eq!(emitted_keys, required);
 }
 
 #[test]

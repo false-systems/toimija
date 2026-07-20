@@ -10,6 +10,7 @@ use crate::command::ProcessCommandRunner;
 use crate::config::{self, RepoConfig};
 use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency, GitOperationState, Verdict};
 use crate::context;
+use crate::footprint::{self, HistoryEnd};
 use crate::git;
 use crate::handoff;
 use crate::landed;
@@ -179,6 +180,16 @@ pub enum Command {
         toimija handoff --show 1782951227-52574"
     )]
     Handoff(HandoffArgs),
+    /// List durable records of concluded sessions.
+    ///
+    /// Use this to see which agents worked in the repo after their live session
+    /// directories have been reclaimed. Reads the append-only local history
+    /// journal; malformed lines are counted and skipped.
+    #[command(
+        after_help = "Examples:\n  toimija history         # newest concluded sessions first\n  \
+        toimija history --json  # all valid records as a JSON array"
+    )]
+    History(HistoryArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     ///
     /// Use this to seed AGENTS.md/CLAUDE.md (`preflight`) or to save a
@@ -349,6 +360,13 @@ pub struct HandoffArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct HistoryArgs {
+    /// Emit all valid history records as a JSON array.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct SessionsArgs {
     /// Emit the report as JSON instead of the human-readable listing.
     #[arg(long)]
@@ -455,6 +473,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Current(args) if args.json => "json",
         Command::Handoff(args) if args.json => "json",
+        Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         _ => "text",
     };
@@ -479,6 +498,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Run(args) => run_run(args),
         Command::Intent(args) => run_intent(args).map(|()| 0),
         Command::Handoff(args) => run_handoff(args).map(|()| 0),
+        Command::History(args) => run_history(args).map(|()| 0),
         Command::Snippet(args) => run_snippet(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
@@ -583,6 +603,7 @@ impl Command {
             Command::Run(_) => "run",
             Command::Intent(_) => "intent",
             Command::Handoff(_) => "handoff",
+            Command::History(_) => "history",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Sessions(_) => "sessions",
@@ -816,14 +837,14 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let entry = match plan.run(&runner, &repo_root) {
         Ok(entry) => entry,
         Err(error) => {
-            close_session_after_startup_failure(&mut session);
+            close_session_after_startup_failure(&repo_root, &mut session);
             return Err(error);
         }
     };
     let entry = match verify_run_entry(&runner, &cwd, &repo_root, &plan, entry, &session.id) {
         Ok(entry) => entry,
         Err(error) => {
-            close_session_after_startup_failure(&mut session);
+            close_session_after_startup_failure(&repo_root, &mut session);
             return Err(error);
         }
     };
@@ -833,7 +854,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
         entry.packet.git.branch.clone(),
         entry.packet.git.head_oid.clone(),
     ) {
-        close_session_after_startup_failure(&mut session);
+        close_session_after_startup_failure(&repo_root, &mut session);
         return Err(error);
     }
 
@@ -844,12 +865,12 @@ fn run_run(args: RunArgs) -> Result<i32> {
     {
         Ok(watch_session) => watch_session,
         Err(error) => {
-            close_session_after_startup_failure(&mut session);
+            close_session_after_startup_failure(&repo_root, &mut session);
             return Err(error);
         }
     };
     if let Err(error) = watch_session.catch_up(&runner, &repo_root, &plan) {
-        close_session_after_startup_failure(&mut session);
+        close_session_after_startup_failure(&repo_root, &mut session);
         return Err(error).context("failed to refresh after arming the file watcher");
     }
     eprintln!("toimija run: watcher armed");
@@ -953,12 +974,13 @@ fn run_run(args: RunArgs) -> Result<i32> {
         .as_ref()
         .ok()
         .map(|status| wrapped_exit_code(*status));
-    if let Err(error) = session.close(exit_status) {
-        eprintln!(
+    match session.close(exit_status) {
+        Ok(()) => journal_closed_session(&repo_root, &session),
+        Err(error) => eprintln!(
             "toimija run: could not close the session marker; it stays 'active' on disk \
              and may show as a live session. Remove {}: {error:#}",
             session.dir.join("session.json").display(),
-        );
+        ),
     }
     // Skip the exit summary if the command never launched — there is nothing to
     // summarize, and the launch error is surfaced below.
@@ -1032,10 +1054,31 @@ fn verify_run_entry(
     unreachable!("the two-attempt entry gate always returns or errors")
 }
 
-fn close_session_after_startup_failure(session: &mut session::Session) {
+fn close_session_after_startup_failure(
+    repo_root: &std::path::Path,
+    session: &mut session::Session,
+) {
     // The wrapped command never launched, so there is no exit status to record.
-    if let Err(error) = session.close(None) {
-        eprintln!("toimija run: could not close the failed session marker: {error:#}");
+    match session.close(None) {
+        Ok(()) => journal_closed_session(repo_root, session),
+        Err(error) => {
+            eprintln!("toimija run: could not close the failed session marker: {error:#}")
+        }
+    }
+}
+
+fn journal_closed_session(repo_root: &std::path::Path, session: &session::Session) {
+    let result = (|| {
+        let marker = session::load_marker(&session.dir)?;
+        footprint::journal_session(repo_root, &marker, HistoryEnd::Closed, now_secs())?;
+        Result::<()>::Ok(())
+    })();
+    if let Err(error) = result {
+        warn!(
+            event = "toimija.footprint.journal_failed",
+            session = %session.id,
+            error = %error
+        );
     }
 }
 
@@ -1838,6 +1881,24 @@ fn run_handoff(args: HandoffArgs) -> Result<()> {
             "Wrote handoff for session {} at {}",
             record.session_id, record.written_at
         );
+    }
+    Ok(())
+}
+
+fn run_history(args: HistoryArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let history = footprint::read_history(&repo_root)?;
+    info!(
+        event = "toimija.history.shown",
+        records = history.records.len(),
+        malformed = history.malformed
+    );
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&history.records)?);
+    } else {
+        print!("{}", footprint::render_history(&history));
     }
     Ok(())
 }

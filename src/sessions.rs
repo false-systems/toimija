@@ -20,6 +20,7 @@ use tracing::{debug, info};
 
 use crate::command::CommandRunner;
 use crate::coverage::Coverage;
+use crate::footprint::{self, HistoryEnd};
 use crate::handoff;
 use crate::session::{SESSIONS_SUBDIR, SessionMarker, SessionStatus};
 
@@ -291,6 +292,7 @@ pub fn prune(
 ) -> Result<PruneReport> {
     let now = now_secs();
     let mut removed = Vec::new();
+    let mut journal = None;
     // Unreadable markers are never pruned: deletion demands the certain
     // signal, and an unreadable marker gives none. They count as kept.
     let scan = read_markers(repo_root)?;
@@ -299,8 +301,18 @@ pub fn prune(
         let alive = pid_is_alive(runner, repo_root, marker.pid);
         let liveness = liveness(&marker, now, alive, stale_after_secs);
         if prunable(liveness, &marker, alive, now, retention_secs) {
-            fs::remove_dir_all(&dir)
-                .with_context(|| format!("failed to remove {}", dir.display()))?;
+            let end = match liveness {
+                Liveness::Closed => HistoryEnd::Closed,
+                Liveness::Stale => HistoryEnd::ReapedStale,
+                Liveness::Active => unreachable!("active sessions are never prunable"),
+            };
+            // Open lazily so an empty pass does not create a journal. The guard
+            // holds one lock and one bounded index for the whole prune pass.
+            let journal = match &mut journal {
+                Some(journal) => journal,
+                None => journal.insert(footprint::Journal::open(repo_root)?),
+            };
+            footprint::reap(repo_root, &dir, &marker, end, now, journal)?;
             removed.push(marker.id);
         } else {
             kept += 1;

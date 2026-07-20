@@ -147,6 +147,11 @@ stale, and closed sessions plus overlap warnings. `toimija intent` records a
 mid-session scope expansion, and `toimija handoff` leaves a versioned record for
 whoever continues the work.
 
+When a session concludes, Toimija appends a compact record to
+`.toimija/history.jsonl` before its directory can be reclaimed. `toimija
+history` keeps intent and handoff memory available after live artifacts are
+gone; malformed records degrade the listing instead of hiding valid history.
+
 This is awareness, not orchestration. Toimija never assigns work, dispatches an
 agent, blocks a sibling, or kills a process. Session state is read and written
 synchronously while an explicit command is running; the human remains the
@@ -166,6 +171,7 @@ toimija verify
 | `enter`, `context`, `refresh`, `watch` | Produce or maintain the live packet directly. |
 | `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
 | `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
+| `history` | List durable records of concluded sessions; `--json` emits all valid records. |
 | `audit-plan` | Partition broad reviews into bounded deterministic worksets. |
 | `validate --plan` | Render inferred and configured validation commands; never execute them. |
 | `landed` | Check whether branch content landed even when squash merges hide ancestry. |
