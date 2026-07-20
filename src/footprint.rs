@@ -520,6 +520,37 @@ mod tests {
     }
 
     #[test]
+    fn a_reaped_lid_death_records_its_frozen_heartbeat() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut marker = marker("100-1");
+        marker.pid = 2_000_000_000;
+        marker.status = SessionStatus::Active;
+        marker.last_seen_at = Some(150);
+        marker.closed_at = None;
+        marker.exit_status = None;
+        let dir = temp.path().join(".toimija/sessions/100-1");
+        fs::create_dir_all(&dir).unwrap();
+        let mut journal = Journal::open(temp.path()).unwrap();
+
+        reap(
+            temp.path(),
+            &dir,
+            &marker,
+            HistoryEnd::ReapedStale,
+            10_000,
+            &mut journal,
+        )
+        .unwrap();
+        drop(journal);
+
+        let record = read_history(temp.path()).unwrap().records.pop().unwrap();
+        assert_eq!(record.end, HistoryEnd::ReapedStale);
+        assert_eq!(record.started_at, 100);
+        assert_eq!(record.last_seen_at, Some(150));
+        assert!(!dir.exists());
+    }
+
+    #[test]
     fn failed_journal_open_keeps_the_session_directory() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join(".toimija/sessions/100-1");
