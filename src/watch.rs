@@ -49,23 +49,18 @@ fn detect_suspension(prev: &ClockPair, now: &ClockPair, threshold: Duration) -> 
 }
 
 /// A probe-proven filesystem watcher: native when available, polling fallback
-/// when the native backend does not report readiness.
+/// when the native backend does not report readiness. The payloads are never
+/// read — they are held so dropping the backend unregisters the OS watch.
 enum Backend {
-    Native(notify::RecommendedWatcher),
-    Poll(notify::PollWatcher),
+    Native(#[allow(dead_code)] notify::RecommendedWatcher),
+    Poll(#[allow(dead_code)] notify::PollWatcher),
 }
 
 impl Backend {
     fn label(&self) -> &'static str {
         match self {
-            Self::Native(watcher) => {
-                let _ = watcher;
-                "native"
-            }
-            Self::Poll(watcher) => {
-                let _ = watcher;
-                "poll fallback"
-            }
+            Self::Native(_) => "native",
+            Self::Poll(_) => "poll fallback",
         }
     }
 }
@@ -88,6 +83,27 @@ pub fn start(repo_root: &Path) -> Result<Session> {
 
 fn start_with_probe(
     repo_root: &Path,
+    probe: impl FnMut(
+        &Path,
+        &mpsc::Receiver<notify::Result<Event>>,
+        Option<&notify::PollWatcher>,
+        &str,
+    ) -> Result<bool>,
+) -> Result<Session> {
+    let native = arm::<notify::RecommendedWatcher>(repo_root, Config::default());
+    start_from_native(native, repo_root, probe)
+}
+
+/// Decide the backend from the native arm attempt: native when it armed *and*
+/// proved ready, the poll fallback otherwise. A native arm failure (e.g. the
+/// inotify watch limit) must not abort startup while polling can still
+/// deliver — it degrades, with the failure logged.
+fn start_from_native(
+    native: Result<(
+        notify::RecommendedWatcher,
+        mpsc::Receiver<notify::Result<Event>>,
+    )>,
+    repo_root: &Path,
     mut probe: impl FnMut(
         &Path,
         &mpsc::Receiver<notify::Result<Event>>,
@@ -95,16 +111,27 @@ fn start_with_probe(
         &str,
     ) -> Result<bool>,
 ) -> Result<Session> {
-    let (native, rx) = arm::<notify::RecommendedWatcher>(repo_root, Config::default())?;
-    let (backend, rx) = if probe(repo_root, &rx, None, "native")? {
-        (Backend::Native(native), rx)
-    } else {
-        drop(native);
-        let (poll, rx) = arm::<notify::PollWatcher>(repo_root, watcher_config())?;
-        let ready = probe(repo_root, &rx, Some(&poll), "poll")?;
-        anyhow::ensure!(ready, "filesystem watcher did not report readiness");
-        (Backend::Poll(poll), rx)
-    };
+    match native {
+        Ok((native, rx)) => {
+            if probe(repo_root, &rx, None, "native")? {
+                return armed(Backend::Native(native), rx);
+            }
+            drop(native);
+        }
+        Err(error) => {
+            info!(
+                event = "toimija.watch.native_unavailable",
+                error = format!("{error:#}")
+            );
+        }
+    }
+    let (poll, rx) = arm::<notify::PollWatcher>(repo_root, watcher_config())?;
+    let ready = probe(repo_root, &rx, Some(&poll), "poll")?;
+    anyhow::ensure!(ready, "filesystem watcher did not report readiness");
+    armed(Backend::Poll(poll), rx)
+}
+
+fn armed(backend: Backend, rx: mpsc::Receiver<notify::Result<Event>>) -> Result<Session> {
     info!(event = "toimija.watch.armed", backend = backend.label());
     Ok(Session { backend, rx })
 }
@@ -139,20 +166,48 @@ fn prove_ready(
     ));
     fs::write(&probe, b"watch readiness probe")
         .with_context(|| format!("failed to arm watcher at {}", repo_root.display()))?;
+    // Native backends may report the symlink-resolved path — FSEvents turns
+    // /tmp/x into /private/tmp/x — so the wait must accept the canonical form
+    // of the probe too, or native never proves ready on a symlinked checkout.
+    let canonical = fs::canonicalize(&probe).unwrap_or_else(|_| probe.clone());
+    let result = wait_for_probe(rx, poll, &probe, &canonical, PROBE_TIMEOUT);
+    let _ = fs::remove_file(&probe);
+    result
+}
+
+fn wait_for_probe(
+    rx: &mpsc::Receiver<notify::Result<Event>>,
+    poll: Option<&notify::PollWatcher>,
+    probe: &Path,
+    canonical: &Path,
+    timeout: Duration,
+) -> Result<bool> {
     if let Some(poll) = poll {
         poll.poll()
             .context("failed to request filesystem watcher readiness poll")?;
     }
-    let ready = loop {
-        match rx.recv_timeout(PROBE_TIMEOUT) {
-            Ok(Ok(event)) if event.paths.iter().any(|path| path == &probe) => break true,
-            Ok(_) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => break false,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
+    // One total deadline. A per-receive timeout would restart on every event,
+    // so steady unrelated churn could stall startup past the fallback window.
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
         }
-    };
-    let _ = fs::remove_file(&probe);
-    Ok(ready)
+        match rx.recv_timeout(remaining) {
+            Ok(Ok(event))
+                if event
+                    .paths
+                    .iter()
+                    .any(|path| path == probe || path == canonical) =>
+            {
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => return Ok(false),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(false),
+        }
+    }
 }
 
 fn watcher_config() -> Config {
@@ -224,15 +279,20 @@ impl Session {
                 }
                 // A watcher-backend error (dropped or rescan-required events):
                 // surface it, since the packet may now be stale, then keep going.
-                Ok(Err(error)) => {
-                    eprintln!("toimija: file watcher error (packet may be stale): {error}");
-                }
+                Ok(Err(error)) => warn_watcher_error(&error),
                 // Irrelevant event: keep watching.
                 Ok(Ok(_)) => {}
                 // Woke to re-check `stop`.
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                // Watcher dropped its sender — nothing more will arrive.
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                // Watcher dropped its sender — nothing more will arrive. Say
+                // so: under `run` the agent keeps working against a packet
+                // that has silently stopped refreshing.
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    eprintln!(
+                        "toimija: file watcher stopped; the live packet will no longer refresh"
+                    );
+                    break;
+                }
             }
         }
         Ok(())
@@ -272,9 +332,30 @@ pub fn watch(
 }
 
 /// Swallow the rest of an event burst: keep receiving until the channel is quiet
-/// for a full debounce window, so one logical change yields one refresh.
+/// for a full debounce window, so one logical change yields one refresh. Backend
+/// errors inside the burst keep their warning — rescan-required is precisely
+/// the error that means events were lost.
 fn drain_burst(rx: &mpsc::Receiver<notify::Result<Event>>) {
-    while rx.recv_timeout(DEBOUNCE).is_ok() {}
+    while let Ok(result) = rx.recv_timeout(DEBOUNCE) {
+        if let Err(error) = result {
+            warn_watcher_error(&error);
+        }
+    }
+}
+
+/// Warn about a backend error unless it is scoped entirely to ignored
+/// directories: a build deleting files under `_build`/`target` mid-scan is
+/// churn the watch has promised not to react to, not a packet-freshness
+/// problem. A pathless error says nothing about where it happened, so it
+/// stays visible.
+fn warn_watcher_error(error: &notify::Error) {
+    if !error_is_ignorable(error) {
+        eprintln!("toimija: file watcher error (packet may be stale): {error}");
+    }
+}
+
+fn error_is_ignorable(error: &notify::Error) -> bool {
+    !error.paths.is_empty() && error.paths.iter().all(|path| is_ignored(path))
 }
 
 fn relevant(event: &Event) -> bool {
@@ -646,5 +727,97 @@ mod tests {
         .unwrap();
 
         assert_eq!(session.backend_label(), "poll fallback");
+    }
+
+    #[test]
+    fn native_arm_failure_arms_the_poll_fallback_instead_of_aborting() {
+        // The inotify watch limit (ENOSPC) fails the native *arm*, not the
+        // probe. Startup must degrade to polling, not abort.
+        let temp = tempfile::tempdir().unwrap();
+        let session = start_from_native(
+            Err(anyhow::anyhow!("injected: inotify watch limit reached")),
+            temp.path(),
+            prove_ready,
+        )
+        .unwrap();
+
+        assert_eq!(session.backend_label(), "poll fallback");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_accepts_the_symlink_resolved_path_native_backends_report() {
+        // FSEvents reports /private/tmp/... for a repo rooted at /tmp/...;
+        // the probe must prove ready from the canonical form, or native is
+        // silently unreachable on any symlinked checkout path.
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let resolved = fs::canonicalize(&real)
+            .unwrap()
+            .join(format!("toimija-watch-probe-{}-native", std::process::id()));
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(Event::new(notify::EventKind::Create(
+            notify::event::CreateKind::File,
+        ))
+        .add_path(resolved)))
+            .unwrap();
+
+        let ready = prove_ready(&link, &rx, None, "native").unwrap();
+
+        assert!(ready);
+    }
+
+    #[test]
+    fn probe_wait_keeps_one_total_deadline_under_steady_unrelated_churn() {
+        // A per-receive timeout would restart on every event; unrelated churn
+        // must not stall startup past the fallback window.
+        let (tx, rx) = mpsc::channel();
+        let feeder = std::thread::spawn(move || {
+            for _ in 0..15 {
+                let _ = tx.send(Ok(Event::new(notify::EventKind::Modify(
+                    notify::event::ModifyKind::Any,
+                ))
+                .add_path(PathBuf::from("/unrelated"))));
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        });
+
+        let started = Instant::now();
+        let ready = wait_for_probe(
+            &rx,
+            None,
+            Path::new("/probe"),
+            Path::new("/probe"),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        feeder.join().unwrap();
+
+        assert!(!ready);
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "deadline extended by unrelated events: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn errors_scoped_to_ignored_dirs_stay_quiet_but_others_surface() {
+        let build_churn = notify::Error::generic("walkdir error scanning")
+            .add_path(PathBuf::from("/repo/_build/lib/vartio_core/priv"));
+        assert!(error_is_ignorable(&build_churn));
+
+        // A pathless error says nothing about where it happened.
+        let pathless = notify::Error::generic("backend failure");
+        assert!(!error_is_ignorable(&pathless));
+
+        // One relevant path makes the whole error relevant.
+        let mixed = notify::Error::generic("walkdir error scanning")
+            .add_path(PathBuf::from("/repo/target/debug/x"))
+            .add_path(PathBuf::from("/repo/src/main.rs"));
+        assert!(!error_is_ignorable(&mixed));
     }
 }
