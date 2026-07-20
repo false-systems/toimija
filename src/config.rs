@@ -12,6 +12,7 @@ use crate::error::ToimijaError;
 /// relevance layer (#12) enlarged the packet (#23).
 pub const DEFAULT_BUDGET: usize = 8000;
 pub const CONFIG_PATH: &str = ".toimija/repo.yaml";
+pub const DAY_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -19,6 +20,7 @@ pub struct RepoConfig {
     pub repo: RepoSection,
     pub context: ContextSection,
     pub validation: ValidationSection,
+    pub stewardship: StewardshipSection,
     pub boundaries: Vec<String>,
 }
 
@@ -48,6 +50,26 @@ pub struct ValidationSection {
     pub strict: Vec<String>,
     pub full: Vec<String>,
     pub privileged: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct StewardshipSection {
+    pub auto_sweep: bool,
+    pub sessions_retention_days: u64,
+    pub runs_retention_days: u64,
+    pub history_max_records: usize,
+}
+
+impl Default for StewardshipSection {
+    fn default() -> Self {
+        Self {
+            auto_sweep: true,
+            sessions_retention_days: crate::sessions::DEFAULT_RETENTION_SECS / DAY_SECS,
+            runs_retention_days: crate::footprint::DEFAULT_RUNS_RETENTION_SECS / DAY_SECS,
+            history_max_records: crate::footprint::DEFAULT_HISTORY_MAX_RECORDS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +110,7 @@ impl RepoConfig {
                 path: path.clone(),
                 source,
             })?;
+        config.validate_stewardship(&path)?;
         info!(event = "toimija.config.loaded", path = %path.display());
         Ok(config)
     }
@@ -122,6 +145,33 @@ impl RepoConfig {
             || !self.validation.strict.is_empty()
             || !self.validation.full.is_empty()
             || !self.validation.privileged.is_empty()
+    }
+
+    fn validate_stewardship(&self, path: &Path) -> Result<(), ToimijaError> {
+        for (name, value) in [
+            (
+                "sessions_retention_days",
+                self.stewardship.sessions_retention_days,
+            ),
+            ("runs_retention_days", self.stewardship.runs_retention_days),
+        ] {
+            if value == 0 || value > u64::MAX / DAY_SECS {
+                return Err(ToimijaError::InvalidStewardship {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "stewardship.{name} must be between 1 and {}",
+                        u64::MAX / DAY_SECS
+                    ),
+                });
+            }
+        }
+        if self.stewardship.history_max_records == 0 {
+            return Err(ToimijaError::InvalidStewardship {
+                path: path.to_path_buf(),
+                message: "stewardship.history_max_records must be greater than zero".to_string(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -198,6 +248,7 @@ mod tests {
         assert!(config.context.read_first.is_empty());
         assert!(config.context.safe_to_ignore.is_empty());
         assert!(!config.validation.replace_inferred);
+        assert_eq!(config.stewardship, StewardshipSection::default());
     }
 
     #[test]
@@ -223,6 +274,24 @@ mod tests {
     }
 
     #[test]
+    fn loads_stewardship_overrides() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".toimija");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("repo.yaml"),
+            "stewardship:\n  auto_sweep: false\n  sessions_retention_days: 2\n  runs_retention_days: 3\n  history_max_records: 4\n",
+        )
+        .unwrap();
+
+        let config = RepoConfig::load(temp.path()).unwrap();
+        assert!(!config.stewardship.auto_sweep);
+        assert_eq!(config.stewardship.sessions_retention_days, 2);
+        assert_eq!(config.stewardship.runs_retention_days, 3);
+        assert_eq!(config.stewardship.history_max_records, 4);
+    }
+
+    #[test]
     fn invalid_yaml_is_actionable() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join(".toimija");
@@ -231,5 +300,21 @@ mod tests {
 
         let error = RepoConfig::load(temp.path()).unwrap_err();
         assert!(matches!(error, ToimijaError::InvalidConfig { .. }));
+    }
+
+    #[test]
+    fn zero_stewardship_values_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".toimija");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("repo.yaml"),
+            "stewardship:\n  sessions_retention_days: 0\n",
+        )
+        .unwrap();
+
+        let error = RepoConfig::load(temp.path()).unwrap_err();
+        assert!(matches!(error, ToimijaError::InvalidStewardship { .. }));
+        assert!(error.to_string().contains("must be between 1 and"));
     }
 }

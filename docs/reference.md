@@ -76,7 +76,7 @@ What you get:
 | **Ambient adoption** | `toimija adopt` maintains one flat instruction in every agent entry file convention, drift-guarded by `doctor --strict`; `--hooks` keeps the packet fresh on every checkout/merge/commit. |
 | **Git-derived relevance** | What to inspect first, what co-changes, what is risky, and which changes may be dependency-related. Heuristic and advisory; no source parsing. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
-| **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, explicit handoff records, 7-day GC. Visibility, never orchestration. |
+| **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, explicit handoff records, and bounded stewardship. Visibility, never orchestration. |
 | **Staged audit breadth** | `toimija audit-plan` partitions the repo into bounded, deterministic audit surfaces; committed findings are the cross-run cache — no more one enormous session re-deriving everything. |
 | **Chain of custody** | Every packet and handoff carries a sauma envelope — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
 | **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS. It never runs commands. |
@@ -230,7 +230,8 @@ Then, from anywhere in the repo, see who else is live:
 ```bash
 toimija sessions          # human listing: LIVE / STALE / CLOSED + warnings
 toimija sessions --json   # same, machine-readable (carries marker-scan coverage)
-toimija sessions --prune  # remove closed/stale sessions older than 7 days
+toimija sessions --prune  # run the configured stewardship pass
+toimija clean --dry-run   # preview all expired Toimija-owned artifacts
 ```
 
 When pausing or finishing, the wrapped agent can leave an explicit handoff
@@ -286,11 +287,15 @@ visibility, not decisions. It never assigns work, signals or kills an agent, or
 touches the network. The human remains the orchestrator. Prefer separate
 worktrees for true isolation: same codebase, separate sessions.
 
-Session directories do not accumulate forever: `toimija sessions --prune`
-removes closed or stale sessions older than a 7-day retention window (live
-sessions are never touched), and `toimija run` performs the same cleanup
-opportunistically at startup — synchronous, best-effort, never blocking the
-run.
+Toimija-owned working artifacts do not accumulate forever. `toimija clean`
+runs one stewardship pass over closed or stale sessions past retention (live
+and unreadable sessions are never touched), old `.toimija/runs/*` transcripts,
+and exact `*.tmp-{pid}-{sequence}` atomic-write leftovers older than one hour.
+Sessions are journaled before deletion; append failure keeps the directory.
+`--dry-run` lists the same candidates without deleting or compacting anything.
+`enter` and `run` invoke that pass at the end of setup when `auto_sweep` is
+enabled; those automatic sweeps log one warning and never fail the command.
+`sessions --prune` remains available and uses the same implementation.
 
 When the agent exits, `run` prints a one-glance session summary to stderr —
 diffing the Git state from entry to exit so you see what the session actually
@@ -465,6 +470,8 @@ toimija intent "..."       # wrapped agent declares why it is here (via TOIMIJA_
 toimija handoff "..."      # wrapped agent appends a session handoff record
 toimija handoff --show ID  # read a session's handoff records
 toimija history            # durable records of concluded sessions
+toimija clean --dry-run    # preview the unified stewardship sweep
+toimija clean              # reclaim expired owned artifacts
 toimija enter              # refresh + print the packet as agent preflight
 toimija refresh            # recompute current.md/current.json
 toimija watch              # keep current.* fresh on Git/filesystem changes
@@ -486,10 +493,11 @@ toimija init               # create .toimija/repo.yaml if missing
 | Command | What it does |
 |---|---|
 | `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. |
-| `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` removes closed/stale sessions past the 7-day retention. |
+| `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` runs the same configured stewardship pass as `clean`. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `handoff ["<note>"]` | Wrapped agent appends an explicit JSONL handoff record for its own session. `--show <id>` reads records, including closed sessions; `--json` emits the written record or all shown records. |
 | `history` | List durable concluded-session records newest first; `--json` emits every valid record. Malformed lines are counted and skipped. |
+| `clean` | Reclaim expired sessions, run transcripts, and exact orphan temp files; `--dry-run` lists candidates without mutation. Explicit cleanup propagates errors. |
 | `enter` | Refresh and print the current packet as agent preflight. |
 | `refresh` | Recompute `current.md`/`current.json`. |
 | `current --write` | Joskus-facing alias for synchronous packet refresh. |
@@ -563,6 +571,8 @@ a live, repo-aware context layer an agent asks for before it works.
 .toimija/current.md     owned by Toimija    repo-level live packet / latest summary (regenerated, git-ignored)
 .toimija/current.json   owned by Toimija    repo-level machine-readable packet (regenerated, git-ignored)
 .toimija/sessions/      owned by Toimija    per-session live packets, markers, handoff records from `run`/`handoff` (regenerated, git-ignored)
+.toimija/runs/          owned by run harnesses  retained transcripts (14 days by default)
+.toimija/history.jsonl  owned by Toimija    bounded durable memory of concluded sessions
 AGENTS.md               owned by you        agent policy — Toimija maintains only its marker-delimited `adopt` preamble inside it
 CLAUDE.md               owned by you        agent policy — same: your prose around Toimija's markers
 scripts/                owned by you        e.g. agent-enter — Toimija only suggests text
@@ -884,6 +894,12 @@ validation:
   full: []
   privileged: []
 
+stewardship:
+  auto_sweep: true
+  sessions_retention_days: 7
+  runs_retention_days: 14
+  history_max_records: 500
+
 boundaries:
   - Keep the core as a single Rust crate.
   - Do not add MCP, LSP, SCIP, Tree-sitter, network calls, or background daemons yet.
@@ -892,6 +908,11 @@ boundaries:
 `context.read_first` adds repo-specific files to the Read first section when they exist.
 `context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
 Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible.
+Stewardship values are optional and default to the values above. Retention and
+history limits must be greater than zero; invalid values are refused and
+reported by `doctor` instead of being silently clamped. `auto_sweep: false`
+disables only the best-effort `enter`/`run` hook; explicit `clean` and
+`sessions --prune` still work.
 
 ## Build from source & development
 

@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // `enter` is the recommended agent preflight: it refreshes the live packet
 // (`.toimija/current.*`) and prints it, framed as agent entry. These lock in the
@@ -122,4 +123,44 @@ fn enter_writes_the_live_packet_but_not_agent_docs() {
     // ... but never writes human-owned agent policy.
     assert!(!temp.path().join("AGENTS.md").exists());
     assert!(!temp.path().join("CLAUDE.md").exists());
+}
+
+#[test]
+fn enter_succeeds_when_automatic_cleanup_fails() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let dir = temp.path().join(".toimija/sessions/old-closed");
+    fs::create_dir_all(&dir).unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    fs::write(
+        dir.join("session.json"),
+        format!(
+            r#"{{
+                "id": "old-closed", "pid": 1, "agent": ["codex"],
+                "worktree": "/repo", "branch": "main", "head": null,
+                "intent": null, "scope": [], "started_at": {started},
+                "status": "closed", "closed_at": {closed}, "exit_status": 0
+            }}"#,
+            started = now - 9 * 24 * 60 * 60,
+            closed = now - 8 * 24 * 60 * 60,
+        ),
+    )
+    .unwrap();
+    // The journal cannot be opened, forcing the opportunistic sweep to fail.
+    fs::create_dir_all(temp.path().join(".toimija/history.jsonl")).unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("enter")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Toimija agent entry"));
+    assert!(dir.exists(), "failed journaling must preserve the session");
 }

@@ -190,6 +190,17 @@ pub enum Command {
         toimija history --json  # all valid records as a JSON array"
     )]
     History(HistoryArgs),
+    /// Reclaim expired Toimija sessions, transcripts, and orphan temp files.
+    ///
+    /// Use this for an explicit, auditable stewardship pass. It applies the
+    /// retention settings in `.toimija/repo.yaml`, journals sessions before
+    /// removing them, and reports every candidate. Unlike automatic sweeps,
+    /// any error fails the command.
+    #[command(
+        after_help = "Examples:\n  toimija clean             # remove expired owned artifacts\n  \
+        toimija clean --dry-run   # list candidates without changing disk"
+    )]
+    Clean(CleanArgs),
     /// Print suggested preflight text or an entry script. Writes no files.
     ///
     /// Use this to seed AGENTS.md/CLAUDE.md (`preflight`) or to save a
@@ -211,12 +222,13 @@ pub enum Command {
     ///
     /// Use this before starting work in a shared repo: it reports presence
     /// (LIVE / STALE / CLOSED) and descriptive overlap warnings. Read-only
-    /// unless `--prune`, which removes closed/stale sessions older than the
-    /// 7-day retention. Assigns nothing, signals nothing, no network.
+    /// unless `--prune`, which runs the same configured stewardship pass as
+    /// `clean` (including expired sessions). Assigns nothing, signals nothing,
+    /// no network.
     #[command(
         after_help = "Examples:\n  toimija sessions           # LIVE / STALE / CLOSED listing + warnings\n  \
         toimija sessions --json    # machine-readable report\n  \
-        toimija sessions --prune   # drop closed/stale sessions older than 7 days"
+        toimija sessions --prune   # run the configured stewardship pass"
     )]
     Sessions(SessionsArgs),
     /// Partition the committed repository tree into bounded audit worksets.
@@ -367,12 +379,18 @@ pub struct HistoryArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct CleanArgs {
+    /// List every expired artifact without deleting or compacting anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct SessionsArgs {
     /// Emit the report as JSON instead of the human-readable listing.
     #[arg(long)]
     pub json: bool,
-    /// Remove closed or stale session directories older than the 7-day
-    /// retention window. Live sessions are never touched.
+    /// Run the configured stewardship pass. Live sessions are never touched.
     #[arg(long)]
     pub prune: bool,
 }
@@ -499,6 +517,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Intent(args) => run_intent(args).map(|()| 0),
         Command::Handoff(args) => run_handoff(args).map(|()| 0),
         Command::History(args) => run_history(args).map(|()| 0),
+        Command::Clean(args) => run_clean(args).map(|()| 0),
         Command::Snippet(args) => run_snippet(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
@@ -604,6 +623,7 @@ impl Command {
             Command::Intent(_) => "intent",
             Command::Handoff(_) => "handoff",
             Command::History(_) => "history",
+            Command::Clean(_) => "clean",
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Sessions(_) => "sessions",
@@ -738,6 +758,7 @@ fn run_enter(args: ContextArgs) -> Result<()> {
     } else {
         print_agent_entry(&refreshed, &repo_root);
     }
+    opportunistic_sweep(&runner, &repo_root);
     Ok(())
 }
 
@@ -798,23 +819,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-
-    // 0. Opportunistic GC: drop closed/stale session directories past the
-    //    retention window so `.toimija/sessions/` does not grow without bound.
-    //    Best-effort — a failed prune never blocks the run.
-    match sessions::prune(
-        &runner,
-        &repo_root,
-        sessions::DEFAULT_STALE_AFTER_SECS,
-        sessions::DEFAULT_RETENTION_SECS,
-    ) {
-        Ok(pruned) if !pruned.removed.is_empty() => eprintln!(
-            "toimija run: pruned {} old session(s)",
-            pruned.removed.len()
-        ),
-        Ok(_) => {}
-        Err(error) => warn!(event = "toimija.sessions.prune_failed", error = %error),
-    }
 
     // 1. Open a session: its own packet directory + marker, so concurrent
     //    wrapped agents do not race on the single repo-level packet.
@@ -877,6 +881,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
         "toimija run: watcher armed ({})",
         watch_session.backend_label()
     );
+    opportunistic_sweep(&runner, &repo_root);
 
     // 4. Run the watch loop in the background, refreshing the SESSION packet
     //    while the agent works. The stop flag is flipped once the command exits.
@@ -1779,23 +1784,19 @@ fn run_sessions(args: SessionsArgs) -> Result<()> {
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
     if args.prune {
-        let report = sessions::prune(
+        let config = RepoConfig::load_optional(&repo_root)?
+            .unwrap_or_else(|| RepoConfig::default_for(&repo_root));
+        let report = footprint::sweep(
             &runner,
             &repo_root,
-            sessions::DEFAULT_STALE_AFTER_SECS,
-            sessions::DEFAULT_RETENTION_SECS,
-        )?;
+            sweep_options(&config, false),
+            footprint::ErrorPosture::Explicit,
+        )?
+        .expect("explicit sweep always returns a report");
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
-        } else if report.removed.is_empty() {
-            println!("nothing to prune ({} session(s) kept)", report.kept);
         } else {
-            println!(
-                "pruned {} session(s): {} ({} kept)",
-                report.removed.len(),
-                report.removed.join(", "),
-                report.kept
-            );
+            print!("{}", footprint::render_sweep(&report));
         }
         return Ok(());
     }
@@ -1806,6 +1807,54 @@ fn run_sessions(args: SessionsArgs) -> Result<()> {
         print!("{}", sessions::render_text(&report));
     }
     Ok(())
+}
+
+fn run_clean(args: CleanArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let config = RepoConfig::load_optional(&repo_root)?
+        .unwrap_or_else(|| RepoConfig::default_for(&repo_root));
+    let report = footprint::sweep(
+        &runner,
+        &repo_root,
+        sweep_options(&config, args.dry_run),
+        footprint::ErrorPosture::Explicit,
+    )?
+    .expect("explicit sweep always returns a report");
+    print!("{}", footprint::render_sweep(&report));
+    Ok(())
+}
+
+fn opportunistic_sweep(runner: &ProcessCommandRunner, repo_root: &std::path::Path) {
+    let config = match RepoConfig::load_optional(repo_root) {
+        Ok(Some(config)) => config,
+        Ok(None) => RepoConfig::default_for(repo_root),
+        Err(error) => {
+            warn!(event = "toimija.footprint.sweep_failed", error = %error);
+            return;
+        }
+    };
+    if !config.stewardship.auto_sweep {
+        return;
+    }
+    if let Err(error) = footprint::sweep(
+        runner,
+        repo_root,
+        sweep_options(&config, false),
+        footprint::ErrorPosture::Opportunistic,
+    ) {
+        warn!(event = "toimija.footprint.sweep_failed", error = %error);
+    }
+}
+
+fn sweep_options(config: &RepoConfig, dry_run: bool) -> footprint::SweepOptions {
+    footprint::SweepOptions {
+        dry_run,
+        sessions_retention_secs: config.stewardship.sessions_retention_days * config::DAY_SECS,
+        runs_retention_secs: config.stewardship.runs_retention_days * config::DAY_SECS,
+        history_max_records: config.stewardship.history_max_records,
+    }
 }
 
 fn run_audit_plan(args: AuditPlanArgs) -> Result<()> {

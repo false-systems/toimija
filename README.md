@@ -151,6 +151,10 @@ When a session concludes, Toimija appends a compact record to
 `.toimija/history.jsonl` before its directory can be reclaimed. `toimija
 history` keeps intent and handoff memory available after live artifacts are
 gone; malformed records degrade the listing instead of hiding valid history.
+`toimija clean --dry-run` previews the same bounded stewardship pass that
+`enter` and `run` perform best-effort: expired sessions are journaled before
+deletion, old run transcripts are removed after 14 days, and exact orphaned
+atomic-write temp files are removed after one hour.
 
 This is awareness, not orchestration. Toimija never assigns work, dispatches an
 agent, blocks a sibling, or kills a process. Session state is read and written
@@ -172,6 +176,7 @@ toimija verify
 | `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
 | `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
 | `history` | List durable records of concluded sessions; `--json` emits all valid records. |
+| `clean` | Reclaim expired owned artifacts; `--dry-run` lists candidates without changing disk. |
 | `audit-plan` | Partition broad reviews into bounded deterministic worksets. |
 | `validate --plan` | Render inferred and configured validation commands; never execute them. |
 | `landed` | Check whether branch content landed even when squash merges hide ancestry. |

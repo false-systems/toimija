@@ -224,7 +224,10 @@ fn prune_removes_old_closed_sessions_and_keeps_live_and_recent_ones() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(report["removed"], serde_json::json!(["old-closed"]));
+    assert_eq!(
+        report["sessions_removed"],
+        serde_json::json!(["old-closed"])
+    );
     assert_eq!(report["kept"], 2);
 
     let sessions_dir = temp.path().join(".toimija/sessions");
