@@ -1,6 +1,6 @@
 # Proposal 0009 — Language packs prove what they claim
 
-**Status:** DRAFT (awaiting Yair)
+**Status:** ACCEPTED 2026-07-21 (Yair dispatched implementation).
 
 **Date:** 2026-07-21
 
