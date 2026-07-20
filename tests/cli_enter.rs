@@ -164,3 +164,38 @@ fn enter_succeeds_when_automatic_cleanup_fails() {
         .stdout(predicate::str::contains("Toimija agent entry"));
     assert!(dir.exists(), "failed journaling must preserve the session");
 }
+
+#[test]
+fn enter_respects_disabled_automatic_cleanup() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let toimija = temp.path().join(".toimija");
+    fs::create_dir_all(&toimija).unwrap();
+    fs::write(
+        toimija.join("repo.yaml"),
+        "stewardship:\n  auto_sweep: false\n",
+    )
+    .unwrap();
+    let orphan = toimija.join("current.json.tmp-123-4");
+    fs::write(&orphan, b"old").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&orphan)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60)),
+        )
+        .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("enter")
+        .assert()
+        .success();
+    assert!(orphan.exists());
+}
