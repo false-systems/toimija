@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,35 @@ pub enum RepoKind {
     Python,
     Node,
     Generic,
+}
+
+impl RepoKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Rust => "Rust",
+            Self::Elixir => "Elixir",
+            Self::Go => "Go",
+            Self::Python => "Python",
+            Self::Node => "JS/TS",
+            Self::Generic => "Generic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DetectedLanguage {
+    pub kind: RepoKind,
+    #[serde(with = "crate::path_codec::one")]
+    pub root: PathBuf,
+    #[serde(with = "crate::path_codec::one")]
+    pub manifest: PathBuf,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SecondaryScan {
+    pub languages: Vec<DetectedLanguage>,
+    pub truncated: bool,
+    pub incomplete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,6 +122,151 @@ pub fn detect_repo_kind(repo_root: &Path) -> RepoKind {
         return lang.kind;
     }
     RepoKind::Generic
+}
+
+const SECONDARY_MAX_DEPTH: usize = 3;
+const SECONDARY_ENTRY_BUDGET: usize = 4096;
+const SECONDARY_HARD_SKIPS: &[&str] =
+    &[".git", "node_modules", "target", "vendor", "_build", "deps"];
+
+/// Find recognized manifests outside the primary language without turning
+/// secondary observations into validation claims. Paths come only from
+/// `read_dir` child names, symlinks are never followed, and both depth and
+/// visited entries are capped.
+pub fn detect_secondary_langs(
+    repo_root: &Path,
+    primary: RepoKind,
+    is_excluded: impl Fn(&Path) -> bool,
+) -> SecondaryScan {
+    detect_secondary_langs_with_budget(repo_root, primary, is_excluded, SECONDARY_ENTRY_BUDGET)
+}
+
+fn detect_secondary_langs_with_budget(
+    repo_root: &Path,
+    primary: RepoKind,
+    is_excluded: impl Fn(&Path) -> bool,
+    entry_budget: usize,
+) -> SecondaryScan {
+    let mut scan = SecondaryScan::default();
+    let mut queue = VecDeque::from([(PathBuf::new(), 0)]);
+    let mut visited = 0;
+
+    'walk: while let Some((relative, depth)) = queue.pop_front() {
+        for (kind, manifest) in manifest_claims(repo_root, &relative) {
+            if kind != primary {
+                let root = if relative.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    relative.clone()
+                };
+                if !scan
+                    .languages
+                    .iter()
+                    .any(|language| language.kind == kind && language.root == root)
+                {
+                    scan.languages.push(DetectedLanguage {
+                        kind,
+                        root,
+                        manifest,
+                    });
+                }
+            }
+        }
+        if depth == SECONDARY_MAX_DEPTH {
+            continue;
+        }
+
+        let entries = match std::fs::read_dir(repo_root.join(&relative)) {
+            Ok(entries) => entries,
+            Err(_) => {
+                scan.incomplete = true;
+                continue;
+            }
+        };
+        for entry in entries {
+            if visited == entry_budget {
+                scan.truncated = true;
+                break 'walk;
+            }
+            visited += 1;
+            let Ok(entry) = entry else {
+                scan.incomplete = true;
+                continue;
+            };
+            let name = entry.file_name();
+            let child = relative.join(&name);
+            if SECONDARY_HARD_SKIPS
+                .iter()
+                .any(|skip| name == std::ffi::OsStr::new(skip))
+                || is_excluded(&child)
+            {
+                continue;
+            }
+            match std::fs::symlink_metadata(repo_root.join(&child)) {
+                Ok(metadata) if metadata.file_type().is_dir() => {
+                    queue.push_back((child, depth + 1));
+                }
+                Ok(_) => {}
+                Err(_) => scan.incomplete = true,
+            }
+        }
+    }
+
+    scan.languages.sort_by(|left, right| {
+        left.root
+            .cmp(&right.root)
+            .then(kind_rank(left.kind).cmp(&kind_rank(right.kind)))
+    });
+    scan
+}
+
+fn manifest_claims(repo_root: &Path, relative: &Path) -> Vec<(RepoKind, PathBuf)> {
+    let mut claims = Vec::new();
+    for (kind, manifests) in [
+        (RepoKind::Rust, &["Cargo.toml"][..]),
+        (RepoKind::Elixir, &["mix.exs"][..]),
+    ] {
+        push_claim(repo_root, relative, kind, manifests, &mut claims);
+    }
+    for language in crate::adapters::minimum::MINIMUMS {
+        push_claim(
+            repo_root,
+            relative,
+            language.kind,
+            language.manifests,
+            &mut claims,
+        );
+    }
+    claims
+}
+
+fn push_claim(
+    repo_root: &Path,
+    relative: &Path,
+    kind: RepoKind,
+    manifests: &[&str],
+    claims: &mut Vec<(RepoKind, PathBuf)>,
+) {
+    if let Some(manifest) = manifests.iter().find_map(|manifest| {
+        let relative_manifest = relative.join(manifest);
+        std::fs::symlink_metadata(repo_root.join(&relative_manifest))
+            .ok()
+            .filter(|metadata| metadata.file_type().is_file())
+            .map(|_| relative_manifest)
+    }) {
+        claims.push((kind, manifest));
+    }
+}
+
+fn kind_rank(kind: RepoKind) -> u8 {
+    match kind {
+        RepoKind::Rust => 0,
+        RepoKind::Elixir => 1,
+        RepoKind::Go => 2,
+        RepoKind::Python => 3,
+        RepoKind::Node => 4,
+        RepoKind::Generic => 5,
+    }
 }
 
 pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> DoctorReport {
@@ -482,6 +657,74 @@ mod tests {
     fn detects_elixir_repo() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/elixir_repo");
         assert_eq!(detect_repo_kind(&root), RepoKind::Elixir);
+    }
+
+    #[test]
+    fn secondary_walk_is_bounded_and_suppresses_primary_kind() {
+        let temp = tempfile::tempdir().unwrap();
+        for path in ["services/api", "xtask", "node_modules/pkg", "a/b/c/d"] {
+            std::fs::create_dir_all(temp.path().join(path)).unwrap();
+        }
+        std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(temp.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(temp.path().join("services/api/go.mod"), "module demo\n").unwrap();
+        std::fs::write(temp.path().join("xtask/Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(temp.path().join("node_modules/pkg/package.json"), "{}\n").unwrap();
+        std::fs::write(temp.path().join("a/b/c/d/mix.exs"), "[]\n").unwrap();
+
+        let scan = detect_secondary_langs(temp.path(), RepoKind::Rust, |_| false);
+        assert_eq!(
+            scan.languages,
+            vec![
+                DetectedLanguage {
+                    kind: RepoKind::Node,
+                    root: PathBuf::from("."),
+                    manifest: PathBuf::from("package.json"),
+                },
+                DetectedLanguage {
+                    kind: RepoKind::Go,
+                    root: PathBuf::from("services/api"),
+                    manifest: PathBuf::from("services/api/go.mod"),
+                },
+            ]
+        );
+        assert!(!scan.truncated);
+    }
+
+    #[test]
+    fn secondary_walk_honors_configured_exclusions() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("fixtures/elixir_repo")).unwrap();
+        std::fs::write(temp.path().join("fixtures/elixir_repo/mix.exs"), "[]\n").unwrap();
+
+        let scan = detect_secondary_langs(temp.path(), RepoKind::Generic, |path| {
+            path.starts_with("fixtures")
+        });
+        assert!(scan.languages.is_empty());
+    }
+
+    #[test]
+    fn secondary_walk_reports_entry_budget_exhaustion() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("one"), "").unwrap();
+        std::fs::write(temp.path().join("two"), "").unwrap();
+
+        let scan = detect_secondary_langs_with_budget(temp.path(), RepoKind::Generic, |_| false, 1);
+        assert!(scan.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secondary_walk_never_follows_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("go.mod"), "module outside\n").unwrap();
+        symlink(outside.path(), temp.path().join("linked")).unwrap();
+
+        let scan = detect_secondary_langs(temp.path(), RepoKind::Generic, |_| false);
+        assert!(scan.languages.is_empty());
     }
 
     #[test]

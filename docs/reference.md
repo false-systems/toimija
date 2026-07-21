@@ -620,6 +620,12 @@ minimum-pack plans carry the honest `minimum language pack` note, and
 one table row in `src/adapters/minimum.rs` — the adapter *code* surface stays
 frozen at two.
 
+Context packets also report secondary languages found by a manifest-only walk
+bounded to depth 3 and 4096 entries. The walk honors configured exclusions,
+hard-skips `.git` and vendored/build trees, and never follows symlinks. Nested
+manifests of the primary kind are suppressed; every other observation is
+report-only and cannot add validation commands.
+
 Other languages are still useful through repository configuration. For example,
 a Java repository can keep its build tool's commands explicit in
 `.toimija/repo.yaml`:
@@ -847,7 +853,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 ## Config
 
-`.toimija/repo.yaml` is the durable repo manifest. Build and vendor directories (`target`, `_build`, `deps`, `node_modules`) are filtered from the changed surface automatically, matched as a path segment anywhere in the tree (so nested `test_projects/app/target/` is caught too). This is applied live each run — not written into `repo.yaml` — so it tracks the repo as its kind changes. `context.safe_to_ignore` is for your own additional rules on top.
+`.toimija/repo.yaml` is the durable repo manifest. Build and vendor directories (`target`, `_build`, `deps`, `node_modules`, `vendor`) are filtered from the changed surface automatically, matched as a path segment anywhere in the tree (so nested `test_projects/app/target/` is caught too). This is applied live each run — not written into `repo.yaml` — so it tracks the repo as its kind changes. `context.safe_to_ignore` is for your own additional rules on top.
 
 ```yaml
 repo:
@@ -927,7 +933,7 @@ editing `xtask`.
 - Git state is collected through the Git CLI, not Git internals.
 - Merge-base is attempted against the selected base candidate.
 - Validation plans are rendered only; commands are not executed.
-- Language detection uses simple marker files (Cargo.toml, mix.exs, go.mod, pyproject.toml/setup.py, package.json); full adapters outrank minimum packs.
+- The primary language uses root marker files (Cargo.toml, mix.exs, go.mod, pyproject.toml/setup.py, package.json); full adapters outrank minimum packs. Secondary markers are reported from the bounded walk but do not affect planning.
 - Context budgets are approximate UTF-8 byte caps, not token counts. Identity,
   Git state, the workset contract, validation, warnings, exclusions, and the
   changed-surface summary are mandatory and may exceed a very small budget.
