@@ -198,6 +198,10 @@ hints, and companion-test discovery. Commands that their manifests do not prove
 are omitted with a note. Other repositories work through
 `.toimija/repo.yaml`.
 
+All recognized languages live in one compile-time registry. Basic support is
+one kind plus one data row; a dedicated adapter is needed only for project-aware
+behavior.
+
 Packets also report recognized secondary languages from a bounded manifest
 walk. Secondary observations do not change the primary kind or validation plan.
 

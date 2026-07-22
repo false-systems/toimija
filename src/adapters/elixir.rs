@@ -1,10 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::adapters::LanguageAdapter;
-use crate::config::RepoConfig;
-use crate::git::ChangedFile;
 use crate::repo::RepoKind;
-use crate::validate::{self, ValidationPlan};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ElixirAdapter;
@@ -12,14 +9,6 @@ pub struct ElixirAdapter;
 impl LanguageAdapter for ElixirAdapter {
     fn kind(&self) -> RepoKind {
         RepoKind::Elixir
-    }
-
-    fn detect(&self, repo_root: &Path) -> bool {
-        repo_root.join("mix.exs").exists()
-    }
-
-    fn validation_plan(&self, repo_root: &Path, config: &RepoConfig) -> ValidationPlan {
-        validate::validation_plan(repo_root, config, RepoKind::Elixir)
     }
 
     fn focused_validation(&self, repo_root: &Path, changed: &[PathBuf]) -> Vec<String> {
@@ -43,22 +32,6 @@ impl LanguageAdapter for ElixirAdapter {
         apps.into_iter()
             .map(|app| format!("mix test apps/{app}/test"))
             .collect()
-    }
-
-    fn read_first_hints(
-        &self,
-        repo_root: &Path,
-        changed: &[ChangedFile],
-    ) -> Vec<(PathBuf, String)> {
-        let mut hints = Vec::new();
-        for file in changed {
-            for candidate in self.companion_tests(repo_root, &file.path) {
-                hints.push((candidate, "matching test heuristic".to_string()));
-            }
-        }
-        hints.sort_by(|left, right| left.0.cmp(&right.0));
-        hints.dedup_by(|left, right| left.0 == right.0);
-        hints
     }
 
     fn companion_tests(&self, repo_root: &Path, path: &Path) -> Vec<PathBuf> {

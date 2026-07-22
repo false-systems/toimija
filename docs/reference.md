@@ -629,8 +629,9 @@ lint`), and companion-test hints (`foo.go` → `foo_test.go`, `foo.py` →
 existence-checked). Full adapters outrank minimum packs in polyglot repos,
 minimum-pack plans carry the honest `minimum language pack` note, and
 `repo.yaml` validation config beats inference everywhere. Adding a language is
-one table row in `src/adapters/minimum.rs` — the adapter *code* surface stays
-frozen at two.
+one `RepoKind` variant plus one table row in `src/adapters/pack.rs`; a language
+gets a dedicated adapter only when it needs project-aware behavior such as Rust
+workspace or Elixir umbrella scoping.
 
 Context packets also report secondary languages found by a manifest-only walk
 bounded to depth 3 and 4096 entries. The walk honors configured exclusions,
