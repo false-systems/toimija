@@ -31,6 +31,10 @@ pub struct LanguagePack {
     pub proof: ValidationProof,
     /// Honest display label for notes and telemetry (e.g. "Go").
     pub name: &'static str,
+    /// Root-manifest evidence rendered in context packets.
+    pub root_evidence: &'static str,
+    /// Repository-kind result rendered by `toimija doctor`.
+    pub doctor_message: &'static str,
     /// Any of these at the repo root claims the repo, checked in table order.
     pub manifests: &'static [&'static str],
     /// Fast-tier (test) candidates. Proven commands also become the Full tier,
@@ -57,6 +61,8 @@ pub const LANGUAGES: &[LanguagePack] = &[
         tier: LanguageTier::Full,
         proof: ValidationProof::Manifest,
         name: "Rust",
+        root_evidence: "Cargo.toml at root",
+        doctor_message: "Rust repo detected",
         manifests: &["Cargo.toml"],
         fast: &["cargo test --workspace"],
         strict: &[
@@ -72,6 +78,8 @@ pub const LANGUAGES: &[LanguagePack] = &[
         tier: LanguageTier::Full,
         proof: ValidationProof::Manifest,
         name: "Elixir",
+        root_evidence: "mix.exs at root",
+        doctor_message: "Elixir repo detected",
         manifests: &["mix.exs"],
         fast: &["mix test"],
         strict: &["mix format --check-formatted"],
@@ -84,6 +92,8 @@ pub const LANGUAGES: &[LanguagePack] = &[
         tier: LanguageTier::Minimum,
         proof: ValidationProof::Manifest,
         name: "Go",
+        root_evidence: "go.mod at root",
+        doctor_message: "Go repo detected (minimum language pack)",
         manifests: &["go.mod"],
         fast: &["go test ./..."],
         strict: &["go vet ./..."],
@@ -96,6 +106,8 @@ pub const LANGUAGES: &[LanguagePack] = &[
         tier: LanguageTier::Minimum,
         proof: ValidationProof::PythonTools,
         name: "Python",
+        root_evidence: "pyproject.toml or setup.py at root",
+        doctor_message: "Python repo detected (minimum language pack)",
         manifests: &["pyproject.toml", "setup.py"],
         fast: &["pytest"],
         strict: &["ruff check ."],
@@ -108,6 +120,8 @@ pub const LANGUAGES: &[LanguagePack] = &[
         tier: LanguageTier::Minimum,
         proof: ValidationProof::NodeScripts,
         name: "JS/TS",
+        root_evidence: "package.json at root",
+        doctor_message: "JS/TS repo detected (minimum language pack)",
         manifests: &["package.json"],
         fast: &["npm test"],
         strict: &["npm run lint", "npm run typecheck"],

@@ -624,14 +624,16 @@ focused per-unit heuristics below). Go, Python, and JS/TS get the **minimum
 language pack** — a data table, not a module: manifest detection (`go.mod`,
 `pyproject.toml`/`setup.py`, `package.json`), inferred test + lint tiers
 (`go test ./...`/`go vet ./...`, `pytest`/`ruff check .`, `npm test`/`npm run
-lint`), and companion-test hints (`foo.go` → `foo_test.go`, `foo.py` →
-`test_foo.py` or `tests/test_foo.py`, `foo.ts` → `foo.test.ts`/`foo.spec.ts`,
-existence-checked). Full adapters outrank minimum packs in polyglot repos,
-minimum-pack plans carry the honest `minimum language pack` note, and
-`repo.yaml` validation config beats inference everywhere. Adding a language is
-one `RepoKind` variant plus one table row in `src/adapters/pack.rs`; a language
-gets a dedicated adapter only when it needs project-aware behavior such as Rust
-workspace or Elixir umbrella scoping.
+lint`/`npm run typecheck`), and companion-test hints (`foo.go` → `foo_test.go`,
+`foo.py` → `test_foo.py` or `tests/test_foo.py`, `foo.ts` →
+`foo.test.ts`/`foo.spec.ts`, existence-checked). Node commands require matching
+string-valued scripts; Python commands require explicit pytest and Ruff
+configuration. Unproven candidates are omitted with a note. Full adapters
+outrank minimum packs in polyglot repos, minimum-pack plans carry the honest
+`minimum language pack` note, and `repo.yaml` validation config beats inference
+everywhere. Adding a language is one `RepoKind` variant plus one table row in
+`src/adapters/pack.rs`; a language gets a dedicated adapter only when it needs
+project-aware behavior such as Rust workspace or Elixir umbrella scoping.
 
 Context packets also report secondary languages found by a manifest-only walk
 bounded to depth 3 and 4096 entries. The walk honors configured exclusions,

@@ -71,6 +71,8 @@ mod tests {
     fn registry_resolves_every_pack_and_preserves_smart_rust_behavior() {
         for pack in pack::LANGUAGES {
             assert_eq!(for_kind(pack.kind).kind(), pack.kind);
+            assert!(!pack.root_evidence.is_empty());
+            assert!(!pack.doctor_message.is_empty());
         }
 
         let temp = tempfile::tempdir().unwrap();

@@ -231,14 +231,9 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
 }
 
 fn primary_language_evidence(kind: RepoKind) -> &'static str {
-    match kind {
-        RepoKind::Rust => "Cargo.toml at root",
-        RepoKind::Elixir => "mix.exs at root",
-        RepoKind::Go => "go.mod at root",
-        RepoKind::Python => "pyproject.toml or setup.py at root",
-        RepoKind::Node => "package.json at root",
-        RepoKind::Generic => "no recognized root manifest",
-    }
+    crate::adapters::pack::for_kind(kind)
+        .map(|pack| pack.root_evidence)
+        .unwrap_or("no recognized root manifest")
 }
 
 pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String {

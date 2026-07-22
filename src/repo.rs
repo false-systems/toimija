@@ -241,15 +241,11 @@ fn push_claim(
     }
 }
 
-fn kind_rank(kind: RepoKind) -> u8 {
-    match kind {
-        RepoKind::Rust => 0,
-        RepoKind::Elixir => 1,
-        RepoKind::Go => 2,
-        RepoKind::Python => 3,
-        RepoKind::Node => 4,
-        RepoKind::Generic => 5,
-    }
+fn kind_rank(kind: RepoKind) -> usize {
+    crate::adapters::pack::LANGUAGES
+        .iter()
+        .position(|pack| pack.kind == kind)
+        .unwrap_or(usize::MAX)
 }
 
 pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> DoctorReport {
@@ -360,14 +356,9 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
     checks.push(check(
         "repo kind",
         DoctorStatus::Ok,
-        match kind {
-            RepoKind::Rust => "Rust repo detected",
-            RepoKind::Elixir => "Elixir repo detected",
-            RepoKind::Go => "Go repo detected (minimum language pack)",
-            RepoKind::Python => "Python repo detected (minimum language pack)",
-            RepoKind::Node => "JS/TS repo detected (minimum language pack)",
-            RepoKind::Generic => "generic repo",
-        },
+        crate::adapters::pack::for_kind(kind)
+            .map(|pack| pack.doctor_message)
+            .unwrap_or("generic repo"),
     ));
     checks.push(check(
         "validation plan",
