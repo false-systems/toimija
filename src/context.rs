@@ -32,6 +32,8 @@ pub struct ContextPacket {
     pub artifact_id: Option<String>,
     pub repo: RepoInfo,
     pub repo_kind: RepoKind,
+    #[serde(default)]
+    pub secondary_languages: Vec<repo::DetectedLanguage>,
     pub git: GitState,
     #[serde(with = "crate::path_codec::vec")]
     pub changed_surface: Vec<PathBuf>,
@@ -140,8 +142,19 @@ pub fn build_context_packet(
         }
     };
     let repo_kind = repo::detect_repo_kind(&git.repo_root);
+    let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
+    let ignore_rules = effective_ignore_rules(&safe_to_ignore);
+    let secondary_scan = repo::detect_secondary_langs(&git.repo_root, repo_kind, |path| {
+        matches_safe_to_ignore(path, &ignore_rules)
+    });
+    if secondary_scan.truncated {
+        warnings.push("Secondary-language scan stopped at its 4096-entry limit.".to_string());
+    } else if secondary_scan.incomplete {
+        warnings
+            .push("Secondary-language scan was incomplete due to unreadable paths.".to_string());
+    }
     if repo_kind == RepoKind::Generic {
-        warnings.push("Repo kind is generic; Rust and Elixir markers were not found.".to_string());
+        warnings.push("Repo kind is generic; no recognized root manifest was found.".to_string());
     }
     if config.repo.role.trim().is_empty() {
         warnings.push("Missing product role in .toimija/repo.yaml.".to_string());
@@ -161,12 +174,10 @@ pub fn build_context_packet(
             warnings.push(note.clone());
         }
     }
-    let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
     // Effective ignore set = the repo's configured rules plus a small built-in
     // set of build/vendor dirs. Applied live (derived each run), not seeded into
     // repo.yaml, so it tracks the repo as it changes and never drifts. The
     // rendered `safe_to_ignore` field stays the user's configured rules only.
-    let ignore_rules = effective_ignore_rules(&safe_to_ignore);
     let changed = filter_ignored(all_changed(&git), &ignore_rules);
     let changed_surface_source = changed_surface_source(&git);
     debug!(
@@ -215,6 +226,7 @@ pub fn build_context_packet(
         artifact_id: None,
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
+        secondary_languages: secondary_scan.languages,
         git,
         changed_surface,
         changed_surface_source,
@@ -365,7 +377,7 @@ fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 /// Build/vendor directories Toimija always treats as noise, matched as a path
 /// segment anywhere in the tree. Kept small and near-universal — these are build
 /// output or vendored deps, not product source. Applied live every run.
-const BUILTIN_ARTIFACT_DIRS: &[&str] = &["target", "_build", "deps", "node_modules"];
+const BUILTIN_ARTIFACT_DIRS: &[&str] = &["target", "_build", "deps", "node_modules", "vendor"];
 
 pub(crate) fn effective_ignore_rules(configured: &[PathBuf]) -> Vec<PathBuf> {
     let mut rules: Vec<PathBuf> = configured.to_vec();
@@ -501,6 +513,7 @@ mod tests {
                 boundaries: Vec::new(),
             },
             repo_kind: RepoKind::Generic,
+            secondary_languages: Vec::new(),
             git,
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,
@@ -555,6 +568,7 @@ mod tests {
                 boundaries: Vec::new(),
             },
             repo_kind: RepoKind::Generic,
+            secondary_languages: Vec::new(),
             git: git.clone(),
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,
@@ -612,6 +626,7 @@ mod tests {
                 boundaries: Vec::new(),
             },
             repo_kind: RepoKind::Generic,
+            secondary_languages: Vec::new(),
             git,
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,
@@ -792,6 +807,10 @@ mod tests {
         assert!(matches_safe_to_ignore(Path::new("deps/grpc/z"), &rules));
         assert!(matches_safe_to_ignore(
             Path::new("web/node_modules/pkg/i.js"),
+            &rules
+        ));
+        assert!(matches_safe_to_ignore(
+            Path::new("vendor/pkg/lib.rs"),
             &rules
         ));
         // Real source survives.

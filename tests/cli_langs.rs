@@ -102,6 +102,51 @@ fn full_adapters_outrank_minimum_packs_in_polyglot_repos() {
 }
 
 #[test]
+fn secondary_languages_are_reported_without_changing_the_primary_plan() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(
+        temp.path(),
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            ),
+            ("services/api/go.mod", "module demo\n"),
+            ("web/package.json", "{}\n"),
+            ("xtask/Cargo.toml", "[package]\nname = \"xtask\"\n"),
+            ("node_modules/pkg/package.json", "{}\n"),
+            ("fixtures/elixir_repo/mix.exs", "[]\n"),
+            (
+                ".toimija/repo.yaml",
+                "repo:\n  name: demo\ncontext:\n  safe_to_ignore:\n    - fixtures/\n",
+            ),
+        ],
+    );
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "- also present: Go (services/api; manifest: services/api/go.mod)",
+        ))
+        .stdout(predicate::str::contains(
+            "- also present: JS/TS (web; manifest: web/package.json)",
+        ))
+        .stdout(predicate::str::contains("cargo test --workspace"))
+        .stdout(predicate::str::contains("go test ./...").not())
+        .stdout(predicate::str::contains("npm test").not())
+        .stdout(predicate::str::contains("node_modules").not())
+        .stdout(predicate::str::contains("fixtures/elixir_repo").not())
+        .stdout(predicate::str::contains("xtask/Cargo.toml").not());
+}
+
+#[test]
 fn repo_config_still_beats_minimum_inference() {
     if !git_available() {
         return;

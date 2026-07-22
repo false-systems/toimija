@@ -6,7 +6,7 @@ use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
 use crate::landed::{LandedReport, LandedStatus};
 use crate::relevance::{HintConfidence, HintEvidence, RelevanceSource};
-use crate::repo::{DoctorReport, DoctorStatus};
+use crate::repo::{DoctorReport, DoctorStatus, RepoKind};
 use crate::validate::{ValidationPlan, ValidationSource};
 
 pub fn render_init_report(report: &InitReport) -> String {
@@ -230,6 +230,17 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
     output
 }
 
+fn primary_language_evidence(kind: RepoKind) -> &'static str {
+    match kind {
+        RepoKind::Rust => "Cargo.toml at root",
+        RepoKind::Elixir => "mix.exs at root",
+        RepoKind::Go => "go.mod at root",
+        RepoKind::Python => "pyproject.toml or setup.py at root",
+        RepoKind::Node => "package.json at root",
+        RepoKind::Generic => "no recognized root manifest",
+    }
+}
+
 pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String {
     let mut output = String::new();
     writeln!(&mut output, "# Toimija Context").unwrap();
@@ -275,6 +286,35 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     )
     .unwrap();
     writeln!(&mut output, "- kind: {:?}", packet.repo_kind).unwrap();
+
+    write_h2(&mut output, "Languages");
+    writeln!(
+        &mut output,
+        "- primary: {} ({})",
+        packet.repo_kind.label(),
+        primary_language_evidence(packet.repo_kind)
+    )
+    .unwrap();
+    if packet.secondary_languages.is_empty() {
+        writeln!(&mut output, "- also present: none").unwrap();
+    } else {
+        for language in packet.secondary_languages.iter().take(MAX_LIST_SHOWN) {
+            writeln!(
+                &mut output,
+                "- also present: {} ({}; manifest: {})",
+                language.kind.label(),
+                crate::path_codec::display(&language.root),
+                crate::path_codec::display(&language.manifest)
+            )
+            .unwrap();
+        }
+        write_more_line(
+            &mut output,
+            packet.secondary_languages.len(),
+            MAX_LIST_SHOWN,
+            "",
+        );
+    }
 
     // The session block renders only on per-session packets — the wrapped
     // agent reads its own declared identity back; repo-level packets skip it.
@@ -951,6 +991,7 @@ mod tests {
                 boundaries: Vec::new(),
             },
             repo_kind: RepoKind::Rust,
+            secondary_languages: Vec::new(),
             git: GitState {
                 repo_root: PathBuf::from("/repo"),
                 git_dir: None,
@@ -1416,6 +1457,10 @@ mod tests {
 - not: (unset — add to .toimija/repo.yaml)
 - kind: Rust
 
+## Languages
+- primary: Rust (Cargo.toml at root)
+- also present: none
+
 ## Workset contract
 Work from this packet's Compiled workset and Read order; they are your working
 set, not a preamble. A session's declared scope is intent, not evidence.
@@ -1499,6 +1544,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "boundaries": []
   },
   "repo_kind": "Rust",
+  "secondary_languages": [],
   "git": {
     "repo_root": "/repo",
     "git_dir": null,

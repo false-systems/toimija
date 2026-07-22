@@ -339,6 +339,7 @@ mod tests {
                 boundaries: Vec::new(),
             },
             repo_kind: RepoKind::Rust,
+            secondary_languages: Vec::new(),
             git: GitState {
                 repo_root: PathBuf::from("/repo"),
                 git_dir: Some(PathBuf::from(".git")),

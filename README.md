@@ -191,6 +191,9 @@ the minimum language pack: repository detection, validation-plan hints, and
 companion-test discovery. Other repositories work through
 `.toimija/repo.yaml`.
 
+Packets also report recognized secondary languages from a bounded manifest
+walk. Secondary observations do not change the primary kind or validation plan.
+
 Adapters contribute hints; they do not parse source code. Git-derived context
 remains the common substrate across languages.
 

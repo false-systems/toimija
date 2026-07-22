@@ -17,6 +17,7 @@ context:
   read_first: []
   safe_to_ignore:
     - target/
+    - fixtures/
 
 validation:
   replace_inferred: false
