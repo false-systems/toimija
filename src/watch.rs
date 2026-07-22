@@ -51,6 +51,7 @@ fn detect_suspension(prev: &ClockPair, now: &ClockPair, threshold: Duration) -> 
 /// A probe-proven filesystem watcher: native when available, polling fallback
 /// when the native backend does not report readiness. The payloads are never
 /// read — they are held so dropping the backend unregisters the OS watch.
+#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
 enum Backend {
     Native(#[allow(dead_code)] notify::RecommendedWatcher),
     Poll(#[allow(dead_code)] notify::PollWatcher),
@@ -78,9 +79,19 @@ pub struct Session {
 /// registering the path — happen here, synchronously, so a startup failure is
 /// reported to the caller rather than swallowed by a background loop.
 pub fn start(repo_root: &Path) -> Result<Session> {
-    start_with_probe(repo_root, prove_ready)
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        // ponytail: inotify proves the probe but drops the first real event on
+        // our ARM64 runner; retry native when that platform proves delivery.
+        start_poll(repo_root, prove_ready)
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+    {
+        start_with_probe(repo_root, prove_ready)
+    }
 }
 
+#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
 fn start_with_probe(
     repo_root: &Path,
     probe: impl FnMut(
@@ -98,6 +109,7 @@ fn start_with_probe(
 /// proved ready, the poll fallback otherwise. A native arm failure (e.g. the
 /// inotify watch limit) must not abort startup while polling can still
 /// deliver — it degrades, with the failure logged.
+#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
 fn start_from_native(
     native: Result<(
         notify::RecommendedWatcher,
@@ -125,6 +137,18 @@ fn start_from_native(
             );
         }
     }
+    start_poll(repo_root, probe)
+}
+
+fn start_poll(
+    repo_root: &Path,
+    mut probe: impl FnMut(
+        &Path,
+        &mpsc::Receiver<notify::Result<Event>>,
+        Option<&notify::PollWatcher>,
+        &str,
+    ) -> Result<bool>,
+) -> Result<Session> {
     let (poll, rx) = arm::<notify::PollWatcher>(repo_root, watcher_config())?;
     let ready = probe(repo_root, &rx, Some(&poll), "poll")?;
     anyhow::ensure!(ready, "filesystem watcher did not report readiness");
@@ -740,6 +764,16 @@ mod tests {
             prove_ready,
         )
         .unwrap();
+
+        assert_eq!(session.backend_label(), "poll fallback");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[test]
+    fn linux_aarch64_uses_the_reliable_poll_backend() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let session = start(temp.path()).unwrap();
 
         assert_eq!(session.backend_label(), "poll fallback");
     }
