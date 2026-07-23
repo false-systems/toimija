@@ -299,18 +299,16 @@ fn status(status: &ChangeStatus) -> String {
     }
 }
 
-/// Whether a repo-relative path is generated state under `.toimija/`. Everything
-/// under that namespace is excluded from the digest so harness output
-/// (`runs/`), session packets, snapshots, and refresh output cannot
-/// self-invalidate the packet. The tracked manifest `.toimija/repo.yaml` is
-/// deliberately NOT generated — a change to it is a real change the packet
-/// should reflect.
+/// Whether a repo-relative path is generated local tool state. Toimija output
+/// and standalone Teko's `.teko/` database cannot count as product changes.
+/// The tracked `.toimija/repo.yaml` manifest remains real repository input.
 pub(crate) fn is_generated_output(path: &Path) -> bool {
     let mut components = path.components().map(|c| c.as_os_str().to_str());
-    if components.next() != Some(Some(".toimija")) {
-        return false;
+    match components.next() {
+        Some(Some(".teko")) => true,
+        Some(Some(".toimija")) => components.next() != Some(Some("repo.yaml")),
+        _ => false,
     }
-    components.next() != Some(Some("repo.yaml"))
 }
 
 fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -478,6 +476,7 @@ mod tests {
             .push(PathBuf::from(".toimija/runs/kisko.jsonl"));
         live.untracked_files
             .push(PathBuf::from(".toimija/anything/tool-output.json"));
+        live.untracked_files.push(PathBuf::from(".teko/teko.redb"));
         assert!(stored.verify(&live).is_consistent());
     }
 

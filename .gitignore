@@ -11,6 +11,9 @@
 .toimija/history.jsonl
 .toimija/history.lock
 
+# Local Teko state.
+.teko/
+
 # Harness run transcripts (e.g. kisko) — generated, never committed. Ignored so
 # a harness writing its own transcript does not invalidate the packet it verified.
 .toimija/runs/

@@ -72,7 +72,7 @@ What you get:
 |---|---|
 | **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed on every relevant change while the agent works. |
 | **A workset contract** | Every packet opens with a normative contract: work from Scope and Read order, exclusions are do-not-scan, and any expansion outside the workset is declared — *expansion is never forbidden; invisible expansion is.* |
-| **Wrapped means used** | Under `run`, using toimija is not voluntary: intent is required to launch, known agents get the packet **in their launch prompt** (argv — they cannot not-see it), and the exit summary reports what the session actually consumed. |
+| **Wrapped means used** | Under `run`, using toimija is not voluntary: explicit intent or active Teko work is required to launch, known agents get the packet **in their launch prompt** (argv — they cannot not-see it), and the exit summary reports what the session actually consumed. |
 | **Ambient adoption** | `toimija adopt` maintains one flat instruction in every agent entry file convention, drift-guarded by `doctor --strict`; `--hooks` keeps the packet fresh on every checkout/merge/commit. |
 | **Git-derived relevance** | What to inspect first, what co-changes, what is risky, and which changes may be dependency-related. Heuristic and advisory; no source parsing. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
@@ -123,10 +123,10 @@ launches the agent command, stops watching when the agent exits, and returns the
 agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
 143).
 
-**Wrapped means used** (proposal 0006). `run` refuses to launch without
-`--intent` — declaring why the session exists is the entry fee of the envelope
-(`--intent unknown` is the explicit escape hatch). For known agents (`claude`,
-`codex`, `gemini` — matched by basename; all use positional prompt delivery)
+**Wrapped means used** (proposal 0006). `run` refuses to launch without either
+`--intent` or active Teko work; `--intent unknown` remains the explicit escape
+hatch for exploratory sessions. For known agents (`claude`, `codex`, `gemini`
+— matched by basename; all use positional prompt delivery)
 the packet is delivered **in the launch prompt
 itself**: `run` appends one positional argument carrying the contract framing,
 the entry packet inlined at the session budget, the live packet path, and your
@@ -334,9 +334,9 @@ flowchart LR
    deterministic, content-based fingerprint of the repo's work state (HEAD,
    index, unstaged tracked content, untracked content, conflicts, in-flight Git
    operations). No clocks, no mtimes, no file sizes: same content, same token.
-   Generated state under `.toimija/` is excluded so refreshes, sessions,
-   snapshots, and harness runs never invalidate the packet; `.toimija/repo.yaml`
-   is the exception and always counts.
+   Generated state under `.toimija/` and `.teko/` is excluded so refreshes,
+   sessions, snapshots, harness runs, and Teko updates never invalidate the
+   packet; `.toimija/repo.yaml` is the exception and always counts.
 2. **Gate.** `toimija verify` (or `toimija current --verify --json` for
    machines) verifies the ambient session packet when wrapped by `run`, and the
    repo-level packet otherwise. `--packet <path>` selects one explicitly. It
@@ -444,9 +444,9 @@ The packet includes:
 - validation plan
 - warnings
 - on per-session packets, a **session** block — the session's id, declared
-  intent, and scope, read from the marker at each refresh (so `run --intent`
-  reaches a wrapped harness, and `toimija intent` updates propagate on the
-  next refresh)
+  intent, scope, and active Teko contract, freshly read at each refresh (so
+  `run --intent` and `toimija intent` reach wrapped harnesses while Kisko can
+  consume the same attested bounded work)
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state
@@ -492,7 +492,7 @@ toimija init               # create .toimija/repo.yaml if missing
 
 | Command | What it does |
 |---|---|
-| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. |
+| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required unless active Teko work supplies the task (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. |
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` runs the same configured stewardship pass as `clean`. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `handoff ["<note>"]` | Wrapped agent appends an explicit JSONL handoff record for its own session. `--show <id>` reads records, including closed sessions; `--json` emits the written record or all shown records. |
@@ -573,6 +573,7 @@ a live, repo-aware context layer an agent asks for before it works.
 .toimija/sessions/      owned by Toimija    per-session live packets, markers, handoff records from `run`/`handoff` (regenerated, git-ignored)
 .toimija/runs/          owned by run harnesses  retained transcripts (14 days by default)
 .toimija/history.jsonl  owned by Toimija    bounded durable memory of concluded sessions
+.teko/teko.redb         owned by Teko       active bounded-work state (local, git-ignored)
 AGENTS.md               owned by you        agent policy — Toimija maintains only its marker-delimited `adopt` preamble inside it
 CLAUDE.md               owned by you        agent policy — same: your prose around Toimija's markers
 scripts/                owned by you        e.g. agent-enter — Toimija only suggests text

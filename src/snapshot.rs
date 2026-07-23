@@ -23,12 +23,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::CommandRunner;
 
-/// Toimija's own generated outputs, dropped from the snapshot tree so a
-/// materialization never captures the packet it is about to describe (mirrors the
-/// consistency token's exclusion).
-const GENERATED_FILES: &[&str] = &[".toimija/current.md", ".toimija/current.json"];
-const GENERATED_DIRS: &[&str] = &[".toimija/sessions", ".toimija/snapshots"];
-
 /// Materialize the full working tree (tracked + staged + unstaged + untracked,
 /// honoring `.gitignore`) as a git tree object; return its oid. Uses a throwaway
 /// index, so the real index is untouched. Toimija's generated output is excluded
@@ -59,23 +53,29 @@ fn materialize_into(runner: &impl CommandRunner, repo_root: &Path, index: &Path)
     // `read-tree` errors harmlessly on an unborn HEAD (no tracked files yet).
     let _ = run_git(runner, repo_root, index, &["read-tree", "HEAD"]);
     // Overlay worktree changes (modifications, additions, deletions), then drop
-    // generated output. `--ignore-unmatch` keeps `rm` quiet when absent.
+    // generated tool namespaces while retaining Toimija's user-authored manifest.
+    // This mirrors `consistency::is_generated_output`.
     run_git(runner, repo_root, index, &["add", "-A"])?;
-    for file in GENERATED_FILES {
-        let _ = run_git(
+    let _ = run_git(
+        runner,
+        repo_root,
+        index,
+        &[
+            "rm",
+            "--cached",
+            "-r",
+            "--ignore-unmatch",
+            ".toimija",
+            ".teko",
+        ],
+    );
+    if repo_root.join(".toimija/repo.yaml").is_file() {
+        run_git(
             runner,
             repo_root,
             index,
-            &["rm", "--cached", "--ignore-unmatch", file],
-        );
-    }
-    for dir in GENERATED_DIRS {
-        let _ = run_git(
-            runner,
-            repo_root,
-            index,
-            &["rm", "--cached", "-r", "--ignore-unmatch", dir],
-        );
+            &["add", "-f", "--", ".toimija/repo.yaml"],
+        )?;
     }
     Ok(run_git(runner, repo_root, index, &["write-tree"])?
         .trim()
