@@ -24,5 +24,6 @@ pub mod session;
 pub mod sessions;
 pub mod snapshot;
 pub mod snippet;
+pub mod teko;
 pub mod validate;
 pub mod watch;
