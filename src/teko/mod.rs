@@ -11,6 +11,8 @@ use crate::command::{CommandRunner, ProcessCommandRunner};
 use crate::consistency::{Consistency, GitOperationState, Verdict};
 use crate::context::ContextPacket;
 
+pub mod store;
+
 macro_rules! id_type {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -215,7 +217,7 @@ pub struct CompletionWitness {
     pub closed_at: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvidenceSet {
     pub gate_receipts: Vec<GateReceipt>,
     pub manual_claims: Vec<ManualClaim>,

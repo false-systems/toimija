@@ -38,6 +38,7 @@ time = { version = "0.3", features = ["formatting", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 which = "8"
+redb = "4.1.0"
 
 [dev-dependencies]
 assert_cmd = "2"
