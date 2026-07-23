@@ -1,114 +1,128 @@
-# Joskus Contract
+# Joskus integration contract
 
-Toimija compiles and verifies modeled local repo state. Joskus drives the session.
+Joskus drives the agent session. Toimija supplies a verified snapshot of the
+local repository state.
 
-Toimija owns that local state packet: it reads Git state, compiles context, writes
-`.toimija/current.md`, writes `.toimija/current.json`, and verifies the packet
-against the live repository. Toimija does not talk to model providers, own
-prompts, apply model patches, or run model-requested validation.
+## Contract at a glance
 
-## Files
+| Need | Interface |
+| --- | --- |
+| Refresh the packet | `toimija current --write` |
+| Verify before reading | `toimija current --verify --json` |
+| Human-readable context | `.toimija/current.md` |
+| Machine-readable context | `.toimija/current.json` |
+| Wrapped-session packet | `.toimija/sessions/<id>/current.{md,json}` |
 
-`.toimija/current.md` is the readable context packet.
+The JSON packet is the machine contract. Markdown is a bounded presentation of
+the same artifact and may omit optional sections to meet its token budget.
 
-`.toimija/current.json` is the machine-readable packet. On per-session packets
-(written under `.toimija/sessions/<id>/` by `toimija run`) it also carries a
-`session` block — `{ "id": "...", "intent": "..."|null, "scope": [...],
-"entry_branch": "...", "entry_head": "..." }` — additive per the contract's
-evolution rule; a harness gets declared intent and a fixed Git baseline from it.
-Persisted Markdown/JSON pairs share an `artifact_id`;
-JSON is authoritative when an interrupted refresh leaves mismatched IDs. It includes:
+## Consumer flow
+
+```text
+toimija current --write
+        │
+        ▼
+toimija current --verify --json
+        │
+        ├── exit 0 / status "verified" ──► read current.json
+        │
+        └── exit 1 / refusal status ─────► do not use the packet
+```
+
+Verification selects the ambient session packet when `TOIMIJA_SESSION` is set,
+and the repo-level packet otherwise. Pass `--packet <path>` to select a packet
+explicitly.
+
+A successful response includes the selected `packet_path`, consistency
+`algorithm`, `token`, and `artifact_digest`:
 
 ```json
 {
-  "artifact_id": "...",
-  "consistency": {
-    "algorithm": "toimija-consistency-v2",
-    "head": { "kind": "normal", "branch": "main", "oid": "..." },
-    "index_fingerprint": "sha256:...",
-    "worktree_fingerprint": "sha256:...",
-    "untracked_fingerprint": "sha256:...",
-    "git_operation": { "kind": "none" },
-    "conflict_state": { "has_conflicts": false, "files": [] },
-    "token": "sha256:..."
-  }
+  "status": "verified",
+  "packet_path": "/repo/.toimija/sessions/123-456/current.json",
+  "algorithm": "toimija-consistency-v2",
+  "token": "sha256:...",
+  "artifact_digest": "sha256:..."
 }
 ```
 
-Path fields remain JSON strings when they are valid UTF-8. Unix paths that are
-not valid UTF-8 use `{ "bytes_hex": "..." }`, preserving the exact bytes without
-replacement characters. Consumers must accept both forms.
-Changed-file objects may include `original_path` and `similarity` for Git
-renames/copies. `git.conflict_entries` preserves stages 1/2/3 with their mode
-and object ID while the existing `conflicted_files` list remains available.
+Any non-zero result is a refusal to trust the packet. Stable status values are:
 
-Collection stages carry coverage (additive, R10): `git.branch_diff_coverage`
-and `relevance.history_coverage` are `{ "status": "available"|"degraded"|
-"failed", "reason": "...", "source": "..." }` objects, and `toimija sessions
---json` carries a top-level `coverage` for the marker scan. `available` means
-the (possibly empty) evidence is a real observation; `failed` means the
-collection did not deliver and no claim — positive or negative — may be derived
-from the empty list next to it. Packets written before these fields existed
-deserialize as `degraded` with reason `packet predates coverage reporting`.
-Coverage describes the collection, not the repo state, so it never feeds the
-consistency token.
-
-Coupling and risk hints carry structured provenance (additive): `source` names
-the collection or heuristic, while `evidence` contains numeric `support`,
-`observations`, and `confidence` (`unrecorded`, `medium`, or `high`). Packets
-written before evidence reporting deserialize with `unrecorded` evidence.
-Sauma verification hashes the raw JSON value before those additive defaults are
-materialized, so an older valid packet does not appear tampered to a newer
-reader.
-
-The token proves freshness of the packet against the current Git working state.
-v2 uses deterministic Git status classes, normalized paths, file type, file
-mode, and a **SHA-256 content hash** of each changed and untracked file
-(symlinks fingerprint their target). Content-based, not time-based: the same
-bytes always fingerprint the same regardless of mtime, and different bytes
-always differ — so a bare `touch` does not falsely invalidate the token, and a
-same-size edit cannot slip through. (v1 used file size + mtime and is rejected
-with `unsupported_consistency_algorithm`.) Ignored files and generated state
-under `.toimija/` do not affect the token, except `.toimija/repo.yaml`, which is
-repo policy and always counts.
-
-## Commands
-
-Refresh synchronously:
-
-```bash
-toimija current --write
-```
-
-Verify synchronously:
-
-```bash
-toimija current --verify --json
-```
-
-`--json` verification emits one of:
-
-- `verified`
 - `missing_packet`
 - `invalid_packet`
 - `missing_consistency`
 - `unsupported_consistency_algorithm`
 - `stale_packet`
+- `sauma_digest_mismatch`
 - `unsafe_git_operation`
 - `unverifiable_repository`
 - `io_error`
 
-Exit code `0` means verified. Exit code `1` means the packet is not verified.
+## Packet guarantees
 
-## Run Wrapper
+Each persisted Markdown/JSON pair shares an `artifact_id`. JSON is authoritative
+if an interrupted refresh leaves mismatched IDs.
 
-`toimija run -- <command> [args...]` refreshes the packet, launches the child
-with normal stdio, watches while it runs, and exits with the child status. The
-child receives optional discovery variables:
+The packet includes:
 
-- `TOIMIJA_CURRENT_MD`
-- `TOIMIJA_CURRENT_JSON`
-- `TOIMIJA_REPO_ROOT`
-- `TOIMIJA_RUN_ID`
+- Git identity and work state: branch, HEAD, merge base, index, worktree,
+  untracked files, conflicts, and in-flight operations;
+- changed surface, compiled workset, read order, configured boundaries, and
+  validation plan;
+- collection coverage and evidence-backed relevance hints;
+- a `toimija-consistency-v2` token over the current Git work state;
+- a sauma envelope binding the artifact to its provenance;
+- on session packets, session identity, declared intent and scope, fixed entry
+  branch/HEAD, drift, and active Teko work when present.
 
-Toimija does not inject prompts or parse model output.
+The consistency token is content-based. File mtimes do not affect it; same-size
+content changes do. Generated state under `.toimija/` and `.teko/` is excluded,
+except `.toimija/repo.yaml`, which is repository policy.
+
+Coverage values mean:
+
+- `available`: the observation succeeded, even when its result is empty;
+- `degraded`: only partial or legacy evidence is available;
+- `failed`: collection produced no usable claim.
+
+Consumers must not interpret an empty result with failed coverage as evidence
+that nothing exists.
+
+## Compatibility rules
+
+- New optional fields may be added without a schema-version bump.
+- Consumers must ignore unknown fields and tolerate unknown sauma provenance
+  edge kinds.
+- Unix paths are JSON strings when valid UTF-8 and `{ "bytes_hex": "..." }`
+  otherwise. Consumers must accept both forms.
+- Changed-file entries may include `original_path` and `similarity` for renames
+  and copies.
+- Do not materialize additive defaults before verifying the sauma digest; verify
+  the raw JSON value first.
+
+## Wrapped sessions
+
+`toimija run` creates a per-session packet, keeps it fresh while the child is
+running, and exits with the child's status. Explicit `--intent` or active Teko
+work is required; `--intent unknown` is the deliberate escape hatch.
+
+Known agents (`claude`, `codex`, and `gemini`) receive the packet and task in
+their launch prompt. Other commands receive only the environment handshake:
+
+| Variable | Meaning |
+| --- | --- |
+| `TOIMIJA_SESSION` | Current session ID |
+| `TOIMIJA_LIVE` | Authoritative session Markdown packet |
+| `TOIMIJA_LIVE_JSON` | Authoritative session JSON packet |
+| `TOIMIJA_CURRENT_MD` | Alias of `TOIMIJA_LIVE` |
+| `TOIMIJA_CURRENT_JSON` | Alias of `TOIMIJA_LIVE_JSON` |
+| `TOIMIJA_REPO_ROOT` | Repository root |
+| `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION` |
+| `TOIMIJA_REPO_LIVE` | Repo-level latest-summary packet |
+
+Toimija owns packet compilation, freshness, launch delivery, and local
+provenance. It does not call model providers, parse model output, apply patches,
+or execute model-requested validation.
+
+For the full packet anatomy and command reference, see
+[reference.md](reference.md).
