@@ -1,27 +1,41 @@
-//! Minimum language packs: the floor every recognized language gets —
-//! detection by manifest, inferred test + lint tiers, companion-test hints.
-//! One engine, one table row per language. Full adapters (Rust, Elixir) stay
-//! the only per-language modules; bounded proof rules live beside this table.
-//! No source parsing — manifests and path templates only — and `repo.yaml`
-//! validation config still beats everything inferred from a row.
+//! The compile-time language registry. Every recognized language starts as one
+//! data row; smart adapters override only the behavior that needs project-aware
+//! code, while bounded proof rules keep inferred commands honest. No source
+//! parsing — manifests and path templates only — and `repo.yaml` validation
+//! config still beats everything inferred from a row.
 
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::adapters::LanguageAdapter;
-use crate::config::RepoConfig;
-use crate::git::ChangedFile;
 use crate::repo::RepoKind;
-use crate::validate::{self, ValidationPlan};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanguageTier {
+    Full,
+    Minimum,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationProof {
+    Manifest,
+    NodeScripts,
+    PythonTools,
+}
 
 #[derive(Debug)]
-pub struct MinimumLang {
+pub struct LanguagePack {
     pub kind: RepoKind,
+    pub tier: LanguageTier,
+    pub proof: ValidationProof,
     /// Honest display label for notes and telemetry (e.g. "Go").
     pub name: &'static str,
-    /// Any of these at the repo root claims the repo (checked in table order,
-    /// after the full adapters have had their chance).
+    /// Root-manifest evidence rendered in context packets.
+    pub root_evidence: &'static str,
+    /// Repository-kind result rendered by `toimija doctor`.
+    pub doctor_message: &'static str,
+    /// Any of these at the repo root claims the repo, checked in table order.
     pub manifests: &'static [&'static str],
     /// Fast-tier (test) candidates. Proven commands also become the Full tier,
     /// mirroring the full adapters' shape.
@@ -41,10 +55,45 @@ pub struct MinimumLang {
     pub test_markers: &'static [&'static str],
 }
 
-pub const MINIMUMS: &[MinimumLang] = &[
-    MinimumLang {
+pub const LANGUAGES: &[LanguagePack] = &[
+    LanguagePack {
+        kind: RepoKind::Rust,
+        tier: LanguageTier::Full,
+        proof: ValidationProof::Manifest,
+        name: "Rust",
+        root_evidence: "Cargo.toml at root",
+        doctor_message: "Rust repo detected",
+        manifests: &["Cargo.toml"],
+        fast: &["cargo test --workspace"],
+        strict: &[
+            "cargo fmt --check",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+        ],
+        extensions: &["rs"],
+        companions: &[],
+        test_markers: &[],
+    },
+    LanguagePack {
+        kind: RepoKind::Elixir,
+        tier: LanguageTier::Full,
+        proof: ValidationProof::Manifest,
+        name: "Elixir",
+        root_evidence: "mix.exs at root",
+        doctor_message: "Elixir repo detected",
+        manifests: &["mix.exs"],
+        fast: &["mix test"],
+        strict: &["mix format --check-formatted"],
+        extensions: &["ex", "exs"],
+        companions: &[],
+        test_markers: &[],
+    },
+    LanguagePack {
         kind: RepoKind::Go,
+        tier: LanguageTier::Minimum,
+        proof: ValidationProof::Manifest,
         name: "Go",
+        root_evidence: "go.mod at root",
+        doctor_message: "Go repo detected (minimum language pack)",
         manifests: &["go.mod"],
         fast: &["go test ./..."],
         strict: &["go vet ./..."],
@@ -52,9 +101,13 @@ pub const MINIMUMS: &[MinimumLang] = &[
         companions: &["{dir}/{stem}_test.go"],
         test_markers: &["*_test.go"],
     },
-    MinimumLang {
+    LanguagePack {
         kind: RepoKind::Python,
+        tier: LanguageTier::Minimum,
+        proof: ValidationProof::PythonTools,
         name: "Python",
+        root_evidence: "pyproject.toml or setup.py at root",
+        doctor_message: "Python repo detected (minimum language pack)",
         manifests: &["pyproject.toml", "setup.py"],
         fast: &["pytest"],
         strict: &["ruff check ."],
@@ -62,9 +115,13 @@ pub const MINIMUMS: &[MinimumLang] = &[
         companions: &["{dir}/test_{stem}.py", "tests/test_{stem}.py"],
         test_markers: &["test_*"],
     },
-    MinimumLang {
+    LanguagePack {
         kind: RepoKind::Node,
+        tier: LanguageTier::Minimum,
+        proof: ValidationProof::NodeScripts,
         name: "JS/TS",
+        root_evidence: "package.json at root",
+        doctor_message: "JS/TS repo detected (minimum language pack)",
         manifests: &["package.json"],
         fast: &["npm test"],
         strict: &["npm run lint", "npm run typecheck"],
@@ -74,16 +131,16 @@ pub const MINIMUMS: &[MinimumLang] = &[
     },
 ];
 
-/// The first minimum language whose manifest exists at the repo root. Called
-/// by repo-kind detection after the full adapters (Rust, Elixir) declined.
-pub fn detect(repo_root: &Path) -> Option<&'static MinimumLang> {
-    MINIMUMS
+/// The first recognized language whose manifest exists at the repo root.
+/// Registry order is precedence: full adapters first, then minimum packs.
+pub fn detect(repo_root: &Path) -> Option<&'static LanguagePack> {
+    LANGUAGES
         .iter()
         .find(|lang| lang.manifests.iter().any(|m| repo_root.join(m).exists()))
 }
 
-pub fn for_kind(kind: RepoKind) -> Option<&'static MinimumLang> {
-    MINIMUMS.iter().find(|lang| lang.kind == kind)
+pub fn for_kind(kind: RepoKind) -> Option<&'static LanguagePack> {
+    LANGUAGES.iter().find(|lang| lang.kind == kind)
 }
 
 #[derive(Debug, Default)]
@@ -93,20 +150,19 @@ pub(crate) struct ProvenCommands {
     pub notes: Vec<String>,
 }
 
-pub(crate) fn proven_commands(repo_root: &Path, lang: &MinimumLang) -> ProvenCommands {
-    match lang.kind {
-        RepoKind::Go => ProvenCommands {
+pub(crate) fn proven_commands(repo_root: &Path, lang: &LanguagePack) -> ProvenCommands {
+    match lang.proof {
+        ValidationProof::Manifest => ProvenCommands {
             fast: strings(lang.fast),
             strict: strings(lang.strict),
             notes: Vec::new(),
         },
-        RepoKind::Node => node_commands(repo_root, lang),
-        RepoKind::Python => python_commands(repo_root, lang),
-        _ => ProvenCommands::default(),
+        ValidationProof::NodeScripts => node_commands(repo_root, lang),
+        ValidationProof::PythonTools => python_commands(repo_root, lang),
     }
 }
 
-fn node_commands(repo_root: &Path, lang: &MinimumLang) -> ProvenCommands {
+fn node_commands(repo_root: &Path, lang: &LanguagePack) -> ProvenCommands {
     let mut commands = ProvenCommands::default();
     let scripts = match read_bounded(&repo_root.join("package.json")) {
         Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
@@ -141,7 +197,7 @@ fn node_commands(repo_root: &Path, lang: &MinimumLang) -> ProvenCommands {
     commands
 }
 
-fn python_commands(repo_root: &Path, lang: &MinimumLang) -> ProvenCommands {
+fn python_commands(repo_root: &Path, lang: &LanguagePack) -> ProvenCommands {
     let pyproject = read_bounded(&repo_root.join("pyproject.toml")).unwrap_or_default();
     let mut commands = ProvenCommands::default();
 
@@ -192,7 +248,7 @@ fn strings(commands: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn all_dropped(lang: &MinimumLang, reason: &str) -> ProvenCommands {
+fn all_dropped(lang: &LanguagePack, reason: &str) -> ProvenCommands {
     ProvenCommands {
         notes: lang
             .fast
@@ -218,54 +274,29 @@ fn read_bounded(path: &Path) -> Result<String, &'static str> {
     String::from_utf8(bytes).map_err(|_| "manifest is not UTF-8")
 }
 
-/// One adapter serves every table row; which row is fixed at construction.
+/// The baseline adapter for a declarative pack. A language graduates to a
+/// dedicated adapter only when it gains behavior that cannot live in the row.
 #[derive(Debug, Clone, Copy)]
-pub struct MinimumAdapter(pub &'static MinimumLang);
+pub struct PackAdapter(pub &'static LanguagePack);
 
-impl LanguageAdapter for MinimumAdapter {
+impl LanguageAdapter for PackAdapter {
     fn kind(&self) -> RepoKind {
         self.0.kind
     }
+}
 
-    fn detect(&self, repo_root: &Path) -> bool {
-        self.0
-            .manifests
-            .iter()
-            .any(|manifest| repo_root.join(manifest).exists())
-    }
-
-    fn validation_plan(&self, repo_root: &Path, config: &RepoConfig) -> ValidationPlan {
-        validate::validation_plan(repo_root, config, self.0.kind)
-    }
-
-    fn read_first_hints(
-        &self,
-        repo_root: &Path,
-        changed: &[ChangedFile],
-    ) -> Vec<(PathBuf, String)> {
-        let mut hints = Vec::new();
-        for file in changed {
-            for candidate in self.companion_tests(repo_root, &file.path) {
-                hints.push((candidate, "matching test heuristic".to_string()));
-            }
-        }
-        hints.sort_by(|left, right| left.0.cmp(&right.0));
-        hints.dedup_by(|left, right| left.0 == right.0);
-        hints
-    }
-
-    fn companion_tests(&self, repo_root: &Path, path: &Path) -> Vec<PathBuf> {
+impl LanguagePack {
+    pub fn companion_tests(&self, repo_root: &Path, path: &Path) -> Vec<PathBuf> {
         let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
             return Vec::new();
         };
-        if !self.0.extensions.contains(&ext) {
+        if !self.extensions.contains(&ext) {
             return Vec::new();
         }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             return Vec::new();
         };
         if self
-            .0
             .test_markers
             .iter()
             .any(|marker| matches_marker(name, marker))
@@ -279,8 +310,7 @@ impl LanguageAdapter for MinimumAdapter {
             .parent()
             .map(|dir| dir.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.0
-            .companions
+        self.companions
             .iter()
             .map(|template| expand_template(template, &dir, stem, ext))
             .filter(|candidate| repo_root.join(candidate).exists())
@@ -316,8 +346,8 @@ fn expand_template(template: &str, dir: &str, stem: &str, ext: &str) -> PathBuf 
 mod tests {
     use super::*;
 
-    fn adapter(kind: RepoKind) -> MinimumAdapter {
-        MinimumAdapter(for_kind(kind).unwrap())
+    fn adapter(kind: RepoKind) -> PackAdapter {
+        PackAdapter(for_kind(kind).unwrap())
     }
 
     #[test]
@@ -329,6 +359,9 @@ mod tests {
         // Go outranks Node when both manifests exist (table order).
         std::fs::write(temp.path().join("go.mod"), "module demo\n").unwrap();
         assert_eq!(detect(temp.path()).unwrap().kind, RepoKind::Go);
+        // Full adapters outrank minimum packs through the same registry.
+        std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        assert_eq!(detect(temp.path()).unwrap().kind, RepoKind::Rust);
     }
 
     #[test]

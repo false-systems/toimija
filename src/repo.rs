@@ -13,7 +13,7 @@ use crate::{
 pub enum RepoKind {
     Rust,
     Elixir,
-    // Minimum-pack languages: data rows in `adapters::minimum`, not modules.
+    // Minimum-pack languages: data rows in `adapters::pack`, not modules.
     Go,
     Python,
     Node,
@@ -110,18 +110,7 @@ impl RepoInfo {
 }
 
 pub fn detect_repo_kind(repo_root: &Path) -> RepoKind {
-    // Full adapters outrank minimum packs; both outrank generic. A polyglot
-    // repo gets the strongest adapter whose manifest is present.
-    if repo_root.join("Cargo.toml").exists() {
-        return RepoKind::Rust;
-    }
-    if repo_root.join("mix.exs").exists() {
-        return RepoKind::Elixir;
-    }
-    if let Some(lang) = crate::adapters::minimum::detect(repo_root) {
-        return lang.kind;
-    }
-    RepoKind::Generic
+    crate::adapters::detect(repo_root)
 }
 
 const SECONDARY_MAX_DEPTH: usize = 3;
@@ -222,13 +211,7 @@ fn detect_secondary_langs_with_budget(
 
 fn manifest_claims(repo_root: &Path, relative: &Path) -> Vec<(RepoKind, PathBuf)> {
     let mut claims = Vec::new();
-    for (kind, manifests) in [
-        (RepoKind::Rust, &["Cargo.toml"][..]),
-        (RepoKind::Elixir, &["mix.exs"][..]),
-    ] {
-        push_claim(repo_root, relative, kind, manifests, &mut claims);
-    }
-    for language in crate::adapters::minimum::MINIMUMS {
+    for language in crate::adapters::pack::LANGUAGES {
         push_claim(
             repo_root,
             relative,
@@ -258,15 +241,11 @@ fn push_claim(
     }
 }
 
-fn kind_rank(kind: RepoKind) -> u8 {
-    match kind {
-        RepoKind::Rust => 0,
-        RepoKind::Elixir => 1,
-        RepoKind::Go => 2,
-        RepoKind::Python => 3,
-        RepoKind::Node => 4,
-        RepoKind::Generic => 5,
-    }
+fn kind_rank(kind: RepoKind) -> usize {
+    crate::adapters::pack::LANGUAGES
+        .iter()
+        .position(|pack| pack.kind == kind)
+        .unwrap_or(usize::MAX)
 }
 
 pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> DoctorReport {
@@ -377,14 +356,9 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
     checks.push(check(
         "repo kind",
         DoctorStatus::Ok,
-        match kind {
-            RepoKind::Rust => "Rust repo detected",
-            RepoKind::Elixir => "Elixir repo detected",
-            RepoKind::Go => "Go repo detected (minimum language pack)",
-            RepoKind::Python => "Python repo detected (minimum language pack)",
-            RepoKind::Node => "JS/TS repo detected (minimum language pack)",
-            RepoKind::Generic => "generic repo",
-        },
+        crate::adapters::pack::for_kind(kind)
+            .map(|pack| pack.doctor_message)
+            .unwrap_or("generic repo"),
     ));
     checks.push(check(
         "validation plan",

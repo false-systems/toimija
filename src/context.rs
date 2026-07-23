@@ -5,9 +5,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::adapters::LanguageAdapter;
-use crate::adapters::elixir::ElixirAdapter;
-use crate::adapters::generic::GenericAdapter;
-use crate::adapters::rust::RustAdapter;
 use crate::command::CommandRunner;
 use crate::config::RepoConfig;
 use crate::consistency::Consistency;
@@ -167,7 +164,7 @@ pub fn build_context_packet(
             "Both Rust and Elixir markers detected; Rust chosen deterministically.".to_string(),
         );
     }
-    let adapter = adapter_for(repo_kind);
+    let adapter = crate::adapters::for_kind(repo_kind);
     let mut validation_plan = adapter.validation_plan(&git.repo_root, &config);
     for note in &validation_plan.notes {
         if note.contains("inferred") {
@@ -284,20 +281,6 @@ fn scope_source(source: ChangedSurfaceSource) -> RelevanceSource {
         ChangedSurfaceSource::BranchDiffSinceMergeBase => RelevanceSource::MergeBaseDiff,
         ChangedSurfaceSource::WorkingTreeAndIndex => RelevanceSource::WorkingTreeAndIndex,
         ChangedSurfaceSource::Unknown => RelevanceSource::Unavailable,
-    }
-}
-
-fn adapter_for(kind: RepoKind) -> Box<dyn LanguageAdapter> {
-    match kind {
-        RepoKind::Rust => Box::new(RustAdapter),
-        RepoKind::Elixir => Box::new(ElixirAdapter),
-        RepoKind::Generic => Box::new(GenericAdapter),
-        // Minimum-pack kinds share one engine; a kind without a table row
-        // would be a wiring bug — degrade honestly to generic.
-        minimum_kind => match crate::adapters::minimum::for_kind(minimum_kind) {
-            Some(lang) => Box::new(crate::adapters::minimum::MinimumAdapter(lang)),
-            None => Box::new(GenericAdapter),
-        },
     }
 }
 
@@ -478,6 +461,7 @@ fn read_first(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::generic::GenericAdapter;
     use crate::git::{ChangeStatus, ChangedFile};
 
     #[test]

@@ -49,39 +49,8 @@ pub fn validation_plan(repo_root: &Path, config: &RepoConfig, kind: RepoKind) ->
 }
 
 fn inferred_plan(repo_root: &Path, kind: RepoKind) -> ValidationPlan {
-    match kind {
-        RepoKind::Rust => {
-            info!(event = "toimija.validation.inferred", repo_kind = "rust");
-            ValidationPlan {
-                source: ValidationSource::Inferred,
-                focused: Vec::new(),
-                fast: vec!["cargo test --workspace".to_string()],
-                strict: vec![
-                    "cargo fmt --check".to_string(),
-                    "cargo clippy --workspace --all-targets -- -D warnings".to_string(),
-                ],
-                full: vec!["cargo test --workspace".to_string()],
-                privileged: Vec::new(),
-                notes: vec![
-                    "Validation inferred from Rust repo shape, not proven by Sykli".to_string(),
-                ],
-            }
-        }
-        RepoKind::Elixir => {
-            info!(event = "toimija.validation.inferred", repo_kind = "elixir");
-            ValidationPlan {
-                source: ValidationSource::Inferred,
-                focused: Vec::new(),
-                fast: vec!["mix test".to_string()],
-                strict: vec!["mix format --check-formatted".to_string()],
-                full: vec!["mix test".to_string()],
-                privileged: Vec::new(),
-                notes: vec![
-                    "Validation inferred from Elixir repo shape, not proven by Sykli".to_string(),
-                ],
-            }
-        }
-        RepoKind::Generic => ValidationPlan {
+    if kind == RepoKind::Generic {
+        return ValidationPlan {
             source: ValidationSource::Unknown,
             focused: Vec::new(),
             fast: Vec::new(),
@@ -89,32 +58,35 @@ fn inferred_plan(repo_root: &Path, kind: RepoKind) -> ValidationPlan {
             full: Vec::new(),
             privileged: Vec::new(),
             notes: vec!["validation unavailable for generic repo without repo config".to_string()],
-        },
-        // Minimum-pack languages: tiers come from the data table, with the
-        // same honest "inferred, not proven" note as the full adapters.
-        minimum_kind => {
-            let Some(lang) = crate::adapters::minimum::for_kind(minimum_kind) else {
-                // A kind with neither a full adapter nor a table row would be
-                // a wiring bug; degrade to the generic (unknown) plan.
-                return inferred_plan(repo_root, RepoKind::Generic);
-            };
-            let commands = crate::adapters::minimum::proven_commands(repo_root, lang);
-            let mut notes = vec![format!(
-                "Validation inferred from {} repo shape (minimum language pack), not proven by Sykli",
-                lang.name
-            )];
-            notes.extend(commands.notes);
-            info!(event = "toimija.validation.inferred", repo_kind = lang.name);
-            ValidationPlan {
-                source: ValidationSource::Inferred,
-                focused: Vec::new(),
-                full: commands.fast.clone(),
-                fast: commands.fast,
-                strict: commands.strict,
-                privileged: Vec::new(),
-                notes,
-            }
-        }
+        };
+    }
+
+    let Some(pack) = crate::adapters::pack::for_kind(kind) else {
+        // A recognized kind without a registry row is a wiring bug; degrade
+        // honestly to the generic (unknown) plan.
+        return inferred_plan(repo_root, RepoKind::Generic);
+    };
+    info!(event = "toimija.validation.inferred", repo_kind = pack.name);
+    let mut notes = vec![match pack.tier {
+        crate::adapters::pack::LanguageTier::Full => format!(
+            "Validation inferred from {} repo shape, not proven by Sykli",
+            pack.name
+        ),
+        crate::adapters::pack::LanguageTier::Minimum => format!(
+            "Validation inferred from {} repo shape (minimum language pack), not proven by Sykli",
+            pack.name
+        ),
+    }];
+    let commands = crate::adapters::pack::proven_commands(repo_root, pack);
+    notes.extend(commands.notes);
+    ValidationPlan {
+        source: ValidationSource::Inferred,
+        focused: Vec::new(),
+        full: commands.fast.clone(),
+        fast: commands.fast,
+        strict: commands.strict,
+        privileged: Vec::new(),
+        notes,
     }
 }
 
