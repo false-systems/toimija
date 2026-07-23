@@ -26,7 +26,11 @@ use crate::command::CommandRunner;
 /// Toimija's own generated outputs, dropped from the snapshot tree so a
 /// materialization never captures the packet it is about to describe (mirrors the
 /// consistency token's exclusion).
-const GENERATED_FILES: &[&str] = &[".toimija/current.md", ".toimija/current.json"];
+const GENERATED_FILES: &[&str] = &[
+    ".toimija/current.md",
+    ".toimija/current.json",
+    ".toimija/teko.redb",
+];
 const GENERATED_DIRS: &[&str] = &[".toimija/sessions", ".toimija/snapshots"];
 
 /// Materialize the full working tree (tracked + staged + unstaged + untracked,
