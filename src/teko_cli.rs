@@ -40,52 +40,97 @@ impl TekoArgs {
 #[derive(Debug, Subcommand)]
 enum TekoCommand {
     /// Create a durable specification; add --ratify to make it activatable.
+    ///
+    /// Stores the objective, goals, non-goals, completion level, and approved
+    /// gate commands locally. Nothing becomes active until `start`.
+    #[command(
+        after_help = "Example:\n  toimija teko new --title \"Fix login\" --objective \"Repair redirect\" --goal regression=\"A regression test covers the fix\" --non-goal \"Redesign authentication\" --gate test=\"cargo test\" --completion validated --ratify"
+    )]
     New(NewArgs),
     /// Create and activate bounded work from one specification.
+    ///
+    /// Captures the current tree as the origin and permits one active work item
+    /// per repository. The active item remains in `.toimija/teko.redb` across
+    /// process exits and interrupted agent sessions.
+    #[command(
+        after_help = "Example:\n  toimija teko start --spec spec-login --scope src/auth --scope tests"
+    )]
     Start(StartArgs),
     /// Show freshly derived active-work status.
+    ///
+    /// Rechecks the repository, then prints the objective, progress, every
+    /// closure blocker, and the exact next Teko command. Read-only.
+    #[command(after_help = "Examples:\n  toimija teko show\n  toimija teko show --json")]
     Show(JsonArgs),
     /// Refresh repository truth, claim manual obligations, and run required gates.
+    ///
+    /// Claims only the named goal IDs, runs every missing or stale approved
+    /// gate, and binds passing receipts to the current tree. Repeat after the
+    /// tree changes.
+    #[command(
+        after_help = "Examples:\n  toimija teko verify --claim regression\n  toimija teko verify"
+    )]
     Verify(VerifyArgs),
     /// Close active work only when fresh evaluation has no blockers.
+    ///
+    /// Refuses with every stable blocker ID and the exact next command when any
+    /// goal, scope rule, repository change, gate, or completion requirement is
+    /// unresolved.
+    #[command(after_help = "Examples:\n  toimija teko close\n  toimija teko close --json")]
     Close(JsonArgs),
     /// Show the highest-value legal next action without executing it.
+    ///
+    /// Prints one copy-pasteable command plus the blocker that makes it useful.
+    #[command(after_help = "Examples:\n  toimija teko next\n  toimija teko next --json")]
     Next(JsonArgs),
 }
 
 #[derive(Debug, Args)]
 struct NewArgs {
+    /// Stable specification ID; generated when omitted.
     #[arg(long)]
     id: Option<String>,
+    /// Short human-readable specification title.
     #[arg(long)]
     title: Option<String>,
+    /// Concrete outcome the work must achieve.
     #[arg(long)]
     objective: Option<String>,
+    /// Required goal as `id=description`; repeatable.
     #[arg(long = "goal")]
     goals: Vec<String>,
+    /// Explicitly excluded outcome; repeatable.
     #[arg(long = "non-goal")]
     non_goals: Vec<String>,
+    /// Condition that must remain true; repeatable.
     #[arg(long = "invariant")]
     invariants: Vec<String>,
     /// Operator-approved gate command. Use `id=command` for a stable gate id.
     #[arg(long = "gate")]
     gates: Vec<String>,
+    /// Required evidence level: `changed` or `validated`.
     #[arg(long)]
     completion: Option<String>,
+    /// Approve the specification for activation immediately.
     #[arg(long)]
     ratify: bool,
+    /// Optional source reference, such as a local design document.
     #[arg(long)]
     source: Option<String>,
+    /// Emit the created specification as JSON.
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, Args)]
 struct StartArgs {
+    /// Specification ID; inferred only when exactly one is activatable.
     #[arg(long)]
     spec: Option<String>,
+    /// Stable work ID; generated when omitted.
     #[arg(long)]
     id: Option<String>,
+    /// Override the specification objective for this work item.
     #[arg(long)]
     objective: Option<String>,
     /// Select goal ids; absence selects every goal.
@@ -97,21 +142,24 @@ struct StartArgs {
     /// Explicitly ratify a draft as part of the activation transaction.
     #[arg(long)]
     ratify: bool,
+    /// Emit the activated work item as JSON.
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, Args)]
 struct VerifyArgs {
-    /// Explicitly claim a manual obligation by stable id.
+    /// Claim a completed goal by the stable ID shown by `teko show`; repeatable.
     #[arg(long = "claim")]
     claims: Vec<String>,
+    /// Emit the complete status as JSON.
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, Args)]
 struct JsonArgs {
+    /// Emit machine-readable JSON.
     #[arg(long)]
     json: bool,
 }
@@ -144,7 +192,7 @@ pub fn run(args: TekoArgs) -> Result<()> {
 
 /// Render the ephemeral packet supplied to wrapped workers. It is derived from
 /// the same live Toimija state as `teko show`; nothing is persisted.
-pub fn active_work_packet(repo_root: &Path, dialect: &str) -> Result<Option<String>> {
+pub fn active_work_packet(repo_root: &Path, _dialect: &str) -> Result<Option<String>> {
     let Some(store) = TekoStore::open_existing(repo_root)? else {
         return Ok(None);
     };
@@ -152,12 +200,37 @@ pub fn active_work_packet(repo_root: &Path, dialect: &str) -> Result<Option<Stri
         return Ok(None);
     };
     let mut packet = String::new();
-    packet.push_str(match dialect {
-        "codex" => "ACTIVE TEKO WORK\n\n",
-        "claude" => "ACTIVE TEKO WORK\n\n",
-        _ => "ACTIVE WORK\n\n",
-    });
+    packet.push_str("# Active Teko Work\n\n");
+    packet.push_str(&format!(
+        "Work: `{}`\nSpec: `{}` — {}\n",
+        active.work.id, active.spec.id, active.spec.title
+    ));
     packet.push_str(&format!("Objective: {}\n", active.work.objective));
+    packet.push_str("Goals:\n");
+    for obligation in active.status.obligations.iter().filter(|item| {
+        active
+            .work
+            .obligations
+            .iter()
+            .any(|source| source.id == item.id && source.kind == ObligationKind::Manual)
+    }) {
+        packet.push_str(&format!(
+            "- [{}] `{}` {}\n",
+            if obligation.resolved { "done" } else { "open" },
+            obligation.id,
+            obligation.description
+        ));
+    }
+    if !active.spec.non_goals.is_empty() {
+        packet.push_str("Non-goals:\n");
+        for non_goal in &active.spec.non_goals {
+            packet.push_str(&format!("- {non_goal}\n"));
+        }
+    }
+    packet.push_str("Write scope:\n");
+    for rule in &active.work.scope.write {
+        packet.push_str(&format!("- {}\n", rule.path.display()));
+    }
     packet.push_str(&format!(
         "Branch: {}\nCurrent tree: {}\n",
         active.current.point.branch.as_deref().unwrap_or("detached"),
@@ -173,23 +246,21 @@ pub fn active_work_packet(repo_root: &Path, dialect: &str) -> Result<Option<Stri
         ScopeStatus::Violated { .. } => "violated\n",
         ScopeStatus::Unknown { .. } => "unknown\n",
     });
-    packet.push_str("Remaining obligations:\n");
-    for obligation in active
-        .status
-        .obligations
-        .iter()
-        .filter(|item| !item.resolved)
-    {
-        packet.push_str(&format!("- {}\n", obligation.description));
-    }
     packet.push_str(&format!(
         "Completion required: {}\n",
         active.status.required_completion
     ));
-    if let Some(blocker) = active.status.blockers.first() {
-        packet.push_str(&format!("Next: {}\n", blocker.message));
+    if active.status.blockers.is_empty() {
+        packet.push_str("Closure blockers: none\nNext: `toimija teko close`\n");
     } else {
-        packet.push_str("Next: close the verified work\n");
+        packet.push_str("Closure blockers:\n");
+        for blocker in &active.status.blockers {
+            packet.push_str(&format!("- `{}`: {}\n", blocker.code, blocker.message));
+        }
+        packet.push_str(&format!(
+            "Next: `{}`\n",
+            active.status.next_actions[0].action
+        ));
     }
     Ok(Some(packet))
 }
@@ -509,37 +580,30 @@ fn print_status(active: &ActiveStatus, json: bool) -> Result<()> {
         .iter()
         .filter(|obligation| obligation.resolved)
         .count();
-    println!("{}", active.spec.title.to_uppercase());
-    println!();
+    println!("{}", active.spec.title);
     println!(
-        "active · {complete}/{} complete · current tree {}",
+        "work {} · {complete}/{} complete · tree {} ({})",
+        active.work.id,
         active.status.obligations.len(),
+        short_oid(&active.current.point.tree_oid.0),
         if active.current.dirty {
             "dirty"
         } else {
             "clean"
         }
     );
-    println!();
-    for obligation in &active.status.obligations {
-        println!(
-            "{} {}",
-            if obligation.resolved { "✓" } else { "○" },
-            obligation.description
-        );
-    }
-    println!();
+    println!("objective: {}", active.work.objective);
     match &active.status.scope {
-        ScopeStatus::WithinScope => println!("scope      valid"),
+        ScopeStatus::WithinScope => println!("scope: valid"),
         ScopeStatus::Violated { paths } => println!(
-            "scope      violated — {}",
+            "scope: violated — {}",
             paths
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        ScopeStatus::Unknown { reason } => println!("scope      unknown — {reason}"),
+        ScopeStatus::Unknown { reason } => println!("scope: unknown — {reason}"),
     }
     for gate in &active.status.gates {
         let status = match &gate.status {
@@ -550,17 +614,19 @@ fn print_status(active: &ActiveStatus, json: bool) -> Result<()> {
             GateStatus::Failed { exit_status } => format!("failed — exit {exit_status}"),
             GateStatus::Missing => "not run".to_string(),
         };
-        println!("gate       {} — {status}", gate.command.shell);
-    }
-    println!("completion {} required", active.status.required_completion);
-    for blocker in &active.status.blockers {
-        println!("blocker    {}", blocker.message);
+        println!("gate: {} — {status}", gate.command.shell);
     }
     println!();
-    if let Some(next) = active.status.next_actions.first() {
-        println!("next       {}", next.action);
+    if active.status.blockers.is_empty() {
+        println!("ready to close");
+        println!("next: toimija teko close");
     } else {
-        println!("next       close the verified work");
+        println!("blockers ({}):", active.status.blockers.len());
+        for blocker in &active.status.blockers {
+            println!("- [{}] {}", blocker.code, blocker.message);
+        }
+        println!();
+        println!("next: {}", active.status.next_actions[0].action);
     }
     Ok(())
 }
@@ -575,9 +641,12 @@ fn print_no_active(json: bool) -> Result<()> {
 }
 
 fn cannot_close(status: &WorkflowStatus) -> Refusal {
-    let mut message = String::from("Cannot close\n");
+    let mut message = String::from("Cannot close:");
     for blocker in &status.blockers {
-        message.push_str(&format!("\n- {}", blocker.message));
+        message.push_str(&format!("\n- [{}] {}", blocker.code, blocker.message));
+    }
+    if let Some(next) = status.next_actions.first() {
+        message.push_str(&format!("\n\nNext: {}", next.action));
     }
     Refusal {
         reason: "teko-not-closable",

@@ -167,6 +167,34 @@ Before commit or handoff:
 toimija verify
 ```
 
+## Bounded work with Teko
+
+Teko keeps one ratified task active across agent restarts and interrupted
+`toimija run` sessions. Its status is derived from the current product tree;
+Toimija's generated packets, session records, history, and Teko database do not
+count as worktree changes.
+
+```bash
+toimija teko new \
+  --title "Fix login" \
+  --objective "Repair the redirect" \
+  --goal regression="A regression test covers the fix" \
+  --non-goal "Redesign authentication" \
+  --gate test="cargo test" \
+  --completion validated \
+  --ratify
+toimija teko start --scope src/auth --scope tests
+toimija teko show
+toimija run -- codex
+toimija teko verify --claim regression
+toimija teko close
+```
+
+`show` prints stable closure-blocker IDs and one copy-pasteable next command.
+Active Teko work is also included in known agents' launch prompts with its
+objective, goals, non-goals, write scope, current blockers, and required
+completion. `teko <command> --help` documents each step and includes an example.
+
 ## Commands
 
 | Command | Purpose |
@@ -176,6 +204,7 @@ toimija verify
 | `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
 | `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
 | `history` | List durable records of concluded sessions; `--json` emits all valid records. |
+| `teko` | Persist, resume, verify, and honestly close one bounded work item. |
 | `clean` | Reclaim expired owned artifacts; `--dry-run` lists candidates without changing disk. |
 | `audit-plan` | Partition broad reviews into bounded deterministic worksets. |
 | `validate --plan` | Render inferred and configured validation commands; never execute them. |

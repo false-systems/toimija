@@ -640,18 +640,18 @@ fn gate_status(
 
 fn next_action(blocker: &Blocker, gates: &[GateEvaluation]) -> String {
     if blocker.code.starts_with("obligation-")
-        && let Some(gate) = gates.iter().find(|gate| {
+        && gates.iter().any(|gate| {
             !matches!(gate.status, GateStatus::Current) && blocker.code.ends_with(&gate.id.0)
         })
     {
-        return format!("run {}", gate.command.shell);
+        return "toimija teko verify".to_string();
     }
     if blocker.code == "completion-incomplete"
-        && let Some(gate) = gates
+        && gates
             .iter()
-            .find(|gate| !matches!(gate.status, GateStatus::Current))
+            .any(|gate| !matches!(gate.status, GateStatus::Current))
     {
-        return format!("run {}", gate.command.shell);
+        return "toimija teko verify".to_string();
     }
     match blocker.code.as_str() {
         "scope-violated" => "restore or move out-of-scope changes".to_string(),
@@ -661,7 +661,7 @@ fn next_action(blocker: &Blocker, gates: &[GateEvaluation]) -> String {
         }
         code if code.starts_with("obligation-") => {
             format!(
-                "resolve and claim {}",
+                "toimija teko verify --claim {}",
                 code.trim_start_matches("obligation-")
             )
         }

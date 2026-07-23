@@ -212,3 +212,157 @@ fn drafts_require_explicit_ratification_and_empty_store_is_safe() {
         .assert()
         .success();
 }
+
+#[cfg(unix)]
+#[test]
+fn interrupted_task_resumes_in_codex_and_closes_end_to_end() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !git_available() {
+        return;
+    }
+    let repo = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    init(repo.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(repo.path())
+        .args([
+            "teko",
+            "new",
+            "--id",
+            "daily",
+            "--title",
+            "Make Teko pleasant for daily work",
+            "--objective",
+            "Resume bounded work without another explanation",
+            "--goal",
+            "resume=Codex receives the active work",
+            "--non-goal",
+            "ticket integrations",
+            "--gate",
+            "e2e=test -f changed.txt",
+            "--completion",
+            "validated",
+            "--ratify",
+        ])
+        .assert()
+        .success();
+    start(repo.path(), "daily", "daily-work", "changed.txt");
+
+    // A genuinely signal-terminated wrapped session must not consume active work.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["run", "--", "sh", "-c", "kill -TERM $$"])
+        .assert()
+        .code(143);
+
+    let capture = tools.path().join("prompt");
+    let codex = tools.path().join("codex");
+    fs::write(
+        &codex,
+        format!(
+            "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > '{}'\n",
+            capture.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&codex).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&codex, permissions).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["run", "--", codex.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let prompt = fs::read_to_string(capture).unwrap();
+    assert!(prompt.contains("# Active Teko Work"), "{prompt}");
+    assert!(prompt.contains("Work: `daily-work`"), "{prompt}");
+    assert!(
+        prompt.contains("Objective: Resume bounded work without another explanation"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("`resume` Codex receives the active work"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Non-goals:\n- ticket integrations"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Next: `toimija teko verify --claim resume`"),
+        "{prompt}"
+    );
+
+    fs::write(repo.path().join("changed.txt"), "done\n").unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["teko", "close"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("[obligation-resume]"))
+        .stderr(predicate::str::contains(
+            "Next: toimija teko verify --claim resume",
+        ));
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["teko", "verify", "--claim", "resume"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("4/4 complete"))
+        .stdout(predicate::str::contains("next: toimija teko close"));
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["teko", "close"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("closed work daily-work"));
+}
+
+#[test]
+fn teko_subcommand_help_is_self_contained() {
+    for (subcommand, expected) in [
+        ("new", "Nothing becomes active until `start`"),
+        ("start", "remains in `.toimija/teko.redb`"),
+        ("show", "every closure blocker"),
+        ("verify", "binds passing receipts to the current tree"),
+        ("close", "stable blocker ID"),
+        ("next", "copy-pasteable command"),
+    ] {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .args(["teko", subcommand, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(expected).name(subcommand))
+            .stdout(predicate::str::contains("Example").name(subcommand));
+    }
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .args(["teko", "new", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Required goal as `id=description`",
+        ))
+        .stdout(predicate::str::contains(
+            "Required evidence level: `changed` or `validated`",
+        ));
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .args(["teko", "start", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "inferred only when exactly one is activatable",
+        ))
+        .stdout(predicate::str::contains("Repository-relative write scope"));
+}
