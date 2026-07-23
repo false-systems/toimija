@@ -12,7 +12,7 @@
 .toimija/history.lock
 
 # Local Teko state.
-.toimija/teko.redb
+.teko/
 
 # Harness run transcripts (e.g. kisko) — generated, never committed. Ignored so
 # a harness writing its own transcript does not invalidate the packet it verified.

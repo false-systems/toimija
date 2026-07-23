@@ -26,20 +26,30 @@ fn active_work_value_with(runner: &impl CommandRunner, repo_root: &Path) -> Resu
             output.stderr_lossy().trim()
         );
     }
-    let value: Value = serde_json::from_slice(&output.stdout)
-        .context("`teko show --json` returned invalid JSON")?;
+    parse_active_work(&output.stdout)
+}
+
+fn parse_active_work(output: &[u8]) -> Result<Option<Value>> {
+    let value: Value =
+        serde_json::from_slice(output).context("`teko show --json` returned invalid JSON")?;
     if value.pointer("/active").is_some_and(Value::is_null) {
-        Ok(None)
-    } else {
-        Ok(Some(value))
+        return Ok(None);
     }
+    for pointer in [
+        "/work/id",
+        "/work/objective",
+        "/spec/id",
+        "/spec/title",
+        "/status/required_completion",
+    ] {
+        if !value.pointer(pointer).is_some_and(Value::is_string) {
+            bail!("`teko show --json` omitted required field `{pointer}`");
+        }
+    }
+    Ok(Some(value))
 }
 
-pub fn active_work_packet(repo_root: &Path) -> Result<Option<String>> {
-    Ok(active_work_value(repo_root)?.map(|value| render(&value)))
-}
-
-fn render(value: &Value) -> String {
+pub(crate) fn render(value: &Value) -> String {
     let text = |pointer: &str| {
         value
             .pointer(pointer)
@@ -151,5 +161,11 @@ mod tests {
             .unwrap();
         assert_eq!(value["work"]["objective"], "ship");
         assert!(render(&value).contains("Objective: ship"));
+    }
+
+    #[test]
+    fn no_active_work_is_distinct_from_an_invalid_contract() {
+        assert!(parse_active_work(br#"{"active":null}"#).unwrap().is_none());
+        assert!(parse_active_work(b"{}").is_err());
     }
 }

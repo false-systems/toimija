@@ -145,9 +145,9 @@ pub enum Command {
     /// `.toimija/sessions/<id>/`, prints the entry packet, keeps it fresh while
     /// the command runs, mirrors `.toimija/current.*`, and exits with the
     /// wrapped command's status (128+signal preserved). `--intent` is required
-    /// (proposal 0006: declaring why the session exists is the entry fee;
-    /// `--intent unknown` is the explicit escape hatch). Known agents (claude,
-    /// codex, gemini) get the packet inlined in their launch prompt — pass the task via
+    /// unless active Teko work supplies the bounded task (`--intent unknown`
+    /// remains the explicit escape hatch). Known agents (claude, codex, gemini)
+    /// get the packet inlined in their launch prompt — pass the task via
     /// `--task`; other commands keep the TOIMIJA_* env handshake behind an
     /// honest banner. `--scope` tells sibling sessions what you expect to touch
     /// — advisory, never an assignment.
@@ -851,9 +851,14 @@ fn run_run(args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
-    if let Some(packet) = crate::teko::active_work_packet(&repo_root)? {
+    if let Some(teko) = entry
+        .packet
+        .session
+        .as_ref()
+        .and_then(|session| session.teko.as_ref())
+    {
         entry.markdown.push_str("\n\n");
-        entry.markdown.push_str(&packet);
+        entry.markdown.push_str(&crate::teko::render(teko));
     }
     print_agent_entry(&entry, &repo_root);
     // The branch and HEAD are known once the packet is built; record them.

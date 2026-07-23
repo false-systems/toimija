@@ -207,7 +207,7 @@ includes an example.
 | `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
 | `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
 | `history` | List durable records of concluded sessions; `--json` emits all valid records. |
-| `teko` | Persist, resume, verify, and honestly close one bounded work item. |
+| `teko` (standalone) | Persist, resume, verify, and honestly close one bounded work item. |
 | `clean` | Reclaim expired owned artifacts; `--dry-run` lists candidates without changing disk. |
 | `audit-plan` | Partition broad reviews into bounded deterministic worksets. |
 | `validate --plan` | Render inferred and configured validation commands; never execute them. |

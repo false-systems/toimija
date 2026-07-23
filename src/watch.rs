@@ -386,9 +386,9 @@ fn relevant(event: &Event) -> bool {
     event.paths.iter().any(|path| !is_ignored(path))
 }
 
-/// Ignore generated Toimija output (so our own writes never re-trigger) and
-/// anything under a build/vendor directory. Matched on path tails/components so
-/// it is robust to the absolute, possibly symlink-resolved paths notify reports.
+/// Ignore generated local tool output and anything under a build/vendor
+/// directory. Matched on path tails/components so it is robust to the absolute,
+/// possibly symlink-resolved paths notify reports.
 fn is_ignored(path: &Path) -> bool {
     if is_generated_output(path) {
         return true;
@@ -408,7 +408,7 @@ fn is_generated_output(path: &Path) -> bool {
         .collect();
     parts
         .iter()
-        .position(|part| *part == ".toimija")
+        .position(|part| matches!(*part, ".toimija" | ".teko"))
         .is_some_and(|index| consistency::is_generated_output(&PathBuf::from_iter(&parts[index..])))
 }
 
@@ -685,6 +685,7 @@ mod tests {
     fn live_files_are_ignored() {
         assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.md")));
         assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.json")));
+        assert!(is_ignored(&PathBuf::from("/repo/.teko/teko.redb")));
         // repo.yaml under .toimija is NOT a live file — changes to it matter.
         assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
     }

@@ -70,6 +70,32 @@ fn snapshot_materializes_a_tree_of_the_worktree_including_untracked() {
 }
 
 #[test]
+fn snapshot_excludes_tool_state_but_keeps_the_repo_manifest() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".toimija/sessions")).unwrap();
+    fs::create_dir(temp.path().join(".teko")).unwrap();
+    fs::write(temp.path().join(".toimija/current.md"), "generated\n").unwrap();
+    fs::write(temp.path().join(".toimija/repo.yaml"), "repo: {}\n").unwrap();
+    fs::write(
+        temp.path().join(".toimija/sessions/session.json"),
+        "generated\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join(".teko/teko.redb"), "generated\n").unwrap();
+
+    let tree = snapshot_tree(temp.path());
+    let listing = git_stdout(temp.path(), &["ls-tree", "-r", "--name-only", &tree]);
+    assert!(listing.contains(".toimija/repo.yaml"), "{listing}");
+    assert!(!listing.contains(".toimija/current.md"), "{listing}");
+    assert!(!listing.contains(".toimija/sessions/"), "{listing}");
+    assert!(!listing.contains(".teko/"), "{listing}");
+}
+
+#[test]
 fn identical_content_yields_the_same_tree_but_a_change_yields_a_new_one() {
     if !git_available() {
         return;
