@@ -224,9 +224,10 @@ pub struct EvidenceSet {
     pub completion_witness: Option<CompletionWitness>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerifiedRepository {
     pub point: RepositoryPoint,
+    #[serde(with = "crate::path_codec::vec")]
     pub changed_paths: Vec<PathBuf>,
     pub dirty: bool,
 }
@@ -260,13 +261,24 @@ pub fn verified_repository_with(
     );
     verify_packet_is_current(runner, cwd, &packet)?;
     Ok(VerifiedRepository {
+        dirty: packet
+            .git
+            .staged_files
+            .iter()
+            .chain(&packet.git.unstaged_files)
+            .any(|file| !crate::consistency::is_generated_output(&file.path))
+            || packet
+                .git
+                .untracked_files
+                .iter()
+                .any(|path| !crate::consistency::is_generated_output(path))
+            || !packet.git.conflicted_files.is_empty(),
         point: RepositoryPoint {
             token: packet.consistency,
             tree_oid,
             branch: packet.git.branch,
         },
         changed_paths: packet.changed_surface,
-        dirty: packet.git.dirty,
     })
 }
 
@@ -520,9 +532,35 @@ pub fn evaluate(
         }),
     }
     for obligation in obligations.iter().filter(|item| !item.resolved) {
+        let message = work
+            .obligations
+            .iter()
+            .find(|candidate| candidate.id == obligation.id)
+            .and_then(|candidate| match &candidate.kind {
+                ObligationKind::Gate { gate_id } => gates
+                    .iter()
+                    .find(|gate| gate.id == *gate_id)
+                    .map(|gate| match &gate.status {
+                        GateStatus::Current => unreachable!("resolved gate was filtered out"),
+                        GateStatus::Stale { tree_oid } => format!(
+                            "{} passed on tree {}, current tree is {}",
+                            gate.command.shell, tree_oid, current.point.tree_oid
+                        ),
+                        GateStatus::Failed { exit_status } => {
+                            format!("{} failed with exit {exit_status}", gate.command.shell)
+                        }
+                        GateStatus::Missing => {
+                            format!("{} has not passed on the current tree", gate.command.shell)
+                        }
+                    }),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                format!("obligation `{}` remains unresolved", obligation.description)
+            });
         blockers.push(Blocker {
             code: format!("obligation-{}", obligation.id),
-            message: format!("obligation `{}` remains unresolved", obligation.description),
+            message,
         });
     }
     if !completion_reachable {
@@ -586,8 +624,8 @@ fn gate_status(
     let latest = evidence
         .gate_receipts
         .iter()
-        .filter(|receipt| receipt.work_id == work.id && receipt.gate_id == gate.id)
-        .max_by_key(|receipt| receipt.passed_at);
+        .rev()
+        .find(|receipt| receipt.work_id == work.id && receipt.gate_id == gate.id);
     match latest {
         Some(receipt) if receipt.exit_status != 0 => GateStatus::Failed {
             exit_status: receipt.exit_status,
