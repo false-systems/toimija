@@ -191,7 +191,10 @@ toimija teko close
 ```
 
 `show` prints stable closure-blocker IDs and one copy-pasteable next command.
-Active Teko work is also included in known agents' launch prompts with its
+Active Teko work is also embedded as structured, attested session data in every
+packet and included in known agents' launch prompts. Kisko consumes that data
+as its durable task contract, refreshes it through Toimija after writes, and
+accepts completion only when Teko is closable. Other agents receive its
 objective, goals, non-goals, write scope, current blockers, and required
 completion. `teko <command> --help` documents each step and includes an example.
 

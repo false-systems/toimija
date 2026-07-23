@@ -366,3 +366,58 @@ fn teko_subcommand_help_is_self_contained() {
         ))
         .stdout(predicate::str::contains("Repository-relative write scope"));
 }
+
+#[test]
+fn session_packet_attests_the_active_teko_contract() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init(temp.path());
+    new_spec(temp.path(), "spec", "test -f changed.txt");
+    start(temp.path(), "spec", "work", "changed.txt");
+    let session = temp.path().join(".toimija/sessions/100-1");
+    fs::create_dir_all(&session).unwrap();
+    fs::write(
+        session.join("session.json"),
+        r#"{
+            "id": "100-1", "pid": 1, "agent": ["kisko"],
+            "worktree": "/repo", "branch": "main", "head": null,
+            "intent": null, "scope": [],
+            "started_at": 100, "status": "active",
+            "closed_at": null, "exit_status": null
+        }"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("TOIMIJA_SESSION", "100-1")
+        .arg("refresh")
+        .assert()
+        .success();
+
+    let packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(session.join("current.json")).unwrap()).unwrap();
+    let teko = &packet["session"]["teko"];
+    assert_eq!(teko["work"]["id"], "work");
+    assert_eq!(teko["work"]["objective"], "Make completion truthful");
+    assert_eq!(teko["work"]["scope"]["write"][0]["path"], "changed.txt");
+    assert_eq!(teko["status"]["required_completion"], "validated");
+    assert_eq!(
+        teko["status"]["gates"][0]["command"]["shell"],
+        "test -f changed.txt"
+    );
+    assert_eq!(
+        teko["status"]["obligations"][0]["description"],
+        "regression test exists"
+    );
+    assert!(!teko["status"]["closable"].as_bool().unwrap());
+    assert!(
+        packet["sauma"]["digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+}

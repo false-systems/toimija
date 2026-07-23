@@ -70,6 +70,10 @@ pub struct SessionBlock {
     pub id: String,
     pub intent: Option<String>,
     pub scope: Vec<String>,
+    /// Active Teko work, freshly derived and attested with this session packet.
+    /// Wrapped harnesses consume this instead of inventing a second task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teko: Option<serde_json::Value>,
     /// Branch and HEAD captured when `run` entered the session. They stay fixed
     /// so later packets can report drift instead of overwriting the baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,6 +634,7 @@ mod tests {
                 id: "100-1".to_string(),
                 intent: None,
                 scope: Vec::new(),
+                teko: None,
                 entry_branch: None,
                 entry_head: None,
             }),

@@ -148,6 +148,7 @@ fn compute(
             id: marker.id,
             intent: marker.intent,
             scope: marker.scope,
+            teko: crate::teko_cli::active_work_value(repo_root)?,
             entry_branch: marker.branch,
             entry_head: marker.head,
         });

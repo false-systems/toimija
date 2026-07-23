@@ -265,6 +265,23 @@ pub fn active_work_packet(repo_root: &Path, _dialect: &str) -> Result<Option<Str
     Ok(Some(packet))
 }
 
+/// Fresh active-work truth embedded in a per-session Toimija packet. The
+/// packet's sauma envelope attests this value together with repository state.
+pub fn active_work_value(repo_root: &Path) -> Result<Option<serde_json::Value>> {
+    let Some(store) = TekoStore::open_existing(repo_root)? else {
+        return Ok(None);
+    };
+    let Some(active) = load_active_status(repo_root, &store)? else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::to_value(StatusView {
+        spec: &active.spec,
+        work: &active.work,
+        current: &active.current,
+        status: &active.status,
+    })?))
+}
+
 fn run_new(mut args: NewArgs) -> Result<()> {
     let repo_root = repo_root()?;
     let interactive = args.title.is_none() || args.objective.is_none();
