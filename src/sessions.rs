@@ -20,7 +20,6 @@ use tracing::{debug, info};
 
 use crate::command::CommandRunner;
 use crate::coverage::Coverage;
-use crate::footprint::{self, HistoryEnd};
 use crate::handoff;
 use crate::session::{SESSIONS_SUBDIR, SessionMarker, SessionStatus};
 
@@ -273,26 +272,27 @@ pub fn liveness(
     }
 }
 
-/// The result of a prune pass: which session ids were removed, how many stayed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PruneReport {
-    pub removed: Vec<String>,
+pub(crate) struct ReapCandidate {
+    pub dir: PathBuf,
+    pub marker: SessionMarker,
+    pub liveness: Liveness,
+}
+
+pub(crate) struct ReapPlan {
+    pub candidates: Vec<ReapCandidate>,
     pub kept: usize,
 }
 
-/// Remove closed or stale session directories older than the retention window.
-/// Live sessions are never touched; a session must *both* be past liveness and
-/// past retention to go. Synchronous, local, and only during an explicitly
-/// invoked command — this is a cleanup pass, not a daemon.
-pub fn prune(
+/// Identify session directories the footprint sweep may safely reclaim.
+/// The sweep owns mutation; this module remains the single owner of liveness.
+pub(crate) fn reap_plan(
     runner: &dyn CommandRunner,
     repo_root: &Path,
     stale_after_secs: u64,
     retention_secs: u64,
-) -> Result<PruneReport> {
+) -> Result<ReapPlan> {
     let now = now_secs();
-    let mut removed = Vec::new();
-    let mut journal = None;
+    let mut candidates = Vec::new();
     // Unreadable markers are never pruned: deletion demands the certain
     // signal, and an unreadable marker gives none. They count as kept.
     let scan = read_markers(repo_root)?;
@@ -301,31 +301,17 @@ pub fn prune(
         let alive = pid_is_alive(runner, repo_root, marker.pid);
         let liveness = liveness(&marker, now, alive, stale_after_secs);
         if prunable(liveness, &marker, alive, now, retention_secs) {
-            let end = match liveness {
-                Liveness::Closed => HistoryEnd::Closed,
-                Liveness::Stale => HistoryEnd::ReapedStale,
-                Liveness::Active => unreachable!("active sessions are never prunable"),
-            };
-            // Open lazily so an empty pass does not create a journal. The guard
-            // holds one lock and one bounded index for the whole prune pass.
-            let journal = match &mut journal {
-                Some(journal) => journal,
-                None => journal.insert(footprint::Journal::open(repo_root)?),
-            };
-            footprint::reap(repo_root, &dir, &marker, end, now, journal)?;
-            removed.push(marker.id);
+            candidates.push(ReapCandidate {
+                dir,
+                marker,
+                liveness,
+            });
         } else {
             kept += 1;
         }
     }
-    // read_dir order is platform-arbitrary; sort so output is deterministic.
-    removed.sort();
-    info!(
-        event = "toimija.sessions.pruned",
-        removed = removed.len(),
-        kept
-    );
-    Ok(PruneReport { removed, kept })
+    candidates.sort_by(|a, b| a.marker.id.cmp(&b.marker.id));
+    Ok(ReapPlan { candidates, kept })
 }
 
 /// Whether a session directory may be removed. Pure, so the retention decision

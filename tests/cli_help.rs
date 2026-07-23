@@ -29,6 +29,7 @@ fn top_level_help_describes_every_subcommand() {
         .stdout(predicate::str::contains(
             "List durable records of concluded sessions",
         ))
+        .stdout(predicate::str::contains("Reclaim expired Toimija sessions"))
         .stdout(predicate::str::contains("Print suggested preflight text"))
         .stdout(predicate::str::contains(
             "Check whether this branch's work has landed",
@@ -69,6 +70,7 @@ fn every_subcommand_help_says_when_to_use_it() {
         "intent",
         "handoff",
         "history",
+        "clean",
         "snippet",
         "landed",
         "sessions",
@@ -100,6 +102,7 @@ fn high_traffic_subcommands_carry_examples() {
         ("intent", "toimija intent"),
         ("handoff", "toimija handoff --show"),
         ("history", "toimija history --json"),
+        ("clean", "toimija clean --dry-run"),
         ("current", "toimija current --verify --json"),
         ("verify", "toimija verify --json"),
         ("landed", "toimija landed"),

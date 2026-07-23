@@ -2,20 +2,50 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Seek, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::atomic_write::TEMP_MARKER;
+use crate::atomic_write::{self, TEMP_MARKER};
+use crate::command::CommandRunner;
 use crate::handoff;
 use crate::session::SessionMarker;
+use crate::sessions::{self, Liveness};
 
 pub const HISTORY_PATH: &str = ".toimija/history.jsonl";
+pub const HISTORY_LOCK_PATH: &str = ".toimija/history.lock";
 const HISTORY_VERSION: u32 = 1;
 const HANDOFF_CAP: usize = 10;
+pub const DEFAULT_RUNS_RETENTION_SECS: u64 = 14 * 24 * 60 * 60;
+pub const ORPHAN_TEMP_RETENTION_SECS: u64 = 60 * 60;
+pub const DEFAULT_HISTORY_MAX_RECORDS: usize = 500;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SweepOptions {
+    pub dry_run: bool,
+    pub sessions_retention_secs: u64,
+    pub runs_retention_secs: u64,
+    pub history_max_records: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorPosture {
+    Explicit,
+    Opportunistic,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SweepReport {
+    pub sessions_removed: Vec<String>,
+    pub runs_removed: Vec<String>,
+    pub temps_removed: Vec<String>,
+    pub journaled: usize,
+    pub kept: usize,
+    pub dry_run: bool,
+}
 
 /// Every artifact class Toimija owns under `.toimija/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -75,7 +105,7 @@ pub fn classify(path: &Path) -> Option<ArtifactClass> {
     if path == Path::new(".toimija/current.md") || path == Path::new(".toimija/current.json") {
         return Some(ArtifactClass::LivePacket);
     }
-    if path == Path::new(HISTORY_PATH) {
+    if path == Path::new(HISTORY_PATH) || path == Path::new(HISTORY_LOCK_PATH) {
         return Some(ArtifactClass::HistoryJournal);
     }
     if path.starts_with(".toimija/sessions") {
@@ -147,6 +177,7 @@ pub struct HistoryRead {
 
 /// An exclusively locked journal and its one-pass record index.
 pub struct Journal {
+    _lock: fs::File,
     path: PathBuf,
     file: fs::File,
     recorded: BTreeSet<String>,
@@ -154,7 +185,8 @@ pub struct Journal {
 
 impl Journal {
     pub fn open(repo_root: &Path) -> Result<Self> {
-        let (path, mut file) = open_history(repo_root)?;
+        let lock = lock_history(repo_root)?;
+        let (path, mut file) = open_history_file(repo_root)?;
         file.lock()
             .with_context(|| format!("failed to lock {}", path.display()))?;
         let recorded = read_locked(&mut file, &path)?
@@ -163,6 +195,7 @@ impl Journal {
             .map(|record| record.id)
             .collect();
         Ok(Self {
+            _lock: lock,
             path,
             file,
             recorded,
@@ -227,13 +260,32 @@ pub fn derive_record(
 }
 
 pub fn append_record(repo_root: &Path, record: &HistoryRecord) -> Result<()> {
-    let (path, mut file) = open_history(repo_root)?;
+    let _lock = lock_history(repo_root)?;
+    let (path, mut file) = open_history_file(repo_root)?;
     file.lock()
         .with_context(|| format!("failed to lock {}", path.display()))?;
     append_locked(&mut file, &path, record)
 }
 
-fn open_history(repo_root: &Path) -> Result<(std::path::PathBuf, fs::File)> {
+fn lock_history(repo_root: &Path) -> Result<fs::File> {
+    let path = repo_root.join(HISTORY_LOCK_PATH);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+    Ok(file)
+}
+
+fn open_history_file(repo_root: &Path) -> Result<(std::path::PathBuf, fs::File)> {
     let path = repo_root.join(HISTORY_PATH);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -332,6 +384,286 @@ pub fn reap(
     Ok(journaled)
 }
 
+/// Reclaim every bounded Toimija artifact in one pass. Explicit cleanup
+/// propagates failures; opportunistic entry cleanup emits one warning and
+/// stops, so housekeeping never blocks the user's work.
+pub fn sweep(
+    runner: &dyn CommandRunner,
+    repo_root: &Path,
+    options: SweepOptions,
+    posture: ErrorPosture,
+) -> Result<Option<SweepReport>> {
+    match sweep_inner(runner, repo_root, options) {
+        Ok(report) => Ok(Some(report)),
+        Err(error) if posture == ErrorPosture::Opportunistic => {
+            warn!(event = "toimija.footprint.sweep_failed", error = %error);
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn sweep_inner(
+    runner: &dyn CommandRunner,
+    repo_root: &Path,
+    options: SweepOptions,
+) -> Result<SweepReport> {
+    let now = now_secs();
+    let plan = sessions::reap_plan(
+        runner,
+        repo_root,
+        sessions::DEFAULT_STALE_AFTER_SECS,
+        options.sessions_retention_secs,
+    )?;
+    let mut kept = plan.kept;
+    let mut run_candidates = Vec::new();
+    for path in direct_children(&repo_root.join(".toimija/runs"))? {
+        if is_atomic_temp(&path) {
+            continue;
+        }
+        if older_than(&path, now, options.runs_retention_secs)? {
+            run_candidates.push(path);
+        } else {
+            kept += 1;
+        }
+    }
+    let mut temp_candidates = Vec::new();
+    for path in descendants(&repo_root.join(".toimija"))? {
+        if !is_atomic_temp(&path)
+            || !fs::symlink_metadata(&path)
+                .with_context(|| format!("failed to inspect {}", path.display()))?
+                .file_type()
+                .is_file()
+        {
+            continue;
+        }
+        if older_than(&path, now, ORPHAN_TEMP_RETENTION_SECS)? {
+            temp_candidates.push(path);
+        } else {
+            kept += 1;
+        }
+    }
+    run_candidates.sort();
+    temp_candidates.sort();
+
+    let mut report = SweepReport {
+        sessions_removed: plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.marker.id.clone())
+            .collect(),
+        runs_removed: run_candidates
+            .iter()
+            .map(|path| relative(repo_root, path))
+            .collect(),
+        temps_removed: temp_candidates
+            .iter()
+            .map(|path| relative(repo_root, path))
+            .collect(),
+        journaled: 0,
+        kept,
+        dry_run: options.dry_run,
+    };
+
+    if options.dry_run {
+        let recorded: BTreeSet<String> = read_history(repo_root)?
+            .records
+            .into_iter()
+            .map(|record| record.id)
+            .collect();
+        report.journaled = plan
+            .candidates
+            .iter()
+            .filter(|candidate| !recorded.contains(&candidate.marker.id))
+            .count();
+    } else {
+        for path in &temp_candidates {
+            fs::remove_file(path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+        for path in &run_candidates {
+            remove_artifact(path)?;
+        }
+        let mut journal = None;
+        for candidate in &plan.candidates {
+            let end = match candidate.liveness {
+                Liveness::Closed => HistoryEnd::Closed,
+                Liveness::Stale => HistoryEnd::ReapedStale,
+                Liveness::Active => unreachable!("active sessions are never reap candidates"),
+            };
+            let journal = match &mut journal {
+                Some(journal) => journal,
+                None => journal.insert(Journal::open(repo_root)?),
+            };
+            if reap(
+                repo_root,
+                &candidate.dir,
+                &candidate.marker,
+                end,
+                now,
+                journal,
+            )? {
+                report.journaled += 1;
+            }
+        }
+        drop(journal);
+        compact_history(repo_root, options.history_max_records)?;
+    }
+
+    info!(
+        event = "toimija.footprint.swept",
+        sessions_removed = report.sessions_removed.len(),
+        runs_removed = report.runs_removed.len(),
+        temps_removed = report.temps_removed.len(),
+        journaled = report.journaled,
+        kept = report.kept,
+        dry_run = report.dry_run
+    );
+    Ok(report)
+}
+
+fn direct_children(dir: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", dir.display()));
+        }
+    };
+    entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .with_context(|| format!("failed to read {}", dir.display()))
+        })
+        .collect()
+}
+
+fn descendants(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut pending = direct_children(root)?;
+    let mut files = Vec::new();
+    while let Some(path) = pending.pop() {
+        if fs::symlink_metadata(&path)
+            .with_context(|| format!("failed to inspect {}", path.display()))?
+            .file_type()
+            .is_dir()
+        {
+            pending.extend(direct_children(&path)?);
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+fn older_than(path: &Path, now: u64, retention_secs: u64) -> Result<bool> {
+    let modified = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?
+        .modified()
+        .with_context(|| format!("failed to read modification time for {}", path.display()))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    Ok(now.saturating_sub(modified) > retention_secs)
+}
+
+fn remove_artifact(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+    .with_context(|| format!("failed to remove {}", path.display()))
+}
+
+fn compact_history(repo_root: &Path, max_records: usize) -> Result<()> {
+    let path = repo_root.join(HISTORY_PATH);
+    if !path.exists() {
+        return Ok(());
+    }
+    let _lock = lock_history(repo_root)?;
+    let mut file = match OpenOptions::new().read(true).write(true).open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    file.lock()
+        .with_context(|| format!("failed to lock {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let Some(compacted) = select_compaction(&bytes, max_records) else {
+        return Ok(());
+    };
+    atomic_write::replace(&path, &compacted)
+        .with_context(|| format!("failed to compact {}", path.display()))
+}
+
+fn select_compaction(bytes: &[u8], max_records: usize) -> Option<Vec<u8>> {
+    let lines: Vec<&[u8]> = bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+        .collect();
+    if lines.len() <= max_records {
+        return None;
+    }
+    Some(
+        lines[lines.len() - max_records..]
+            .iter()
+            .flat_map(|line| line.iter().copied())
+            .collect(),
+    )
+}
+
+fn relative(repo_root: &Path, path: &Path) -> String {
+    path.strip_prefix(repo_root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+pub fn render_sweep(report: &SweepReport) -> String {
+    let verb = if report.dry_run {
+        "would remove"
+    } else {
+        "removed"
+    };
+    let journal = if report.dry_run {
+        "would journal"
+    } else {
+        "journaled"
+    };
+    let mut out = format!(
+        "{verb} {} sessions, {} transcripts, {} temp files; {journal} {} records; kept {}\n",
+        report.sessions_removed.len(),
+        report.runs_removed.len(),
+        report.temps_removed.len(),
+        report.journaled,
+        report.kept
+    );
+    for (kind, paths) in [
+        ("session", &report.sessions_removed),
+        ("transcript", &report.runs_removed),
+        ("temp", &report.temps_removed),
+    ] {
+        for path in paths {
+            out.push_str(&format!("  {kind}: {path}\n"));
+        }
+    }
+    out
+}
+
 pub fn render_history(read: &HistoryRead) -> String {
     if read.records.is_empty() {
         return if read.malformed == 0 {
@@ -382,7 +714,35 @@ pub fn render_history(read: &HistoryRead) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::{CommandOutput, CommandRunner};
     use crate::session::SessionStatus;
+
+    struct DeadRunner;
+
+    impl CommandRunner for DeadRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &str,
+            _args: &[&str],
+        ) -> std::io::Result<CommandOutput> {
+            Ok(CommandOutput {
+                status: 1,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn set_age(path: &Path, age_secs: u64) {
+        let modified = std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs);
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
 
     fn marker(id: &str) -> SessionMarker {
         SessionMarker {
@@ -418,6 +778,7 @@ mod tests {
                 ArtifactClass::SnapshotLease,
             ),
             (".toimija/history.jsonl", ArtifactClass::HistoryJournal),
+            (".toimija/history.lock", ArtifactClass::HistoryJournal),
             (
                 ".toimija/sessions/100-1/session.json.tmp-17582-9",
                 ArtifactClass::TempFile,
@@ -611,5 +972,104 @@ mod tests {
         let read = read_history(temp.path()).unwrap();
         assert_eq!(read.records.len(), 1);
         assert_eq!(read.malformed, 1);
+    }
+
+    #[test]
+    fn sweep_dry_run_and_cleanup_share_exact_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let toimija = temp.path().join(".toimija");
+        let runs = toimija.join("runs");
+        fs::create_dir_all(&runs).unwrap();
+        let old_run = runs.join("old.jsonl");
+        let fresh_run = runs.join("fresh.jsonl");
+        let old_temp = toimija.join("current.json.tmp-123-4");
+        let fresh_temp = toimija.join("current.md.tmp-123-5");
+        let false_temp = toimija.join("current.json.tmp-bad-6");
+        for path in [&old_run, &fresh_run, &old_temp, &fresh_temp, &false_temp] {
+            fs::write(path, b"x").unwrap();
+        }
+        set_age(&old_run, 20);
+        set_age(&old_temp, ORPHAN_TEMP_RETENTION_SECS + 1);
+        set_age(&false_temp, ORPHAN_TEMP_RETENTION_SECS + 1);
+        let options = SweepOptions {
+            dry_run: true,
+            sessions_retention_secs: sessions::DEFAULT_RETENTION_SECS,
+            runs_retention_secs: 10,
+            history_max_records: DEFAULT_HISTORY_MAX_RECORDS,
+        };
+
+        let dry = sweep(&DeadRunner, temp.path(), options, ErrorPosture::Explicit)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dry.runs_removed, vec![".toimija/runs/old.jsonl"]);
+        assert_eq!(dry.temps_removed, vec![".toimija/current.json.tmp-123-4"]);
+        assert!(old_run.exists());
+        assert!(old_temp.exists());
+
+        let cleaned = sweep(
+            &DeadRunner,
+            temp.path(),
+            SweepOptions {
+                dry_run: false,
+                ..options
+            },
+            ErrorPosture::Explicit,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cleaned.runs_removed, dry.runs_removed);
+        assert_eq!(cleaned.temps_removed, dry.temps_removed);
+        assert!(!old_run.exists());
+        assert!(!old_temp.exists());
+        assert!(fresh_run.exists());
+        assert!(fresh_temp.exists());
+        assert!(false_temp.exists());
+    }
+
+    #[test]
+    fn sweep_compacts_history_to_the_newest_whole_records() {
+        let temp = tempfile::tempdir().unwrap();
+        for index in 0..4 {
+            append_record(
+                temp.path(),
+                &derive_record(
+                    &marker(&format!("100-{index}")),
+                    &[],
+                    HistoryEnd::Closed,
+                    index,
+                ),
+            )
+            .unwrap();
+        }
+
+        sweep(
+            &DeadRunner,
+            temp.path(),
+            SweepOptions {
+                dry_run: false,
+                sessions_retention_secs: sessions::DEFAULT_RETENTION_SECS,
+                runs_retention_secs: DEFAULT_RUNS_RETENTION_SECS,
+                history_max_records: 2,
+            },
+            ErrorPosture::Explicit,
+        )
+        .unwrap();
+
+        let ids: Vec<String> = read_history(temp.path())
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|record| record.id)
+            .collect();
+        assert_eq!(ids, ["100-2", "100-3"]);
+    }
+
+    #[test]
+    fn compaction_selects_the_newest_whole_lines() {
+        assert_eq!(
+            select_compaction(b"one\ntwo\nthree\n", 2),
+            Some(b"two\nthree\n".to_vec())
+        );
+        assert_eq!(select_compaction(b"one\ntwo\n", 2), None);
     }
 }

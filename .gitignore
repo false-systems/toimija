@@ -9,6 +9,7 @@
 
 # Durable, bounded summaries of concluded sessions.
 .toimija/history.jsonl
+.toimija/history.lock
 
 # Harness run transcripts (e.g. kisko) — generated, never committed. Ignored so
 # a harness writing its own transcript does not invalidate the packet it verified.

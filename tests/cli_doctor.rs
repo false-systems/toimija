@@ -150,6 +150,30 @@ fn doctor_invalid_config_fails() {
 }
 
 #[test]
+fn doctor_rejects_zero_stewardship_retention() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "stewardship:\n  runs_retention_days: 0\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("runs_retention_days"))
+        .stdout(predicate::str::contains("must be between 1 and"));
+}
+
+#[test]
 fn doctor_reports_drift_as_advisory_by_default() {
     if !git_available() {
         return;
