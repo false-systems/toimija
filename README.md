@@ -175,7 +175,7 @@ Toimija's generated packets, session records, history, and Teko database do not
 count as worktree changes.
 
 ```bash
-toimija teko new \
+teko new \
   --title "Fix login" \
   --objective "Repair the redirect" \
   --goal regression="A regression test covers the fix" \
@@ -183,20 +183,20 @@ toimija teko new \
   --gate test="cargo test" \
   --completion validated \
   --ratify
-toimija teko start --scope src/auth --scope tests
-toimija teko show
+teko start --scope src/auth --scope tests
+teko show
 toimija run -- codex
-toimija teko verify --claim regression
-toimija teko close
+teko verify --claim regression
+teko close
 ```
 
 `show` prints stable closure-blocker IDs and one copy-pasteable next command.
-Active Teko work is also embedded as structured, attested session data in every
-packet and included in known agents' launch prompts. Kisko consumes that data
-as its durable task contract, refreshes it through Toimija after writes, and
-accepts completion only when Teko is closable. Other agents receive its
-objective, goals, non-goals, write scope, current blockers, and required
-completion. `teko <command> --help` documents each step and includes an example.
+Toimija reads active work from the standalone `teko show --json` command,
+embeds it as structured, attested session data in every packet, and includes it
+in known agents' launch prompts. Kisko consumes that data as its durable task
+contract, refreshes it through Toimija after writes, and accepts completion
+only when Teko is closable. `teko <command> --help` documents each step and
+includes an example.
 
 ## Commands
 

@@ -53,14 +53,21 @@ fn materialize_into(runner: &impl CommandRunner, repo_root: &Path, index: &Path)
     // `read-tree` errors harmlessly on an unborn HEAD (no tracked files yet).
     let _ = run_git(runner, repo_root, index, &["read-tree", "HEAD"]);
     // Overlay worktree changes (modifications, additions, deletions), then drop
-    // Toimija's generated namespace while retaining its user-authored manifest.
+    // generated tool namespaces while retaining Toimija's user-authored manifest.
     // This mirrors `consistency::is_generated_output`.
     run_git(runner, repo_root, index, &["add", "-A"])?;
     let _ = run_git(
         runner,
         repo_root,
         index,
-        &["rm", "--cached", "-r", "--ignore-unmatch", ".toimija"],
+        &[
+            "rm",
+            "--cached",
+            "-r",
+            "--ignore-unmatch",
+            ".toimija",
+            ".teko",
+        ],
     );
     if repo_root.join(".toimija/repo.yaml").is_file() {
         run_git(

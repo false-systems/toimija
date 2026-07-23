@@ -25,6 +25,5 @@ pub mod sessions;
 pub mod snapshot;
 pub mod snippet;
 pub mod teko;
-pub(crate) mod teko_cli;
 pub mod validate;
 pub mod watch;

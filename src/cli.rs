@@ -273,19 +273,6 @@ pub enum Command {
         toimija snapshot --list            # held leases"
     )]
     Snapshot(SnapshotArgs),
-    /// Manage bounded active work, tree-bound evidence, and honest completion.
-    ///
-    /// Use this to turn a ratified specification into one active work item,
-    /// verify it against current Toimija state, and close it only with current
-    /// evidence.
-    #[command(
-        after_help = "Examples:\n  toimija teko new --title \"Fix login\" --objective \"Repair redirect\" --goal regression --gate \"cargo test\" --ratify\n  \
-        toimija teko start --scope src/auth\n  \
-        toimija teko show\n  \
-        toimija teko verify --claim regression\n  \
-        toimija teko close"
-    )]
-    Teko(crate::teko_cli::TekoArgs),
 }
 
 #[derive(Debug, Args)]
@@ -506,7 +493,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Handoff(args) if args.json => "json",
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
-        Command::Teko(args) if args.json() => "json",
         _ => "text",
     };
     let span = info_span!(
@@ -539,7 +525,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Validate(args) => run_validate(args).map(|()| 0),
         Command::Verify(args) => run_verify(args),
         Command::Snapshot(args) => run_snapshot(args).map(|()| 0),
-        Command::Teko(args) => crate::teko_cli::run(args).map(|()| 0),
     };
 
     match &result {
@@ -646,7 +631,6 @@ impl Command {
             Command::Validate(_) => "validate",
             Command::Verify(_) => "verify",
             Command::Snapshot(_) => "snapshot",
-            Command::Teko(_) => "teko",
         }
     }
 }
@@ -831,13 +815,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
     // An active Teko work item is the authoritative intent. Exploratory runs
     // still require the existing explicit intent handshake.
-    if args.intent.is_none()
-        && crate::teko::store::TekoStore::open_existing(&repo_root)
-            .ok()
-            .flatten()
-            .and_then(|store| store.active_work().ok().flatten())
-            .is_none()
-    {
+    if args.intent.is_none() && !crate::teko::has_active_work(&repo_root)? {
         return Err(refuse_missing_intent(&args.command).into());
     }
 
@@ -873,7 +851,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
-    if let Ok(Some(packet)) = crate::teko_cli::active_work_packet(&repo_root, "generic") {
+    if let Some(packet) = crate::teko::active_work_packet(&repo_root)? {
         entry.markdown.push_str("\n\n");
         entry.markdown.push_str(&packet);
     }
