@@ -195,8 +195,10 @@ Toimija reads active work from the standalone `teko show --json` command,
 embeds it as structured, attested session data in every packet, and includes it
 in known agents' launch prompts. Kisko consumes that data as its durable task
 contract, refreshes it through Toimija after writes, and accepts completion
-only when Teko is closable. `teko <command> --help` documents each step and
-includes an example.
+only when Teko is closable. Without `--intent`, the session marker uses
+`teko:<work-id> — <objective>` and combines Teko's write scope with explicit
+`--scope` paths. `teko <command> --help` documents each step and includes an
+example.
 
 ## Commands
 
