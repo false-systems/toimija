@@ -159,10 +159,12 @@ Each `run` opens a **session** with its own live packet under
 shared file. While the agent works, that session packet stays fresh: every
 relevant filesystem or Git-state change re-runs the refresh after a short
 debounce. After laptop sleep, the resumed watch loop re-proves the session within
-one tick through that same refresh and heartbeat path. The watcher arms the
-platform-native backend first and reports `armed (native)` only after a readiness
-probe is observed. If that probe times out, it re-arms and re-proves the bounded
-500 ms polling backend before reporting `armed (poll fallback)`. It is
+one tick through that same refresh and heartbeat path. Except on Linux ARM64,
+the watcher arms the platform-native backend first and reports `armed (native)`
+only after a readiness probe is observed. If that probe times out, it re-arms
+and re-proves the bounded 500 ms polling backend before reporting
+`armed (poll fallback)`. Linux ARM64 uses that polling backend directly because
+its native runner backend drops post-probe events. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
 last-writer-wins "latest" summary for sessionless readers.
