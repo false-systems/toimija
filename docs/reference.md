@@ -446,7 +446,9 @@ The packet includes:
 - on per-session packets, a **session** block — the session's id, declared
   intent, scope, and active Teko contract, freshly read at each refresh (so
   `run --intent` and `toimija intent` reach wrapped harnesses while Kisko can
-  consume the same attested bounded work)
+  consume the same attested bounded work); when `--intent` is omitted, the
+  marker derives `teko:<work-id> — <objective>` and unions Teko's write scope
+  with explicit `--scope` paths
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state

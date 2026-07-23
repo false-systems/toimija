@@ -179,6 +179,52 @@ fn run_refuses_to_launch_without_intent() {
 
 #[cfg(unix)]
 #[test]
+fn active_teko_work_supplies_session_intent_and_scope() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let teko = bin.join("teko");
+    fs::write(
+        &teko,
+        "#!/bin/sh\nprintf '%s\\n' '{\"work\":{\"id\":\"w1\",\"objective\":\"ship it\",\"scope\":{\"write\":[{\"path\":\"src\"},{\"path\":\"tests\"}]}},\"spec\":{\"id\":\"s1\",\"title\":\"Ship\",\"goals\":[],\"non_goals\":[]},\"status\":{\"required_completion\":\"validated\",\"obligations\":[],\"blockers\":[],\"next_actions\":[]}}'\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&teko).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&teko, permissions).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("PATH", path)
+        .args(["run", "--scope", "docs", "--", "true"])
+        .assert()
+        .success();
+
+    let session = fs::read_dir(temp.path().join(".toimija/sessions"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let marker: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(session.join("session.json")).unwrap()).unwrap();
+    assert_eq!(marker["intent"], "teko:w1 — ship it");
+    assert_eq!(marker["scope"], serde_json::json!(["docs", "src", "tests"]));
+}
+
+#[cfg(unix)]
+#[test]
 fn run_inlines_the_packet_into_a_known_agents_launch_prompt() {
     use std::os::unix::fs::PermissionsExt;
     if !git_available() {

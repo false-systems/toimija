@@ -6,10 +6,6 @@ use serde_json::Value;
 
 use crate::command::{CommandRunner, ProcessCommandRunner};
 
-pub fn has_active_work(repo_root: &Path) -> Result<bool> {
-    Ok(active_work_value(repo_root)?.is_some())
-}
-
 pub fn active_work_value(repo_root: &Path) -> Result<Option<Value>> {
     active_work_value_with(&ProcessCommandRunner, repo_root)
 }
@@ -46,7 +42,30 @@ fn parse_active_work(output: &[u8]) -> Result<Option<Value>> {
             bail!("`teko show --json` omitted required field `{pointer}`");
         }
     }
+    let scope = value
+        .pointer("/work/scope/write")
+        .and_then(Value::as_array)
+        .context("`teko show --json` omitted required field `/work/scope/write`")?;
+    if scope.iter().any(|rule| !rule["path"].is_string()) {
+        bail!("`teko show --json` returned an invalid write scope");
+    }
     Ok(Some(value))
+}
+
+pub(crate) fn session_metadata(value: &Value) -> (String, Vec<String>) {
+    let id = value.pointer("/work/id").and_then(Value::as_str).unwrap();
+    let objective = value
+        .pointer("/work/objective")
+        .and_then(Value::as_str)
+        .unwrap();
+    let scope = value
+        .pointer("/work/scope/write")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|rule| rule["path"].as_str().map(str::to_owned))
+        .collect();
+    (format!("teko:{id} — {objective}"), scope)
 }
 
 pub(crate) fn render(value: &Value) -> String {

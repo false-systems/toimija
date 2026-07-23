@@ -813,21 +813,28 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let teko = crate::teko::active_work_value(&repo_root)?;
+    let mut intent = args.intent.clone();
+    let mut scope = args.scope.clone();
+    if let Some(teko) = &teko {
+        let (teko_intent, teko_scope) = crate::teko::session_metadata(teko);
+        intent.get_or_insert(teko_intent);
+        for path in teko_scope {
+            if !scope.contains(&path) {
+                scope.push(path);
+            }
+        }
+    }
     // An active Teko work item is the authoritative intent. Exploratory runs
     // still require the existing explicit intent handshake.
-    if args.intent.is_none() && !crate::teko::has_active_work(&repo_root)? {
+    if intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
 
     // 1. Open a session: its own packet directory + marker, so concurrent
     //    wrapped agents do not race on the single repo-level packet.
-    let mut session = session::Session::open(
-        &repo_root,
-        &args.command,
-        args.intent.clone(),
-        args.scope.clone(),
-    )
-    .context("failed to open the toimija session")?;
+    let mut session = session::Session::open(&repo_root, &args.command, intent, scope)
+        .context("failed to open the toimija session")?;
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
