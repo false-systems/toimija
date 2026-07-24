@@ -632,11 +632,11 @@ lint`/`npm run typecheck`, `terraform fmt -check -recursive`), and
 companion-test hints (`foo.go` → `foo_test.go`, `foo.py` → `test_foo.py` or
 `tests/test_foo.py`, `foo.ts` → `foo.test.ts`/`foo.spec.ts`,
 existence-checked). Node commands require matching string-valued scripts;
-Python commands require explicit pytest and Ruff configuration. Terraform
-validation is not inferred because initialization and module roots cannot be
-proven from a root `.tf` file. Unproven candidates are omitted with a note.
-Full adapters
-outrank minimum packs in polyglot repos, minimum-pack plans carry the honest
+Python commands require explicit pytest and Ruff configuration. The
+`terraform validate` command is not inferred because initialization and module
+roots cannot be proven from a root `.tf` file. Unproven candidates are omitted
+with a note. Full adapters outrank minimum packs in polyglot repos, minimum-pack
+plans carry the honest
 `minimum language pack` note, and `repo.yaml` validation config beats inference
 everywhere. Adding a language is one `RepoKind` variant plus one table row in
 `src/adapters/pack.rs`; a language gets a dedicated adapter only when it needs
