@@ -150,11 +150,13 @@ fn compute(
                 plugins.insert(plugin.meta().name.to_string(), observation);
             }
         }
+        let teko = plugins.get("teko").cloned();
         packet.session = Some(context::SessionBlock {
             id: marker.id,
             intent: marker.intent,
             scope: marker.scope,
             plugins,
+            teko,
             entry_branch: marker.branch,
             entry_head: marker.head,
         });

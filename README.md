@@ -237,7 +237,8 @@ teko close
 The Teko plugin reads active work from the standalone `teko current` command
 (one JSON envelope; `{"active": null}` means no bounded work), embeds it under
 the session packet's `plugins.teko` key as structured, attested data, and
-includes it in known agents' launch prompts. Kisko consumes that data as its durable task
+also emits the v1 compatibility alias `session.teko`. It includes that data in
+known agents' launch prompts. Kisko consumes that data as its durable task
 contract, refreshes it through Toimija after writes, and accepts completion
 only when Teko is closable. Without `--intent`, the session marker uses
 `teko:<work-id> — <objective>` and combines Teko's write scope with explicit

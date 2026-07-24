@@ -75,6 +75,9 @@ pub struct SessionBlock {
     /// inventing a second task.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub plugins: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Compatibility alias for `plugins.teko` within the v1 packet schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teko: Option<serde_json::Value>,
     /// Branch and HEAD captured when `run` entered the session. They stay fixed
     /// so later packets can report drift instead of overwriting the baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -636,6 +639,7 @@ mod tests {
                 intent: None,
                 scope: Vec::new(),
                 plugins: Default::default(),
+                teko: None,
                 entry_branch: None,
                 entry_head: None,
             }),

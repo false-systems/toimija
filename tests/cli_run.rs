@@ -221,6 +221,12 @@ fn active_teko_work_supplies_session_intent_and_scope() {
         serde_json::from_str(&fs::read_to_string(session.join("session.json")).unwrap()).unwrap();
     assert_eq!(marker["intent"], "teko:w1 — ship it");
     assert_eq!(marker["scope"], serde_json::json!(["docs", "src", "tests"]));
+    let packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(session.join("current.json")).unwrap()).unwrap();
+    assert_eq!(
+        packet["session"]["teko"],
+        packet["session"]["plugins"]["teko"]
+    );
 }
 
 #[cfg(unix)]
