@@ -177,6 +177,41 @@ absent tool disables its plugin silently — plugins are enhancements Toimija
 detects, never requirements it carries. There is no dynamic loading, no plugin
 discovery, and no network. Teko is the first plugin.
 
+### Every plugin works the same way
+
+The `Plugin` trait is the entire contract, and the lifecycle lives in Toimija,
+not in the plugin — so no plugin can deviate from it:
+
+1. **observe** — during a packet refresh, Toimija calls every registered
+   plugin's `observe(repo_root)`. The plugin runs its tool synchronously and
+   returns `Ok(None)` when the tool is absent or has nothing to report, the
+   validated observation when it does, and `Err` only when the tool answered
+   with a broken contract.
+2. **embed** — each observation is stored in the session packet under
+   `session.plugins.<name>`, attested with the rest of the packet.
+3. **identity** — before a `run` session opens, a plugin may derive the
+   session's authoritative intent and write scope from its observation
+   (Teko does; a purely informational plugin returns `None`).
+4. **render** — at agent entry, each stored observation is rendered as one
+   markdown section appended to the launch packet, in registry order.
+
+### Adding a plugin
+
+1. Create `src/plugins/<name>.rs` and implement `Plugin`: `meta()` returns the
+   stable `name` (it keys `session.plugins.<name>` forever — never change it),
+   a one-line `description`, and the external `command` the plugin consumes;
+   then `observe`, `identity`, and `render` as above.
+2. Add the plugin to `all()` in `src/plugins/mod.rs`. Registry order is
+   deterministic and defines render order.
+3. Nothing else. No call-site wiring, no schema change, no config. The
+   registry test enforces unique, non-empty metadata.
+
+Rules every plugin follows, without exception: a missing tool disables the
+plugin silently rather than erroring; the tool is invoked synchronously during
+an explicitly-invoked command and never as a daemon; the stored observation is
+the tool's own derived truth, validated but not reshaped; and no plugin makes
+network calls.
+
 ## Bounded work with Teko
 
 Teko keeps one ratified task active across agent restarts and interrupted
