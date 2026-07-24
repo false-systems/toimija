@@ -144,29 +144,8 @@ fn detect_secondary_langs_with_budget(
 
     'walk: while let Some((relative, depth)) = queue.pop_front() {
         for (kind, manifest) in manifest_claims(repo_root, &relative) {
-            if kind != primary {
-                let root = if relative.as_os_str().is_empty() {
-                    PathBuf::from(".")
-                } else {
-                    relative.clone()
-                };
-                if !scan
-                    .languages
-                    .iter()
-                    .any(|language| language.kind == kind && language.root == root)
-                {
-                    scan.languages.push(DetectedLanguage {
-                        kind,
-                        root,
-                        manifest,
-                    });
-                }
-            }
+            push_language(&mut scan, primary, kind, &relative, manifest);
         }
-        if depth == SECONDARY_MAX_DEPTH {
-            continue;
-        }
-
         let entries = match std::fs::read_dir(repo_root.join(&relative)) {
             Ok(entries) => entries,
             Err(_) => {
@@ -194,8 +173,24 @@ fn detect_secondary_langs_with_budget(
                 continue;
             }
             match std::fs::symlink_metadata(repo_root.join(&child)) {
-                Ok(metadata) if metadata.file_type().is_dir() => {
+                Ok(metadata) if metadata.file_type().is_dir() && depth < SECONDARY_MAX_DEPTH => {
                     queue.push_back((child, depth + 1));
+                }
+                Ok(metadata) if metadata.file_type().is_file() => {
+                    let Some(extension) = child.extension().and_then(|ext| ext.to_str()) else {
+                        continue;
+                    };
+                    for language in crate::adapters::pack::LANGUAGES {
+                        if language.root_extensions.contains(&extension) {
+                            push_language(
+                                &mut scan,
+                                primary,
+                                language.kind,
+                                &relative,
+                                child.clone(),
+                            );
+                        }
+                    }
                 }
                 Ok(_) => {}
                 Err(_) => scan.incomplete = true,
@@ -214,11 +209,49 @@ fn detect_secondary_langs_with_budget(
 fn manifest_claims(repo_root: &Path, relative: &Path) -> Vec<(RepoKind, PathBuf)> {
     let mut claims = Vec::new();
     for language in crate::adapters::pack::LANGUAGES {
-        if let Some(marker) = language.root_marker(&repo_root.join(relative)) {
-            claims.push((language.kind, relative.join(marker)));
+        if let Some(manifest) = language.manifests.iter().find_map(|manifest| {
+            let relative_manifest = relative.join(manifest);
+            std::fs::symlink_metadata(repo_root.join(&relative_manifest))
+                .ok()
+                .filter(|metadata| metadata.file_type().is_file())
+                .map(|_| relative_manifest)
+        }) {
+            claims.push((language.kind, manifest));
         }
     }
     claims
+}
+
+fn push_language(
+    scan: &mut SecondaryScan,
+    primary: RepoKind,
+    kind: RepoKind,
+    relative: &Path,
+    manifest: PathBuf,
+) {
+    if kind == primary {
+        return;
+    }
+    let root = if relative.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        relative.to_path_buf()
+    };
+    if let Some(existing) = scan
+        .languages
+        .iter_mut()
+        .find(|language| language.kind == kind && language.root == root)
+    {
+        if manifest < existing.manifest {
+            existing.manifest = manifest;
+        }
+    } else {
+        scan.languages.push(DetectedLanguage {
+            kind,
+            root,
+            manifest,
+        });
+    }
 }
 
 fn kind_rank(kind: RepoKind) -> usize {
@@ -616,12 +649,19 @@ mod tests {
     #[test]
     fn secondary_walk_is_bounded_and_suppresses_primary_kind() {
         let temp = tempfile::tempdir().unwrap();
-        for path in ["services/api", "xtask", "node_modules/pkg", "a/b/c/d"] {
+        for path in [
+            "services/api",
+            "infra",
+            "xtask",
+            "node_modules/pkg",
+            "a/b/c/d",
+        ] {
             std::fs::create_dir_all(temp.path().join(path)).unwrap();
         }
         std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
         std::fs::write(temp.path().join("package.json"), "{}\n").unwrap();
         std::fs::write(temp.path().join("services/api/go.mod"), "module demo\n").unwrap();
+        std::fs::write(temp.path().join("infra/network.tf"), "").unwrap();
         std::fs::write(temp.path().join("xtask/Cargo.toml"), "[package]\n").unwrap();
         std::fs::write(temp.path().join("node_modules/pkg/package.json"), "{}\n").unwrap();
         std::fs::write(temp.path().join("a/b/c/d/mix.exs"), "[]\n").unwrap();
@@ -634,6 +674,11 @@ mod tests {
                     kind: RepoKind::Node,
                     root: PathBuf::from("."),
                     manifest: PathBuf::from("package.json"),
+                },
+                DetectedLanguage {
+                    kind: RepoKind::Terraform,
+                    root: PathBuf::from("infra"),
+                    manifest: PathBuf::from("infra/network.tf"),
                 },
                 DetectedLanguage {
                     kind: RepoKind::Go,
@@ -665,6 +710,16 @@ mod tests {
 
         let scan = detect_secondary_langs_with_budget(temp.path(), RepoKind::Generic, |_| false, 1);
         assert!(scan.truncated);
+    }
+
+    #[test]
+    fn secondary_extension_detection_obeys_entry_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("network.tf"), "").unwrap();
+
+        let scan = detect_secondary_langs_with_budget(temp.path(), RepoKind::Generic, |_| false, 0);
+        assert!(scan.truncated);
+        assert!(scan.languages.is_empty());
     }
 
     #[cfg(unix)]

@@ -310,10 +310,11 @@ impl LanguageAdapter for PackAdapter {
 
 impl LanguagePack {
     pub fn root_marker(&self, root: &Path) -> Option<PathBuf> {
-        if let Some(manifest) = self.manifests.iter().find(|manifest| {
-            std::fs::symlink_metadata(root.join(manifest))
-                .is_ok_and(|metadata| metadata.file_type().is_file())
-        }) {
+        if let Some(manifest) = self
+            .manifests
+            .iter()
+            .find(|manifest| root.join(manifest).exists())
+        {
             return Some(PathBuf::from(manifest));
         }
         if self.root_extensions.is_empty() {
@@ -323,10 +324,10 @@ impl LanguagePack {
             .ok()?
             .filter_map(Result::ok)
             .filter_map(|entry| {
-                if !entry.file_type().ok()?.is_file() {
+                let path = entry.path();
+                if !path.is_file() {
                     return None;
                 }
-                let path = entry.path();
                 let extension = path.extension()?.to_str()?;
                 self.root_extensions
                     .contains(&extension)
@@ -427,6 +428,18 @@ mod tests {
             terraform.root_marker(temp.path()),
             Some(PathBuf::from("network.tf"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_detection_preserves_manifest_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("manifest"), "[workspace]\n").unwrap();
+        symlink("manifest", temp.path().join("Cargo.toml")).unwrap();
+
+        assert_eq!(detect(temp.path()).unwrap().kind, RepoKind::Rust);
     }
 
     #[test]
