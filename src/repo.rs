@@ -17,6 +17,7 @@ pub enum RepoKind {
     Go,
     Python,
     Node,
+    Terraform,
     Generic,
 }
 
@@ -28,6 +29,7 @@ impl RepoKind {
             Self::Go => "Go",
             Self::Python => "Python",
             Self::Node => "JS/TS",
+            Self::Terraform => "Terraform",
             Self::Generic => "Generic",
         }
     }
@@ -212,33 +214,11 @@ fn detect_secondary_langs_with_budget(
 fn manifest_claims(repo_root: &Path, relative: &Path) -> Vec<(RepoKind, PathBuf)> {
     let mut claims = Vec::new();
     for language in crate::adapters::pack::LANGUAGES {
-        push_claim(
-            repo_root,
-            relative,
-            language.kind,
-            language.manifests,
-            &mut claims,
-        );
+        if let Some(marker) = language.root_marker(&repo_root.join(relative)) {
+            claims.push((language.kind, relative.join(marker)));
+        }
     }
     claims
-}
-
-fn push_claim(
-    repo_root: &Path,
-    relative: &Path,
-    kind: RepoKind,
-    manifests: &[&str],
-    claims: &mut Vec<(RepoKind, PathBuf)>,
-) {
-    if let Some(manifest) = manifests.iter().find_map(|manifest| {
-        let relative_manifest = relative.join(manifest);
-        std::fs::symlink_metadata(repo_root.join(&relative_manifest))
-            .ok()
-            .filter(|metadata| metadata.file_type().is_file())
-            .map(|_| relative_manifest)
-    }) {
-        claims.push((kind, manifest));
-    }
 }
 
 fn kind_rank(kind: RepoKind) -> usize {

@@ -226,17 +226,17 @@ variable, packet field, and output guarantee.
 
 ## Language support
 
-Rust and Elixir have full adapters. Go, Python, and JavaScript/TypeScript receive
-the minimum language pack: repository detection, evidence-backed validation-plan
-hints, and companion-test discovery. Commands without the required repository
-evidence are omitted with a note. Other repositories work through
-`.toimija/repo.yaml`.
+Rust and Elixir have full adapters. Go, Python, JavaScript/TypeScript, and
+Terraform receive the minimum language pack: repository detection and
+evidence-backed validation-plan hints. Source languages also receive
+companion-test discovery. Commands without the required repository evidence are
+omitted with a note. Other repositories work through `.toimija/repo.yaml`.
 
 All recognized languages live in one compile-time registry. Basic support is
 one kind plus one data row; a dedicated adapter is needed only for project-aware
 behavior.
 
-Packets also report recognized secondary languages from a bounded manifest
+Packets also report recognized secondary languages from a bounded root-marker
 walk. Secondary observations do not change the primary kind or validation plan.
 
 Adapters contribute hints; they do not parse source code. Git-derived context
