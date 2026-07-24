@@ -144,11 +144,17 @@ fn compute(
     if let Some(dir) = session_dir
         && let Ok(marker) = session::load_marker(dir)
     {
+        let mut plugins = std::collections::BTreeMap::new();
+        for plugin in crate::plugins::all() {
+            if let Some(observation) = plugin.observe(repo_root)? {
+                plugins.insert(plugin.meta().name.to_string(), observation);
+            }
+        }
         packet.session = Some(context::SessionBlock {
             id: marker.id,
             intent: marker.intent,
             scope: marker.scope,
-            teko: crate::teko::active_work_value(repo_root)?,
+            plugins,
             entry_branch: marker.branch,
             entry_head: marker.head,
         });

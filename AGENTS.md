@@ -10,7 +10,7 @@ Read `.toimija/current.md` before reading anything else (the preamble above alre
 
 Keep changes small and reviewable. Preserve the v0.0 scope: Git-aware local context compilation, config, repo detection, validation plan rendering, observability, and tests.
 
-Do not add MCP, Tree-sitter, LSP, SCIP, Kythe, Sykli delegation, Vaisto integration, Kerto integration, background daemons, network calls, or a plugin system yet. (The `watch`/`run` commands are foreground-only and run solely while explicitly invoked.)
+Do not add MCP, Tree-sitter, LSP, SCIP, Kythe, Sykli delegation, Vaisto integration, Kerto integration, background daemons, or network calls. (The `watch`/`run` commands are foreground-only and run solely while explicitly invoked.) External tools integrate through the built-in plugin registry under `src/plugins/` — synchronous subprocess adapters, Teko first — never through dynamic loading or plugin discovery.
 
 ## Boundaries
 
@@ -21,6 +21,7 @@ they drift apart. Edit both together.
 - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Vaisto, or Kerto integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.rs contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.
 - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
 - Agent coordination — per-session live packets, sibling-session awareness, and session handoff records — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
+- Plugins are built-in synchronous subprocess adapters under src/plugins/ (Teko is the first) that observe external tools only during explicitly-invoked commands. No dynamic loading, no plugin discovery, no downloads; an absent tool disables its plugin silently.
 
 Before claiming completion, run:
 

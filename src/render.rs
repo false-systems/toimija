@@ -1090,7 +1090,7 @@ mod tests {
             id: "100-1".to_string(),
             intent: None,
             scope: Vec::new(),
-            teko: None,
+            plugins: Default::default(),
             entry_branch: None,
             entry_head: None,
         });
@@ -1107,7 +1107,7 @@ mod tests {
             id: "100-1".to_string(),
             intent: Some("test drive 2".to_string()),
             scope: vec!["src/a.rs".to_string()],
-            teko: None,
+            plugins: Default::default(),
             entry_branch: None,
             entry_head: None,
         });
@@ -1127,7 +1127,7 @@ mod tests {
             id: "100-1".to_string(),
             intent: Some("move safely".to_string()),
             scope: Vec::new(),
-            teko: None,
+            plugins: Default::default(),
             entry_branch: Some("feat/before".to_string()),
             entry_head: Some("aaaaaaa111".to_string()),
         });

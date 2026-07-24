@@ -167,6 +167,16 @@ Before commit or handoff:
 toimija verify
 ```
 
+## Plugins
+
+Toimija correlates external tool state with its packets through built-in
+plugins under `src/plugins/`. A plugin is a synchronous subprocess adapter: it
+observes one tool during an explicitly-invoked command, may supply the
+session's identity (intent and scope), and renders one packet section. An
+absent tool disables its plugin silently — plugins are enhancements Toimija
+detects, never requirements it carries. There is no dynamic loading, no plugin
+discovery, and no network. Teko is the first plugin.
+
 ## Bounded work with Teko
 
 Teko keeps one ratified task active across agent restarts and interrupted
@@ -175,15 +185,13 @@ Toimija's generated packets, session records, history, and Teko database do not
 count as worktree changes.
 
 ```bash
-teko new \
+teko begin \
   --title "Fix login" \
   --objective "Repair the redirect" \
   --goal regression="A regression test covers the fix" \
   --non-goal "Redesign authentication" \
   --gate test="cargo test" \
-  --completion validated \
-  --ratify
-teko start --scope src/auth --scope tests
+  --scope src/auth --scope tests
 teko show
 toimija run -- codex
 teko verify --claim regression
@@ -191,9 +199,10 @@ teko close
 ```
 
 `show` prints stable closure-blocker IDs and one copy-pasteable next command.
-Toimija reads active work from the standalone `teko show --json` command,
-embeds it as structured, attested session data in every packet, and includes it
-in known agents' launch prompts. Kisko consumes that data as its durable task
+The Teko plugin reads active work from the standalone `teko current` command
+(one JSON envelope; `{"active": null}` means no bounded work), embeds it under
+the session packet's `plugins.teko` key as structured, attested data, and
+includes it in known agents' launch prompts. Kisko consumes that data as its durable task
 contract, refreshes it through Toimija after writes, and accepts completion
 only when Teko is closable. Without `--intent`, the session marker uses
 `teko:<work-id> — <objective>` and combines Teko's write scope with explicit

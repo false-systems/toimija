@@ -192,7 +192,7 @@ fn active_teko_work_supplies_session_intent_and_scope() {
     let teko = bin.join("teko");
     fs::write(
         &teko,
-        "#!/bin/sh\nprintf '%s\\n' '{\"work\":{\"id\":\"w1\",\"objective\":\"ship it\",\"scope\":{\"write\":[{\"path\":\"src\"},{\"path\":\"tests\"}]}},\"spec\":{\"id\":\"s1\",\"title\":\"Ship\",\"goals\":[],\"non_goals\":[]},\"status\":{\"required_completion\":\"validated\",\"obligations\":[],\"blockers\":[],\"next_actions\":[]}}'\n",
+        "#!/bin/sh\nprintf '%s\\n' '{\"active\":{\"work\":{\"id\":\"w1\",\"objective\":\"ship it\",\"scope\":{\"write\":[{\"path\":\"src\"},{\"path\":\"tests\"}]}},\"spec\":{\"id\":\"s1\",\"title\":\"Ship\",\"goals\":[],\"non_goals\":[]},\"status\":{\"required_completion\":\"validated\",\"obligations\":[],\"blockers\":[],\"next_actions\":[]}}}'\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&teko).unwrap().permissions();

@@ -813,20 +813,25 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let teko = crate::teko::active_work_value(&repo_root)?;
     let mut intent = args.intent.clone();
     let mut scope = args.scope.clone();
-    if let Some(teko) = &teko {
-        let (teko_intent, teko_scope) = crate::teko::session_metadata(teko);
-        intent.get_or_insert(teko_intent);
-        for path in teko_scope {
+    for plugin in crate::plugins::all() {
+        let Some(observation) = plugin.observe(&repo_root)? else {
+            continue;
+        };
+        let Some(identity) = plugin.identity(&observation) else {
+            continue;
+        };
+        intent.get_or_insert(identity.intent);
+        for path in identity.scope {
             if !scope.contains(&path) {
                 scope.push(path);
             }
         }
     }
-    // An active Teko work item is the authoritative intent. Exploratory runs
-    // still require the existing explicit intent handshake.
+    // A plugin-supplied identity (such as active Teko work) is the
+    // authoritative intent. Exploratory runs still require the existing
+    // explicit intent handshake.
     if intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
@@ -858,14 +863,13 @@ fn run_run(args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
-    if let Some(teko) = entry
-        .packet
-        .session
-        .as_ref()
-        .and_then(|session| session.teko.as_ref())
-    {
-        entry.markdown.push_str("\n\n");
-        entry.markdown.push_str(&crate::teko::render(teko));
+    if let Some(session) = entry.packet.session.as_ref() {
+        for plugin in crate::plugins::all() {
+            if let Some(observation) = session.plugins.get(plugin.meta().name) {
+                entry.markdown.push_str("\n\n");
+                entry.markdown.push_str(&plugin.render(observation));
+            }
+        }
     }
     print_agent_entry(&entry, &repo_root);
     // The branch and HEAD are known once the packet is built; record them.
