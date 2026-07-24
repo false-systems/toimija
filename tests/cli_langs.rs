@@ -59,6 +59,23 @@ fn go_repo_gets_the_go_minimum_pack() {
 }
 
 #[test]
+fn terraform_repo_gets_the_terraform_minimum_pack() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path(), &[("network.tf", "terraform {}\n")]);
+    assert_packet_contains(
+        temp.path(),
+        &[
+            "- kind: Terraform",
+            "terraform fmt -check -recursive",
+            "Validation inferred from Terraform repo shape (minimum language pack)",
+        ],
+    );
+}
+
+#[test]
 fn python_repo_gets_the_python_minimum_pack() {
     if !git_available() {
         return;

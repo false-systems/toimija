@@ -79,7 +79,7 @@ What you get:
 | **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, explicit handoff records, and bounded stewardship. Visibility, never orchestration. |
 | **Staged audit breadth** | `toimija audit-plan` partitions the repo into bounded, deterministic audit surfaces; committed findings are the cross-run cache — no more one enormous session re-deriving everything. |
 | **Chain of custody** | Every packet and handoff carries a sauma envelope — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
-| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS. It never runs commands. |
+| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS/Terraform. It never runs commands. |
 | **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
 
 ## What Toimija is
@@ -623,22 +623,26 @@ The plan has tiers — `Focused` (derived from the changed surface), `Fast`,
 them empty. The agent runs the commands itself and reports the exact output.
 
 Two languages have full adapters (Rust, Elixir: inferred tiers plus the
-focused per-unit heuristics below). Go, Python, and JS/TS get the **minimum
-language pack** — a data table, not a module: manifest detection (`go.mod`,
-`pyproject.toml`/`setup.py`, `package.json`), inferred test + lint tiers
+focused per-unit heuristics below). Go, Python, JS/TS, and Terraform get the
+**minimum language pack** — a data table, not a module: root-marker detection
+(`go.mod`, `pyproject.toml`/`setup.py`, `package.json`, root `*.tf`), inferred
+test + lint tiers
 (`go test ./...`/`go vet ./...`, `pytest`/`ruff check .`, `npm test`/`npm run
-lint`/`npm run typecheck`), and companion-test hints (`foo.go` → `foo_test.go`,
-`foo.py` → `test_foo.py` or `tests/test_foo.py`, `foo.ts` →
-`foo.test.ts`/`foo.spec.ts`, existence-checked). Node commands require matching
-string-valued scripts; Python commands require explicit pytest and Ruff
-configuration. Unproven candidates are omitted with a note. Full adapters
-outrank minimum packs in polyglot repos, minimum-pack plans carry the honest
+lint`/`npm run typecheck`, `terraform fmt -check -recursive`), and
+companion-test hints (`foo.go` → `foo_test.go`, `foo.py` → `test_foo.py` or
+`tests/test_foo.py`, `foo.ts` → `foo.test.ts`/`foo.spec.ts`,
+existence-checked). Node commands require matching string-valued scripts;
+Python commands require explicit pytest and Ruff configuration. The
+`terraform validate` command is not inferred because initialization and module
+roots cannot be proven from a root `.tf` file. Unproven candidates are omitted
+with a note. Full adapters outrank minimum packs in polyglot repos, minimum-pack
+plans carry the honest
 `minimum language pack` note, and `repo.yaml` validation config beats inference
 everywhere. Adding a language is one `RepoKind` variant plus one table row in
 `src/adapters/pack.rs`; a language gets a dedicated adapter only when it needs
 project-aware behavior such as Rust workspace or Elixir umbrella scoping.
 
-Context packets also report secondary languages found by a manifest-only walk
+Context packets also report secondary languages found by a root-marker walk
 bounded to depth 3 and 4096 entries. The walk honors configured exclusions,
 hard-skips `.git` and vendored/build trees, and never follows symlinks. Nested
 manifests of the primary kind are suppressed; every other observation is
@@ -962,7 +966,7 @@ editing `xtask`.
 - Git state is collected through the Git CLI, not Git internals.
 - Merge-base is attempted against the selected base candidate.
 - Validation plans are rendered only; commands are not executed.
-- The primary language uses root marker files (Cargo.toml, mix.exs, go.mod, pyproject.toml/setup.py, package.json); full adapters outrank minimum packs. Secondary markers are reported from the bounded walk but do not affect planning.
+- The primary language uses root markers (Cargo.toml, mix.exs, go.mod, pyproject.toml/setup.py, package.json, or a root `.tf` file); full adapters outrank minimum packs. Secondary markers are reported from the bounded walk but do not affect planning.
 - Context budgets are approximate UTF-8 byte caps, not token counts. Identity,
   Git state, the workset contract, validation, warnings, exclusions, and the
   changed-surface summary are mandatory and may exceed a very small budget.
@@ -1010,7 +1014,7 @@ Elixir:
 - `lib/foo/bar.ex` may point to `test/foo/bar_test.exs` if present
 - `mix.exs` may point to `test/test_helper.exs` if present
 
-Minimum language packs (Go, Python, JS/TS) use existence-checked path
+Minimum source-language packs (Go, Python, JS/TS) use existence-checked path
 templates: `pkg/foo.go` → `pkg/foo_test.go`; `src/foo.py` → `src/test_foo.py`
 or `tests/test_foo.py`; `app/foo.ts` → `app/foo.test.ts` or `app/foo.spec.ts`.
 Files that are themselves tests (matched by anchored patterns, e.g.
