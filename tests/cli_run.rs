@@ -231,6 +231,58 @@ fn active_teko_work_supplies_session_intent_and_scope() {
 
 #[cfg(unix)]
 #[test]
+fn a_broken_plugin_tool_degrades_the_run_instead_of_failing_it() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let teko = bin.join("teko");
+    fs::write(&teko, "#!/bin/sh\necho 'store is busy' >&2\nexit 1\n").unwrap();
+    let mut permissions = fs::metadata(&teko).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&teko, permissions).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    // The run survives: explicit intent carries it, the broken tool is noted.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("PATH", path)
+        .args(["run", "--intent", "explicit", "--", "true"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("plugin `teko` unavailable"));
+
+    let session = fs::read_dir(temp.path().join(".toimija/sessions"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(session.join("current.json")).unwrap()).unwrap();
+    let warnings = packet["warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(|warning| {
+            warning
+                .as_str()
+                .unwrap_or_default()
+                .contains("Plugin `teko` observation failed")
+        }),
+        "{warnings:?}"
+    );
+    assert!(packet["session"]["plugins"].get("teko").is_none());
+}
+
+#[cfg(unix)]
+#[test]
 fn run_inlines_the_packet_into_a_known_agents_launch_prompt() {
     use std::os::unix::fs::PermissionsExt;
     if !git_available() {

@@ -816,8 +816,18 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let mut intent = args.intent.clone();
     let mut scope = args.scope.clone();
     for plugin in crate::plugins::all() {
-        let Some(observation) = plugin.observe(&repo_root)? else {
-            continue;
+        let observation = match plugin.observe(&repo_root) {
+            Ok(Some(observation)) => observation,
+            Ok(None) => continue,
+            // A broken tool must not block the run; without its identity the
+            // explicit --intent handshake below still applies.
+            Err(error) => {
+                eprintln!(
+                    "toimija run: plugin `{}` unavailable for session identity: {error:#}",
+                    plugin.meta().name
+                );
+                continue;
+            }
         };
         let Some(identity) = plugin.identity(&observation) else {
             continue;
