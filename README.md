@@ -66,10 +66,16 @@ It combines:
 - the branch surface and recent commits;
 - a Git-derived workset and ordered reading plan;
 - coupling and risk hints with visible evidence and confidence;
+- fetched `origin/*` branches that overlap the workset, with inferred
+  committer attribution and fetch age;
 - collection coverage, including degraded and failed observations;
 - configured boundaries, exclusions, and validation commands;
 - session identity, declared intent, scope, and entry-state drift;
 - a content-based consistency token and provenance envelope.
+
+The first packet compilation mints a clone-local identity in Git's common
+directory (`.git/toimija-id`). Linked worktrees share it; it is never committed
+or written into the worktree.
 
 A typical agent sees the contract before the detail:
 

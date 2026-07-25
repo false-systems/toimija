@@ -388,6 +388,7 @@ mod tests {
             relevance: RelevancePacket {
                 scope: None,
                 read_order: Vec::new(),
+                team_overlap: Vec::new(),
                 coupling: vec![CouplingHint {
                     changed: PathBuf::from("src/lib.rs"),
                     missing: PathBuf::from("tests/lib.rs"),

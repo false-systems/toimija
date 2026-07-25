@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -31,6 +31,8 @@ const CONTAINER_DIRS: &[&str] = &["apps", "crates", "packages", "libs", "service
 pub struct RelevancePacket {
     pub scope: Option<ScopeHints>,
     pub read_order: Vec<ReadOrderEntry>,
+    #[serde(default)]
+    pub team_overlap: Vec<TeamOverlapHint>,
     pub coupling: Vec<CouplingHint>,
     pub risk: Vec<RiskHint>,
     pub warnings: Vec<String>,
@@ -48,6 +50,7 @@ impl RelevancePacket {
     pub fn is_empty(&self) -> bool {
         self.scope.is_none()
             && self.read_order.is_empty()
+            && self.team_overlap.is_empty()
             && self.coupling.is_empty()
             && self.risk.is_empty()
             && self.warnings.is_empty()
@@ -81,6 +84,17 @@ pub struct ReadOrderEntry {
     pub reason: String,
     pub priority: u8,
     pub source: RelevanceSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TeamOverlapHint {
+    #[serde(with = "crate::path_codec::one")]
+    pub path: PathBuf,
+    pub branch: String,
+    pub attribution: String,
+    pub attribution_tier: String,
+    pub confidence: HintConfidence,
+    pub fetched_age_seconds: Option<u64>,
 }
 
 /// A changed file with a companion that is absent from this diff.
@@ -155,6 +169,7 @@ pub struct RelevanceInput<'a> {
     pub branch_added: &'a [PathBuf],
     pub scope_source: RelevanceSource,
     pub merge_base: Option<&'a str>,
+    pub base: Option<&'a str>,
     pub head_available: bool,
 }
 
@@ -186,6 +201,7 @@ pub fn compute_relevance(
         event = "toimija.relevance.read_order.computed",
         entries = read_order.len()
     );
+    let team_overlap = compute_team_overlap(runner, repo_root, input.base, changed);
 
     // History mining starts from the merge-base, not HEAD, so the branch's own
     // commits do not count as historical evidence (they would make any file the
@@ -265,11 +281,119 @@ pub fn compute_relevance(
     RelevancePacket {
         scope,
         read_order,
+        team_overlap,
         coupling,
         risk,
         warnings,
         history_coverage,
     }
+}
+
+fn compute_team_overlap(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    base: Option<&str>,
+    changed: &[PathBuf],
+) -> Vec<TeamOverlapHint> {
+    let Some(base) = base else { return Vec::new() };
+    let workset: BTreeSet<&Path> = changed.iter().map(PathBuf::as_path).collect();
+    if workset.is_empty() {
+        return Vec::new();
+    }
+    let branches = run_git_ok(
+        runner,
+        repo_root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/remotes/origin",
+        ],
+    )
+    .unwrap_or_default();
+    let fetched_age_seconds = fetch_head_age(runner, repo_root);
+    let mut hints = Vec::new();
+    for branch in branches
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != base && !line.ends_with("/HEAD"))
+    {
+        let range = format!("{base}..{branch}");
+        let ahead = run_git_ok(runner, repo_root, &["rev-list", "--count", &range])
+            .and_then(|count| count.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        if ahead == 0 {
+            continue;
+        }
+        let Some(merge_base) = run_git_ok(runner, repo_root, &["merge-base", base, branch])
+            .map(|oid| oid.trim().to_string())
+            .filter(|oid| !oid.is_empty())
+        else {
+            continue;
+        };
+        let Ok(paths) = run_git_observed(
+            runner,
+            repo_root,
+            &["diff", "--name-only", "-z", &merge_base, branch],
+        ) else {
+            continue;
+        };
+        let attribution = run_git_ok(
+            runner,
+            repo_root,
+            &["log", "-1", "--format=%cn%x00%ce", branch],
+        )
+        .map(|value| {
+            let mut parts = value.trim().split('\0');
+            let name = parts.next().unwrap_or("").trim();
+            let email = parts.next().unwrap_or("").trim();
+            match (name.is_empty(), email.is_empty()) {
+                (false, false) => format!("{name} <{email}>"),
+                (false, true) => name.to_string(),
+                (true, false) => email.to_string(),
+                (true, true) => "unknown committer".to_string(),
+            }
+        })
+        .unwrap_or_else(|| "unknown committer".to_string());
+        for path in paths
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(crate::path_codec::from_git_bytes)
+            .filter(|path| workset.contains(path.as_path()))
+        {
+            hints.push(TeamOverlapHint {
+                path,
+                branch: branch.to_string(),
+                attribution: attribution.clone(),
+                attribution_tier: "inferred".to_string(),
+                confidence: HintConfidence::Medium,
+                fetched_age_seconds,
+            });
+        }
+    }
+    hints.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then(left.branch.cmp(&right.branch))
+    });
+    hints
+}
+
+fn fetch_head_age(runner: &impl CommandRunner, repo_root: &Path) -> Option<u64> {
+    let path = run_git_ok(
+        runner,
+        repo_root,
+        &["rev-parse", "--git-path", "FETCH_HEAD"],
+    )?;
+    let path = PathBuf::from(path.trim());
+    let path = if path.is_absolute() {
+        path
+    } else {
+        repo_root.join(path)
+    };
+    SystemTime::now()
+        .duration_since(std::fs::metadata(path).ok()?.modified().ok()?)
+        .ok()
+        .map(|age| age.as_secs())
 }
 
 /// Default bounded history window for log mining. Conservative so the work stays
@@ -1229,6 +1353,7 @@ mod tests {
                 branch_added: &[],
                 scope_source: RelevanceSource::MergeBaseDiff,
                 merge_base: Some("basesha"),
+                base: None,
                 head_available: true,
             },
         );
@@ -1238,6 +1363,89 @@ mod tests {
             "pairs already changed together should not be missing-companion hints"
         );
         assert!(packet.warnings.is_empty());
+    }
+
+    #[test]
+    fn team_overlap_keeps_only_ahead_branches_that_touch_the_workset() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+        std::fs::write(temp.path().join(".git/FETCH_HEAD"), "").unwrap();
+        let runner = FakeRunner::default()
+            .with(
+                &[
+                    "for-each-ref",
+                    "--format=%(refname:short)",
+                    "refs/remotes/origin",
+                ],
+                "origin/main\norigin/feature\norigin/unrelated\norigin/behind\n",
+            )
+            .with(
+                &["rev-parse", "--git-path", "FETCH_HEAD"],
+                ".git/FETCH_HEAD\n",
+            )
+            .with(
+                &["rev-list", "--count", "origin/main..origin/feature"],
+                "2\n",
+            )
+            .with(
+                &["merge-base", "origin/main", "origin/feature"],
+                "feature-base\n",
+            )
+            .with(
+                &[
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "feature-base",
+                    "origin/feature",
+                ],
+                "src/context.rs\0docs/notes.md\0",
+            )
+            .with(
+                &["log", "-1", "--format=%cn%x00%ce", "origin/feature"],
+                "Dima\0dima@example.com\n",
+            )
+            .with(
+                &["rev-list", "--count", "origin/main..origin/unrelated"],
+                "1\n",
+            )
+            .with(
+                &["merge-base", "origin/main", "origin/unrelated"],
+                "other-base\n",
+            )
+            .with(
+                &[
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "other-base",
+                    "origin/unrelated",
+                ],
+                "docs/notes.md\0",
+            )
+            .with(
+                &["log", "-1", "--format=%cn%x00%ce", "origin/unrelated"],
+                "Other\0other@example.com\n",
+            )
+            .with(
+                &["rev-list", "--count", "origin/main..origin/behind"],
+                "0\n",
+            );
+
+        let hints = compute_team_overlap(
+            &runner,
+            temp.path(),
+            Some("origin/main"),
+            &[PathBuf::from("src/context.rs")],
+        );
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].path, Path::new("src/context.rs"));
+        assert_eq!(hints[0].branch, "origin/feature");
+        assert_eq!(hints[0].attribution, "Dima <dima@example.com>");
+        assert_eq!(hints[0].attribution_tier, "inferred");
+        assert_eq!(hints[0].confidence, HintConfidence::Medium);
+        assert!(hints[0].fetched_age_seconds.is_some());
     }
 
     #[test]
@@ -1376,6 +1584,7 @@ mod tests {
                 branch_added: &[],
                 scope_source: RelevanceSource::MergeBaseDiff,
                 merge_base: Some("base"),
+                base: None,
                 head_available: true,
             },
         );
@@ -1420,6 +1629,7 @@ mod tests {
                 branch_added: &[],
                 scope_source: RelevanceSource::MergeBaseDiff,
                 merge_base: Some("base"),
+                base: None,
                 head_available: true,
             },
         );
@@ -1560,6 +1770,7 @@ mod tests {
                 branch_added: &branch_added,
                 scope_source: RelevanceSource::MergeBaseDiff,
                 merge_base: Some("basesha"),
+                base: None,
                 head_available: true,
             },
         );

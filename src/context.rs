@@ -139,6 +139,9 @@ pub fn build_context_packet(
     let (git, mut warnings) = git::collect_git_state(runner, cwd)?;
     let mut git = git;
     normalize_git_state(&mut git);
+    if let Err(error) = git::ensure_environment_identity(runner, &git.repo_root) {
+        warnings.push(format!("Environment identity unavailable: {error}."));
+    }
     let config = match RepoConfig::load_optional(&git.repo_root)? {
         Some(config) => config,
         None => {
@@ -212,6 +215,7 @@ pub fn build_context_packet(
             branch_added: &branch_added,
             scope_source: scope_source(changed_surface_source),
             merge_base: git.merge_base.as_deref(),
+            base: git.base.as_deref(),
             head_available: git.head_oid.is_some(),
         },
     );

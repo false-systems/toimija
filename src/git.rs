@@ -1,6 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, hash_map::RandomState};
+use std::fs::{self, OpenOptions};
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -93,6 +96,12 @@ pub struct RecentCommit {
     pub summary: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnvironmentIdentity {
+    pub id: String,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ParsedStatus {
     pub branch: Option<String>,
@@ -118,6 +127,79 @@ pub fn discover_repo_root(
     Ok(crate::path_codec::from_git_bytes(trim_ascii_end(
         &output.stdout,
     )))
+}
+
+/// Read or mint the clone identity in Git's common directory. `--git-common-dir`
+/// makes linked worktrees share the same identity without putting it in the
+/// worktree or inventing another registry.
+pub fn ensure_environment_identity(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+) -> Result<EnvironmentIdentity, String> {
+    let common_dir = run_git_ok(runner, repo_root, &["rev-parse", "--git-common-dir"])
+        .map(|path| PathBuf::from(path.trim()))
+        .ok_or_else(|| "Git common directory is unavailable".to_string())?;
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        repo_root.join(common_dir)
+    };
+    let path = common_dir.join("toimija-id");
+    if path.exists() {
+        return fs::read(&path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("invalid {}: {error}", path.display()))
+            });
+    }
+
+    let identity = EnvironmentIdentity {
+        id: random_id(repo_root),
+        label: hostname_label(),
+    };
+    let bytes = serde_json::to_vec_pretty(&identity)
+        .map_err(|error| format!("failed to serialize clone identity: {error}"))?;
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(&bytes).and_then(|_| file.write_all(b"\n")) {
+                let _ = fs::remove_file(&path);
+                return Err(format!("failed to write {}: {error}", path.display()));
+            }
+            Ok(identity)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => fs::read(&path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("invalid {}: {error}", path.display()))
+            }),
+        Err(error) => Err(format!("failed to create {}: {error}", path.display())),
+    }
+}
+
+fn random_id(repo_root: &Path) -> String {
+    let mut hasher = RandomState::new().build_hasher();
+    repo_root.hash(&mut hasher);
+    SystemTime::now().hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    format!("{:012x}", hasher.finish() & 0xffff_ffff_ffff)
+}
+
+fn hostname_label() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "unknown-host".to_string())
 }
 
 pub fn collect_git_state(
@@ -781,6 +863,27 @@ R094\tsrc/old.rs\tsrc/renamed.rs
             spawn,
             Err("git failed to spawn: entity not found".to_string())
         );
+    }
+
+    #[test]
+    fn clone_identity_is_minted_once_in_the_common_git_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let common = temp.path().join("common.git");
+        let worktree = temp.path().join("worktree");
+        std::fs::create_dir_all(&common).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        let common_text = format!("{}\n", common.display());
+        let runner =
+            FakeRunner::default().with(&["rev-parse", "--git-common-dir"], 0, &common_text);
+
+        let first = ensure_environment_identity(&runner, &worktree).unwrap();
+        let second = ensure_environment_identity(&runner, &worktree).unwrap();
+
+        assert_eq!(first, second);
+        assert!(!first.id.is_empty());
+        assert!(!first.label.is_empty());
+        assert!(common.join("toimija-id").is_file());
+        assert!(!worktree.join("toimija-id").exists());
     }
 
     /// A runner primed with everything `collect_git_state` needs up to the

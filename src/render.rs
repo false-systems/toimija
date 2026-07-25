@@ -250,6 +250,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         packet.changed_surface.len(),
         packet.git.recent_commits.len(),
         packet.relevance.read_order.len()
+            + packet.relevance.team_overlap.len()
             + packet.relevance.coupling.len()
             + packet.relevance.risk.len(),
     )
@@ -432,6 +433,15 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     // Optional sections are selected atomically. A budget may omit a whole
     // section, never cut a path or silently drop safety-critical state.
     let mut optional = Vec::new();
+    if !packet.relevance.team_overlap.is_empty() {
+        let mut section = String::new();
+        write_team_overlap(&mut section, packet);
+        optional.push((
+            "team overlap hints",
+            packet.relevance.team_overlap.len(),
+            section,
+        ));
+    }
     if !packet.relevance.coupling.is_empty() {
         let mut section = String::new();
         write_coupling(&mut section, packet);
@@ -460,6 +470,35 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     append_optional_sections(&mut output, budget, optional);
     output
+}
+
+fn write_team_overlap(output: &mut String, packet: &ContextPacket) {
+    write_h2(output, "Team overlap");
+    for hint in &packet.relevance.team_overlap {
+        let freshness = hint
+            .fetched_age_seconds
+            .map(|seconds| format!("fetched {} ago", humanize_age(seconds)))
+            .unwrap_or_else(|| "fetch age unavailable".to_string());
+        writeln!(
+            output,
+            "- {} — {} — {} ({} tier; confidence: {}) — {freshness}",
+            crate::path_codec::display(&hint.path),
+            hint.branch,
+            hint.attribution,
+            hint.attribution_tier,
+            confidence_label(hint.confidence),
+        )
+        .unwrap();
+    }
+}
+
+fn humanize_age(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
 }
 
 fn append_optional_sections(
@@ -913,17 +952,21 @@ fn relevance_source_label(source: RelevanceSource) -> &'static str {
 }
 
 fn relevance_evidence_label(source: RelevanceSource, evidence: &HintEvidence) -> String {
-    let confidence = match evidence.confidence {
-        HintConfidence::Unrecorded => "unrecorded",
-        HintConfidence::Medium => "medium",
-        HintConfidence::High => "high",
-    };
+    let confidence = confidence_label(evidence.confidence);
     format!(
         "source: {}; evidence: {}/{}; confidence: {confidence}",
         relevance_source_label(source),
         evidence.support,
         evidence.observations
     )
+}
+
+fn confidence_label(confidence: HintConfidence) -> &'static str {
+    match confidence {
+        HintConfidence::Unrecorded => "unrecorded",
+        HintConfidence::Medium => "medium",
+        HintConfidence::High => "high",
+    }
 }
 
 pub(crate) fn truncate_to_budget(
@@ -971,7 +1014,7 @@ mod tests {
     use crate::config::RepoConfig;
     use crate::context::ContextPacket;
     use crate::git::GitState;
-    use crate::relevance::RelevancePacket;
+    use crate::relevance::{RelevancePacket, TeamOverlapHint};
     use crate::repo::{RepoInfo, RepoKind};
 
     fn packet() -> ContextPacket {
@@ -1052,6 +1095,27 @@ mod tests {
         assert!(rendered.contains("## Validation plan"));
         // Repo-level packets carry no session identity.
         assert!(!rendered.contains("## Session"));
+    }
+
+    #[test]
+    fn markdown_renders_team_overlap_with_attribution_and_fetch_age() {
+        let mut packet = packet();
+        packet.relevance.team_overlap.push(TeamOverlapHint {
+            path: PathBuf::from("src/context.rs"),
+            branch: "origin/feature".to_string(),
+            attribution: "Dima <dima@example.com>".to_string(),
+            attribution_tier: "inferred".to_string(),
+            confidence: HintConfidence::Medium,
+            fetched_age_seconds: Some(14 * 60),
+        });
+
+        let rendered = render_context_markdown(&packet, 5000);
+
+        assert!(rendered.contains("## Team overlap"));
+        assert!(rendered.contains(
+            "src/context.rs — origin/feature — Dima <dima@example.com> \
+             (inferred tier; confidence: medium) — fetched 14m ago"
+        ));
     }
 
     #[test]
@@ -1598,6 +1662,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
   "relevance": {
     "scope": null,
     "read_order": [],
+    "team_overlap": [],
     "coupling": [],
     "risk": [],
     "warnings": [],

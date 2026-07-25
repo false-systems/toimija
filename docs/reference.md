@@ -439,6 +439,8 @@ The packet includes:
 - changed surface
 - scope
 - read order
+- team overlap with fetched `origin/*` branches, committer-inferred attribution,
+  and `FETCH_HEAD` age
 - coupling
 - risk
 - validation plan
@@ -607,12 +609,19 @@ an agent decide what to inspect first:
   authored intent, never ripple.
 - companion files that are missing from the current diff (`Coupling`)
 - files with high churn or young surface, plus a concrete action hint (`Risk`)
+- files also touched by an `origin/*` branch ahead of main (`Team overlap`);
+  attribution comes from the branch-tip committer at medium confidence, and
+  every line states the local `FETCH_HEAD` age
 
 > This is not semantic code understanding. It is Git-derived work relevance.
 
 > Tree-sitter can help after you know where to look. Toimija uses Git to decide where looking is worth it.
 
 These hints are advisory. They come from `git ls-tree`, `git log`, `git diff`, and language adapter path heuristics (no source parsing, no network, no index). Every coupling and risk hint carries its source, supporting observations, total observations, and a conservative confidence grade; the same fields are structured in JSON as `evidence.support`, `evidence.observations`, and `evidence.confidence`. History mining is bounded: the last 200 non-merge commits, starting from the merge-base so the branch does not vote on its own relevance. Historical coupling needs a missing partner to co-change at least twice and in at least 60% of the changed file's edits; existing companion tests are surfaced through path heuristics. "High churn" means at least 8 commits touched the file in that window. A file being untouched is not enough evidence to call it stable or load-bearing, so Toimija stays silent. Sections are capped (read order grouped, coupling and risk at 5). On a shallow clone or a repo with no history these sections are omitted and a `Relevance history unavailable` warning is emitted.
+
+The first packet compilation also creates `.git/toimija-id` in Git's common
+directory. It contains a short random `id` and a hostname-derived, editable
+`label`; linked worktrees share one clone identity.
 
 ## Validation
 
