@@ -233,7 +233,7 @@ fn active_teko_work_supplies_session_intent_and_scope() {
     let markdown = fs::read_to_string(session.join("current.md")).unwrap();
     assert!(
         markdown.contains(
-            "- plugin teko: active bounded work: intent, write scope, and closure blockers — check: `teko next`"
+            "- plugin teko: active bounded work: intent, write scope, and closure blockers — check: `teko show`"
         ),
         "session packet markdown carries no plugin nudge:\n{markdown}"
     );

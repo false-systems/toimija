@@ -1168,7 +1168,7 @@ mod tests {
         });
         let rendered = render_context_markdown(&packet, 4000);
         assert!(rendered.contains(
-            "- plugin teko: active bounded work: intent, write scope, and closure blockers — check: `teko next`"
+            "- plugin teko: active bounded work: intent, write scope, and closure blockers — check: `teko show`"
         ));
         assert!(rendered.contains("- plugin unregistered: observation carried in the packet JSON"));
     }

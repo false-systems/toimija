@@ -195,7 +195,7 @@ not in the plugin — so no plugin can deviate from it:
 4. **render** — at agent entry, each stored observation is rendered as one
    markdown section appended to the launch packet, in registry order.
 5. **nudge** — every rendered packet's Session block carries one line per
-   observed plugin naming it and its check command (Teko: `teko next`), so an
+   observed plugin naming it and its check command (Teko: `teko show`), so an
    agent re-reading its live packet mid-session is pointed back at the tool —
    the packet embeds a snapshot, but the tool stays authoritative.
 
