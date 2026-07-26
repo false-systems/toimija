@@ -144,11 +144,30 @@ fn compute(
     if let Some(dir) = session_dir
         && let Ok(marker) = session::load_marker(dir)
     {
+        let mut plugins = std::collections::BTreeMap::new();
+        for plugin in crate::plugins::all() {
+            // Plugins are enhancements, never requirements: a failing tool
+            // degrades the packet with a warning instead of failing the
+            // refresh (and with it `run`'s entry, watch loop, and exit
+            // summary).
+            match plugin.observe(repo_root) {
+                Ok(Some(observation)) => {
+                    plugins.insert(plugin.meta().name.to_string(), observation);
+                }
+                Ok(None) => {}
+                Err(error) => packet.warnings.push(format!(
+                    "Plugin `{}` observation failed; packet compiled without it: {error:#}",
+                    plugin.meta().name
+                )),
+            }
+        }
+        let teko = plugins.get("teko").cloned();
         packet.session = Some(context::SessionBlock {
             id: marker.id,
             intent: marker.intent,
             scope: marker.scope,
-            teko: crate::teko::active_work_value(repo_root)?,
+            plugins,
+            teko,
             entry_branch: marker.branch,
             entry_head: marker.head,
         });

@@ -167,6 +167,51 @@ Before commit or handoff:
 toimija verify
 ```
 
+## Plugins
+
+Toimija correlates external tool state with its packets through built-in
+plugins under `src/plugins/`. A plugin is a synchronous subprocess adapter: it
+observes one tool during an explicitly-invoked command, may supply the
+session's identity (intent and scope), and renders one packet section. An
+absent tool disables its plugin silently — plugins are enhancements Toimija
+detects, never requirements it carries. There is no dynamic loading, no plugin
+discovery, and no network. Teko is the first plugin.
+
+### Every plugin works the same way
+
+The `Plugin` trait is the entire contract, and the lifecycle lives in Toimija,
+not in the plugin — so no plugin can deviate from it:
+
+1. **observe** — during a packet refresh, Toimija calls every registered
+   plugin's `observe(repo_root)`. The plugin runs its tool synchronously and
+   returns `Ok(None)` when the tool is absent or has nothing to report, the
+   validated observation when it does, and `Err` only when the tool answered
+   with a broken contract.
+2. **embed** — each observation is stored in the session packet under
+   `session.plugins.<name>`, attested with the rest of the packet.
+3. **identity** — before a `run` session opens, a plugin may derive the
+   session's authoritative intent and write scope from its observation
+   (Teko does; a purely informational plugin returns `None`).
+4. **render** — at agent entry, each stored observation is rendered as one
+   markdown section appended to the launch packet, in registry order.
+
+### Adding a plugin
+
+1. Create `src/plugins/<name>.rs` and implement `Plugin`: `meta()` returns the
+   stable `name` (it keys `session.plugins.<name>` forever — never change it),
+   a one-line `description`, and the external `command` the plugin consumes;
+   then `observe`, `identity`, and `render` as above.
+2. Add the plugin to `all()` in `src/plugins/mod.rs`. Registry order is
+   deterministic and defines render order.
+3. Nothing else. No call-site wiring, no schema change, no config. The
+   registry test enforces unique, non-empty metadata.
+
+Rules every plugin follows, without exception: a missing tool disables the
+plugin silently rather than erroring; the tool is invoked synchronously during
+an explicitly-invoked command and never as a daemon; the stored observation is
+the tool's own derived truth, validated but not reshaped; and no plugin makes
+network calls.
+
 ## Bounded work with Teko
 
 Teko keeps one ratified task active across agent restarts and interrupted
@@ -175,15 +220,13 @@ Toimija's generated packets, session records, history, and Teko database do not
 count as worktree changes.
 
 ```bash
-teko new \
+teko begin \
   --title "Fix login" \
   --objective "Repair the redirect" \
   --goal regression="A regression test covers the fix" \
   --non-goal "Redesign authentication" \
   --gate test="cargo test" \
-  --completion validated \
-  --ratify
-teko start --scope src/auth --scope tests
+  --scope src/auth --scope tests
 teko show
 toimija run -- codex
 teko verify --claim regression
@@ -191,9 +234,11 @@ teko close
 ```
 
 `show` prints stable closure-blocker IDs and one copy-pasteable next command.
-Toimija reads active work from the standalone `teko show --json` command,
-embeds it as structured, attested session data in every packet, and includes it
-in known agents' launch prompts. Kisko consumes that data as its durable task
+The Teko plugin reads active work from the standalone `teko current` command
+(one JSON envelope; `{"active": null}` means no bounded work), embeds it under
+the session packet's `plugins.teko` key as structured, attested data, and
+also emits the v1 compatibility alias `session.teko`. It includes that data in
+known agents' launch prompts. Kisko consumes that data as its durable task
 contract, refreshes it through Toimija after writes, and accepts completion
 only when Teko is closable. Without `--intent`, the session marker uses
 `teko:<work-id> — <objective>` and combines Teko's write scope with explicit
