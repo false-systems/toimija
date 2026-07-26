@@ -22,6 +22,10 @@ pub struct PluginMeta {
     pub description: &'static str,
     /// External command the plugin consumes; its absence disables the plugin.
     pub command: &'static str,
+    /// Command an agent runs to consult the tool directly. Rendered as the
+    /// packet's nudge line whenever the plugin has an observation, so every
+    /// packet read points back at the live tool instead of an aging snapshot.
+    pub check: &'static str,
 }
 
 /// Session identity a plugin derives from its observation: an authoritative
@@ -68,6 +72,7 @@ mod tests {
             assert!(!meta.name.is_empty());
             assert!(!meta.description.is_empty());
             assert!(!meta.command.is_empty());
+            assert!(!meta.check.is_empty());
             assert!(
                 names.insert(meta.name),
                 "duplicate plugin name `{}`",
