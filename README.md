@@ -194,13 +194,18 @@ not in the plugin — so no plugin can deviate from it:
    (Teko does; a purely informational plugin returns `None`).
 4. **render** — at agent entry, each stored observation is rendered as one
    markdown section appended to the launch packet, in registry order.
+5. **nudge** — every rendered packet's Session block carries one line per
+   observed plugin naming it and its check command (Teko: `teko show`), so an
+   agent re-reading its live packet mid-session is pointed back at the tool —
+   the packet embeds a snapshot, but the tool stays authoritative.
 
 ### Adding a plugin
 
 1. Create `src/plugins/<name>.rs` and implement `Plugin`: `meta()` returns the
    stable `name` (it keys `session.plugins.<name>` forever — never change it),
-   a one-line `description`, and the external `command` the plugin consumes;
-   then `observe`, `identity`, and `render` as above.
+   a one-line `description`, the external `command` the plugin consumes, and
+   the `check` command an agent runs to consult the tool (the packet's nudge
+   line); then `observe`, `identity`, and `render` as above.
 2. Add the plugin to `all()` in `src/plugins/mod.rs`. Registry order is
    deterministic and defines render order.
 3. Nothing else. No call-site wiring, no schema change, no config. The

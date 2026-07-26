@@ -24,6 +24,7 @@ impl Plugin for TekoPlugin {
             name: "teko",
             description: "active bounded work: intent, write scope, and closure blockers",
             command: "teko",
+            check: "teko show",
         }
     }
 

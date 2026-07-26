@@ -227,6 +227,16 @@ fn active_teko_work_supplies_session_intent_and_scope() {
         packet["session"]["teko"],
         packet["session"]["plugins"]["teko"]
     );
+    // The nudge lives in the packet FILE, not only the printed entry: an
+    // agent re-reading its live packet mid-session is pointed back at the
+    // tool that stays authoritative for the observation.
+    let markdown = fs::read_to_string(session.join("current.md")).unwrap();
+    assert!(
+        markdown.contains(
+            "- plugin teko: active bounded work: intent, write scope, and closure blockers — check: `teko show`"
+        ),
+        "session packet markdown carries no plugin nudge:\n{markdown}"
+    );
 }
 
 #[cfg(unix)]
