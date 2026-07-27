@@ -24,6 +24,12 @@ Git is not a save button here. Git is the substrate.
 
 > Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
 
+Toimija is also the runtime composition point: Teko optionally provides work,
+Kisko or a built-in Codex/Claude adapter provides a launch plan, and Toimija
+owns the harness process, terminal, signals, and authoritative repository
+points. Products meet through `work.v1` and `worker.v1`; none is linked into
+another.
+
 ## Start in 30 seconds
 
 ```bash
@@ -182,10 +188,10 @@ gone; malformed records degrade the listing instead of hiding valid history.
 deletion, old run transcripts are removed after 14 days, and exact orphaned
 atomic-write temp files are removed after one hour.
 
-This is awareness, not orchestration. Toimija never assigns work, dispatches an
-agent, blocks a sibling, or kills a process. Session state is read and written
-synchronously while an explicit command is running; the human remains the
-orchestrator.
+This is runtime composition, not agent orchestration. Toimija launches and
+supervises the selected harness, but never assigns work, dispatches agents, or
+blocks siblings. Session state is read and written synchronously while an
+explicit command is running; the human remains the orchestrator.
 
 Before commit or handoff:
 
@@ -217,12 +223,11 @@ teko close
 ```
 
 `show` prints stable closure-blocker IDs and one copy-pasteable next command.
-Toimija reads active work from the standalone `teko show --json` command,
-embeds it as structured, attested session data in every packet, and includes it
-in known agents' launch prompts. Kisko consumes that data as its durable task
-contract, refreshes it through Toimija after writes, and accepts completion
-only when Teko is closable. `teko <command> --help` documents each step and
-includes an example.
+Toimija discovers `teko plugin serve --stdio`, negotiates `work.v1`, and asks
+for active work using its authoritative repository point before launching the
+harness. The resulting canonical execution context reaches Kisko, Codex, and
+Claude. After exit, Toimija refreshes repository truth and sends the normalized
+worker result back through `work.observe`; only Teko may close the work.
 
 ## Commands
 
@@ -234,7 +239,7 @@ includes an example.
 | `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
 | `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
 | `history` | List durable records of concluded sessions; `--json` emits all valid records. |
-| `teko` (standalone) | Persist, resume, verify, and honestly close one bounded work item. |
+| `plugins list`, `plugins doctor`, `plugins inspect` | Inspect trusted runtime providers and negotiated capabilities. |
 | `clean` | Reclaim expired owned artifacts; `--dry-run` lists candidates without changing disk. |
 | `audit-plan` | Partition broad reviews into bounded deterministic worksets. |
 | `validate --plan` | Render inferred and configured validation commands; never execute them. |
