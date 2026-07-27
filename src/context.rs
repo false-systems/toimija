@@ -20,7 +20,7 @@ fn default_context_schema() -> String {
     CONTEXT_SCHEMA.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextPacket {
     #[serde(default = "default_context_schema")]
     pub schema: String,
@@ -65,7 +65,7 @@ pub struct ContextPacket {
 /// that session says it is here. `scope` is the agent's declaration, distinct
 /// from the Git-derived workset under `relevance.scope`. Advisory, like the
 /// marker it mirrors.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionBlock {
     pub id: String,
     pub intent: Option<String>,
@@ -78,6 +78,9 @@ pub struct SessionBlock {
     /// Compatibility alias for `plugins.teko` within the v1 packet schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teko: Option<serde_json::Value>,
+    /// Ephemeral projection of active Teko work plus current Toimija truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<teko_protocol::ExecutionContextEnvelope>,
     /// Branch and HEAD captured when `run` entered the session. They stay fixed
     /// so later packets can report drift instead of overwriting the baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -640,6 +643,7 @@ mod tests {
                 scope: Vec::new(),
                 plugins: Default::default(),
                 teko: None,
+                execution: None,
                 entry_branch: None,
                 entry_head: None,
             }),

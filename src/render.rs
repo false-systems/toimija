@@ -1118,6 +1118,7 @@ mod tests {
             scope: Vec::new(),
             plugins: Default::default(),
             teko: None,
+            execution: None,
             entry_branch: None,
             entry_head: None,
         });
@@ -1136,6 +1137,7 @@ mod tests {
             scope: vec!["src/a.rs".to_string()],
             plugins: Default::default(),
             teko: None,
+            execution: None,
             entry_branch: None,
             entry_head: None,
         });
@@ -1163,6 +1165,7 @@ mod tests {
             scope: Vec::new(),
             plugins,
             teko: None,
+            execution: None,
             entry_branch: None,
             entry_head: None,
         });
@@ -1184,6 +1187,7 @@ mod tests {
             scope: Vec::new(),
             plugins: Default::default(),
             teko: None,
+            execution: None,
             entry_branch: Some("feat/before".to_string()),
             entry_head: Some("aaaaaaa111".to_string()),
         });

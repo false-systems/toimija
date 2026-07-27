@@ -30,6 +30,11 @@ fn replace_before_rename(
     };
     let result = (|| {
         file.write_all(contents)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         file.sync_all()?;
         drop(file);
         before_rename(&temp)?;

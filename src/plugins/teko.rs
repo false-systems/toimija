@@ -57,18 +57,15 @@ impl Plugin for TekoPlugin {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ActiveWork {
     pub packet: WorkPacketEnvelope,
     pub status: Value,
 }
 
-#[allow(dead_code)]
 pub(crate) fn active_work(repo_root: &Path) -> Result<Option<ActiveWork>> {
     active_work_with(&ProcessCommandRunner, repo_root)
 }
 
-#[allow(dead_code)]
 fn active_work_with(runner: &impl CommandRunner, repo_root: &Path) -> Result<Option<ActiveWork>> {
     let current = match runner.run(repo_root, "teko", &["current"]) {
         Ok(output) => output,

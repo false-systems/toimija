@@ -13,7 +13,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::Value;
 
-mod teko;
+pub(crate) mod teko;
 
 /// What a plugin is, stated once. `name` keys the plugin's observation in the
 /// packet's `session.plugins` map and must never change across releases.
