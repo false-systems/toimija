@@ -7,6 +7,7 @@ pub mod command;
 pub mod config;
 pub mod consistency;
 pub mod context;
+pub mod correlation;
 pub mod coverage;
 pub mod error;
 pub mod footprint;

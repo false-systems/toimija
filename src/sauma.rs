@@ -21,6 +21,12 @@ pub enum SaumaProvenance {
     Git { oid: String },
     Token { token: String },
     Artifact { digest: String },
+    Spec { id: String },
+    Work { id: String },
+    Session { id: String },
+    WorkerRun { id: String },
+    RepositoryPoint { id: String },
+    External { r#ref: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
