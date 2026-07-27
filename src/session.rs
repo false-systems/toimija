@@ -11,13 +11,34 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+use false_agent_protocol::{WorkerRunRef, WorkerRunResultEnvelope};
 use serde::{Deserialize, Serialize};
 
 use crate::refresh;
+use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
 
 /// Directory, relative to the repo root, holding all per-session state.
 pub const SESSIONS_SUBDIR: &str = ".toimija/sessions";
+pub const RUN_RECEIPT_SCHEMA: &str = "toimija-run-session.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunReceipt {
+    pub schema: String,
+    pub session: String,
+    pub worker_run: WorkerRunRef,
+    pub result_digest: String,
+    pub worktree: String,
+    pub closed_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sauma: Option<SaumaEnvelope>,
+}
+
+impl sauma::Carrier for RunReceipt {
+    fn sauma_mut(&mut self) -> &mut Option<SaumaEnvelope> {
+        &mut self.sauma
+    }
+}
 
 /// Lifecycle of a session, recorded in its marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +174,64 @@ impl Session {
         self.write_marker()
     }
 
+    pub fn record_worker_run(
+        &self,
+        repo_root: &Path,
+        result: &WorkerRunResultEnvelope,
+    ) -> Result<PathBuf> {
+        ensure!(
+            self.marker.status == SessionStatus::Closed,
+            "cannot record a worker run for active session {}",
+            self.id
+        );
+        let closed_at = self
+            .marker
+            .closed_at
+            .context("closed session has no close timestamp")?;
+        let mut receipt = RunReceipt {
+            schema: RUN_RECEIPT_SCHEMA.into(),
+            session: self.id.clone(),
+            worker_run: result.run.clone(),
+            result_digest: result.result_digest.clone(),
+            worktree: self.marker.worktree.clone(),
+            closed_at,
+            sauma: None,
+        };
+        sauma::attach(
+            &mut receipt,
+            RUN_RECEIPT_SCHEMA,
+            vec![
+                SaumaProvenance::Session {
+                    id: self.id.clone(),
+                },
+                SaumaProvenance::WorkerRun {
+                    id: result.run.to_string(),
+                },
+                SaumaProvenance::Artifact {
+                    digest: result.result_digest.clone(),
+                },
+            ],
+            &result.result_digest,
+            Some(self.id.clone()),
+        )?;
+        let path = run_receipt_path(repo_root, &result.run);
+        if path.exists() {
+            let existing = read_run_receipt(repo_root, &result.run)?;
+            ensure!(
+                existing == receipt,
+                "worker run {} is already owned by session {}",
+                result.run,
+                existing.session
+            );
+            return Ok(path);
+        }
+        let mut bytes = serde_json::to_vec_pretty(&receipt)?;
+        bytes.push(b'\n');
+        crate::atomic_write::replace(&path, &bytes)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        Ok(path)
+    }
+
     /// The live-packet handshake the wrapped child inherits. The per-session
     /// `TOIMIJA_LIVE` is authoritative for the agent; `TOIMIJA_REPO_LIVE` is the
     /// demoted repo-level summary. Absolute paths, so they survive the agent
@@ -196,6 +275,41 @@ impl Session {
             .with_context(|| format!("failed to write {}", self.marker_path.display()))?;
         Ok(())
     }
+}
+
+pub fn run_receipt_path(repo_root: &Path, run: &WorkerRunRef) -> PathBuf {
+    repo_root
+        .join(".toimija/runs")
+        .join(format!("{run}.session.json"))
+}
+
+pub fn read_run_receipt(repo_root: &Path, run: &WorkerRunRef) -> Result<RunReceipt> {
+    const MAX_BYTES: u64 = 1024 * 1024;
+    let path = run_receipt_path(repo_root, run);
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= MAX_BYTES,
+        "run receipt must be a bounded regular file"
+    );
+    let mut receipt: RunReceipt = serde_json::from_slice(&fs::read(&path)?)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    ensure!(
+        receipt.schema == RUN_RECEIPT_SCHEMA,
+        "unsupported run receipt schema"
+    );
+    ensure!(
+        receipt
+            .sauma
+            .as_ref()
+            .is_some_and(|envelope| envelope.envelope == sauma::ENVELOPE_SCHEMA),
+        "run receipt has no supported Sauma envelope"
+    );
+    ensure!(
+        sauma::verify(&mut receipt)?.is_none(),
+        "run receipt digest mismatch"
+    );
+    Ok(receipt)
 }
 
 /// The `run` session this process was launched under, if any: a valid

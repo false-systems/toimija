@@ -54,7 +54,7 @@ impl sauma::Carrier for WorkCorrelation {
 
 pub struct CorrelateInput {
     pub url: String,
-    pub session: String,
+    pub session: Option<String>,
     pub run: Option<String>,
 }
 
@@ -65,9 +65,9 @@ pub fn create(
 ) -> Result<(WorkCorrelation, PathBuf)> {
     let pull_request = parse_pull_request_url(&input.url)?;
     ensure_origin_matches(runner, repo_root, &pull_request.repository)?;
-    validate_session(repo_root, &input.session)?;
 
     let result = read_result(repo_root, input.run.as_deref())?;
+    let session = session_for_run(repo_root, &result, input.session.as_deref())?;
     let binding = result
         .binding
         .as_ref()
@@ -110,7 +110,7 @@ pub fn create(
         created_at: now_timestamp(),
         spec: binding.spec.clone(),
         work: binding.work.clone(),
-        session: input.session,
+        session,
         worker_run: result.run.clone(),
         origin: result.origin.clone(),
         destination,
@@ -275,19 +275,80 @@ fn read_path(path: &Path) -> Result<WorkCorrelation> {
     Ok(correlation)
 }
 
-fn validate_session(repo_root: &Path, id: &str) -> Result<()> {
+fn session_for_run(
+    repo_root: &Path,
+    result: &WorkerRunResultEnvelope,
+    expected: Option<&str>,
+) -> Result<String> {
+    let run = &result.run;
+    let receipt = crate::session::read_run_receipt(repo_root, run)?;
+    ensure!(
+        receipt.worker_run == *run,
+        "run receipt references worker run {}, expected {run}",
+        receipt.worker_run
+    );
+    ensure!(
+        receipt.result_digest == result.result_digest,
+        "run receipt does not match worker result {run}"
+    );
+    if let Some(id) = expected {
+        ensure!(
+            receipt.session == id,
+            "worker run {run} was produced by session {}, not {id}",
+            receipt.session
+        );
+    }
+    ensure!(
+        crate::session::is_valid_session_id(&receipt.session),
+        "run receipt has invalid session id `{}`",
+        receipt.session
+    );
+    validate_worktree(repo_root, &receipt.session, &receipt.worktree)?;
+
+    let session_dir = repo_root
+        .join(crate::session::SESSIONS_SUBDIR)
+        .join(&receipt.session);
+    match fs::symlink_metadata(session_dir.join("session.json")) {
+        Ok(_) => {
+            validate_session(repo_root, &receipt.session)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("failed to inspect producing session marker"),
+    }
+    Ok(receipt.session)
+}
+
+fn validate_session(repo_root: &Path, id: &str) -> Result<crate::session::SessionMarker> {
     ensure!(
         crate::session::is_valid_session_id(id),
         "invalid session id `{id}`"
     );
     let marker =
         crate::session::load_marker(&repo_root.join(crate::session::SESSIONS_SUBDIR).join(id))?;
+    validate_marker(repo_root, id, &marker)?;
+    Ok(marker)
+}
+
+fn validate_marker(
+    repo_root: &Path,
+    id: &str,
+    marker: &crate::session::SessionMarker,
+) -> Result<()> {
+    ensure!(marker.id == id, "session marker id does not match `{id}`");
+    ensure!(
+        marker.status == crate::session::SessionStatus::Closed,
+        "session {id} is still active"
+    );
+    validate_worktree(repo_root, id, &marker.worktree)
+}
+
+fn validate_worktree(repo_root: &Path, id: &str, worktree: &str) -> Result<()> {
     let expected = repo_root
         .canonicalize()
         .unwrap_or_else(|_| repo_root.into());
-    let observed = Path::new(&marker.worktree)
+    let observed = Path::new(worktree)
         .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(&marker.worktree));
+        .unwrap_or_else(|_| PathBuf::from(worktree));
     ensure!(
         observed == expected,
         "session {id} belongs to a different worktree"

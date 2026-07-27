@@ -166,7 +166,9 @@ The command validates the local `origin`, session, worker result, repository
 point, and commit without contacting GitHub. It writes a Sauma-attested
 `.toimija/runs/<run>.correlation.json` connecting the Teko spec/work, Toimija
 session and repository points, worker run, commit, evidence, and declared PR
-reference. `toimija explain-work` displays the link; `sauma why
+reference. The producing session is derived from Toimija's finalized run
+record; `--run` selects a specific run and `--session` asserts its producer.
+`toimija explain-work` displays the link; `sauma why
 github:false-systems/kisko#171` walks it.
 
 ### Worker providers
