@@ -332,32 +332,6 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
             }
         )
         .unwrap();
-        // Every observed plugin leaves a nudge: the packet embeds the
-        // observation snapshot, but the tool itself stays authoritative — the
-        // check command is where the agent gets the fresh answer.
-        for name in session.plugins.keys() {
-            match crate::plugins::all()
-                .iter()
-                .find(|plugin| plugin.meta().name == name)
-            {
-                Some(plugin) => {
-                    let meta = plugin.meta();
-                    writeln!(
-                        &mut output,
-                        "- plugin {}: {} — check: `{}`",
-                        meta.name, meta.description, meta.check
-                    )
-                    .unwrap();
-                }
-                None => {
-                    writeln!(
-                        &mut output,
-                        "- plugin {name}: observation carried in the packet JSON"
-                    )
-                    .unwrap();
-                }
-            }
-        }
     }
 
     // Proposal 0005: the contract renders on every packet and early.
@@ -1116,8 +1090,7 @@ mod tests {
             id: "100-1".to_string(),
             intent: None,
             scope: Vec::new(),
-            plugins: Default::default(),
-            teko: None,
+            execution: None,
             entry_branch: None,
             entry_head: None,
         });
@@ -1134,8 +1107,7 @@ mod tests {
             id: "100-1".to_string(),
             intent: Some("test drive 2".to_string()),
             scope: vec!["src/a.rs".to_string()],
-            plugins: Default::default(),
-            teko: None,
+            execution: None,
             entry_branch: None,
             entry_head: None,
         });
@@ -1147,33 +1119,6 @@ mod tests {
     }
 
     #[test]
-    fn observed_plugins_render_a_check_nudge_in_the_session_block() {
-        let mut packet = packet();
-        let mut plugins = std::collections::BTreeMap::new();
-        plugins.insert(
-            "teko".to_string(),
-            serde_json::json!({"work": {"id": "w1"}}),
-        );
-        // A name outside the registry (e.g. a packet written by a newer
-        // toimija) still nudges, without inventing a check command.
-        plugins.insert("unregistered".to_string(), serde_json::json!({}));
-        packet.session = Some(crate::context::SessionBlock {
-            id: "100-1".to_string(),
-            intent: None,
-            scope: Vec::new(),
-            plugins,
-            teko: None,
-            entry_branch: None,
-            entry_head: None,
-        });
-        let rendered = render_context_markdown(&packet, 4000);
-        assert!(rendered.contains(
-            "- plugin teko: active bounded work: intent, write scope, and closure blockers — check: `teko show`"
-        ));
-        assert!(rendered.contains("- plugin unregistered: observation carried in the packet JSON"));
-    }
-
-    #[test]
     fn session_drift_compares_entry_to_current_git_state() {
         let mut packet = packet();
         packet.git.branch = Some("feat/after".to_string());
@@ -1182,8 +1127,7 @@ mod tests {
             id: "100-1".to_string(),
             intent: Some("move safely".to_string()),
             scope: Vec::new(),
-            plugins: Default::default(),
-            teko: None,
+            execution: None,
             entry_branch: Some("feat/before".to_string()),
             entry_head: Some("aaaaaaa111".to_string()),
         });

@@ -18,10 +18,29 @@ pub const DAY_SECS: u64 = 24 * 60 * 60;
 #[serde(default)]
 pub struct RepoConfig {
     pub repo: RepoSection,
+    pub composition: CompositionSection,
     pub context: ContextSection,
     pub validation: ValidationSection,
     pub stewardship: StewardshipSection,
     pub boundaries: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct CompositionSection {
+    pub work: Option<String>,
+    pub default_worker: Option<String>,
+    pub require_work: bool,
+}
+
+impl Default for CompositionSection {
+    fn default() -> Self {
+        Self {
+            work: Some("teko".into()),
+            default_worker: None,
+            require_work: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

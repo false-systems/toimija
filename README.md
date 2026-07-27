@@ -39,6 +39,32 @@ for known agents (`claude`, `codex`, and `gemini`), keeps it fresh while the
 agent works, and exits with the wrapped command’s status plus an entry-to-exit
 summary.
 
+Toimija can compose optional work and worker providers at runtime without
+linking their product crates. Trusted commands live in
+`$XDG_CONFIG_HOME/toimija/plugins.toml` (or
+`~/.config/toimija/plugins.toml`):
+
+```toml
+[plugins.teko]
+kind = "work"
+command = "teko"
+args = ["plugin", "serve", "--stdio"]
+required = false
+
+[plugins.kisko]
+kind = "worker"
+command = "kisko"
+args = ["plugin", "serve", "--stdio"]
+```
+
+`toimija plugins list`, `plugins doctor`, and `plugins inspect teko` expose
+discovery and negotiation. `toimija run --require-work -- codex` fails closed
+when `work.v1` is unavailable; ordinary runs remain valid and unbound.
+Repository configuration may select plugin IDs, but never supplies executable
+paths. Toimija obtains work before launch, gives every adapter the same
+canonical context, launches the harness itself, refreshes repository truth,
+and reports the normalized result back to the work provider.
+
 Use `--task` to include the concrete assignment:
 
 ```bash
@@ -167,56 +193,6 @@ Before commit or handoff:
 toimija verify
 ```
 
-## Plugins
-
-Toimija correlates external tool state with its packets through built-in
-plugins under `src/plugins/`. A plugin is a synchronous subprocess adapter: it
-observes one tool during an explicitly-invoked command, may supply the
-session's identity (intent and scope), and renders one packet section. An
-absent tool disables its plugin silently — plugins are enhancements Toimija
-detects, never requirements it carries. There is no dynamic loading, no plugin
-discovery, and no network. Teko is the first plugin.
-
-### Every plugin works the same way
-
-The `Plugin` trait is the entire contract, and the lifecycle lives in Toimija,
-not in the plugin — so no plugin can deviate from it:
-
-1. **observe** — during a packet refresh, Toimija calls every registered
-   plugin's `observe(repo_root)`. The plugin runs its tool synchronously and
-   returns `Ok(None)` when the tool is absent or has nothing to report, the
-   validated observation when it does, and `Err` only when the tool answered
-   with a broken contract.
-2. **embed** — each observation is stored in the session packet under
-   `session.plugins.<name>`, attested with the rest of the packet.
-3. **identity** — before a `run` session opens, a plugin may derive the
-   session's authoritative intent and write scope from its observation
-   (Teko does; a purely informational plugin returns `None`).
-4. **render** — at agent entry, each stored observation is rendered as one
-   markdown section appended to the launch packet, in registry order.
-5. **nudge** — every rendered packet's Session block carries one line per
-   observed plugin naming it and its check command (Teko: `teko show`), so an
-   agent re-reading its live packet mid-session is pointed back at the tool —
-   the packet embeds a snapshot, but the tool stays authoritative.
-
-### Adding a plugin
-
-1. Create `src/plugins/<name>.rs` and implement `Plugin`: `meta()` returns the
-   stable `name` (it keys `session.plugins.<name>` forever — never change it),
-   a one-line `description`, the external `command` the plugin consumes, and
-   the `check` command an agent runs to consult the tool (the packet's nudge
-   line); then `observe`, `identity`, and `render` as above.
-2. Add the plugin to `all()` in `src/plugins/mod.rs`. Registry order is
-   deterministic and defines render order.
-3. Nothing else. No call-site wiring, no schema change, no config. The
-   registry test enforces unique, non-empty metadata.
-
-Rules every plugin follows, without exception: a missing tool disables the
-plugin silently rather than erroring; the tool is invoked synchronously during
-an explicitly-invoked command and never as a daemon; the stored observation is
-the tool's own derived truth, validated but not reshaped; and no plugin makes
-network calls.
-
 ## Bounded work with Teko
 
 Teko keeps one ratified task active across agent restarts and interrupted
@@ -225,13 +201,15 @@ Toimija's generated packets, session records, history, and Teko database do not
 count as worktree changes.
 
 ```bash
-teko begin \
+teko new \
   --title "Fix login" \
   --objective "Repair the redirect" \
   --goal regression="A regression test covers the fix" \
   --non-goal "Redesign authentication" \
   --gate test="cargo test" \
-  --scope src/auth --scope tests
+  --completion validated \
+  --ratify
+teko start --scope src/auth --scope tests
 teko show
 toimija run -- codex
 teko verify --claim regression
@@ -239,16 +217,12 @@ teko close
 ```
 
 `show` prints stable closure-blocker IDs and one copy-pasteable next command.
-The Teko plugin reads active work from the standalone `teko current` command
-(one JSON envelope; `{"active": null}` means no bounded work), embeds it under
-the session packet's `plugins.teko` key as structured, attested data, and
-also emits the v1 compatibility alias `session.teko`. It includes that data in
-known agents' launch prompts. Kisko consumes that data as its durable task
+Toimija reads active work from the standalone `teko show --json` command,
+embeds it as structured, attested session data in every packet, and includes it
+in known agents' launch prompts. Kisko consumes that data as its durable task
 contract, refreshes it through Toimija after writes, and accepts completion
-only when Teko is closable. Without `--intent`, the session marker uses
-`teko:<work-id> — <objective>` and combines Teko's write scope with explicit
-`--scope` paths. `teko <command> --help` documents each step and includes an
-example.
+only when Teko is closable. `teko <command> --help` documents each step and
+includes an example.
 
 ## Commands
 
@@ -256,6 +230,7 @@ example.
 | --- | --- |
 | `run --intent "..." -- <agent>` | Compile, deliver, refresh, and summarize a wrapped agent session. |
 | `enter`, `context`, `refresh`, `watch` | Produce or maintain the live packet directly. |
+| `repository-point`, `explain-work` | Export versioned repository truth or explain active shared work (`--json` for machines). |
 | `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
 | `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
 | `history` | List durable records of concluded sessions; `--json` emits all valid records. |
@@ -276,17 +251,17 @@ variable, packet field, and output guarantee.
 
 ## Language support
 
-Rust and Elixir have full adapters. Go, Python, JavaScript/TypeScript, and
-Terraform receive the minimum language pack: repository detection and
-evidence-backed validation-plan hints. Source languages also receive
-companion-test discovery. Commands without the required repository evidence are
-omitted with a note. Other repositories work through `.toimija/repo.yaml`.
+Rust and Elixir have full adapters. Go, Python, and JavaScript/TypeScript receive
+the minimum language pack: repository detection, evidence-backed validation-plan
+hints, and companion-test discovery. Commands without the required repository
+evidence are omitted with a note. Other repositories work through
+`.toimija/repo.yaml`.
 
 All recognized languages live in one compile-time registry. Basic support is
 one kind plus one data row; a dedicated adapter is needed only for project-aware
 behavior.
 
-Packets also report recognized secondary languages from a bounded root-marker
+Packets also report recognized secondary languages from a bounded manifest
 walk. Secondary observations do not change the primary kind or validation plan.
 
 Adapters contribute hints; they do not parse source code. Git-derived context

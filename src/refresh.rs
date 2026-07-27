@@ -40,11 +40,20 @@ pub struct Refreshed {
 /// target. `session_dir = Some(dir)` writes the per-session packet (and mirrors
 /// the repo-level summary); `None` writes only the repo-level packet. Bundled so
 /// it travels as one value through `run` and the watch loop.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Plan {
     pub for_diff: bool,
     pub budget: Option<usize>,
     pub session_dir: Option<PathBuf>,
+    pub work: WorkSource,
+}
+
+#[derive(Clone, Default)]
+pub enum WorkSource {
+    #[default]
+    Discover,
+    Unbound,
+    Provider(crate::teko::SharedWorkProvider),
 }
 
 impl Plan {
@@ -52,7 +61,14 @@ impl Plan {
     /// repo-level writer.
     pub fn run(&self, runner: &impl CommandRunner, repo_root: &Path) -> Result<Refreshed> {
         match &self.session_dir {
-            Some(dir) => refresh_session(runner, repo_root, self.for_diff, self.budget, dir),
+            Some(dir) => refresh_session(
+                runner,
+                repo_root,
+                self.for_diff,
+                self.budget,
+                dir,
+                &self.work,
+            ),
             None => refresh(runner, repo_root, self.for_diff, self.budget),
         }
     }
@@ -68,7 +84,14 @@ pub fn refresh(
     for_diff: bool,
     budget_override: Option<usize>,
 ) -> Result<Refreshed> {
-    let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override, None)?;
+    let (packet, markdown, json) = compute(
+        runner,
+        repo_root,
+        for_diff,
+        budget_override,
+        None,
+        &WorkSource::Discover,
+    )?;
     let md_path = repo_root.join(CURRENT_MD);
     let json_path = repo_root.join(CURRENT_JSON);
     write_packet(&md_path, &json_path, &markdown, &json)?;
@@ -91,6 +114,7 @@ pub fn refresh_session(
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: &Path,
+    work: &WorkSource,
 ) -> Result<Refreshed> {
     let (packet, markdown, json) = compute(
         runner,
@@ -98,11 +122,30 @@ pub fn refresh_session(
         for_diff,
         budget_override,
         Some(session_dir),
+        work,
     )?;
     let md_path = session_dir.join("current.md");
     let json_path = session_dir.join("current.json");
     // The session packet is authoritative for the agent — its failure is fatal.
     write_packet(&md_path, &json_path, &markdown, &json)?;
+    let context_path = session_dir.join(crate::semantic::CONTEXT_FILE);
+    let execution = packet
+        .session
+        .as_ref()
+        .and_then(|session| session.execution.as_ref());
+    if let Some(execution) = execution {
+        crate::semantic::write_json(&context_path, execution)?;
+    } else {
+        let _ = fs::remove_file(context_path);
+    }
+    let point = match execution {
+        Some(execution) => execution.repository.clone(),
+        None => crate::semantic::repository_point(runner, &packet)?,
+    };
+    crate::semantic::write_json(
+        &session_dir.join(crate::semantic::POINT_FILE),
+        &crate::semantic::point_envelope(point),
+    )?;
     // The repo-level summary is demoted (last-writer-wins) and best-effort: a
     // failure mirroring it must not abort the already-written session packet, or
     // a transient summary write error would freeze the agent's live context.
@@ -138,41 +181,44 @@ fn compute(
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: Option<&Path>,
+    work: &WorkSource,
 ) -> Result<(ContextPacket, String, String)> {
     let mut packet = context::build_context_packet(runner, repo_root, for_diff)
         .context("failed to build context packet")?;
+    let artifact_id = artifact_id();
+    packet.artifact_id = Some(artifact_id.clone());
+    let generation = artifact_id
+        .split('-')
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
     if let Some(dir) = session_dir
         && let Ok(marker) = session::load_marker(dir)
     {
-        let mut plugins = std::collections::BTreeMap::new();
-        for plugin in crate::plugins::all() {
-            // Plugins are enhancements, never requirements: a failing tool
-            // degrades the packet with a warning instead of failing the
-            // refresh (and with it `run`'s entry, watch loop, and exit
-            // summary).
-            match plugin.observe(repo_root) {
-                Ok(Some(observation)) => {
-                    plugins.insert(plugin.meta().name.to_string(), observation);
-                }
-                Ok(None) => {}
-                Err(error) => packet.warnings.push(format!(
-                    "Plugin `{}` observation failed; packet compiled without it: {error:#}",
-                    plugin.meta().name
-                )),
-            }
-        }
-        let teko = plugins.get("teko").cloned();
+        let point = crate::semantic::repository_point(runner, &packet)?;
+        let active = match work {
+            WorkSource::Discover => crate::teko::active_work_at(repo_root, &point, false)?,
+            WorkSource::Unbound => None,
+            WorkSource::Provider(provider) => provider
+                .lock()
+                .map_err(|_| anyhow::anyhow!("work provider session lock was poisoned"))?
+                .current(&point)?,
+        };
         packet.session = Some(context::SessionBlock {
             id: marker.id,
             intent: marker.intent,
             scope: marker.scope,
-            plugins,
-            teko,
+            execution: None,
             entry_branch: marker.branch,
             entry_head: marker.head,
         });
+        let execution = crate::semantic::execution_context(runner, &packet, active, generation)?;
+        packet
+            .session
+            .as_mut()
+            .expect("session was just installed")
+            .execution = Some(execution);
     }
-    packet.artifact_id = Some(artifact_id());
     let run = packet.session.as_ref().map(|session| session.id.clone());
     packet.attach_sauma(run)?;
     let budget = budget_override
