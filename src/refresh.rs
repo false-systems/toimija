@@ -40,11 +40,20 @@ pub struct Refreshed {
 /// target. `session_dir = Some(dir)` writes the per-session packet (and mirrors
 /// the repo-level summary); `None` writes only the repo-level packet. Bundled so
 /// it travels as one value through `run` and the watch loop.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Plan {
     pub for_diff: bool,
     pub budget: Option<usize>,
     pub session_dir: Option<PathBuf>,
+    pub work: WorkSource,
+}
+
+#[derive(Clone, Default)]
+pub enum WorkSource {
+    #[default]
+    Discover,
+    Unbound,
+    Provider(crate::teko::SharedWorkProvider),
 }
 
 impl Plan {
@@ -52,7 +61,14 @@ impl Plan {
     /// repo-level writer.
     pub fn run(&self, runner: &impl CommandRunner, repo_root: &Path) -> Result<Refreshed> {
         match &self.session_dir {
-            Some(dir) => refresh_session(runner, repo_root, self.for_diff, self.budget, dir),
+            Some(dir) => refresh_session(
+                runner,
+                repo_root,
+                self.for_diff,
+                self.budget,
+                dir,
+                &self.work,
+            ),
             None => refresh(runner, repo_root, self.for_diff, self.budget),
         }
     }
@@ -68,7 +84,14 @@ pub fn refresh(
     for_diff: bool,
     budget_override: Option<usize>,
 ) -> Result<Refreshed> {
-    let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override, None)?;
+    let (packet, markdown, json) = compute(
+        runner,
+        repo_root,
+        for_diff,
+        budget_override,
+        None,
+        &WorkSource::Discover,
+    )?;
     let md_path = repo_root.join(CURRENT_MD);
     let json_path = repo_root.join(CURRENT_JSON);
     write_packet(&md_path, &json_path, &markdown, &json)?;
@@ -91,6 +114,7 @@ pub fn refresh_session(
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: &Path,
+    work: &WorkSource,
 ) -> Result<Refreshed> {
     let (packet, markdown, json) = compute(
         runner,
@@ -98,6 +122,7 @@ pub fn refresh_session(
         for_diff,
         budget_override,
         Some(session_dir),
+        work,
     )?;
     let md_path = session_dir.join("current.md");
     let json_path = session_dir.join("current.json");
@@ -156,6 +181,7 @@ fn compute(
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: Option<&Path>,
+    work: &WorkSource,
 ) -> Result<(ContextPacket, String, String)> {
     let mut packet = context::build_context_packet(runner, repo_root, for_diff)
         .context("failed to build context packet")?;
@@ -169,7 +195,15 @@ fn compute(
     if let Some(dir) = session_dir
         && let Ok(marker) = session::load_marker(dir)
     {
-        let active = crate::teko::active_work(repo_root)?;
+        let point = crate::semantic::repository_point(runner, &packet)?;
+        let active = match work {
+            WorkSource::Discover => crate::teko::active_work_at(repo_root, &point, false)?,
+            WorkSource::Unbound => None,
+            WorkSource::Provider(provider) => provider
+                .lock()
+                .map_err(|_| anyhow::anyhow!("work provider session lock was poisoned"))?
+                .current(&point)?,
+        };
         packet.session = Some(context::SessionBlock {
             id: marker.id,
             intent: marker.intent,
@@ -178,15 +212,12 @@ fn compute(
             entry_branch: marker.branch,
             entry_head: marker.head,
         });
-        if let Some(active) = active {
-            let execution =
-                crate::semantic::execution_context(runner, &packet, active, generation)?;
-            packet
-                .session
-                .as_mut()
-                .expect("session was just installed")
-                .execution = Some(execution);
-        }
+        let execution = crate::semantic::execution_context(runner, &packet, active, generation)?;
+        packet
+            .session
+            .as_mut()
+            .expect("session was just installed")
+            .execution = Some(execution);
     }
     let run = packet.session.as_ref().map(|session| session.id.clone());
     packet.attach_sauma(run)?;

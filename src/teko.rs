@@ -1,16 +1,132 @@
-use std::io::ErrorKind;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use serde_json::Value;
-use teko_protocol::WorkPacketEnvelope;
+use false_agent_protocol::{
+    RepositoryPoint, WorkPacketEnvelope, WorkerRunResultEnvelope, WorkflowStatusSummary,
+    plugin::PluginKind,
+    work::{
+        CURRENT_METHOD, CurrentWorkParams, CurrentWorkResult, EXPLAIN_METHOD, ExplainParams,
+        ExplainResult, OBSERVE_METHOD, ObserveParams, ProcessOutcome,
+    },
+};
 
-use crate::command::{CommandRunner, ProcessCommandRunner};
+use crate::command::ProcessCommandRunner;
+use crate::config::RepoConfig;
+use crate::plugins::{PluginSession, discover};
 
 #[derive(Debug, Clone)]
 pub struct ActiveWork {
     pub packet: WorkPacketEnvelope,
-    pub status: Value,
+    pub status: WorkflowStatusSummary,
+}
+
+pub struct WorkProvider {
+    plugin: PluginSession,
+}
+
+pub type SharedWorkProvider = std::sync::Arc<std::sync::Mutex<WorkProvider>>;
+
+impl WorkProvider {
+    pub fn open(
+        repo_root: &Path,
+        point: &RepositoryPoint,
+        required: bool,
+    ) -> Result<(Option<SharedWorkProvider>, Option<ActiveWork>)> {
+        let config = RepoConfig::load_optional(repo_root)?
+            .unwrap_or_else(|| RepoConfig::default_for(repo_root));
+        let provider = config.composition.work.as_deref().unwrap_or("teko");
+        let Some(definition) = discover(provider, PluginKind::Work)? else {
+            if required || config.composition.require_work {
+                bail!(
+                    "Cannot launch bounded work.\n\nRequired capability:\n  work.v1\n\nConfigured provider:\n  {provider}\n\nFailure:\n  executable not found"
+                );
+            }
+            return Ok((None, None));
+        };
+        let bounded = required || config.composition.require_work || definition.required;
+        let attempted = (|| {
+            let plugin =
+                PluginSession::spawn(provider, &definition, repo_root, point.repository.clone())
+                    .with_context(|| format!("failed to initialize work provider `{provider}`"))?;
+            let mut provider = Self { plugin };
+            let active = provider.current(point)?;
+            Ok((
+                Some(std::sync::Arc::new(std::sync::Mutex::new(provider))),
+                active,
+            ))
+        })();
+        match attempted {
+            Ok(value) => Ok(value),
+            Err(error) if bounded => Err(error),
+            Err(error) => {
+                eprintln!("work provider `{provider}` unavailable: {error:#}");
+                Ok((None, None))
+            }
+        }
+    }
+
+    pub fn current(&mut self, point: &RepositoryPoint) -> Result<Option<ActiveWork>> {
+        let current: CurrentWorkResult = self.plugin.call(
+            CURRENT_METHOD,
+            CurrentWorkParams {
+                repository_point: point.clone(),
+                previously_known_work: None,
+            },
+        )?;
+        match current {
+            CurrentWorkResult::None => Ok(None),
+            CurrentWorkResult::Active { work } => {
+                let explained: ExplainResult = self.plugin.call(
+                    EXPLAIN_METHOD,
+                    ExplainParams {
+                        repository_point: point.clone(),
+                    },
+                )?;
+                let status = explained
+                    .status
+                    .context("work provider returned active work without workflow status")?;
+                Ok(Some(ActiveWork {
+                    packet: *work,
+                    status,
+                }))
+            }
+        }
+    }
+
+    pub fn observe_result(
+        &mut self,
+        point: &RepositoryPoint,
+        result: WorkerRunResultEnvelope,
+        outcome: ProcessOutcome,
+    ) -> Result<String> {
+        let binding = result
+            .binding
+            .as_ref()
+            .context("cannot observe an unbound worker result")?;
+        let related_evidence = result
+            .evidence
+            .iter()
+            .map(|evidence| evidence.id.clone())
+            .collect();
+        let work = binding.work.clone();
+        let _: serde_json::Value = self.plugin.call(
+            OBSERVE_METHOD,
+            ObserveParams {
+                work,
+                worker_result: result,
+                repository_point: point.clone(),
+                related_evidence,
+                outcome,
+            },
+        )?;
+        let explained: ExplainResult = self.plugin.call(
+            EXPLAIN_METHOD,
+            ExplainParams {
+                repository_point: point.clone(),
+            },
+        )?;
+        Ok(serde_json::to_string(&explained)?)
+    }
 }
 
 pub fn has_active_work(repo_root: &Path) -> Result<bool> {
@@ -18,40 +134,18 @@ pub fn has_active_work(repo_root: &Path) -> Result<bool> {
 }
 
 pub fn active_work(repo_root: &Path) -> Result<Option<ActiveWork>> {
-    active_work_with(&ProcessCommandRunner, repo_root)
+    let runner = ProcessCommandRunner;
+    let context = crate::context::build_context_packet(&runner, repo_root, false)?;
+    let point = crate::semantic::repository_point(&runner, &context)?;
+    active_work_at(repo_root, &point, false)
 }
 
-fn active_work_with(runner: &impl CommandRunner, repo_root: &Path) -> Result<Option<ActiveWork>> {
-    let current = match runner.run(repo_root, "teko", &["current"]) {
-        Ok(output) => output,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("failed to run `teko current`"),
-    };
-    if current.status != 0 {
-        bail!("`teko current` failed: {}", current.stderr_lossy().trim());
-    }
-    let current: Value =
-        serde_json::from_slice(&current.stdout).context("`teko current` returned invalid JSON")?;
-    let Some(status) = current.get("active").filter(|value| !value.is_null()) else {
-        return Ok(None);
-    };
-
-    let packet = runner
-        .run(repo_root, "teko", &["packet", "--json"])
-        .context("failed to run `teko packet --json`")?;
-    if packet.status != 0 {
-        bail!(
-            "`teko packet --json` failed: {}",
-            packet.stderr_lossy().trim()
-        );
-    }
-    let packet: WorkPacketEnvelope = serde_json::from_slice(&packet.stdout)
-        .context("`teko packet --json` returned an invalid work envelope")?;
-    packet.validate().map_err(anyhow::Error::from)?;
-    Ok(Some(ActiveWork {
-        packet,
-        status: status.clone(),
-    }))
+pub fn active_work_at(
+    repo_root: &Path,
+    point: &RepositoryPoint,
+    required: bool,
+) -> Result<Option<ActiveWork>> {
+    Ok(WorkProvider::open(repo_root, point, required)?.1)
 }
 
 pub fn active_work_packet(repo_root: &Path) -> Result<Option<String>> {
@@ -68,109 +162,37 @@ pub(crate) fn render(active: &ActiveWork) -> String {
         format!("Objective: {}", packet.work.objective),
         "Obligations:".into(),
     ];
-    let states = active
-        .status
-        .pointer("/status/obligations")
-        .and_then(Value::as_array);
-    lines.extend(
-        packet
+    lines.extend(packet.obligations.iter().map(|obligation| {
+        let resolved = active
+            .status
             .obligations
             .iter()
-            .enumerate()
-            .map(|(index, obligation)| {
-                let resolved = states
-                    .and_then(|items| items.get(index))
-                    .and_then(|item| item.get("resolved"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                format!(
-                    "- [{}] `{}` {}",
-                    if resolved { "done" } else { "open" },
-                    obligation.id,
-                    obligation.description
-                )
-            }),
-    );
+            .find(|state| state.obligation == obligation.id)
+            .is_some_and(|state| state.supported);
+        format!(
+            "- [{}] `{}` {}",
+            if resolved { "done" } else { "open" },
+            obligation.id,
+            obligation.description
+        )
+    }));
     if !packet.spec.non_goals.is_empty() {
         lines.push("Non-goals:".into());
         lines.extend(packet.spec.non_goals.iter().map(|item| format!("- {item}")));
     }
     lines.push("Write scope:".into());
     lines.extend(packet.scope.write.iter().map(|path| format!("- {path}")));
-    lines.push(format!(
-        "Completion required: {}",
-        match packet.required_completion {
-            teko_protocol::CompletionLevel::Changed => "changed",
-            teko_protocol::CompletionLevel::Validated => "validated",
-        }
-    ));
     lines.push("Closure blockers:".into());
-    let blockers = active
-        .status
-        .pointer("/status/blockers")
-        .and_then(Value::as_array);
-    match blockers {
-        Some(items) if !items.is_empty() => lines.extend(items.iter().map(|blocker| {
-            format!(
-                "- `{}`: {}",
-                blocker["code"].as_str().unwrap_or("unknown"),
-                blocker["message"].as_str().unwrap_or("unknown")
-            )
-        })),
-        _ => lines.push("- none".into()),
+    if active.status.blockers.is_empty() {
+        lines.push("- none".into());
+    } else {
+        lines.extend(
+            active
+                .status
+                .blockers
+                .iter()
+                .map(|blocker| format!("- `{}`: {}", blocker.code, blocker.message)),
+        );
     }
     lines.join("\n")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-
-    use super::*;
-    use crate::command::CommandOutput;
-
-    struct FakeRunner {
-        outputs: RefCell<Vec<CommandOutput>>,
-    }
-
-    impl CommandRunner for FakeRunner {
-        fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
-            assert_eq!(program, "teko");
-            assert!(matches!(args, ["current"] | ["packet", "--json"]));
-            Ok(self.outputs.borrow_mut().remove(0))
-        }
-    }
-
-    #[test]
-    fn active_work_uses_the_versioned_packet_and_current_status() {
-        let runner = FakeRunner {
-            outputs: RefCell::new(vec![
-                CommandOutput {
-                    status: 0,
-                    stdout: br#"{"active":{"status":{"obligations":[],"blockers":[]}}}"#.to_vec(),
-                    stderr: Vec::new(),
-                },
-                CommandOutput {
-                    status: 0,
-                    stdout: teko_protocol::WORK_PACKET_FIXTURE.as_bytes().to_vec(),
-                    stderr: Vec::new(),
-                },
-            ]),
-        };
-        let active = active_work_with(&runner, Path::new(".")).unwrap().unwrap();
-        assert_eq!(active.packet.work.id.as_str(), "work_shared-semantic-v0");
-        assert!(render(&active).contains("Shared semantic contract v0"));
-    }
-
-    #[test]
-    fn no_active_work_does_not_request_a_packet() {
-        let runner = FakeRunner {
-            outputs: RefCell::new(vec![CommandOutput {
-                status: 0,
-                stdout: br#"{"active":null}"#.to_vec(),
-                stderr: Vec::new(),
-            }]),
-        };
-        assert!(active_work_with(&runner, Path::new(".")).unwrap().is_none());
-    }
 }

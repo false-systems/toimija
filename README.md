@@ -39,6 +39,32 @@ for known agents (`claude`, `codex`, and `gemini`), keeps it fresh while the
 agent works, and exits with the wrapped command’s status plus an entry-to-exit
 summary.
 
+Toimija can compose optional work and worker providers at runtime without
+linking their product crates. Trusted commands live in
+`$XDG_CONFIG_HOME/toimija/plugins.toml` (or
+`~/.config/toimija/plugins.toml`):
+
+```toml
+[plugins.teko]
+kind = "work"
+command = "teko"
+args = ["plugin", "serve", "--stdio"]
+required = false
+
+[plugins.kisko]
+kind = "worker"
+command = "kisko"
+args = ["plugin", "serve", "--stdio"]
+```
+
+`toimija plugins list`, `plugins doctor`, and `plugins inspect teko` expose
+discovery and negotiation. `toimija run --require-work -- codex` fails closed
+when `work.v1` is unavailable; ordinary runs remain valid and unbound.
+Repository configuration may select plugin IDs, but never supplies executable
+paths. Toimija obtains work before launch, gives every adapter the same
+canonical context, launches the harness itself, refreshes repository truth,
+and reports the normalized result back to the work provider.
+
 Use `--task` to include the concrete assignment:
 
 ```bash

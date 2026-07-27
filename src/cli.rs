@@ -89,6 +89,8 @@ pub enum Command {
         toimija doctor --strict   # CI / pre-commit gate: drift fails the build"
     )]
     Doctor(DoctorArgs),
+    /// Inspect runtime work and worker providers.
+    Plugins(PluginsArgs),
     /// Compile the current Git work state into a context packet.
     ///
     /// Use this to *see* the packet without writing anything: branch, HEAD,
@@ -259,7 +261,7 @@ pub enum Command {
         toimija verify --packet .toimija/current.json --json  # select explicitly"
     )]
     Verify(VerifyArgs),
-    /// Export the exact current repository point using teko-protocol v1.
+    /// Export the exact current repository point using false-agent-protocol v1.
     ///
     /// Materializes the worktree tree and pairs it with Toimija's consistency
     /// token. Toimija remains authoritative for this point.
@@ -348,6 +350,9 @@ pub struct RunArgs {
     /// Output budget for the Markdown packet.
     #[arg(long)]
     pub budget: Option<usize>,
+    /// Refuse to launch unless a valid work.v1 provider returns active work.
+    #[arg(long)]
+    pub require_work: bool,
     /// Free-text declaration of why this session is here, surfaced to sibling
     /// sessions by `toimija sessions`. Advisory only — never an assignment.
     #[arg(long)]
@@ -478,6 +483,22 @@ pub struct DoctorArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct PluginsArgs {
+    #[command(subcommand)]
+    pub command: PluginsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PluginsCommand {
+    /// List explicitly configured plugin IDs.
+    List,
+    /// Initialize configured plugins and report failures.
+    Doctor,
+    /// Initialize and print one plugin's negotiated identity.
+    Inspect { id: String },
+}
+
+#[derive(Debug, Args)]
 pub struct ValidateArgs {
     /// Print the plan only. Required: Toimija never runs validation in v0.
     #[arg(long)]
@@ -528,6 +549,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Init => run_init().map(|()| 0),
         Command::Adopt(args) => run_adopt(args).map(|()| 0),
         Command::Doctor(args) => run_doctor(args).map(|()| 0),
+        Command::Plugins(args) => run_plugins(args).map(|()| 0),
         Command::Context(args) => run_context(args).map(|()| 0),
         Command::Current(args) => run_current(args),
         Command::Refresh(args) => run_refresh(args).map(|()| 0),
@@ -636,6 +658,7 @@ impl Command {
             Command::Init => "init",
             Command::Adopt(_) => "adopt",
             Command::Doctor(_) => "doctor",
+            Command::Plugins(_) => "plugins",
             Command::Context(_) => "context",
             Command::Current(_) => "current",
             Command::Refresh(_) => "refresh",
@@ -715,6 +738,70 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_plugins(args: PluginsArgs) -> Result<()> {
+    use false_agent_protocol::plugin::PluginKind;
+
+    if matches!(args.command, PluginsCommand::List) {
+        return crate::plugins::print_list();
+    }
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let packet = context::build_context_packet(&runner, &repo_root, false)?;
+    let point = crate::semantic::repository_point(&runner, &packet)?;
+    let configured = crate::plugins::definitions()?;
+    let inspect = |id: &str, kind: PluginKind| -> Result<()> {
+        let definition = crate::plugins::discover(id, kind)?
+            .with_context(|| format!("plugin `{id}` is not configured or on PATH"))?;
+        let session = crate::plugins::PluginSession::spawn(
+            id,
+            &definition,
+            &repo_root,
+            point.repository.clone(),
+        )?;
+        println!(
+            "{}\t{:?}\t{}\t{}",
+            session.metadata.id,
+            session.metadata.kind,
+            session.metadata.version,
+            definition.command
+        );
+        Ok(())
+    };
+    match args.command {
+        PluginsCommand::List => unreachable!(),
+        PluginsCommand::Inspect { id } => {
+            let kind = configured
+                .get(&id)
+                .map(|definition| definition.kind)
+                .or(match id.as_str() {
+                    "teko" => Some(PluginKind::Work),
+                    "kisko" => Some(PluginKind::Worker),
+                    _ => None,
+                })
+                .with_context(|| format!("plugin `{id}` has no configured kind"))?;
+            inspect(&id, kind)
+        }
+        PluginsCommand::Doctor => {
+            if configured.is_empty() {
+                for (id, kind) in [("teko", PluginKind::Work), ("kisko", PluginKind::Worker)] {
+                    match inspect(id, kind) {
+                        Ok(()) => {}
+                        Err(error) => println!("{id}\tunavailable\t{error}"),
+                    }
+                }
+            } else {
+                for (id, definition) in configured {
+                    if let Err(error) = inspect(&id, definition.kind) {
+                        println!("{id}\tfailed\t{error}");
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn run_context(args: ContextArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
@@ -773,14 +860,22 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
     let active = crate::teko::active_work(&repo_root)?
         .ok_or_else(|| anyhow::anyhow!("No active Teko work to explain."))?;
     let packet = context::build_context_packet(&runner, &repo_root, false)?;
-    let execution = crate::semantic::execution_context(&runner, &packet, active, 0)?;
+    let execution = crate::semantic::execution_context(&runner, &packet, Some(active), 0)?;
+    let work = execution
+        .work
+        .as_ref()
+        .expect("active work was used to build the execution context");
+    let workflow_status = execution
+        .workflow_status
+        .as_ref()
+        .expect("active work was used to build workflow status");
     let latest = crate::semantic::latest_result(&repo_root)?;
     let projection = crate::semantic::projection(&execution, latest.as_ref())?;
     if args.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "protocol": teko_protocol::ProtocolVersion::V1,
+                "protocol": false_agent_protocol::ProtocolVersion::V1,
                 "execution": execution,
                 "latest_result": latest,
                 "projection": projection,
@@ -790,7 +885,7 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
         println!("WORK");
         println!(
             "{} implements {} — {}",
-            execution.work.work.id, execution.work.spec.id, execution.work.work.objective
+            work.work.id, work.spec.id, work.work.objective
         );
         println!("\nCURRENT");
         println!(
@@ -809,12 +904,12 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
                 if result
                     .binding
                     .as_ref()
-                    .is_some_and(|binding| binding.work == execution.work.work.id) =>
+                    .is_some_and(|binding| binding.work == work.work.id) =>
             {
                 println!(
                     "{} executed {} · {} material action(s)",
                     result.run,
-                    execution.work.work.id,
+                    work.work.id,
                     result.actions.len()
                 );
                 println!(
@@ -834,18 +929,18 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
             _ => println!("no bound Kisko result"),
         }
         println!("\nCLOSURE");
-        if execution.workflow_status.closable {
+        if workflow_status.closable {
             println!("ready to close");
         } else {
             println!("blocked");
-            for blocker in &execution.workflow_status.blockers {
+            for blocker in &workflow_status.blockers {
                 println!("- [{}] {}", blocker.code, blocker.message);
             }
         }
     }
     info!(
         event = "semantic_projection_rendered",
-        work = %execution.work.work.id,
+        work = %work.work.id,
         facts = projection.facts.len(),
         protocol_major = execution.protocol.major,
         protocol_minor = execution.protocol.minor
@@ -922,6 +1017,7 @@ fn ambient_refresh(
         for_diff: args.for_diff,
         budget: args.budget,
         session_dir: ambient.as_ref().map(|(_, dir)| dir.clone()),
+        work: refresh::WorkSource::Discover,
     };
     let refreshed = plan.run(runner, repo_root)?;
     if let Some((id, _)) = &ambient
@@ -957,9 +1053,18 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    // An active Teko work item is the authoritative intent. Exploratory runs
-    // still require the existing explicit intent handshake.
-    if args.intent.is_none() && !crate::teko::has_active_work(&repo_root)? {
+    let preflight = context::build_context_packet(&runner, &repo_root, false)?;
+    let point = crate::semantic::repository_point(&runner, &preflight)?;
+    let (work_provider, active_work) =
+        crate::teko::WorkProvider::open(&repo_root, &point, args.require_work)?;
+    if active_work.is_some() {
+        eprintln!("work provider: teko");
+    } else {
+        eprintln!("no work provider available");
+    }
+    // An active work item is the authoritative intent. Exploratory runs still
+    // require the existing explicit intent handshake.
+    if args.intent.is_none() && active_work.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
 
@@ -980,6 +1085,11 @@ fn run_run(args: RunArgs) -> Result<i32> {
         for_diff: args.for_diff,
         budget: args.budget,
         session_dir: Some(session.dir.clone()),
+        work: work_provider
+            .as_ref()
+            .map_or(refresh::WorkSource::Unbound, |provider| {
+                refresh::WorkSource::Provider(std::sync::Arc::clone(provider))
+            }),
     };
     let entry = match plan.run(&runner, &repo_root) {
         Ok(entry) => entry,
@@ -1093,8 +1203,9 @@ fn run_run(args: RunArgs) -> Result<i32> {
             if let Some(dir) = &watch_plan.session_dir {
                 let path = dir.join(crate::semantic::CONTEXT_FILE);
                 if let Ok(bytes) = std::fs::read(path)
-                    && let Ok(context) =
-                        serde_json::from_slice::<teko_protocol::ExecutionContextEnvelope>(&bytes)
+                    && let Ok(context) = serde_json::from_slice::<
+                        false_agent_protocol::context::ExecutionContextEnvelope,
+                    >(&bytes)
                 {
                     watcher_digests
                         .lock()
@@ -1143,17 +1254,27 @@ fn run_run(args: RunArgs) -> Result<i32> {
             }
         }
     }
+    use crate::workers::WorkerAdapter as _;
+    let execution = entry_execution
+        .as_ref()
+        .context("session refresh omitted its execution context")?;
+    let mut adapter = crate::workers::select(program, &repo_root, &execution.repository)?;
+    let descriptor = adapter.describe()?;
+    let launch_plan = adapter.prepare(execution, &repo_root, &session.dir, rest, composed)?;
     eprintln!(
-        "toimija run: launching `{program}` (session {}, watching for changes)",
-        session.id
+        "toimija run: worker: {} · launching `{}` (session {}, watching for changes)",
+        descriptor.name, launch_plan.program, session.id
     );
-    let mut child = std::process::Command::new(program);
-    child.args(rest);
-    if let Some(prompt) = &composed {
-        child.arg(prompt);
-    }
+    let mut child = std::process::Command::new(&launch_plan.program);
+    child.args(&launch_plan.args);
+    child.envs(
+        launch_plan
+            .env
+            .iter()
+            .map(|entry| (&entry.key, &entry.value)),
+    );
     let launched = child
-        .current_dir(&cwd)
+        .current_dir(&launch_plan.cwd)
         .envs(session.env(&repo_root))
         .status();
 
@@ -1203,8 +1324,29 @@ fn run_run(args: RunArgs) -> Result<i32> {
                     .session
                     .as_ref()
                     .and_then(|session| session.execution.as_ref());
+                if let (Some(origin), Some(destination), Ok(status)) =
+                    (entry_execution.as_ref(), exit_execution, launched.as_ref())
+                {
+                    let normalized =
+                        adapter.finalize(false_agent_protocol::worker::FinalizeParams {
+                            outcome: process_outcome(*status),
+                            origin: origin.repository.clone(),
+                            destination: destination.repository.clone(),
+                            structured_result_path: semantic_result_path
+                                .is_file()
+                                .then(|| semantic_result_path.display().to_string()),
+                            session_id: session.id.clone(),
+                        })?;
+                    eprintln!(
+                        "toimija run: worker result grade: {:?}",
+                        normalized.result_grade
+                    );
+                }
+                let session_observer = crate::semantic::SessionWorkObserver {
+                    provider: work_provider.as_ref().map(std::sync::Arc::clone),
+                };
                 if let Some(correlation) = crate::semantic::correlate_result(
-                    &runner,
+                    &session_observer,
                     &repo_root,
                     entry_execution.as_ref(),
                     exit_execution,
@@ -1212,6 +1354,11 @@ fn run_run(args: RunArgs) -> Result<i32> {
                     &emitted_context_digests
                         .lock()
                         .unwrap_or_else(|poison| poison.into_inner()),
+                    process_outcome(
+                        *launched
+                            .as_ref()
+                            .expect("exit summary only runs after successful launch"),
+                    ),
                 )? {
                     eprintln!(
                         "toimija run: correlated Kisko run {} at {} ({})",
@@ -1476,6 +1623,25 @@ fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
         .unwrap_or(1)
 }
 
+fn process_outcome(status: std::process::ExitStatus) -> false_agent_protocol::work::ProcessOutcome {
+    if let Some(code) = status.code() {
+        return false_agent_protocol::work::ProcessOutcome::Exited { code };
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        false_agent_protocol::work::ProcessOutcome::Signaled {
+            signal: status.signal().unwrap_or(-1),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        false_agent_protocol::work::ProcessOutcome::Interrupted {
+            reason: "process ended without an exit code".into(),
+        }
+    }
+}
+
 #[cfg(not(unix))]
 fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
@@ -1510,6 +1676,7 @@ fn run_watch(args: ContextArgs) -> Result<()> {
         for_diff: args.for_diff,
         budget: args.budget,
         session_dir: None,
+        work: refresh::WorkSource::Discover,
     };
     watch::watch(&runner, &repo_root, &plan, &stop, || {
         eprintln!(

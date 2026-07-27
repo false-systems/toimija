@@ -72,7 +72,7 @@ pub struct SessionBlock {
     pub scope: Vec<String>,
     /// Ephemeral projection of active Teko work plus current Toimija truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution: Option<teko_protocol::ExecutionContextEnvelope>,
+    pub execution: Option<false_agent_protocol::context::ExecutionContextEnvelope>,
     /// Branch and HEAD captured when `run` entered the session. They stay fixed
     /// so later packets can report drift instead of overwriting the baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
