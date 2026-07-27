@@ -148,6 +148,22 @@ pub fn active_work_at(
     Ok(WorkProvider::open(repo_root, point, required)?.1)
 }
 
+pub fn explain_at(repo_root: &Path, point: &RepositoryPoint) -> Result<ExplainResult> {
+    let config =
+        RepoConfig::load_optional(repo_root)?.unwrap_or_else(|| RepoConfig::default_for(repo_root));
+    let provider = config.composition.work.as_deref().unwrap_or("teko");
+    let definition = discover(provider, PluginKind::Work)?
+        .with_context(|| format!("work provider `{provider}` is unavailable"))?;
+    let mut plugin =
+        PluginSession::spawn(provider, &definition, repo_root, point.repository.clone())?;
+    plugin.call(
+        EXPLAIN_METHOD,
+        ExplainParams {
+            repository_point: point.clone(),
+        },
+    )
+}
+
 pub fn active_work_packet(repo_root: &Path) -> Result<Option<String>> {
     Ok(active_work(repo_root)?.map(|active| render(&active)))
 }

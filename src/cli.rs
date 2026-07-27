@@ -857,9 +857,24 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let active = crate::teko::active_work(&repo_root)?
-        .ok_or_else(|| anyhow::anyhow!("No active Teko work to explain."))?;
     let packet = context::build_context_packet(&runner, &repo_root, false)?;
+    let point = crate::semantic::repository_point(&runner, &packet)?;
+    let Some(active) = crate::teko::active_work_at(&repo_root, &point, false)? else {
+        let explained = crate::teko::explain_at(&repo_root, &point)?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "protocol": false_agent_protocol::ProtocolVersion::V1,
+                    "work": explained,
+                    "latest_result": crate::semantic::latest_result(&repo_root)?,
+                }))?
+            );
+        } else {
+            println!("{}", explained.explanation);
+        }
+        return Ok(());
+    };
     let execution = crate::semantic::execution_context(&runner, &packet, Some(active), 0)?;
     let work = execution
         .work
