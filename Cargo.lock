@@ -737,7 +737,7 @@ dependencies = [
 [[package]]
 name = "teko-protocol"
 version = "0.1.0"
-source = "git+ssh://git@github.com/false-systems/teko.git?rev=1a653fb462c7be871547a64b99d76ee69b3fc7fc#1a653fb462c7be871547a64b99d76ee69b3fc7fc"
+source = "git+ssh://git@github.com/false-systems/teko.git?rev=4c84354cc5903da042a67e3dfd3f5c94b8193dc0#4c84354cc5903da042a67e3dfd3f5c94b8193dc0"
 dependencies = [
  "serde",
  "serde_json",

@@ -241,6 +241,114 @@ fn active_teko_work_supplies_session_intent_and_scope() {
 
 #[cfg(unix)]
 #[test]
+fn semantic_launch_context_stays_frozen_while_the_live_packet_refreshes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let packet: serde_json::Value =
+        serde_json::from_str(teko_protocol::WORK_PACKET_FIXTURE).unwrap();
+    let obligations = packet["obligations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|obligation| {
+            serde_json::json!({
+                "id": obligation["id"],
+                "resolved": false,
+                "evidence_refs": [],
+            })
+        })
+        .collect::<Vec<_>>();
+    let current = serde_json::json!({
+        "active": {
+            "work": {
+                "id": packet["work"]["id"],
+                "objective": packet["work"]["objective"],
+                "scope": {"write": []},
+            },
+            "spec": {
+                "id": packet["spec"]["id"],
+                "title": "Shared semantics",
+                "goals": [],
+                "non_goals": [],
+            },
+            "status": {
+                "required_completion": "validated",
+                "obligations": obligations,
+                "blockers": [],
+                "next_actions": [],
+                "closable": false,
+            }
+        }
+    });
+    let current_path = temp.path().join("teko-current.json");
+    let packet_path = temp.path().join("teko-packet.json");
+    fs::write(&current_path, serde_json::to_vec(&current).unwrap()).unwrap();
+    fs::write(&packet_path, teko_protocol::WORK_PACKET_FIXTURE).unwrap();
+
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let teko = bin.join("teko");
+    fs::write(
+        &teko,
+        "#!/bin/sh\ncase \"$1\" in\n  current) cat \"$TEKO_CURRENT_FIXTURE\" ;;\n  packet) cat \"$TEKO_PACKET_FIXTURE\" ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&teko).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&teko, permissions).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("PATH", path)
+        .env("TEKO_CURRENT_FIXTURE", current_path)
+        .env("TEKO_PACKET_FIXTURE", packet_path)
+        .args([
+            "run",
+            "--",
+            "sh",
+            "-c",
+            "printf '%s' \"$FALSE_SYSTEMS_CONTEXT_PATH\" > context-path; cp \"$FALSE_SYSTEMS_CONTEXT_PATH\" launch-context; printf 'changed\\n' > changed.txt; sleep 1; cp \"$FALSE_SYSTEMS_CONTEXT_PATH\" refreshed-context",
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read(temp.path().join("launch-context")).unwrap(),
+        fs::read(temp.path().join("refreshed-context")).unwrap()
+    );
+    assert!(
+        fs::read_to_string(temp.path().join("context-path"))
+            .unwrap()
+            .ends_with("semantic-launch-context.json")
+    );
+    let session = fs::read_dir(temp.path().join(".toimija/sessions"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    for file in [
+        "semantic-context.json",
+        "semantic-launch-context.json",
+        "semantic-point.json",
+        "semantic-result.json",
+    ] {
+        assert!(!session.join(file).exists(), "{file} was not cleaned up");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn a_broken_plugin_tool_degrades_the_run_instead_of_failing_it() {
     use std::os::unix::fs::PermissionsExt;
     if !git_available() {
