@@ -37,6 +37,9 @@ pub struct LanguagePack {
     pub doctor_message: &'static str,
     /// Any of these at the repo root claims the repo, checked in table order.
     pub manifests: &'static [&'static str],
+    /// A root file with any of these extensions claims repos without a
+    /// canonical manifest, checked after exact manifest names.
+    pub root_extensions: &'static [&'static str],
     /// Fast-tier (test) candidates. Proven commands also become the Full tier,
     /// mirroring the full adapters' shape.
     pub fast: &'static [&'static str],
@@ -64,6 +67,7 @@ pub const LANGUAGES: &[LanguagePack] = &[
         root_evidence: "Cargo.toml at root",
         doctor_message: "Rust repo detected",
         manifests: &["Cargo.toml"],
+        root_extensions: &[],
         fast: &["cargo test --workspace"],
         strict: &[
             "cargo fmt --check",
@@ -81,6 +85,7 @@ pub const LANGUAGES: &[LanguagePack] = &[
         root_evidence: "mix.exs at root",
         doctor_message: "Elixir repo detected",
         manifests: &["mix.exs"],
+        root_extensions: &[],
         fast: &["mix test"],
         strict: &["mix format --check-formatted"],
         extensions: &["ex", "exs"],
@@ -95,6 +100,7 @@ pub const LANGUAGES: &[LanguagePack] = &[
         root_evidence: "go.mod at root",
         doctor_message: "Go repo detected (minimum language pack)",
         manifests: &["go.mod"],
+        root_extensions: &[],
         fast: &["go test ./..."],
         strict: &["go vet ./..."],
         extensions: &["go"],
@@ -109,6 +115,7 @@ pub const LANGUAGES: &[LanguagePack] = &[
         root_evidence: "pyproject.toml or setup.py at root",
         doctor_message: "Python repo detected (minimum language pack)",
         manifests: &["pyproject.toml", "setup.py"],
+        root_extensions: &[],
         fast: &["pytest"],
         strict: &["ruff check ."],
         extensions: &["py"],
@@ -123,20 +130,36 @@ pub const LANGUAGES: &[LanguagePack] = &[
         root_evidence: "package.json at root",
         doctor_message: "JS/TS repo detected (minimum language pack)",
         manifests: &["package.json"],
+        root_extensions: &[],
         fast: &["npm test"],
         strict: &["npm run lint", "npm run typecheck"],
         extensions: &["ts", "tsx", "js", "jsx"],
         companions: &["{dir}/{stem}.test.{ext}", "{dir}/{stem}.spec.{ext}"],
         test_markers: &[".test.", ".spec."],
     },
+    LanguagePack {
+        kind: RepoKind::Terraform,
+        tier: LanguageTier::Minimum,
+        proof: ValidationProof::Manifest,
+        name: "Terraform",
+        root_evidence: ".tf file at root",
+        doctor_message: "Terraform repo detected (minimum language pack)",
+        manifests: &[],
+        root_extensions: &["tf"],
+        fast: &[],
+        strict: &["terraform fmt -check -recursive"],
+        extensions: &["tf"],
+        companions: &[],
+        test_markers: &[],
+    },
 ];
 
-/// The first recognized language whose manifest exists at the repo root.
+/// The first recognized language with a root marker.
 /// Registry order is precedence: full adapters first, then minimum packs.
 pub fn detect(repo_root: &Path) -> Option<&'static LanguagePack> {
     LANGUAGES
         .iter()
-        .find(|lang| lang.manifests.iter().any(|m| repo_root.join(m).exists()))
+        .find(|lang| lang.root_marker(repo_root).is_some())
 }
 
 pub fn for_kind(kind: RepoKind) -> Option<&'static LanguagePack> {
@@ -286,6 +309,35 @@ impl LanguageAdapter for PackAdapter {
 }
 
 impl LanguagePack {
+    pub fn root_marker(&self, root: &Path) -> Option<PathBuf> {
+        if let Some(manifest) = self
+            .manifests
+            .iter()
+            .find(|manifest| root.join(manifest).exists())
+        {
+            return Some(PathBuf::from(manifest));
+        }
+        if self.root_extensions.is_empty() {
+            return None;
+        }
+        let mut matches = std::fs::read_dir(root)
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let extension = path.extension()?.to_str()?;
+                self.root_extensions
+                    .contains(&extension)
+                    .then_some(entry.file_name())
+            })
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.into_iter().next().map(PathBuf::from)
+    }
+
     pub fn companion_tests(&self, repo_root: &Path, path: &Path) -> Vec<PathBuf> {
         let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
             return Vec::new();
@@ -361,6 +413,32 @@ mod tests {
         assert_eq!(detect(temp.path()).unwrap().kind, RepoKind::Go);
         // Full adapters outrank minimum packs through the same registry.
         std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        assert_eq!(detect(temp.path()).unwrap().kind, RepoKind::Rust);
+    }
+
+    #[test]
+    fn terraform_detection_accepts_any_root_tf_file() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("fake.tf")).unwrap();
+        std::fs::write(temp.path().join("network.tf"), "").unwrap();
+
+        let terraform = detect(temp.path()).unwrap();
+        assert_eq!(terraform.kind, RepoKind::Terraform);
+        assert_eq!(
+            terraform.root_marker(temp.path()),
+            Some(PathBuf::from("network.tf"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_detection_preserves_manifest_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("manifest"), "[workspace]\n").unwrap();
+        symlink("manifest", temp.path().join("Cargo.toml")).unwrap();
+
         assert_eq!(detect(temp.path()).unwrap().kind, RepoKind::Rust);
     }
 
