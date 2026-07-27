@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use false_agent_protocol::{
     EvidenceRef, RepositoryPointRef, SpecRef, WorkRef, WorkerRunRef, WorkerRunResultEnvelope,
 };
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 use crate::command::CommandRunner;
 use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
@@ -32,7 +32,7 @@ pub struct PullRequestReference {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkCorrelation {
     pub schema: String,
-    pub created_at: u64,
+    pub created_at: String,
     pub spec: SpecRef,
     pub work: WorkRef,
     pub session: String,
@@ -76,6 +76,11 @@ pub fn create(
         .destination
         .clone()
         .context("latest worker result has no authoritative destination")?;
+    let evidence_digests = result
+        .evidence
+        .iter()
+        .map(|evidence| evidence.digest.clone())
+        .collect();
 
     let packet = crate::context::build_context_packet(runner, repo_root, false)?;
     ensure!(
@@ -102,7 +107,7 @@ pub fn create(
 
     let mut correlation = WorkCorrelation {
         schema: SCHEMA.into(),
-        created_at: now_secs(),
+        created_at: now_timestamp(),
         spec: binding.spec.clone(),
         work: binding.work.clone(),
         session: input.session,
@@ -118,7 +123,7 @@ pub fn create(
             .collect(),
         sauma: None,
     };
-    correlation.attach(&point.consistency_token.0, commit)?;
+    correlation.attach(&point.consistency_token.0, commit, evidence_digests)?;
 
     let path = correlation_path(repo_root, &result.run);
     if path.exists() {
@@ -151,8 +156,13 @@ pub fn create(
 }
 
 impl WorkCorrelation {
-    fn attach(&mut self, anchored_at: &str, commit: String) -> Result<()> {
-        let provenance = vec![
+    fn attach(
+        &mut self,
+        anchored_at: &str,
+        commit: String,
+        evidence_digests: Vec<String>,
+    ) -> Result<()> {
+        let mut provenance = vec![
             SaumaProvenance::Spec {
                 id: self.spec.to_string(),
             },
@@ -176,6 +186,11 @@ impl WorkCorrelation {
                 r#ref: self.pull_request.r#ref.clone(),
             },
         ];
+        provenance.extend(
+            evidence_digests
+                .into_iter()
+                .map(|digest| SaumaProvenance::Artifact { digest }),
+        );
         sauma::attach(
             self,
             SCHEMA,
@@ -351,11 +366,10 @@ fn valid_slug_part(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+fn now_timestamp() -> String {
+    OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 #[cfg(test)]

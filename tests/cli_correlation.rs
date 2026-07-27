@@ -36,6 +36,7 @@ fn correlate_pr_binds_a_clean_destination_to_bounded_work() {
     binding.origin = point.repository.id.clone();
     binding.work = "work_demo".parse().unwrap();
     binding.spec = "spec_demo".parse().unwrap();
+    let evidence_digest = result.evidence[0].digest.clone();
     result.seal().unwrap();
 
     let runs = fixture.path().join(".toimija/runs");
@@ -91,5 +92,13 @@ fn correlate_pr_binds_a_clean_destination_to_bounded_work() {
     assert_eq!(value["work"], "work_demo");
     assert_eq!(value["pull_request"]["ref"], "github:false-systems/demo#7");
     assert_eq!(value["destination"], point.repository.id.as_str());
+    assert!(value["created_at"].is_string());
+    assert!(
+        value["sauma"]["provenance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["kind"] == "artifact" && edge["digest"] == evidence_digest)
+    );
     assert_eq!(toimija::sauma::verify_value(value.take()).unwrap(), None);
 }
