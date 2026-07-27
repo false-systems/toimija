@@ -103,6 +103,24 @@ pub fn refresh_session(
     let json_path = session_dir.join("current.json");
     // The session packet is authoritative for the agent — its failure is fatal.
     write_packet(&md_path, &json_path, &markdown, &json)?;
+    let context_path = session_dir.join(crate::semantic::CONTEXT_FILE);
+    let execution = packet
+        .session
+        .as_ref()
+        .and_then(|session| session.execution.as_ref());
+    if let Some(execution) = execution {
+        crate::semantic::write_json(&context_path, execution)?;
+    } else {
+        let _ = fs::remove_file(context_path);
+    }
+    let point = match execution {
+        Some(execution) => execution.repository.clone(),
+        None => crate::semantic::repository_point(runner, &packet)?,
+    };
+    crate::semantic::write_json(
+        &session_dir.join(crate::semantic::POINT_FILE),
+        &crate::semantic::point_envelope(point),
+    )?;
     // The repo-level summary is demoted (last-writer-wins) and best-effort: a
     // failure mirroring it must not abort the already-written session packet, or
     // a transient summary write error would freeze the agent's live context.
@@ -141,19 +159,35 @@ fn compute(
 ) -> Result<(ContextPacket, String, String)> {
     let mut packet = context::build_context_packet(runner, repo_root, for_diff)
         .context("failed to build context packet")?;
+    let artifact_id = artifact_id();
+    packet.artifact_id = Some(artifact_id.clone());
+    let generation = artifact_id
+        .split('-')
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
     if let Some(dir) = session_dir
         && let Ok(marker) = session::load_marker(dir)
     {
+        let active = crate::teko::active_work(repo_root)?;
         packet.session = Some(context::SessionBlock {
             id: marker.id,
             intent: marker.intent,
             scope: marker.scope,
-            teko: crate::teko::active_work_value(repo_root)?,
+            execution: None,
             entry_branch: marker.branch,
             entry_head: marker.head,
         });
+        if let Some(active) = active {
+            let execution =
+                crate::semantic::execution_context(runner, &packet, active, generation)?;
+            packet
+                .session
+                .as_mut()
+                .expect("session was just installed")
+                .execution = Some(execution);
+        }
     }
-    packet.artifact_id = Some(artifact_id());
     let run = packet.session.as_ref().map(|session| session.id.clone());
     packet.attach_sauma(run)?;
     let budget = budget_override

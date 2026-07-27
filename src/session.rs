@@ -158,7 +158,7 @@ impl Session {
     /// demoted repo-level summary. Absolute paths, so they survive the agent
     /// changing directory mid-session.
     pub fn env(&self, repo_root: &Path) -> Vec<(&'static str, OsString)> {
-        vec![
+        let mut env = vec![
             ("TOIMIJA_RUN", OsString::from("1")),
             ("TOIMIJA_SESSION", OsString::from(&self.id)),
             ("TOIMIJA_LIVE", self.md_path.clone().into_os_string()),
@@ -174,7 +174,20 @@ impl Session {
                 "TOIMIJA_REPO_LIVE",
                 repo_root.join(refresh::CURRENT_MD).into_os_string(),
             ),
-        ]
+            (
+                "FALSE_SYSTEMS_RESULT_PATH",
+                self.dir.join(crate::semantic::RESULT_FILE).into_os_string(),
+            ),
+            (
+                "FALSE_SYSTEMS_REPOSITORY_POINT_PATH",
+                self.dir.join(crate::semantic::POINT_FILE).into_os_string(),
+            ),
+        ];
+        let context = self.dir.join(crate::semantic::CONTEXT_FILE);
+        if context.is_file() {
+            env.push(("FALSE_SYSTEMS_CONTEXT_PATH", context.into_os_string()));
+        }
+        env
     }
 
     fn write_marker(&self) -> Result<()> {
