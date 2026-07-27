@@ -33,7 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
-teko-protocol = { version = "0.1.0", git = "ssh://git@github.com/false-systems/teko.git", rev = "4c84354cc5903da042a67e3dfd3f5c94b8193dc0" }
+teko-protocol = { version = "0.1.0", git = "ssh://git@github.com/false-systems/teko.git", rev = "d50e6ef9aa2aaed3831fbff82534d8c6deee7d7e" }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 tracing = "0.1"

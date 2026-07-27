@@ -156,6 +156,17 @@ pub fn repository_point(
 ) -> Result<RepositoryPoint> {
     let tree = crate::snapshot::materialize(runner, &context.git.repo_root)
         .context("failed to materialize the authoritative repository point")?;
+    let (mut live, _) = crate::git::collect_git_state(runner, &context.git.repo_root)
+        .context("failed to re-check repository state after materializing its tree")?;
+    crate::context::normalize_git_state(&mut live);
+    let consistency = crate::consistency::Consistency::fingerprint(&live);
+    if consistency.token != context.consistency.token {
+        bail!(
+            "repository moved while Toimija captured its point (expected {}, observed {}). Toimija is authoritative for repository truth; retry after writes stop.",
+            context.consistency.token,
+            consistency.token
+        );
+    }
     let repository = repository_ref(&context.git.repo_root)?;
     let id = point_ref(&repository, &context.consistency.token)?;
     Ok(RepositoryPoint {
@@ -163,8 +174,8 @@ pub fn repository_point(
         repository,
         consistency_token: ConsistencyToken(context.consistency.token.clone()),
         tree_oid: TreeOid(tree),
-        branch: context.git.branch.clone().map(BranchName),
-        dirty: context.git.dirty,
+        branch: live.branch.map(BranchName),
+        dirty: live.dirty,
         captured_at: now_timestamp(),
     })
 }
@@ -340,7 +351,7 @@ pub fn correlate_result(
                 }
                 Some(_) => {}
             }
-            for action in &mut result.actions {
+            for action in &result.actions {
                 let transforms = matches!(
                     action.kind,
                     teko_protocol::ActionKind::WriteFile
@@ -374,14 +385,6 @@ pub fn correlate_result(
                         action.transforms_to,
                         exit.repository.id
                     );
-                }
-                if action.transforms_from.is_none() {
-                    action.transforms_from = Some(entry.repository.id.clone());
-                    changed = true;
-                }
-                if action.transforms_to.is_none() {
-                    action.transforms_to = Some(exit.repository.id.clone());
-                    changed = true;
                 }
             }
             if changed {
@@ -710,6 +713,32 @@ mod tests {
     }
 
     #[test]
+    fn repository_point_refuses_a_tree_from_a_newer_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = crate::command::ProcessCommandRunner;
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.email", "toimija@example.invalid"],
+            &["config", "user.name", "Toimija Test"],
+        ] {
+            assert_eq!(runner.run(dir.path(), "git", args).unwrap().status, 0);
+        }
+        std::fs::write(dir.path().join("tracked.txt"), "before\n").unwrap();
+        for args in [&["add", "."][..], &["commit", "-m", "init"]] {
+            assert_eq!(runner.run(dir.path(), "git", args).unwrap().status, 0);
+        }
+        let context = crate::context::build_context_packet(&runner, dir.path(), false).unwrap();
+        std::fs::write(dir.path().join("tracked.txt"), "after\n").unwrap();
+
+        assert!(
+            repository_point(&runner, &context)
+                .unwrap_err()
+                .to_string()
+                .contains("repository moved")
+        );
+    }
+
+    #[test]
     fn shared_fixtures_are_consumed_from_the_protocol_crate() {
         let context: ExecutionContextEnvelope =
             serde_json::from_str(teko_protocol::EXECUTION_CONTEXT_FIXTURE).unwrap();
@@ -788,10 +817,7 @@ mod tests {
             correlated.result.destination.as_ref(),
             Some(&exit.repository.id)
         );
-        assert_eq!(
-            correlated.result.actions[0].transforms_to.as_ref(),
-            Some(&exit.repository.id)
-        );
+        assert_eq!(correlated.result.actions[0].transforms_to.as_ref(), None);
         correlated.result.validate().unwrap();
 
         entry.work.work.id = "work_other".parse().unwrap();

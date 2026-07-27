@@ -93,6 +93,25 @@ fn active_work_with(runner: &impl CommandRunner, repo_root: &Path) -> Result<Opt
     let packet: WorkPacketEnvelope = serde_json::from_slice(&packet.stdout)
         .context("`teko packet --json` returned an invalid work envelope")?;
     packet.validate().map_err(anyhow::Error::from)?;
+    let status_work = status
+        .pointer("/work/id")
+        .and_then(Value::as_str)
+        .context("`teko current` omitted the active work id")?;
+    let status_spec = status
+        .pointer("/spec/id")
+        .and_then(Value::as_str)
+        .context("`teko current` omitted the active spec id")?;
+    if (packet.work.id.as_str() != status_work
+        && packet.work.id.as_str().strip_prefix("work_") != Some(status_work))
+        || (packet.spec.id.as_str() != status_spec
+            && packet.spec.id.as_str().strip_prefix("spec_") != Some(status_spec))
+    {
+        bail!(
+            "active Teko work changed while Toimija read it (status {status_work}/{status_spec}, packet {}/{}). Teko is authoritative for active work; retry context generation.",
+            packet.work.id,
+            packet.spec.id
+        );
+    }
     Ok(Some(ActiveWork {
         packet,
         status: status.clone(),
@@ -268,12 +287,29 @@ mod tests {
     fn active_work_uses_the_versioned_packet_and_current_status() {
         let runner = FakeRunner {
             outputs: RefCell::new(vec![
-                output(br#"{"active":{"status":{"obligations":[],"blockers":[]}}}"#),
+                output(br#"{"active":{"work":{"id":"shared-semantic-v0"},"spec":{"id":"shared-semantic-v0"},"status":{"obligations":[],"blockers":[]}}}"#),
                 output(teko_protocol::WORK_PACKET_FIXTURE.as_bytes()),
             ]),
         };
         let active = active_work_with(&runner, Path::new(".")).unwrap().unwrap();
         assert_eq!(active.packet.work.id.as_str(), "work_shared-semantic-v0");
+    }
+
+    #[test]
+    fn active_work_refuses_a_packet_from_another_work_item() {
+        let runner = FakeRunner {
+            outputs: RefCell::new(vec![
+                output(br#"{"active":{"work":{"id":"old"},"spec":{"id":"old"},"status":{}}}"#),
+                output(teko_protocol::WORK_PACKET_FIXTURE.as_bytes()),
+            ]),
+        };
+
+        assert!(
+            active_work_with(&runner, Path::new("."))
+                .unwrap_err()
+                .to_string()
+                .contains("active Teko work changed")
+        );
     }
 
     #[test]
