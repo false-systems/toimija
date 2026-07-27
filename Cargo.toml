@@ -33,7 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
-false-agent-protocol = { version = "0.1.1", git = "ssh://git@github.com/false-systems/false-agent-protocol.git", tag = "v0.1.1" }
+false-agent-protocol = { version = "0.1.1", git = "https://github.com/false-systems/false-agent-protocol.git", tag = "v0.1.1" }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 toml = "0.8"
