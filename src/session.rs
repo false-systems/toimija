@@ -183,7 +183,7 @@ impl Session {
                 self.dir.join(crate::semantic::POINT_FILE).into_os_string(),
             ),
         ];
-        let context = self.dir.join(crate::semantic::CONTEXT_FILE);
+        let context = self.dir.join(crate::semantic::LAUNCH_CONTEXT_FILE);
         if context.is_file() {
             env.push(("FALSE_SYSTEMS_CONTEXT_PATH", context.into_os_string()));
         }
@@ -510,5 +510,15 @@ mod tests {
         assert!(live.ends_with("current.md"), "{live}");
         // Repo-level summary is the demoted, shared current.md.
         assert!(get("TOIMIJA_REPO_LIVE").ends_with(".toimija/current.md"));
+
+        std::fs::write(session.dir.join(crate::semantic::LAUNCH_CONTEXT_FILE), "{}").unwrap();
+        let env = session.env(temp.path());
+        let context = env
+            .iter()
+            .find(|(key, _)| *key == "FALSE_SYSTEMS_CONTEXT_PATH")
+            .unwrap()
+            .1
+            .to_string_lossy();
+        assert!(context.ends_with(crate::semantic::LAUNCH_CONTEXT_FILE));
     }
 }

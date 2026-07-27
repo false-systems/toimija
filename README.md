@@ -256,6 +256,7 @@ example.
 | --- | --- |
 | `run --intent "..." -- <agent>` | Compile, deliver, refresh, and summarize a wrapped agent session. |
 | `enter`, `context`, `refresh`, `watch` | Produce or maintain the live packet directly. |
+| `repository-point`, `explain-work` | Export versioned repository truth or explain active shared work (`--json` for machines). |
 | `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
 | `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
 | `history` | List durable records of concluded sessions; `--json` emits all valid records. |

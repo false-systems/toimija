@@ -17,6 +17,7 @@ use crate::context::ContextPacket;
 use crate::plugins::teko::ActiveWork;
 
 pub const CONTEXT_FILE: &str = "semantic-context.json";
+pub const LAUNCH_CONTEXT_FILE: &str = "semantic-launch-context.json";
 pub const RESULT_FILE: &str = "semantic-result.json";
 pub const POINT_FILE: &str = "semantic-point.json";
 
