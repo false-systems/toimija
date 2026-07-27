@@ -735,6 +735,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "teko-protocol"
+version = "0.1.0"
+source = "git+ssh://git@github.com/false-systems/teko.git?rev=1a653fb462c7be871547a64b99d76ee69b3fc7fc#1a653fb462c7be871547a64b99d76ee69b3fc7fc"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -827,6 +838,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "sykli",
+ "teko-protocol",
  "tempfile",
  "thiserror",
  "time",
