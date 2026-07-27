@@ -155,6 +155,20 @@ toimija run --require-work -- codex
 Without `--require-work`, a missing or unavailable optional work provider
 degrades to an unbound run.
 
+After opening a pull request from the exact clean destination tree, bind it to
+the completed bounded run:
+
+```bash
+toimija correlate-pr https://github.com/false-systems/kisko/pull/171
+```
+
+The command validates the local `origin`, session, worker result, repository
+point, and commit without contacting GitHub. It writes a Sauma-attested
+`.toimija/runs/<run>.correlation.json` connecting the Teko spec/work, Toimija
+session and repository points, worker run, commit, evidence, and declared PR
+reference. `toimija explain-work` displays the link; `sauma why
+github:false-systems/kisko#171` walks it.
+
 ### Worker providers
 
 Built-in adapters launch Codex, Claude, Gemini, and generic commands through the

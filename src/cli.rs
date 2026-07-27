@@ -273,6 +273,16 @@ pub enum Command {
     /// the latest Kisko result. Persists no graph.
     #[command(after_help = "Examples:\n  toimija explain-work\n  toimija explain-work --json")]
     ExplainWork(SemanticArgs),
+    /// Bind a completed bounded worker run to its pull request.
+    ///
+    /// Use this after creating a PR from the exact clean destination tree.
+    /// Toimija validates the repository, session, run, commit, and destination,
+    /// then writes one Sauma-attested correlation artifact. No network calls.
+    #[command(
+        after_help = "Examples:\n  toimija correlate-pr https://github.com/false-systems/kisko/pull/171\n  \
+        toimija correlate-pr https://github.com/false-systems/kisko/pull/171 --session 1785179852-51947 --run run_51670292"
+    )]
+    CorrelatePr(CorrelatePrArgs),
     /// Materialize the working tree as an immutable git tree object.
     ///
     /// Freezes the full working state (content-addressed) so a reader can read
@@ -305,6 +315,21 @@ pub struct ContextArgs {
 #[derive(Debug, Args)]
 pub struct SemanticArgs {
     /// Emit the versioned machine projection as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CorrelatePrArgs {
+    /// Canonical GitHub pull-request URL for this repository.
+    pub url: String,
+    /// Toimija session that produced the run; defaults to TOIMIJA_SESSION.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Worker run to correlate; defaults to the latest durable result.
+    #[arg(long)]
+    pub run: Option<String>,
+    /// Emit the correlation artifact as JSON.
     #[arg(long)]
     pub json: bool,
 }
@@ -534,6 +559,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         Command::RepositoryPoint(args) | Command::ExplainWork(args) if args.json => "json",
+        Command::CorrelatePr(args) if args.json => "json",
         _ => "text",
     };
     let span = info_span!(
@@ -568,6 +594,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Verify(args) => run_verify(args),
         Command::RepositoryPoint(args) => run_repository_point(args).map(|()| 0),
         Command::ExplainWork(args) => run_explain_work(args).map(|()| 0),
+        Command::CorrelatePr(args) => run_correlate_pr(args).map(|()| 0),
         Command::Snapshot(args) => run_snapshot(args).map(|()| 0),
     };
 
@@ -677,6 +704,7 @@ impl Command {
             Command::Verify(_) => "verify",
             Command::RepositoryPoint(_) => "repository-point",
             Command::ExplainWork(_) => "explain-work",
+            Command::CorrelatePr(_) => "correlate-pr",
             Command::Snapshot(_) => "snapshot",
         }
     }
@@ -859,6 +887,7 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
     let packet = context::build_context_packet(&runner, &repo_root, false)?;
     let point = crate::semantic::repository_point(&runner, &packet)?;
+    let latest_correlation = crate::correlation::latest(&repo_root)?;
     let Some(active) = crate::teko::active_work_at(&repo_root, &point, false)? else {
         let explained = crate::teko::explain_at(&repo_root, &point)?;
         if args.json {
@@ -868,10 +897,17 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
                     "protocol": false_agent_protocol::ProtocolVersion::V1,
                     "work": explained,
                     "latest_result": crate::semantic::latest_result(&repo_root)?,
+                    "latest_correlation": latest_correlation,
                 }))?
             );
         } else {
             println!("{}", explained.explanation);
+            if let Some(correlation) = latest_correlation {
+                println!(
+                    "Pull request: {} ({})",
+                    correlation.pull_request.url, correlation.pull_request.r#ref
+                );
+            }
         }
         return Ok(());
     };
@@ -885,6 +921,8 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
         .as_ref()
         .expect("active work was used to build workflow status");
     let latest = crate::semantic::latest_result(&repo_root)?;
+    let latest_correlation =
+        latest_correlation.filter(|correlation| correlation.work == work.work.id);
     let projection = crate::semantic::projection(&execution, latest.as_ref())?;
     if args.json {
         println!(
@@ -893,6 +931,7 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
                 "protocol": false_agent_protocol::ProtocolVersion::V1,
                 "execution": execution,
                 "latest_result": latest,
+                "latest_correlation": latest_correlation,
                 "projection": projection,
             }))?
         );
@@ -943,6 +982,17 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
             }
             _ => println!("no bound Kisko result"),
         }
+        if let Some(correlation) = latest_correlation {
+            println!("\nPULL REQUEST");
+            println!(
+                "{} · {}",
+                correlation.pull_request.r#ref, correlation.pull_request.url
+            );
+            println!(
+                "{} → commit {}",
+                correlation.destination, correlation.commit
+            );
+        }
         println!("\nCLOSURE");
         if workflow_status.closable {
             println!("ready to close");
@@ -960,6 +1010,40 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
         protocol_major = execution.protocol.major,
         protocol_minor = execution.protocol.minor
     );
+    Ok(())
+}
+
+fn run_correlate_pr(args: CorrelatePrArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let session = args
+        .session
+        .or_else(|| std::env::var("TOIMIJA_SESSION").ok())
+        .context(
+            "no Toimija session selected; run inside `toimija run` or pass `--session <id>`",
+        )?;
+    let (correlation, path) = crate::correlation::create(
+        &runner,
+        &repo_root,
+        crate::correlation::CorrelateInput {
+            url: args.url,
+            session,
+            run: args.run,
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&correlation)?);
+    } else {
+        println!("correlated pull request {}", correlation.pull_request.r#ref);
+        println!("spec: {}", correlation.spec);
+        println!("work: {}", correlation.work);
+        println!("session: {}", correlation.session);
+        println!("worker run: {}", correlation.worker_run);
+        println!("destination: {}", correlation.destination);
+        println!("commit: {}", correlation.commit);
+        println!("artifact: {}", rel_display(&path, &repo_root));
+    }
     Ok(())
 }
 
