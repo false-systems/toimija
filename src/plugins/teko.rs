@@ -12,6 +12,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+use teko_protocol::WorkPacketEnvelope;
 
 use crate::command::{CommandRunner, ProcessCommandRunner};
 use crate::plugins::{Identity, Plugin, PluginMeta};
@@ -53,6 +54,52 @@ impl Plugin for TekoPlugin {
     fn render(&self, observation: &Value) -> String {
         render(observation)
     }
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct ActiveWork {
+    pub packet: WorkPacketEnvelope,
+    pub status: Value,
+}
+
+#[allow(dead_code)]
+pub(crate) fn active_work(repo_root: &Path) -> Result<Option<ActiveWork>> {
+    active_work_with(&ProcessCommandRunner, repo_root)
+}
+
+#[allow(dead_code)]
+fn active_work_with(runner: &impl CommandRunner, repo_root: &Path) -> Result<Option<ActiveWork>> {
+    let current = match runner.run(repo_root, "teko", &["current"]) {
+        Ok(output) => output,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("failed to run `teko current`"),
+    };
+    if current.status != 0 {
+        bail!("`teko current` failed: {}", current.stderr_lossy().trim());
+    }
+    let current: Value =
+        serde_json::from_slice(&current.stdout).context("`teko current` returned invalid JSON")?;
+    let Some(status) = current.get("active").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+
+    let packet = runner
+        .run(repo_root, "teko", &["packet", "--json"])
+        .context("failed to run `teko packet --json`")?;
+    if packet.status != 0 {
+        bail!(
+            "`teko packet --json` failed: {}",
+            packet.stderr_lossy().trim()
+        );
+    }
+    let packet: WorkPacketEnvelope = serde_json::from_slice(&packet.stdout)
+        .context("`teko packet --json` returned an invalid work envelope")?;
+    packet.validate().map_err(anyhow::Error::from)?;
+    Ok(Some(ActiveWork {
+        packet,
+        status: status.clone(),
+    }))
 }
 
 fn active_work_value_with(runner: &impl CommandRunner, repo_root: &Path) -> Result<Option<Value>> {
@@ -184,25 +231,31 @@ mod tests {
     use crate::command::CommandOutput;
 
     struct FakeRunner {
-        output: RefCell<Option<std::io::Result<CommandOutput>>>,
+        outputs: RefCell<Vec<std::io::Result<CommandOutput>>>,
     }
 
     impl CommandRunner for FakeRunner {
         fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
             assert_eq!(program, "teko");
-            assert_eq!(args, ["current"]);
-            self.output.borrow_mut().take().unwrap()
+            assert!(matches!(args, ["current"] | ["packet", "--json"]));
+            self.outputs.borrow_mut().remove(0)
         }
+    }
+
+    fn output(stdout: &[u8]) -> std::io::Result<CommandOutput> {
+        Ok(CommandOutput {
+            status: 0,
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        })
     }
 
     #[test]
     fn active_work_is_read_from_the_teko_current_envelope() {
         let runner = FakeRunner {
-            output: RefCell::new(Some(Ok(CommandOutput {
-                status: 0,
-                stdout: br#"{"active":{"work":{"id":"w","objective":"ship","scope":{"write":[{"path":"src"}]}},"spec":{"id":"s","title":"T","goals":[],"non_goals":[]},"status":{"required_completion":"validated","obligations":[],"blockers":[],"next_actions":[],"closable":true}}}"#.to_vec(),
-                stderr: Vec::new(),
-            }))),
+            outputs: RefCell::new(vec![output(
+                br#"{"active":{"work":{"id":"w","objective":"ship","scope":{"write":[{"path":"src"}]}},"spec":{"id":"s","title":"T","goals":[],"non_goals":[]},"status":{"required_completion":"validated","obligations":[],"blockers":[],"next_actions":[],"closable":true}}}"#,
+            )]),
         };
         let value = active_work_value_with(&runner, Path::new("."))
             .unwrap()
@@ -215,15 +268,29 @@ mod tests {
     }
 
     #[test]
-    fn no_active_work_is_distinct_from_an_invalid_contract() {
-        assert!(parse_active_work(br#"{"active":null}"#).unwrap().is_none());
-        assert!(parse_active_work(b"{}").is_err());
+    fn active_work_uses_the_versioned_packet_and_current_status() {
+        let runner = FakeRunner {
+            outputs: RefCell::new(vec![
+                output(br#"{"active":{"status":{"obligations":[],"blockers":[]}}}"#),
+                output(teko_protocol::WORK_PACKET_FIXTURE.as_bytes()),
+            ]),
+        };
+        let active = active_work_with(&runner, Path::new(".")).unwrap().unwrap();
+        assert_eq!(active.packet.work.id.as_str(), "work_shared-semantic-v0");
+    }
+
+    #[test]
+    fn no_active_work_does_not_request_a_packet() {
+        let runner = FakeRunner {
+            outputs: RefCell::new(vec![output(br#"{"active":null}"#)]),
+        };
+        assert!(active_work_with(&runner, Path::new(".")).unwrap().is_none());
     }
 
     #[test]
     fn a_missing_teko_binary_disables_the_plugin_silently() {
         let runner = FakeRunner {
-            output: RefCell::new(Some(Err(std::io::Error::from(ErrorKind::NotFound)))),
+            outputs: RefCell::new(vec![Err(std::io::Error::from(ErrorKind::NotFound))]),
         };
         assert!(
             active_work_value_with(&runner, Path::new("."))
