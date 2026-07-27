@@ -323,7 +323,7 @@ pub struct SemanticArgs {
 pub struct CorrelatePrArgs {
     /// Canonical GitHub pull-request URL for this repository.
     pub url: String,
-    /// Toimija session that produced the run; defaults to TOIMIJA_SESSION.
+    /// Assert the Toimija session that produced the run.
     #[arg(long)]
     pub session: Option<String>,
     /// Worker run to correlate; defaults to the latest durable result.
@@ -1017,18 +1017,12 @@ fn run_correlate_pr(args: CorrelatePrArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let session = args
-        .session
-        .or_else(|| std::env::var("TOIMIJA_SESSION").ok())
-        .context(
-            "no Toimija session selected; run inside `toimija run` or pass `--session <id>`",
-        )?;
     let (correlation, path) = crate::correlation::create(
         &runner,
         &repo_root,
         crate::correlation::CorrelateInput {
             url: args.url,
-            session,
+            session: args.session,
             run: args.run,
         },
     )?;
@@ -1473,6 +1467,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
                     if let Some(status) = correlation.teko_status {
                         eprintln!("{}", crate::semantic::render_teko_status(&status));
                     }
+                    session.record_worker_run(&repo_root, &correlation.result)?;
                 }
                 eprint!(
                     "\n{}",

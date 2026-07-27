@@ -256,14 +256,28 @@ impl PluginSession {
         let deadline = Instant::now() + Duration::from_millis(1_000);
         while Instant::now() < deadline {
             match self.child.try_wait() {
-                Ok(Some(_)) => return,
+                Ok(Some(_)) => {
+                    kill_process_group(&mut self.child);
+                    return;
+                }
                 Ok(None) => std::thread::sleep(Duration::from_millis(10)),
                 Err(_) => break,
             }
         }
-        let _ = self.child.kill();
+        kill_process_group(&mut self.child);
         let _ = self.child.wait();
     }
+}
+
+fn kill_process_group(child: &mut Child) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id()) {
+        // SAFETY: `process_group(0)` made the child PID its process-group ID.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
 }
 
 impl Drop for PluginSession {
@@ -363,7 +377,7 @@ mod tests {
         let started = Instant::now();
         let error = PluginSession::spawn(
             "teko",
-            &definition("sleep 2".into(), 10),
+            &definition("sleep 5".into(), 10),
             Path::new("."),
             "repo_fixture".parse().unwrap(),
         )
