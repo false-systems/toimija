@@ -1,6 +1,6 @@
 # Toimija
 
-**A Git-native context compiler and live entrypoint for coding agents.**
+**Git-native context and runtime composition for coding agents.**
 
 ![Rust](https://img.shields.io/badge/rust-single_crate-orange)
 ![daemons](https://img.shields.io/badge/daemons-zero-success)
@@ -9,71 +9,87 @@
 
 *Toimija* is Finnish for “the one who acts.”
 
+> Git knows what repository state exists. Toimija turns that state into a
+> bounded, verifiable contract for the agent that acts on it.
+
+Toimija sits between a repository and a coding harness. It compiles local Git
+state into a live context packet, optionally obtains bounded work from Teko,
+launches Codex, Claude, Kisko, or another command, keeps the packet fresh while
+the harness runs, and verifies the repository again at exit.
+
+It is deliberately local and compositional. Teko, Toimija, and Kisko are
+independent products that build and release separately. They meet only at
+runtime through the public
+[`false-agent-protocol`](https://github.com/false-systems/false-agent-protocol).
+
+## Architecture
+
+```mermaid
+flowchart LR
+    G["Git<br/>HEAD · index · worktree · history"] --> T{{"Toimija"}}
+    R[".toimija/repo.yaml<br/>role · boundaries · validation"] --> T
+    W["Teko<br/>work provider"] -- "work.v1" --> T
+    T -- "worker.v1" --> K["Kisko"]
+    T --> C["Codex"]
+    T --> A["Claude"]
+    T --> X["other commands"]
+    T --> P["live packet<br/>Markdown + JSON"]
+```
+
+The ownership lines are strict:
+
+| Product | Owns | Does not own |
+| --- | --- | --- |
+| **Teko** | Active work, objectives, obligations, gates, completion policy | Git truth, harness execution |
+| **Toimija** | Repository points, context packets, session lifecycle, launch validation | Task assignment, model execution, work closure |
+| **Kisko** | Model execution, actions, transcripts, structured worker results | Repository truth, work closure |
+| **Codex / Claude** | The work they perform inside the launched session | Teko or Toimija policy |
+
+Toimija is the composition point, not a product monolith. It imports no Teko or
+Kisko implementation crate. An absent provider simply leaves the corresponding
+capability unbound unless the repository or command explicitly requires it.
+
+## Why
+
+Coding agents often enter a repository by globbing, grepping, reading, and
+guessing. That cold crawl is expensive, repeats across agents, and can reason
+from stale state.
+
 > We do not ask the model to understand the repo first. We ask Git what state the repo is in.
 
-Coding agents usually enter a repository by globbing, grepping, reading, and
-guessing. That cold crawl costs time and tokens, duplicates work across agents,
-and can silently reason from stale or incomplete state.
+Every Git repository already contains a content-addressed database describing
+the current branch, HEAD, index, worktree, history, and merge relationships.
+Toimija reads that evidence once and produces a bounded packet that answers:
 
-Toimija compiles the repository’s local Git state, history, configuration, and
-validation conventions into one bounded packet. The packet tells an agent what
-to read, what changed, how strong the evidence is, where collection failed, and
-whether the packet still matches the live worktree.
+- What repository and branch am I in?
+- What changed in commits, the index, and the worktree?
+- What should I read first?
+- Which files tend to change together?
+- Which areas are risky or high-churn?
+- What validation commands does this repository expect?
+- What work did Teko bind to this run?
+- Does this packet still describe the live repository?
 
 Git is not a save button here. Git is the substrate.
 
 > Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
 
-Toimija is also the runtime composition point: Teko optionally provides work,
-Kisko or a built-in Codex/Claude adapter provides a launch plan, and Toimija
-owns the harness process, terminal, signals, and authoritative repository
-points. Products meet through `work.v1` and `worker.v1`; none is linked into
-another.
+## Quick start
 
-## Start in 30 seconds
+Build and install Toimija from a checkout:
 
 ```bash
+git clone https://github.com/false-systems/toimija.git
+cd toimija
 cargo install --path .
-cd /path/to/repo
-toimija init                              # once: seed .toimija/repo.yaml
-toimija adopt --hooks                     # once: teach agents the entry rule
-toimija run --intent "fix #51" -- codex   # every session: wrap the agent
 ```
 
-`run` compiles and verifies a session packet, delivers it in the launch prompt
-for known agents (`claude`, `codex`, and `gemini`), keeps it fresh while the
-agent works, and exits with the wrapped command’s status plus an entry-to-exit
-summary.
-
-Toimija can compose optional work and worker providers at runtime without
-linking their product crates. Trusted commands live in
-`$XDG_CONFIG_HOME/toimija/plugins.toml` (or
-`~/.config/toimija/plugins.toml`):
-
-```toml
-[plugins.teko]
-kind = "work"
-command = "teko"
-args = ["plugin", "serve", "--stdio"]
-required = false
-
-[plugins.kisko]
-kind = "worker"
-command = "kisko"
-args = ["plugin", "serve", "--stdio"]
-```
-
-`toimija plugins list`, `plugins doctor`, and `plugins inspect teko` expose
-discovery and negotiation. `toimija run --require-work -- codex` fails closed
-when `work.v1` is unavailable; ordinary runs remain valid and unbound.
-Repository configuration may select plugin IDs, but never supplies executable
-paths. Toimija obtains work before launch, gives every adapter the same
-canonical context, launches the harness itself, refreshes repository truth,
-and reports the normalized result back to the work provider.
-
-Use `--task` to include the concrete assignment:
+Adopt it in a repository:
 
 ```bash
+cd /path/to/repository
+toimija init
+toimija adopt --hooks
 toimija run \
   --intent "fix authentication regression" \
   --scope src/auth/ \
@@ -81,9 +97,164 @@ toimija run \
   -- codex
 ```
 
-## The packet is the product
+`init` creates `.toimija/repo.yaml` without overwriting an existing file.
+`adopt --hooks` installs the small “read the live packet first” preamble in
+recognized agent instruction files and adds best-effort Git refresh hooks.
 
-Every packet is available as readable Markdown and complete JSON:
+`run` then:
+
+1. Discovers the repository and compiles its current Git state.
+2. Materializes an authoritative repository point.
+3. Optionally asks a `work.v1` provider for active work.
+4. Creates one canonical execution context.
+5. Opens a per-session live packet under `.toimija/sessions/<id>/`.
+6. Selects a built-in or external worker adapter.
+7. Validates the launch plan and starts the harness directly.
+8. Refreshes the packet on relevant repository changes.
+9. Recomputes repository truth after the harness exits.
+10. Normalizes the result and, for bound work, reports it to the work provider.
+
+Known agents such as `codex`, `claude`, and `gemini` receive the packet in their
+launch prompt. Other commands receive the session paths through environment
+variables and are reported honestly as environment-only delivery.
+
+Use `--` before harness arguments:
+
+```bash
+toimija run --intent unknown -- codex --help
+```
+
+## Runtime composition
+
+### Work providers
+
+A work provider implements `work.v1`. Teko exposes the capability with:
+
+```bash
+teko plugin serve --stdio
+```
+
+During a bound run, Toimija asks the provider for current work at an
+authoritative repository point. The returned work packet may include:
+
+- objective and scope;
+- obligations and required gates;
+- required completion level;
+- current blockers and reachable completion.
+
+At exit, Toimija refreshes the repository point and sends the normalized worker
+result through `work.observe`. Evidence may support Teko's obligations, but only
+Teko decides whether the work is closable. A worker claim cannot close work.
+
+Bounded work can be required for one invocation:
+
+```bash
+toimija run --require-work -- codex
+```
+
+Without `--require-work`, a missing or unavailable optional work provider
+degrades to an unbound run.
+
+### Worker providers
+
+Built-in adapters launch Codex, Claude, Gemini, and generic commands through the
+same execution-context path.
+
+An external worker implements `worker.v1`. Kisko exposes it with:
+
+```bash
+kisko plugin serve --stdio
+```
+
+The worker lifecycle is:
+
+| Method | Purpose |
+| --- | --- |
+| `worker.describe` | Report supported execution and context modes |
+| `worker.prepare` | Return a structured, shell-free launch plan |
+| `worker.finalize` | Normalize the exit outcome and structured result |
+
+Toimija validates an external launch plan before executing it. The executable
+must match the trusted user configuration, the working directory must be the
+verified repository root, environment keys are allow-listed, protocol limits
+are enforced, and runtime artifacts must stay inside the session directory.
+
+### Provider configuration
+
+Trusted executable paths belong to user configuration, not repository
+configuration:
+
+```toml
+# $XDG_CONFIG_HOME/toimija/plugins.toml
+# or ~/.config/toimija/plugins.toml
+
+automatic_path_discovery = true
+
+[plugins.teko]
+kind = "work"
+command = "teko"
+args = ["plugin", "serve", "--stdio"]
+required = false
+timeout_ms = 5000
+
+[plugins.kisko]
+kind = "worker"
+command = "kisko"
+args = ["plugin", "serve", "--stdio"]
+required = false
+timeout_ms = 5000
+```
+
+When automatic discovery is enabled, the exact executable names `teko` and
+`kisko` may be discovered on `PATH`. There is no arbitrary plugin scan.
+Repository configuration may select a provider ID, but cannot introduce an
+executable path.
+
+Inspect the effective providers before running:
+
+```bash
+toimija plugins list
+toimija plugins doctor
+toimija plugins inspect teko
+```
+
+## The neutral protocol
+
+All runtime messages use
+[`false-agent-protocol` v0.1.1](https://github.com/false-systems/false-agent-protocol/tree/v0.1.1).
+It is a public, product-neutral Rust crate and wire contract.
+
+The protocol defines:
+
+- protocol negotiation and capability IDs;
+- `work.v1` and `worker.v1`;
+- typed repository, work, run, evidence, action, and digest references;
+- JSON-RPC-style requests and responses;
+- `Content-Length` framing over stdin/stdout;
+- canonical SHA-256 digests;
+- stable error codes and compatibility fixtures;
+- frame, string, argument, environment, and collection limits.
+
+It intentionally contains no Git operations, process execution, async runtime,
+storage, workflow policy, or product behavior. The protocol describes messages;
+each product decides what those messages mean and what authority it retains.
+
+This keeps builds independent:
+
+```text
+teko checkout      ── cargo build ──▶ Teko
+toimija checkout   ── cargo build ──▶ Toimija
+kisko checkout     ── cargo build ──▶ Kisko
+                          │
+                          └── public false-agent-protocol tag
+```
+
+No build requires a sibling checkout, local path dependency, private deploy key,
+or another product binary.
+
+## The live packet
+
+Toimija writes human-readable Markdown and complete machine-readable JSON:
 
 ```text
 .toimija/current.md
@@ -92,106 +263,34 @@ Every packet is available as readable Markdown and complete JSON:
 .toimija/sessions/<id>/current.json
 ```
 
-It combines:
+The per-session packet is authoritative for a wrapped harness. The repo-level
+pair is a last-writer-wins summary for sessionless readers.
 
-- branch, HEAD, merge-base, index, worktree, conflicts, and untracked state;
-- the branch surface and recent commits;
+A packet combines:
+
+- branch, HEAD, upstream, merge-base, and recent commits;
+- staged, unstaged, untracked, renamed, and conflicted paths;
+- unsafe Git operation state;
+- the committed branch surface;
 - a Git-derived workset and ordered reading plan;
-- coupling and risk hints with visible evidence and confidence;
-- collection coverage, including degraded and failed observations;
-- configured boundaries, exclusions, and validation commands;
-- session identity, declared intent, scope, and entry-state drift;
-- a content-based consistency token and provenance envelope.
+- coupling and risk hints with evidence and confidence;
+- collection coverage: `available`, `degraded`, or `failed`;
+- repository boundaries, exclusions, and validation plans;
+- session identity, entry baseline, declared intent, and scope;
+- optional active work and canonical execution context;
+- a content-based consistency token;
+- a Sauma provenance envelope.
 
-A typical agent sees the contract before the detail:
+Every packet carries a workset contract:
 
-```markdown
-## Workset contract
-Work from this packet's Scope and Read order; they are your working set, not a
-preamble. Configured exclusions are do-not-scan. You MAY read outside the
-workset when a concrete unresolved dependency requires it — but you MUST
-declare the expansion first. Expansion is never forbidden; invisible expansion
-is.
-```
+> Work from the compiled workset and read order. Treat configured exclusions as
+> do-not-scan. If a concrete dependency requires reading outside the workset,
+> declare that expansion first. Expansion is never forbidden; invisible
+> expansion is.
 
-That changes the packet from helpful background into an operational boundary.
-The agent starts from compiled evidence and only widens its search when the task
-actually requires it.
-
-```mermaid
-flowchart LR
-    G["Git state + history"] --> C{{"toimija"}}
-    R["repo.yaml<br/>role · rules · validation"] --> C
-    C --> V["coverage<br/>available · degraded · failed"]
-    C --> E["evidence<br/>support · observations · confidence"]
-    V --> P["live packet<br/>Markdown + JSON"]
-    E --> P
-    P --> A["agent workset"]
-    P --> F["verify freshness"]
-```
-
-## Trust is explicit
-
-Toimija does not turn missing data into reassuring output.
-
-- **Collection coverage:** a collector reports `available`, `degraded`, or
-  `failed`. An empty successful observation is different from a failed
-  collection, and failed collection cannot support a positive or negative
-  claim.
-- **Evidence-backed relevance:** coupling and risk hints expose their source,
-  support, observation count, and confidence. Weak hints are suppressed instead
-  of padded into a longer list.
-- **Verifiable freshness:** `toimija verify` checks a content-based consistency
-  token against the current Git state. Same-size edits cannot hide behind file
-  metadata, and a bare timestamp change does not create false staleness.
-- **Honest budgets:** Markdown omits optional sections whole and reports exactly
-  what was omitted. JSON remains complete; safety state is never clipped to fit
-  a token budget.
-- **Fixed session baseline:** a session retains its entry branch and HEAD. Later
-  movement appears as drift rather than rewriting history.
-- **Chain of custody:** packets and handoffs carry a canonical sauma digest and
-  provenance edges tied to the repository state that produced them.
-
-The result is not merely a smaller prompt. It is a context artifact whose
-claims can be inspected and verified.
-
-## One live packet per agent
-
-```mermaid
-sequenceDiagram
-    participant Y as you
-    participant T as toimija run
-    participant A as agent
-
-    Y->>T: run --intent "fix #51" -- codex
-    T->>T: compile + verify session packet
-    T->>A: packet in launch prompt + discovery environment
-    loop while the agent works
-        T->>T: refresh on relevant Git/worktree change
-    end
-    A-->>T: exit
-    T-->>Y: entry→exit summary + agent exit code
-```
-
-Each wrapped agent gets a packet under `.toimija/sessions/<id>/`; concurrent
-agents do not race on one shared context file. `toimija sessions` shows live,
-stale, and closed sessions plus overlap warnings. `toimija intent` records a
-mid-session scope expansion, and `toimija handoff` leaves a versioned record for
-whoever continues the work.
-
-When a session concludes, Toimija appends a compact record to
-`.toimija/history.jsonl` before its directory can be reclaimed. `toimija
-history` keeps intent and handoff memory available after live artifacts are
-gone; malformed records degrade the listing instead of hiding valid history.
-`toimija clean --dry-run` previews the same bounded stewardship pass that
-`enter` and `run` perform best-effort: expired sessions are journaled before
-deletion, old run transcripts are removed after 14 days, and exact orphaned
-atomic-write temp files are removed after one hour.
-
-This is runtime composition, not agent orchestration. Toimija launches and
-supervises the selected harness, but never assigns work, dispatches agents, or
-blocks siblings. Session state is read and written synchronously while an
-explicit command is running; the human remains the orchestrator.
+Markdown is budgeted for agents; optional sections are omitted atomically and
+reported by name. JSON remains complete. Safety state, warnings, exclusions,
+and the workset contract are never silently clipped.
 
 Before commit or handoff:
 
@@ -199,108 +298,217 @@ Before commit or handoff:
 toimija verify
 ```
 
-## Bounded work with Teko
+`verify` recomputes live Git state and checks the packet's content-based token.
+Same-size edits, index changes, conflicts, and unsafe Git operations cannot hide
+behind timestamps.
 
-Teko keeps one ratified task active across agent restarts and interrupted
-`toimija run` sessions. Its status is derived from the current product tree;
-Toimija's generated packets, session records, history, and Teko database do not
-count as worktree changes.
+## Sessions and collaboration
+
+Each `toimija run` creates a separate session directory, so concurrent agents do
+not race on one shared packet.
 
 ```bash
-teko new \
-  --title "Fix login" \
-  --objective "Repair the redirect" \
-  --goal regression="A regression test covers the fix" \
-  --non-goal "Redesign authentication" \
-  --gate test="cargo test" \
-  --completion validated \
-  --ratify
-teko start --scope src/auth --scope tests
-teko show
-toimija run -- codex
-teko verify --claim regression
-teko close
+toimija sessions
+toimija sessions --json
 ```
 
-`show` prints stable closure-blocker IDs and one copy-pasteable next command.
-Toimija discovers `teko plugin serve --stdio`, negotiates `work.v1`, and asks
-for active work using its authoritative repository point before launching the
-harness. The resulting canonical execution context reaches Kisko, Codex, and
-Claude. After exit, Toimija refreshes repository truth and sends the normalized
-worker result back through `work.observe`; only Teko may close the work.
+The session listing reports live, stale, and closed sessions plus descriptive
+overlap warnings for branch, worktree, intent, and scope. These are awareness
+signals, not locks or assignments.
+
+A wrapped agent can update its own declaration:
+
+```bash
+toimija intent "repairing token refresh" --scope src/auth/
+```
+
+It can leave a durable continuation record:
+
+```bash
+toimija handoff "redirect fixed; rerun the integration gate"
+toimija handoff --show <session-id>
+```
+
+Closed sessions are summarized in `.toimija/history.jsonl`. Stewardship remains
+explicit and bounded:
+
+```bash
+toimija clean --dry-run
+toimija clean
+```
+
+Toimija does not assign tasks, choose priorities, or decide which agent should
+work. GitHub issues, pull requests, labels, and the human remain the coordination
+layer.
+
+## Trust and security
+
+The runtime boundary is intentionally narrow:
+
+- no Rust dynamic libraries or product implementation imports;
+- no repository-controlled executable paths;
+- no network access or plugin downloads;
+- no hidden daemon or background service;
+- no shell interpolation of plugin-returned launch plans;
+- framed protocol output on stdout and provider logs on stderr;
+- initialization and request timeouts;
+- response and request-ID validation;
+- bounded protocol values and collections;
+- runtime artifact containment inside the session directory;
+- graceful plugin shutdown followed by termination and reaping if necessary;
+- authority checks that prevent providers from replacing repository truth;
+- authority checks that prevent worker evidence from closing Teko work.
+
+Toimija invokes plugins and harnesses only during an explicitly requested
+foreground command. Optional provider failure is visible but non-fatal; required
+bounded work fails closed.
+
+## Git-native context
+
+Runtime composition builds on Toimija's original job: turning Git plumbing into
+agent-facing porcelain.
+
+```mermaid
+flowchart LR
+    S["Git state + bounded history"] --> C{{"context compiler"}}
+    Y["repo.yaml"] --> C
+    C --> V["coverage"]
+    C --> E["evidence"]
+    V --> P["packet"]
+    E --> P
+    P --> A["agent workset"]
+    P --> F["freshness verification"]
+```
+
+Toimija does not maintain a second repository index. Snapshots use Git tree
+objects; relevance uses bounded Git history; freshness uses content-derived
+tokens. When evidence is missing, the packet says so instead of converting
+failure into an empty, reassuring list.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `run --intent "..." -- <agent>` | Compile, deliver, refresh, and summarize a wrapped agent session. |
-| `enter`, `context`, `refresh`, `watch` | Produce or maintain the live packet directly. |
-| `repository-point`, `explain-work` | Export versioned repository truth or explain active shared work (`--json` for machines). |
-| `verify`, `snapshot` | Verify live state or freeze the worktree as a Git object. |
-| `sessions`, `intent`, `handoff` | Observe sessions, declare scope, and record continuation context. |
-| `history` | List durable records of concluded sessions; `--json` emits all valid records. |
-| `plugins list`, `plugins doctor`, `plugins inspect` | Inspect trusted runtime providers and negotiated capabilities. |
-| `clean` | Reclaim expired owned artifacts; `--dry-run` lists candidates without changing disk. |
-| `audit-plan` | Partition broad reviews into bounded deterministic worksets. |
-| `validate --plan` | Render inferred and configured validation commands; never execute them. |
-| `landed` | Check whether branch content landed even when squash merges hide ancestry. |
-| `init`, `adopt`, `doctor` | Configure a repo, install the entry rule, and detect policy drift. |
+| `run --intent "..." -- <harness>` | Compose context, launch a harness, refresh, finalize, and summarize |
+| `plugins list|doctor|inspect` | Inspect configured and discoverable runtime providers |
+| `repository-point` | Export authoritative versioned repository truth |
+| `explain-work` | Explain active work, latest bound result, evidence, and blockers |
+| `enter`, `context`, `refresh`, `watch` | Produce or maintain a live packet |
+| `verify`, `snapshot` | Verify freshness or materialize an immutable Git tree |
+| `sessions`, `intent`, `handoff`, `history` | Observe and record local session continuity |
+| `clean` | Reclaim expired Toimija-owned artifacts |
+| `audit-plan` | Partition a broad review into bounded deterministic worksets |
+| `validate --plan` | Render validation commands without executing them |
+| `landed` | Check whether branch content reached a base ref |
+| `init`, `adopt`, `doctor` | Configure a repository and detect setup drift |
 
-The foreground watch loop survives laptop sleep: a resumed session re-proves
-itself within one tick through the same refresh and heartbeat path as a file
-change. Its armed line names the probe-proven native backend or polling fallback.
-Linux ARM64 uses polling because its native runner backend drops post-probe events.
+Use `toimija <command> --help` for flags and examples. The
+[complete reference](docs/reference.md) documents packet fields, environment
+variables, configuration, output guarantees, and every command.
 
-See the **[complete reference](docs/reference.md)** for every flag, environment
-variable, packet field, and output guarantee.
+## Repository configuration
 
-## Language support
+`.toimija/repo.yaml` gives durable meaning to live Git state:
+
+```yaml
+repo:
+  name: example
+  role: service that processes customer events
+  not:
+    - deployment controller
+
+composition:
+  work: teko
+  require_work: false
+
+context:
+  default_budget: 8000
+  important_docs:
+    - README.md
+    - AGENTS.md
+  read_first: []
+  safe_to_ignore:
+    - target/
+
+validation:
+  replace_inferred: false
+  fast:
+    - cargo test
+  strict:
+    - cargo fmt --check
+    - cargo clippy --all-targets -- -D warnings
+  full:
+    - cargo test --workspace
+  privileged: []
+
+boundaries:
+  - Do not add network calls.
+  - Keep runtime providers optional.
+```
+
+`toimija doctor --strict` checks that repository boundaries and major
+documentation remain aligned.
+
+## Language and validation support
 
 Rust and Elixir have full adapters. Go, Python, and JavaScript/TypeScript receive
-the minimum language pack: repository detection, evidence-backed validation-plan
-hints, and companion-test discovery. Commands without the required repository
-evidence are omitted with a note. Other repositories work through
-`.toimija/repo.yaml`.
+the minimum language pack: repository detection, evidence-backed validation
+hints, and companion-test discovery. Other repositories work through explicit
+`.toimija/repo.yaml` configuration.
 
-All recognized languages live in one compile-time registry. Basic support is
-one kind plus one data row; a dedicated adapter is needed only for project-aware
-behavior.
-
-Packets also report recognized secondary languages from a bounded manifest
-walk. Secondary observations do not change the primary kind or validation plan.
-
-Adapters contribute hints; they do not parse source code. Git-derived context
-remains the common substrate across languages.
+Adapters contribute planning hints; they do not parse source code. `toimija
+validate --plan` prints commands and provenance but never executes them.
 
 ## Boundaries
 
-The boundaries are part of the trust model:
+Toimija intentionally does not:
 
-- no network calls or implicit fetches;
-- no background daemon—`watch` and `run` exist only while invoked;
-- no MCP, LSP, Tree-sitter, SCIP, Kythe, or hidden source index;
-- no model-provider calls, prompt ownership, or patch application;
-- no automatic execution of validation commands;
-- no task dispatch, assignment, or agent orchestration.
+- make model-provider calls;
+- assign or dispatch work;
+- apply patches or commit changes;
+- run validation commands automatically;
+- fetch repository or plugin data from the network;
+- run a daemon after the invoked command exits;
+- dynamically load product code;
+- build an MCP, LSP, SCIP, Kythe, or Tree-sitter index;
+- persist a semantic graph.
 
-Relevance remains file-level, heuristic, and advisory. Coverage describes what
-Toimija successfully observed, not omniscience about the repository. Those
-limits are rendered instead of hidden.
+Relevance remains file-level, bounded, heuristic, and advisory. Coverage says
+what Toimija successfully observed, not what it knows with certainty.
 
-## Development status
+## Development
 
-Toimija is currently a v0.1 Rust CLI being prepared for public use. It is one
-crate, local-first, and intentionally small enough to audit. The Markdown packet
-is the human interface; JSON is the complete machine-readable contract and
-evolves additively within a schema version.
+Toimija is one Rust crate. The development-only `xtask` installs the
+pre-commit hook but is excluded from ordinary root builds.
+
+```bash
+git clone https://github.com/false-systems/toimija.git
+cd toimija
+cargo build
+cargo run -- context
+```
+
+Before claiming completion:
 
 ```bash
 cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo xtask install-pre-commit-hook   # once per clone
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-Design history lives in [`docs/proposals/`](docs/proposals/). The cross-tool
-packet contract is documented in
-[`docs/joskus-contract.md`](docs/joskus-contract.md).
+Install the pre-commit hook once per clone:
+
+```bash
+cargo xtask install-pre-commit-hook
+```
+
+Release artifacts are built by GitHub Actions for `v*` tags. The public protocol
+dependency is fetched over HTTPS, so a fresh checkout requires no sibling
+repository or private Git credentials.
+
+## Documentation
+
+- [Complete command and packet reference](docs/reference.md)
+- [Cross-tool packet contract](docs/joskus-contract.md)
+- [Design proposals](docs/proposals/)
+- [Audit history](docs/audit/)
