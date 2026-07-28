@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use tracing::{debug, info};
 
-use crate::command::CommandRunner;
+use crate::command::{CommandOutput, CommandRunner};
 use crate::coverage::Coverage;
 use crate::handoff;
 use crate::session::{SESSIONS_SUBDIR, SessionMarker, SessionStatus};
@@ -31,6 +31,26 @@ pub const DEFAULT_STALE_AFTER_SECS: u64 = 90 * 60;
 /// long enough that recent history stays visible in listings, short enough that
 /// a busy repo does not accumulate session directories without bound.
 pub const DEFAULT_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// What a `kill -0 <pid>` probe actually proved. Three-valued because a
+/// nonzero exit alone proves nothing: `kill -0` fails with EPERM when the
+/// process *exists* under another user, and the probe itself can fail to
+/// spawn. Only ESRCH ("no such process") proves death.
+///
+/// The asymmetry is deliberate and one-directional: display may give
+/// `Unknown` the benefit of the doubt, but deletion (`prunable`) demands
+/// `Dead` specifically — "not provably alive" is never "provably dead".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PidCheck {
+    /// The process exists: `kill -0` succeeded, or failed with EPERM
+    /// (it is alive under another user, just not signalable by us).
+    Alive,
+    /// The process is provably gone: the probe reported ESRCH.
+    Dead,
+    /// The probe gave no certain answer: it failed to spawn, or failed
+    /// with unrecognized diagnostics. Never treated as dead.
+    Unknown,
+}
 
 /// Resolved liveness of a session, derived from its marker plus a best-effort
 /// process check — never stored, always recomputed when listing.
@@ -107,13 +127,13 @@ pub fn report(
     let mut sessions = Vec::new();
     let scan = read_markers(repo_root)?;
     for (_dir, marker) in scan.markers {
-        let alive = pid_is_alive(runner, repo_root, marker.pid);
-        let liveness = liveness(&marker, now, alive, stale_after_secs);
+        let pid_check = check_pid(runner, repo_root, marker.pid);
+        let liveness = liveness(&marker, now, pid_check, stale_after_secs);
         debug!(
             event = "toimija.session.liveness_checked",
             id = %marker.id,
             pid = marker.pid,
-            alive,
+            pid_check = ?pid_check,
             liveness = ?liveness
         );
         let packet = packet_path(repo_root, &marker.id);
@@ -243,7 +263,7 @@ fn read_markers(repo_root: &Path) -> Result<MarkerScan> {
     })
 }
 
-/// Resolve liveness from the marker, a process-liveness flag, and the staleness
+/// Resolve liveness from the marker, the pid probe's verdict, and the staleness
 /// threshold. Pure, so the staleness/active/closed transitions are unit-tested
 /// without touching the OS or the clock.
 ///
@@ -252,10 +272,15 @@ fn read_markers(repo_root: &Path) -> Result<MarkerScan> {
 /// one whose heartbeat froze goes stale within the window even if a recycled
 /// pid looks alive. Markers from before the heartbeat fall back to
 /// `started_at` — exactly the old D2 behavior.
+///
+/// Only a *provably* dead pid downgrades an active marker: a sibling session
+/// under another user (EPERM → `Alive`) and a probe that gave no answer
+/// (`Unknown`) both leave the heartbeat as the deciding signal, so a
+/// transient spawn failure cannot mark every session stale at once.
 pub fn liveness(
     marker: &SessionMarker,
     now_secs: u64,
-    pid_alive: bool,
+    pid: PidCheck,
     stale_after_secs: u64,
 ) -> Liveness {
     match marker.status {
@@ -263,7 +288,7 @@ pub fn liveness(
         SessionStatus::Active => {
             let last_seen = marker.last_seen_at.unwrap_or(marker.started_at);
             let idle = now_secs.saturating_sub(last_seen);
-            if !pid_alive || idle > stale_after_secs {
+            if pid == PidCheck::Dead || idle > stale_after_secs {
                 Liveness::Stale
             } else {
                 Liveness::Active
@@ -281,6 +306,11 @@ pub(crate) struct ReapCandidate {
 pub(crate) struct ReapPlan {
     pub candidates: Vec<ReapCandidate>,
     pub kept: usize,
+    /// Markers whose pid probe returned [`PidCheck::Unknown`]. A persistently
+    /// failing probe (no `kill` on PATH, a broken runner) silently blocks
+    /// stale pruning; the sweep surfaces this count so the stall is a visible
+    /// signal, not a quiet accumulation of session directories.
+    pub unknown_probes: usize,
 }
 
 /// Identify session directories the footprint sweep may safely reclaim.
@@ -297,10 +327,14 @@ pub(crate) fn reap_plan(
     // signal, and an unreadable marker gives none. They count as kept.
     let scan = read_markers(repo_root)?;
     let mut kept = scan.unreadable.len();
+    let mut unknown_probes = 0;
     for (dir, marker) in scan.markers {
-        let alive = pid_is_alive(runner, repo_root, marker.pid);
-        let liveness = liveness(&marker, now, alive, stale_after_secs);
-        if prunable(liveness, &marker, alive, now, retention_secs) {
+        let pid_check = check_pid(runner, repo_root, marker.pid);
+        if pid_check == PidCheck::Unknown {
+            unknown_probes += 1;
+        }
+        let liveness = liveness(&marker, now, pid_check, stale_after_secs);
+        if prunable(liveness, &marker, pid_check, now, retention_secs) {
             candidates.push(ReapCandidate {
                 dir,
                 marker,
@@ -311,7 +345,11 @@ pub(crate) fn reap_plan(
         }
     }
     candidates.sort_by(|a, b| a.marker.id.cmp(&b.marker.id));
-    Ok(ReapPlan { candidates, kept })
+    Ok(ReapPlan {
+        candidates,
+        kept,
+        unknown_probes,
+    })
 }
 
 /// Whether a session directory may be removed. Pure, so the retention decision
@@ -324,19 +362,24 @@ pub(crate) fn reap_plan(
 /// been open past the TTL while its process — a long interactive session — is
 /// alive and mid-work; removing its directory would pull the live packet out
 /// from under a running watcher. So a stale marker is prunable only when its
-/// pid is gone. `Closed` is an explicit end-of-life record and ages out
-/// regardless of `pid_alive`, which by then may point at a recycled pid.
+/// pid is *provably* gone (`PidCheck::Dead`): an EPERM answer means a live
+/// session under another user, and an `Unknown` probe proves nothing — both
+/// keep the directory. That inherits the pid-recycling caveat in the safe
+/// direction: a dead session whose pid was recycled by any live process reads
+/// `Alive` and is kept, and retention resumes only once that pid exits.
+/// `Closed` is an explicit end-of-life record and ages out regardless of the
+/// pid verdict, which by then may point at a recycled pid.
 pub fn prunable(
     liveness: Liveness,
     marker: &SessionMarker,
-    pid_alive: bool,
+    pid: PidCheck,
     now_secs: u64,
     retention_secs: u64,
 ) -> bool {
     let reference = match liveness {
         Liveness::Active => return false,
         Liveness::Closed => marker.closed_at.unwrap_or(marker.started_at),
-        Liveness::Stale if pid_alive => return false,
+        Liveness::Stale if pid != PidCheck::Dead => return false,
         // Retention counts from when the session was last seen alive, not
         // from its birth (proposal 0002).
         Liveness::Stale => marker.last_seen_at.unwrap_or(marker.started_at),
@@ -344,16 +387,46 @@ pub fn prunable(
     now_secs.saturating_sub(reference) > retention_secs
 }
 
-/// Best-effort process liveness via `kill -0 <pid>` (exit 0 = the process
-/// exists and is signalable). Routed through the runner so it is mockable in
-/// tests. Best-effort only: a pid owned by another user, or a recycled pid, can
-/// mislead — awareness, not authority.
-fn pid_is_alive(runner: &dyn CommandRunner, cwd: &Path, pid: u32) -> bool {
+/// Best-effort process liveness via `kill -0 <pid>`. Routed through the runner
+/// so it is mockable in tests. `LC_ALL=C` pins the probe's diagnostics to the
+/// untranslated strerror text so classification does not depend on the host
+/// locale. Best-effort only: a recycled pid can still mislead — awareness, not
+/// authority — but the answer is honest about what it proved (see [`PidCheck`]).
+fn check_pid(runner: &dyn CommandRunner, cwd: &Path, pid: u32) -> PidCheck {
     let pid = pid.to_string();
-    matches!(
-        runner.run(cwd, "kill", &["-0", &pid]),
-        Ok(output) if output.status == 0
-    )
+    let result = runner.run_with_env(
+        cwd,
+        "kill",
+        &["-0", &pid],
+        &[("LC_ALL", std::ffi::OsStr::new("C"))],
+    );
+    classify_kill_probe(result)
+}
+
+/// Classify a `kill -0` probe result. Pure, so the ESRCH/EPERM/unknown
+/// distinctions are unit-tested without spawning processes.
+///
+/// Exit 0 proves the process exists. A nonzero exit is ambiguous — `kill`
+/// exits 1 for both ESRCH and EPERM — so the verdict comes from the strerror
+/// text on stderr: "no such process" (ESRCH) is the only phrase that proves
+/// death, "not permitted" (EPERM) proves life under another user, and
+/// anything else — including a probe that failed to spawn — is `Unknown`.
+fn classify_kill_probe(result: std::io::Result<CommandOutput>) -> PidCheck {
+    let output = match result {
+        Ok(output) => output,
+        Err(_) => return PidCheck::Unknown,
+    };
+    if output.status == 0 {
+        return PidCheck::Alive;
+    }
+    let stderr = output.stderr_lossy().to_ascii_lowercase();
+    if stderr.contains("no such process") {
+        PidCheck::Dead
+    } else if stderr.contains("not permitted") {
+        PidCheck::Alive
+    } else {
+        PidCheck::Unknown
+    }
 }
 
 /// Path to a session's live packet, as a display string for the listing.
@@ -678,11 +751,114 @@ mod tests {
         assert!(scan.unreadable[0].contains("malformed JSON"));
     }
 
+    fn probe(status: i32, stderr: &str) -> std::io::Result<CommandOutput> {
+        Ok(CommandOutput {
+            status,
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
+    #[test]
+    fn probe_exit_zero_is_alive() {
+        assert_eq!(classify_kill_probe(probe(0, "")), PidCheck::Alive);
+    }
+
+    #[test]
+    fn probe_pins_the_c_locale() {
+        // Classification parses strerror text, so the probe must go through
+        // `run_with_env` with LC_ALL=C — a regression to plain `run()` would
+        // reintroduce locale-dependent verdicts and pass every other test.
+        struct EnvAssertingRunner;
+
+        impl CommandRunner for EnvAssertingRunner {
+            fn run(
+                &self,
+                _cwd: &Path,
+                _program: &str,
+                _args: &[&str],
+            ) -> std::io::Result<CommandOutput> {
+                panic!("check_pid must use run_with_env so LC_ALL can be pinned");
+            }
+
+            fn run_with_env(
+                &self,
+                _cwd: &Path,
+                program: &str,
+                args: &[&str],
+                env: &[(&str, &std::ffi::OsStr)],
+            ) -> std::io::Result<CommandOutput> {
+                assert_eq!(program, "kill");
+                assert_eq!(args, ["-0", "4242"]);
+                assert!(
+                    env.iter()
+                        .any(|(key, value)| *key == "LC_ALL" && *value == "C"),
+                    "probe must pin LC_ALL=C, got {env:?}"
+                );
+                Ok(CommandOutput {
+                    status: 0,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            }
+        }
+
+        assert_eq!(
+            check_pid(&EnvAssertingRunner, Path::new("."), 4242),
+            PidCheck::Alive
+        );
+    }
+
+    #[test]
+    fn probe_esrch_is_the_only_dead_verdict() {
+        // util-linux phrasing.
+        assert_eq!(
+            classify_kill_probe(probe(
+                1,
+                "kill: sending signal to 4242 failed: No such process"
+            )),
+            PidCheck::Dead
+        );
+        // BSD/macOS phrasing.
+        assert_eq!(
+            classify_kill_probe(probe(1, "kill: 4242: No such process")),
+            PidCheck::Dead
+        );
+    }
+
+    #[test]
+    fn probe_eperm_means_alive_under_another_user() {
+        // The #160 bug: a sibling session owned by another user answers EPERM.
+        // That is proof of existence, not of death.
+        assert_eq!(
+            classify_kill_probe(probe(1, "kill: 4242: Operation not permitted")),
+            PidCheck::Alive
+        );
+    }
+
+    #[test]
+    fn probe_spawn_failure_is_unknown() {
+        let error: std::io::Result<CommandOutput> =
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(classify_kill_probe(error), PidCheck::Unknown);
+    }
+
+    #[test]
+    fn probe_unrecognized_diagnostics_are_unknown() {
+        // A nonzero exit with no recognizable strerror text proves nothing —
+        // fail toward keeping, never toward deleting.
+        assert_eq!(classify_kill_probe(probe(1, "")), PidCheck::Unknown);
+        assert_eq!(
+            classify_kill_probe(probe(1, "kill: something surprising")),
+            PidCheck::Unknown
+        );
+    }
+
     #[test]
     fn closed_marker_is_always_closed() {
         let m = marker("a", SessionStatus::Closed, 0);
         assert_eq!(
-            liveness(&m, 1_000, true, DEFAULT_STALE_AFTER_SECS),
+            liveness(&m, 1_000, PidCheck::Alive, DEFAULT_STALE_AFTER_SECS),
             Liveness::Closed
         );
     }
@@ -691,7 +867,7 @@ mod tests {
     fn open_marker_with_live_pid_is_active() {
         let m = marker("a", SessionStatus::Active, 1_000);
         assert_eq!(
-            liveness(&m, 1_100, true, DEFAULT_STALE_AFTER_SECS),
+            liveness(&m, 1_100, PidCheck::Alive, DEFAULT_STALE_AFTER_SECS),
             Liveness::Active
         );
     }
@@ -700,7 +876,7 @@ mod tests {
     fn open_marker_with_dead_pid_is_stale() {
         let m = marker("a", SessionStatus::Active, 1_000);
         assert_eq!(
-            liveness(&m, 1_100, false, DEFAULT_STALE_AFTER_SECS),
+            liveness(&m, 1_100, PidCheck::Dead, DEFAULT_STALE_AFTER_SECS),
             Liveness::Stale
         );
     }
@@ -715,7 +891,7 @@ mod tests {
             liveness(
                 &m,
                 1_000 + DEFAULT_STALE_AFTER_SECS + 1,
-                true,
+                PidCheck::Alive,
                 DEFAULT_STALE_AFTER_SECS
             ),
             Liveness::Stale
@@ -730,7 +906,7 @@ mod tests {
         let now = 1_000 + 30 * DEFAULT_STALE_AFTER_SECS;
         m.last_seen_at = Some(now - 60);
         assert_eq!(
-            liveness(&m, now, true, DEFAULT_STALE_AFTER_SECS),
+            liveness(&m, now, PidCheck::Alive, DEFAULT_STALE_AFTER_SECS),
             Liveness::Active
         );
     }
@@ -744,7 +920,7 @@ mod tests {
             liveness(
                 &m,
                 2_000 + DEFAULT_STALE_AFTER_SECS + 1,
-                true,
+                PidCheck::Alive,
                 DEFAULT_STALE_AFTER_SECS
             ),
             Liveness::Stale
@@ -761,14 +937,14 @@ mod tests {
         assert!(!prunable(
             Liveness::Stale,
             &m,
-            false,
+            PidCheck::Dead,
             last_seen + retention,
             retention
         ));
         assert!(prunable(
             Liveness::Stale,
             &m,
-            false,
+            PidCheck::Dead,
             last_seen + retention + 1,
             retention
         ));
@@ -946,7 +1122,13 @@ mod tests {
     fn active_sessions_are_never_prunable() {
         let m = marker("a", SessionStatus::Active, 0);
         // Even at an absurd age, Active means hands off.
-        assert!(!prunable(Liveness::Active, &m, true, u64::MAX, 0));
+        assert!(!prunable(
+            Liveness::Active,
+            &m,
+            PidCheck::Alive,
+            u64::MAX,
+            0
+        ));
     }
 
     #[test]
@@ -956,7 +1138,45 @@ mod tests {
         // would pull the live packet out from under a running watcher — never,
         // at any age.
         let m = marker("a", SessionStatus::Active, 1_000);
-        assert!(!prunable(Liveness::Stale, &m, true, u64::MAX, 0));
+        assert!(!prunable(Liveness::Stale, &m, PidCheck::Alive, u64::MAX, 0));
+    }
+
+    #[test]
+    fn stale_session_with_an_unknown_pid_is_never_prunable() {
+        // A probe that failed to spawn (or answered unintelligibly) proves
+        // nothing; `remove_dir_all` demands proof. Even at an absurd age.
+        let m = marker("a", SessionStatus::Active, 1_000);
+        assert!(!prunable(
+            Liveness::Stale,
+            &m,
+            PidCheck::Unknown,
+            u64::MAX,
+            0
+        ));
+    }
+
+    #[test]
+    fn unknown_probe_leaves_the_heartbeat_deciding() {
+        // A transient spawn failure must not mark every session stale at
+        // once: with a fresh heartbeat the session stays active...
+        let mut m = marker("a", SessionStatus::Active, 1_000);
+        let now = 10_000;
+        m.last_seen_at = Some(now - 60);
+        assert_eq!(
+            liveness(&m, now, PidCheck::Unknown, DEFAULT_STALE_AFTER_SECS),
+            Liveness::Active
+        );
+        // ...while a frozen heartbeat still goes stale on its own.
+        m.last_seen_at = Some(1_000);
+        assert_eq!(
+            liveness(
+                &m,
+                1_000 + DEFAULT_STALE_AFTER_SECS + 1,
+                PidCheck::Unknown,
+                DEFAULT_STALE_AFTER_SECS
+            ),
+            Liveness::Stale
+        );
     }
 
     #[test]
@@ -967,14 +1187,14 @@ mod tests {
         assert!(!prunable(
             Liveness::Closed,
             &m,
-            false,
+            PidCheck::Dead,
             2_000 + retention,
             retention
         ));
         assert!(prunable(
             Liveness::Closed,
             &m,
-            false,
+            PidCheck::Dead,
             2_000 + retention + 1,
             retention
         ));
@@ -989,7 +1209,7 @@ mod tests {
         assert!(prunable(
             Liveness::Closed,
             &m,
-            true,
+            PidCheck::Alive,
             2_000 + DEFAULT_RETENTION_SECS + 1,
             DEFAULT_RETENTION_SECS
         ));
@@ -1002,7 +1222,7 @@ mod tests {
         assert!(prunable(
             Liveness::Closed,
             &m,
-            false,
+            PidCheck::Dead,
             1_000 + DEFAULT_RETENTION_SECS + 1,
             DEFAULT_RETENTION_SECS
         ));
@@ -1015,14 +1235,14 @@ mod tests {
         assert!(!prunable(
             Liveness::Stale,
             &m,
-            false,
+            PidCheck::Dead,
             1_000 + retention,
             retention
         ));
         assert!(prunable(
             Liveness::Stale,
             &m,
-            false,
+            PidCheck::Dead,
             1_000 + retention + 1,
             retention
         ));

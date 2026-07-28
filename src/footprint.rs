@@ -48,6 +48,11 @@ pub struct SweepReport {
     pub temps_removed: Vec<String>,
     pub journaled: usize,
     pub kept: usize,
+    /// Session markers whose pid probe gave no verdict (`kill` failed to run
+    /// or answered unintelligibly). Such sessions are never stale-pruned, so
+    /// a persistently broken probe would silently stall reclamation — this
+    /// count keeps the stall visible in the report instead.
+    pub sessions_unprobed: usize,
     pub dry_run: bool,
 }
 
@@ -474,8 +479,15 @@ fn sweep_inner(
             .collect(),
         journaled: 0,
         kept,
+        sessions_unprobed: plan.unknown_probes,
         dry_run: options.dry_run,
     };
+    if plan.unknown_probes > 0 {
+        warn!(
+            event = "toimija.footprint.pid_probe_unknown",
+            count = plan.unknown_probes
+        );
+    }
 
     if options.dry_run {
         let recorded: BTreeSet<String> = read_history(repo_root)?
@@ -548,6 +560,7 @@ fn sweep_inner(
         temps_removed = report.temps_removed.len(),
         journaled = report.journaled,
         kept = report.kept,
+        sessions_unprobed = report.sessions_unprobed,
         dry_run = report.dry_run
     );
     Ok(report)
@@ -701,6 +714,12 @@ pub fn render_sweep(report: &SweepReport) -> String {
             out.push_str(&format!("  contended: {id}\n"));
         }
     }
+    if report.sessions_unprobed > 0 {
+        out.push_str(&format!(
+            "{} session pid probe(s) gave no verdict; stale pruning held back for them\n",
+            report.sessions_unprobed
+        ));
+    }
     out
 }
 
@@ -757,6 +776,11 @@ mod tests {
     use crate::command::{CommandOutput, CommandRunner};
     use crate::session::SessionStatus;
 
+    /// A runner whose `kill -0` probe answers ESRCH — the *certain* dead
+    /// signal. A bare nonzero exit no longer counts as dead (#160), so the
+    /// mock must speak the real strerror phrase. Implements `run_with_env`
+    /// too: the probe pins `LC_ALL=C`, and the trait's default errors on a
+    /// non-empty env.
     struct DeadRunner;
 
     impl CommandRunner for DeadRunner {
@@ -769,8 +793,72 @@ mod tests {
             Ok(CommandOutput {
                 status: 1,
                 stdout: Vec::new(),
-                stderr: Vec::new(),
+                stderr: b"kill: sending signal to 4242 failed: No such process".to_vec(),
             })
+        }
+
+        fn run_with_env(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            _env: &[(&str, &std::ffi::OsStr)],
+        ) -> std::io::Result<CommandOutput> {
+            self.run(cwd, program, args)
+        }
+    }
+
+    /// A runner whose probe answers EPERM: the pid *exists* under another
+    /// user. The #160 failure mode — this must never read as dead.
+    struct ForeignPidRunner;
+
+    impl CommandRunner for ForeignPidRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &str,
+            _args: &[&str],
+        ) -> std::io::Result<CommandOutput> {
+            Ok(CommandOutput {
+                status: 1,
+                stdout: Vec::new(),
+                stderr: b"kill: 4242: Operation not permitted".to_vec(),
+            })
+        }
+
+        fn run_with_env(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            _env: &[(&str, &std::ffi::OsStr)],
+        ) -> std::io::Result<CommandOutput> {
+            self.run(cwd, program, args)
+        }
+    }
+
+    /// A runner whose probe cannot spawn at all — the transient failure that
+    /// used to mark every session dead at once (#160).
+    struct BrokenProbeRunner;
+
+    impl CommandRunner for BrokenProbeRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            _program: &str,
+            _args: &[&str],
+        ) -> std::io::Result<CommandOutput> {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+
+        fn run_with_env(
+            &self,
+            _cwd: &Path,
+            _program: &str,
+            _args: &[&str],
+            _env: &[(&str, &std::ffi::OsStr)],
+        ) -> std::io::Result<CommandOutput> {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
         }
     }
 
@@ -939,6 +1027,58 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn sweep_never_reaps_a_session_without_a_certain_dead_pid() {
+        // An ancient stale-looking marker whose pid answers EPERM (live under
+        // another user) or whose probe fails outright must survive the sweep:
+        // `remove_dir_all` under a running watcher is the disaster `prunable`
+        // exists to prevent (#160).
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".toimija/sessions/100-1");
+        fs::create_dir_all(&dir).unwrap();
+        let mut stale = marker("100-1");
+        stale.status = SessionStatus::Active;
+        stale.closed_at = None;
+        stale.exit_status = None;
+        fs::write(
+            dir.join("session.json"),
+            serde_json::to_string_pretty(&stale).unwrap(),
+        )
+        .unwrap();
+        let options = SweepOptions {
+            dry_run: false,
+            sessions_retention_secs: 0,
+            runs_retention_secs: 0,
+            history_max_records: 100,
+        };
+
+        // EPERM: a certain answer (alive under another user) — kept, and not
+        // counted as an unprobed session.
+        let report = sweep_inner(&ForeignPidRunner, temp.path(), options).unwrap();
+        assert!(report.sessions_removed.is_empty());
+        assert_eq!(report.sessions_unprobed, 0);
+        assert!(dir.exists());
+
+        // A probe with no verdict: kept, and surfaced as unprobed so a
+        // persistently broken probe reads as a stall, not a clean sweep.
+        let report = sweep_inner(&BrokenProbeRunner, temp.path(), options).unwrap();
+        assert!(report.sessions_removed.is_empty());
+        assert_eq!(report.sessions_unprobed, 1);
+        assert!(dir.exists());
+        let rendered = render_sweep(&report);
+        assert!(
+            rendered.contains("1 session pid probe(s) gave no verdict"),
+            "{rendered}"
+        );
+
+        // The identical marker with a provably dead pid is reaped — the guard
+        // demands evidence, it is not a blanket keep.
+        let report = sweep_inner(&DeadRunner, temp.path(), options).unwrap();
+        assert_eq!(report.sessions_removed, vec!["100-1"]);
+        assert_eq!(report.sessions_unprobed, 0);
+        assert!(!dir.exists());
     }
 
     #[cfg(unix)]
