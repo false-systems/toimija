@@ -49,13 +49,38 @@ fn aborting_commit(result: Result<()>) -> Result<()> {
 }
 
 /// The full repo gate behind one entrypoint (guardrails R-R.1): the same three
-/// checks `sykli.rs` encodes, in cheapest-first order. A human, CI, and the
-/// harness run this identically as `cargo xtask gate`.
+/// checks `sykli.rs` encodes, in cheapest-first order — plus xtask's own tests,
+/// which `default-members = ["."]` hides from plain `cargo test` (xtask is
+/// already compiled to run this, so its tests cost almost nothing here). A
+/// human, CI, and the harness run this identically as `cargo xtask gate`.
 fn run_full_gate() -> Result<()> {
+    // `cargo xtask` aliases work from any workspace subdir; unpinned, a
+    // `cargo test` run from inside `xtask/` would gate the xtask package
+    // instead of toimija. (Not `locate_project_root`: that returns `GIT_DIR`
+    // verbatim when set, which would point the hook path into `.git/`.)
+    std::env::set_current_dir(repo_toplevel()?)?;
     run_gate(&["fmt", "--check"], "formatting differs from rustfmt")?;
     run_clippy()?;
     run_tests()?;
+    run_gate(&["test", "-p", "xtask"], "xtask tests failed")?;
     Ok(())
+}
+
+/// The repo root via `git rev-parse --show-toplevel`, with the redirecting git
+/// env scrubbed so an inherited `GIT_DIR` can never steer it.
+fn repo_toplevel() -> Result<PathBuf> {
+    let mut command = Command::new("git");
+    command.args(["rev-parse", "--show-toplevel"]);
+    for var in REDIRECTING_GIT_ENV {
+        command.env_remove(var);
+    }
+    let output = command.output()?;
+    if !output.status.success() {
+        bail!("not inside a git repository — run `cargo xtask gate` from the repo");
+    }
+    Ok(PathBuf::from(
+        String::from_utf8(output.stdout)?.trim_end().to_string(),
+    ))
 }
 
 fn run_clippy() -> Result<()> {
