@@ -32,7 +32,9 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 or equivalently `sykli run` — the same gate as a typed execution contract
-(`sykli.rs`), with cached task results and structured failures.
+(`sykli.rs`), with cached task results and structured failures — or
+`cargo xtask gate`, the same three checks behind the single entrypoint
+harnesses invoke (guardrails R-R.1).
 
 
 Install the git pre-commit hook once per clone (it lives in `.git/`, which is

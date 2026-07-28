@@ -35,9 +35,25 @@ fn run_hook() -> Result<()> {
     // Lint gate: a commit must not introduce clippy warnings. This mirrors the
     // CI step (`cargo clippy --all-targets -- -D warnings`) so failures surface
     // locally instead of after a push.
-    run_clippy()?;
+    aborting_commit(run_clippy())?;
     // Test gate: the suite must be green before the commit lands. Runs after
     // clippy so the cheaper lint failures surface first.
+    aborting_commit(run_tests())?;
+    Ok(())
+}
+
+/// Hook-path phrasing: the same gate failure aborts a commit rather than a
+/// standalone `cargo xtask gate` run.
+fn aborting_commit(result: Result<()>) -> Result<()> {
+    result.map_err(|error| error.context("commit aborted. Fix the problem and commit again."))
+}
+
+/// The full repo gate behind one entrypoint (guardrails R-R.1): the same three
+/// checks `sykli.rs` encodes, in cheapest-first order. A human, CI, and the
+/// harness run this identically as `cargo xtask gate`.
+fn run_full_gate() -> Result<()> {
+    run_gate(&["fmt", "--check"], "formatting differs from rustfmt")?;
+    run_clippy()?;
     run_tests()?;
     Ok(())
 }
@@ -68,7 +84,7 @@ const REDIRECTING_GIT_ENV: &[&str] = &[
     "GIT_CEILING_DIRECTORIES",
 ];
 
-/// Run a `cargo` subcommand and abort the commit if it exits non-zero. The git
+/// Run a `cargo` subcommand and fail if it exits non-zero. The git
 /// redirection env is scrubbed so the gates run hermetically against tempdirs.
 fn run_gate(args: &[&str], what: &str) -> Result<()> {
     let mut command = Command::new(cargo());
@@ -78,7 +94,7 @@ fn run_gate(args: &[&str], what: &str) -> Result<()> {
     }
     let status = command.status()?;
     if !status.success() {
-        bail!("{what}; commit aborted. Fix the problem and commit again.");
+        bail!("{what}");
     }
     Ok(())
 }
@@ -402,13 +418,17 @@ fn main() -> Result<()> {
             };
             run_sauma_why(query)?;
         }
+        Some("gate") => run_full_gate()?,
         other => {
-            if let Some(arg) = other {
-                eprintln!("Unknown task: {arg}\n");
-            }
             eprintln!("toimija dev tasks:");
+            eprintln!("  cargo xtask gate                      run the full gate: fmt --check, clippy -D warnings, tests");
             eprintln!("  cargo xtask install-pre-commit-hook   install the git pre-commit hook");
             eprintln!("  cargo xtask sauma-why <query>        walk local sauma artifact edges");
+            // Fail closed: a caller that treats the exit code as a verdict (the
+            // harness gate, CI) must never mistake "task not found" for a pass.
+            if let Some(arg) = other {
+                bail!("unknown task: {arg}");
+            }
         }
     }
     Ok(())
