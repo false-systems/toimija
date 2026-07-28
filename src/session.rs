@@ -360,10 +360,23 @@ pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
         return Ok(());
     }
     marker.last_seen_at = Some(now_secs());
-    let json = serde_json::to_string_pretty(&marker)?;
-    crate::atomic_write::replace(&marker_path, format!("{json}\n").as_bytes())
-        .with_context(|| format!("failed to write {}", marker_path.display()))?;
-    Ok(())
+    stamp(&marker_path, &marker)
+}
+
+/// Write half of the heartbeat, split out so the prune race is testable
+/// (issue #159): the session directory can vanish between `touch`'s read and
+/// this write when a sibling's startup prune wins the interleaving. `NotFound`
+/// then means "pruned — nothing left to stamp", the same quiet outcome as a
+/// marker already missing at the read. Every other error still surfaces.
+fn stamp(marker_path: &Path, marker: &SessionMarker) -> Result<()> {
+    let json = serde_json::to_string_pretty(marker)?;
+    match crate::atomic_write::replace(marker_path, format!("{json}\n").as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to write {}", marker_path.display()))
+        }
+    }
 }
 
 /// Whether `id` has the `<unix-secs>-<pid>` shape `run` mints (decision D1).
@@ -530,6 +543,21 @@ mod tests {
 
         // Missing marker: quietly Ok — never interrupts the watch loop.
         touch(temp.path(), "999-999").unwrap();
+    }
+
+    #[test]
+    fn stamp_is_quiet_when_prune_removed_the_session_dir_mid_heartbeat() {
+        let temp = tempfile::tempdir().unwrap();
+        let session =
+            Session::open(temp.path(), &["claude".to_string()], None, Vec::new()).unwrap();
+        let dir = temp.path().join(SESSIONS_SUBDIR).join(&session.id);
+        let marker = load_marker(&dir).unwrap();
+        // The exact interleaving from issue #159: marker read, prune removes
+        // the directory, then the heartbeat writes. The write must be the
+        // quiet outcome, not `failed to write …/session.json.tmp-…`.
+        fs::remove_dir_all(&dir).unwrap();
+        stamp(&dir.join("session.json"), &marker).unwrap();
+        assert!(!dir.exists(), "a quiet stamp must not resurrect the dir");
     }
 
     #[test]

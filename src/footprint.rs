@@ -40,6 +40,10 @@ pub enum ErrorPosture {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SweepReport {
     pub sessions_removed: Vec<String>,
+    /// Session dirs whose removal failed (issue #159: a live writer — e.g. a
+    /// sibling's heartbeat tmp file — can contend the directory). Left in
+    /// place; the next sweep retries them.
+    pub sessions_failed: Vec<String>,
     pub runs_removed: Vec<String>,
     pub temps_removed: Vec<String>,
     pub journaled: usize,
@@ -380,7 +384,14 @@ pub fn reap(
     journal: &mut Journal,
 ) -> Result<bool> {
     let journaled = journal.journal_session(repo_root, marker, end, recorded_at)?;
-    fs::remove_dir_all(dir).with_context(|| format!("failed to remove {}", dir.display()))?;
+    match fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        // A sibling sweep won the race; the directory is already reclaimed.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to remove {}", dir.display()));
+        }
+    }
     Ok(journaled)
 }
 
@@ -452,6 +463,7 @@ fn sweep_inner(
             .iter()
             .map(|candidate| candidate.marker.id.clone())
             .collect(),
+        sessions_failed: Vec::new(),
         runs_removed: run_candidates
             .iter()
             .map(|path| relative(repo_root, path))
@@ -485,6 +497,7 @@ fn sweep_inner(
             remove_artifact(path)?;
         }
         let mut journal = None;
+        let mut removed = Vec::with_capacity(plan.candidates.len());
         for candidate in &plan.candidates {
             let end = match candidate.liveness {
                 Liveness::Closed => HistoryEnd::Closed,
@@ -495,17 +508,34 @@ fn sweep_inner(
                 Some(journal) => journal,
                 None => journal.insert(Journal::open(repo_root)?),
             };
-            if reap(
+            // Per-directory best-effort (issue #159): one contended directory
+            // — a sibling's freshly written heartbeat tmp file is enough —
+            // must not abort the whole pass. Keep it for the next sweep.
+            match reap(
                 repo_root,
                 &candidate.dir,
                 &candidate.marker,
                 end,
                 now,
                 journal,
-            )? {
-                report.journaled += 1;
+            ) {
+                Ok(journaled) => {
+                    if journaled {
+                        report.journaled += 1;
+                    }
+                    removed.push(candidate.marker.id.clone());
+                }
+                Err(error) => {
+                    warn!(
+                        event = "toimija.footprint.reap_failed",
+                        session = %candidate.marker.id,
+                        error = %format!("{error:#}")
+                    );
+                    report.sessions_failed.push(candidate.marker.id.clone());
+                }
             }
         }
+        report.sessions_removed = removed;
         drop(journal);
         compact_history(repo_root, options.history_max_records)?;
     }
@@ -659,6 +689,15 @@ pub fn render_sweep(report: &SweepReport) -> String {
     ] {
         for path in paths {
             out.push_str(&format!("  {kind}: {path}\n"));
+        }
+    }
+    if !report.sessions_failed.is_empty() {
+        out.push_str(&format!(
+            "left {} contended session dir(s) in place; the next sweep retries:\n",
+            report.sessions_failed.len()
+        ));
+        for id in &report.sessions_failed {
+            out.push_str(&format!("  contended: {id}\n"));
         }
     }
     out
@@ -878,6 +917,68 @@ mod tests {
         assert!(!dir.exists());
         drop(journal);
         assert_eq!(read_history(temp.path()).unwrap().records.len(), 1);
+    }
+
+    #[test]
+    fn reap_tolerates_a_directory_a_sibling_already_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = marker("100-1");
+        // The directory never existed here — the state after a concurrent
+        // sweep won the removal race. The reclaim outcome is achieved.
+        let dir = temp.path().join(".toimija/sessions/100-1");
+        let mut journal = Journal::open(temp.path()).unwrap();
+        assert!(
+            reap(
+                temp.path(),
+                &dir,
+                &marker,
+                HistoryEnd::Closed,
+                300,
+                &mut journal
+            )
+            .unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_leaves_a_contended_session_dir_in_place_and_continues() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        for id in ["100-1", "100-2"] {
+            let dir = temp.path().join(".toimija/sessions").join(id);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("session.json"),
+                serde_json::to_string_pretty(&marker(id)).unwrap(),
+            )
+            .unwrap();
+        }
+        // Deny writes on one dir so remove_dir_all cannot unlink its marker —
+        // the same per-directory failure a live writer's fresh heartbeat tmp
+        // file causes (issue #159). The pass must continue, not abort.
+        let contended = temp.path().join(".toimija/sessions/100-1");
+        fs::set_permissions(&contended, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let report = sweep_inner(
+            &DeadRunner,
+            temp.path(),
+            SweepOptions {
+                dry_run: false,
+                sessions_retention_secs: 0,
+                runs_retention_secs: 0,
+                history_max_records: 100,
+            },
+        );
+
+        fs::set_permissions(&contended, fs::Permissions::from_mode(0o755)).unwrap();
+        let report = report.unwrap();
+        assert_eq!(report.sessions_removed, vec!["100-2"]);
+        assert_eq!(report.sessions_failed, vec!["100-1"]);
+        assert!(contended.exists());
+        assert!(!temp.path().join(".toimija/sessions/100-2").exists());
+        let rendered = render_sweep(&report);
+        assert!(rendered.contains("contended: 100-1"), "{rendered}");
     }
 
     #[test]
