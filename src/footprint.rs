@@ -48,6 +48,11 @@ pub struct SweepReport {
     pub temps_removed: Vec<String>,
     pub journaled: usize,
     pub kept: usize,
+    /// Session markers whose pid probe gave no verdict (`kill` failed to run
+    /// or answered unintelligibly). Such sessions are never stale-pruned, so
+    /// a persistently broken probe would silently stall reclamation — this
+    /// count keeps the stall visible in the report instead.
+    pub sessions_unprobed: usize,
     pub dry_run: bool,
 }
 
@@ -474,8 +479,15 @@ fn sweep_inner(
             .collect(),
         journaled: 0,
         kept,
+        sessions_unprobed: plan.unknown_probes,
         dry_run: options.dry_run,
     };
+    if plan.unknown_probes > 0 {
+        warn!(
+            event = "toimija.footprint.pid_probe_unknown",
+            count = plan.unknown_probes
+        );
+    }
 
     if options.dry_run {
         let recorded: BTreeSet<String> = read_history(repo_root)?
@@ -548,6 +560,7 @@ fn sweep_inner(
         temps_removed = report.temps_removed.len(),
         journaled = report.journaled,
         kept = report.kept,
+        sessions_unprobed = report.sessions_unprobed,
         dry_run = report.dry_run
     );
     Ok(report)
@@ -700,6 +713,12 @@ pub fn render_sweep(report: &SweepReport) -> String {
         for id in &report.sessions_failed {
             out.push_str(&format!("  contended: {id}\n"));
         }
+    }
+    if report.sessions_unprobed > 0 {
+        out.push_str(&format!(
+            "{} session pid probe(s) gave no verdict; stale pruning held back for them\n",
+            report.sessions_unprobed
+        ));
     }
     out
 }
@@ -1035,16 +1054,30 @@ mod tests {
             history_max_records: 100,
         };
 
-        for runner in [&ForeignPidRunner as &dyn CommandRunner, &BrokenProbeRunner] {
-            let report = sweep_inner(runner, temp.path(), options).unwrap();
-            assert!(report.sessions_removed.is_empty());
-            assert!(dir.exists());
-        }
+        // EPERM: a certain answer (alive under another user) — kept, and not
+        // counted as an unprobed session.
+        let report = sweep_inner(&ForeignPidRunner, temp.path(), options).unwrap();
+        assert!(report.sessions_removed.is_empty());
+        assert_eq!(report.sessions_unprobed, 0);
+        assert!(dir.exists());
+
+        // A probe with no verdict: kept, and surfaced as unprobed so a
+        // persistently broken probe reads as a stall, not a clean sweep.
+        let report = sweep_inner(&BrokenProbeRunner, temp.path(), options).unwrap();
+        assert!(report.sessions_removed.is_empty());
+        assert_eq!(report.sessions_unprobed, 1);
+        assert!(dir.exists());
+        let rendered = render_sweep(&report);
+        assert!(
+            rendered.contains("1 session pid probe(s) gave no verdict"),
+            "{rendered}"
+        );
 
         // The identical marker with a provably dead pid is reaped — the guard
         // demands evidence, it is not a blanket keep.
         let report = sweep_inner(&DeadRunner, temp.path(), options).unwrap();
         assert_eq!(report.sessions_removed, vec!["100-1"]);
+        assert_eq!(report.sessions_unprobed, 0);
         assert!(!dir.exists());
     }
 

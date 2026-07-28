@@ -306,6 +306,11 @@ pub(crate) struct ReapCandidate {
 pub(crate) struct ReapPlan {
     pub candidates: Vec<ReapCandidate>,
     pub kept: usize,
+    /// Markers whose pid probe returned [`PidCheck::Unknown`]. A persistently
+    /// failing probe (no `kill` on PATH, a broken runner) silently blocks
+    /// stale pruning; the sweep surfaces this count so the stall is a visible
+    /// signal, not a quiet accumulation of session directories.
+    pub unknown_probes: usize,
 }
 
 /// Identify session directories the footprint sweep may safely reclaim.
@@ -322,8 +327,12 @@ pub(crate) fn reap_plan(
     // signal, and an unreadable marker gives none. They count as kept.
     let scan = read_markers(repo_root)?;
     let mut kept = scan.unreadable.len();
+    let mut unknown_probes = 0;
     for (dir, marker) in scan.markers {
         let pid_check = check_pid(runner, repo_root, marker.pid);
+        if pid_check == PidCheck::Unknown {
+            unknown_probes += 1;
+        }
         let liveness = liveness(&marker, now, pid_check, stale_after_secs);
         if prunable(liveness, &marker, pid_check, now, retention_secs) {
             candidates.push(ReapCandidate {
@@ -336,7 +345,11 @@ pub(crate) fn reap_plan(
         }
     }
     candidates.sort_by(|a, b| a.marker.id.cmp(&b.marker.id));
-    Ok(ReapPlan { candidates, kept })
+    Ok(ReapPlan {
+        candidates,
+        kept,
+        unknown_probes,
+    })
 }
 
 /// Whether a session directory may be removed. Pure, so the retention decision
@@ -351,8 +364,11 @@ pub(crate) fn reap_plan(
 /// from under a running watcher. So a stale marker is prunable only when its
 /// pid is *provably* gone (`PidCheck::Dead`): an EPERM answer means a live
 /// session under another user, and an `Unknown` probe proves nothing — both
-/// keep the directory. `Closed` is an explicit end-of-life record and ages out
-/// regardless of the pid verdict, which by then may point at a recycled pid.
+/// keep the directory. That inherits the pid-recycling caveat in the safe
+/// direction: a dead session whose pid was recycled by any live process reads
+/// `Alive` and is kept, and retention resumes only once that pid exits.
+/// `Closed` is an explicit end-of-life record and ages out regardless of the
+/// pid verdict, which by then may point at a recycled pid.
 pub fn prunable(
     liveness: Liveness,
     marker: &SessionMarker,
@@ -746,6 +762,51 @@ mod tests {
     #[test]
     fn probe_exit_zero_is_alive() {
         assert_eq!(classify_kill_probe(probe(0, "")), PidCheck::Alive);
+    }
+
+    #[test]
+    fn probe_pins_the_c_locale() {
+        // Classification parses strerror text, so the probe must go through
+        // `run_with_env` with LC_ALL=C — a regression to plain `run()` would
+        // reintroduce locale-dependent verdicts and pass every other test.
+        struct EnvAssertingRunner;
+
+        impl CommandRunner for EnvAssertingRunner {
+            fn run(
+                &self,
+                _cwd: &Path,
+                _program: &str,
+                _args: &[&str],
+            ) -> std::io::Result<CommandOutput> {
+                panic!("check_pid must use run_with_env so LC_ALL can be pinned");
+            }
+
+            fn run_with_env(
+                &self,
+                _cwd: &Path,
+                program: &str,
+                args: &[&str],
+                env: &[(&str, &std::ffi::OsStr)],
+            ) -> std::io::Result<CommandOutput> {
+                assert_eq!(program, "kill");
+                assert_eq!(args, ["-0", "4242"]);
+                assert!(
+                    env.iter()
+                        .any(|(key, value)| *key == "LC_ALL" && *value == "C"),
+                    "probe must pin LC_ALL=C, got {env:?}"
+                );
+                Ok(CommandOutput {
+                    status: 0,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            }
+        }
+
+        assert_eq!(
+            check_pid(&EnvAssertingRunner, Path::new("."), 4242),
+            PidCheck::Alive
+        );
     }
 
     #[test]
