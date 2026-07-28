@@ -52,10 +52,20 @@ fn materialize_into(runner: &impl CommandRunner, repo_root: &Path, index: &Path)
     // `.gitignore`, which would drop committed-but-ignored content from the tree.
     // `read-tree` errors harmlessly on an unborn HEAD (no tracked files yet).
     let _ = run_git(runner, repo_root, index, &["read-tree", "HEAD"]);
-    // Overlay worktree changes (modifications, additions, deletions), then drop
-    // generated tool namespaces while retaining Toimija's user-authored manifest.
-    // This mirrors `consistency::is_generated_output`.
-    run_git(runner, repo_root, index, &["add", "-A"])?;
+    // Exclude generated namespaces before Git can stat a disappearing atomic
+    // write. `[.]` avoids treating an ignored directory as an explicit path.
+    run_git(
+        runner,
+        repo_root,
+        index,
+        &[
+            "add",
+            "-A",
+            "--",
+            ":(exclude,top,glob)[.]toimija/**",
+            ":(exclude,top,glob)[.]teko/**",
+        ],
+    )?;
     let _ = run_git(
         runner,
         repo_root,
