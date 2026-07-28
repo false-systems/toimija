@@ -222,7 +222,7 @@ pub fn latest(repo_root: &Path) -> Result<Option<WorkCorrelation>> {
         })
         .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
         .collect::<Vec<_>>();
-    paths.sort_by(|left, right| right.0.cmp(&left.0));
+    paths.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     paths.first().map(|(_, path)| read_path(path)).transpose()
 }
 

@@ -1408,7 +1408,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
     }
     // Skip the exit summary if the command never launched — there is nothing to
     // summarize, and the launch error is surfaced below.
-    if launched.is_ok() {
+    if let Ok(wrapped_status) = &launched {
         let consumption = collect_consumption(&repo_root, &session, &args);
         match plan.run(&runner, &repo_root) {
             Ok(exit) => {
@@ -1417,12 +1417,12 @@ fn run_run(args: RunArgs) -> Result<i32> {
                     .session
                     .as_ref()
                     .and_then(|session| session.execution.as_ref());
-                if let (Some(origin), Some(destination), Ok(status)) =
-                    (entry_execution.as_ref(), exit_execution, launched.as_ref())
+                if let (Some(origin), Some(destination)) =
+                    (entry_execution.as_ref(), exit_execution)
                 {
                     let normalized =
                         adapter.finalize(false_agent_protocol::worker::FinalizeParams {
-                            outcome: process_outcome(*status),
+                            outcome: process_outcome(*wrapped_status),
                             origin: origin.repository.clone(),
                             destination: destination.repository.clone(),
                             structured_result_path: semantic_result_path
@@ -1447,11 +1447,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
                     &emitted_context_digests
                         .lock()
                         .unwrap_or_else(|poison| poison.into_inner()),
-                    process_outcome(
-                        *launched
-                            .as_ref()
-                            .expect("exit summary only runs after successful launch"),
-                    ),
+                    process_outcome(*wrapped_status),
                 )? {
                     eprintln!(
                         "toimija run: correlated Kisko run {} at {} ({})",

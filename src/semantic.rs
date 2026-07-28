@@ -439,7 +439,7 @@ pub fn latest_result(
             Some((modified, entry.path()))
         })
         .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
     candidates
         .first()
         .map(|(_, path)| read_result(path))
