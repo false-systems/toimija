@@ -543,6 +543,7 @@ fn sweep_inner(
     info!(
         event = "toimija.footprint.swept",
         sessions_removed = report.sessions_removed.len(),
+        sessions_failed = report.sessions_failed.len(),
         runs_removed = report.runs_removed.len(),
         temps_removed = report.temps_removed.len(),
         journaled = report.journaled,
