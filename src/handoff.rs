@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::command::CommandRunner;
 use crate::context::{ContextPacket, build_context_packet};
@@ -122,17 +122,49 @@ pub fn read_all(repo_root: &Path, id: &str) -> Result<Vec<HandoffRecord>> {
     Ok(records)
 }
 
+/// Count the handoff records for a session; `None` means no handoff file.
+/// Unreadable ≠ missing (issue #161): a file that exists but cannot be opened
+/// or read is warned about, and a malformed line is warned about and skipped
+/// while the valid records are still counted — one bad line must not collapse
+/// real handoff records to zero.
 pub fn count(repo_root: &Path, id: &str) -> Option<usize> {
     let path = handoff_path(repo_root, id).ok()?;
-    let file = fs::File::open(path).ok()?;
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn!(
+                event = "toimija.handoff.unreadable",
+                path = %path.display(),
+                error = %error
+            );
+            return None;
+        }
+    };
     let mut total = 0;
     for line in BufReader::new(file).lines() {
-        let line = line.ok()?;
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                warn!(
+                    event = "toimija.handoff.unreadable",
+                    path = %path.display(),
+                    error = %error
+                );
+                return Some(total);
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
-        serde_json::from_str::<HandoffRecord>(&line).ok()?;
-        total += 1;
+        match serde_json::from_str::<HandoffRecord>(&line) {
+            Ok(_) => total += 1,
+            Err(error) => warn!(
+                event = "toimija.handoff.record_malformed",
+                path = %path.display(),
+                error = %error
+            ),
+        }
     }
     Some(total)
 }
@@ -534,6 +566,27 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.to_string().contains("closed"));
+    }
+
+    #[test]
+    fn count_still_counts_valid_records_around_a_malformed_line() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = "100-1";
+        let dir = temp.path().join(SESSIONS_SUBDIR).join(id);
+        fs::create_dir_all(&dir).unwrap();
+        let record =
+            HandoffRecord::from_marker_packet(&marker(SessionStatus::Active), &packet(), None);
+        let valid = serde_json::to_string(&record).unwrap();
+        fs::write(dir.join(FILE_NAME), format!("{valid}\nnot json\n{valid}\n")).unwrap();
+        // Issue #161: one bad line must not collapse real records to zero.
+        assert_eq!(count(temp.path(), id), Some(2));
+    }
+
+    #[test]
+    fn count_is_none_when_the_handoff_file_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(SESSIONS_SUBDIR).join("100-1")).unwrap();
+        assert_eq!(count(temp.path(), "100-1"), None);
     }
 
     #[test]

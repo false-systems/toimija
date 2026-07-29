@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, ensure};
 use false_agent_protocol::{WorkerRunRef, WorkerRunResultEnvelope};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::refresh;
 use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
@@ -318,14 +319,41 @@ pub fn read_run_receipt(repo_root: &Path, run: &WorkerRunRef) -> Result<RunRecei
 /// another repo finds no marker here and resolves to `None`, so a handshake
 /// can never steer writes into the wrong repo. Returns the id and the
 /// session directory.
+///
+/// Unreadable ≠ missing (issue #161): a marker that exists but cannot be read
+/// or parsed still resolves to `None` — writes must not target a session whose
+/// state is unknown — but it is warned about, because the wrapped agent keeps
+/// reading the per-session packet that will now silently stop refreshing.
 pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
     let id = std::env::var("TOIMIJA_SESSION").ok()?;
     if !is_valid_session_id(&id) {
         return None;
     }
     let dir = repo_root.join(SESSIONS_SUBDIR).join(&id);
-    let raw = fs::read_to_string(dir.join("session.json")).ok()?;
-    let marker: SessionMarker = serde_json::from_str(&raw).ok()?;
+    let marker_path = dir.join("session.json");
+    let raw = match fs::read_to_string(&marker_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn!(
+                event = "toimija.session.marker_unreadable",
+                path = %marker_path.display(),
+                error = %error
+            );
+            return None;
+        }
+    };
+    let marker: SessionMarker = match serde_json::from_str(&raw) {
+        Ok(marker) => marker,
+        Err(error) => {
+            warn!(
+                event = "toimija.session.marker_unreadable",
+                path = %marker_path.display(),
+                error = %error
+            );
+            return None;
+        }
+    };
     (marker.id == id && marker.status == SessionStatus::Active).then_some((id, dir))
 }
 
@@ -341,8 +369,10 @@ pub fn load_marker(session_dir: &Path) -> Result<SessionMarker> {
 /// Best-effort activity heartbeat (proposal 0002): stamp `last_seen_at = now`
 /// on an open marker. Called by `run`'s watcher after each packet refresh —
 /// an event worth a refresh is worth a heartbeat, and nothing else is. A
-/// closed or unreadable marker is left alone: the heartbeat must never fight
-/// the close path or interrupt the watch loop.
+/// closed or missing marker is left alone: the heartbeat must never fight
+/// the close path. An unreadable or corrupt marker is an error (issue #161)
+/// — callers log it and keep looping, but silence here means heartbeats stop
+/// stamping and a live session gets misreported stale.
 pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
     let marker_path = repo_root
         .join(SESSIONS_SUBDIR)
@@ -350,12 +380,14 @@ pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
         .join("session.json");
     let raw = match fs::read_to_string(&marker_path) {
         Ok(raw) => raw,
-        Err(_) => return Ok(()), // marker gone (pruned, closed early) — nothing to stamp
+        // Marker gone (pruned, closed early) — nothing to stamp.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", marker_path.display()));
+        }
     };
-    let mut marker: SessionMarker = match serde_json::from_str(&raw) {
-        Ok(marker) => marker,
-        Err(_) => return Ok(()),
-    };
+    let mut marker: SessionMarker = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", marker_path.display()))?;
     if marker.status != SessionStatus::Active {
         return Ok(());
     }
@@ -543,6 +575,24 @@ mod tests {
 
         // Missing marker: quietly Ok — never interrupts the watch loop.
         touch(temp.path(), "999-999").unwrap();
+    }
+
+    #[test]
+    fn touch_surfaces_a_corrupt_marker_instead_of_silently_skipping() {
+        let temp = tempfile::tempdir().unwrap();
+        let session =
+            Session::open(temp.path(), &["claude".to_string()], None, Vec::new()).unwrap();
+        let marker_path = temp
+            .path()
+            .join(SESSIONS_SUBDIR)
+            .join(&session.id)
+            .join("session.json");
+        // Issue #161: unreadable ≠ missing. A corrupt marker must error (the
+        // watcher logs it) — heartbeats silently stopping is how a live
+        // session gets misreported stale.
+        fs::write(&marker_path, "not json").unwrap();
+        let error = touch(temp.path(), &session.id).unwrap_err();
+        assert!(error.to_string().contains("failed to parse"));
     }
 
     #[test]

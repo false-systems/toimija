@@ -119,6 +119,35 @@ fn refresh_with_a_session_env_but_no_marker_stays_repo_level() {
 }
 
 #[test]
+fn refresh_with_a_corrupt_marker_warns_and_stays_repo_level() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let dir = temp.path().join(".toimija/sessions/100-1");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("session.json"), "not json").unwrap();
+
+    // Issue #161: unreadable ≠ missing. The refresh still succeeds and stays
+    // repo-level — writes must not target a session whose state is unknown —
+    // but the broken marker is warned about instead of being silently treated
+    // as "no session".
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("TOIMIJA_SESSION", "100-1")
+        .arg("refresh")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".toimija/current.md"))
+        .stderr(predicate::str::contains(
+            "toimija.session.marker_unreadable",
+        ));
+    assert!(!dir.join("current.md").exists());
+}
+
+#[test]
 fn refresh_writes_current_md_and_json() {
     if !git_available() {
         return;
