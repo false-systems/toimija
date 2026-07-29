@@ -1116,7 +1116,7 @@ fn ambient_refresh(
     if let Some((id, _)) = &ambient
         && let Err(error) = session::touch(repo_root, id)
     {
-        warn!(event = "toimija.session.heartbeat_failed", error = %error);
+        warn!(event = "toimija.session.heartbeat_failed", error = %format!("{error:#}"));
     }
     Ok(refreshed)
 }
@@ -1310,7 +1310,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
             // `last_seen_at` stamp, so staleness measures inactivity rather
             // than lifetime. Best-effort — never interrupts the watch loop.
             if let Err(error) = session::touch(&watch_root, &heartbeat_id) {
-                warn!(event = "toimija.session.heartbeat_failed", error = %error);
+                warn!(event = "toimija.session.heartbeat_failed", error = %format!("{error:#}"));
             }
         })
     });

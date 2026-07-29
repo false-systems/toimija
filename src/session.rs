@@ -321,9 +321,11 @@ pub fn read_run_receipt(repo_root: &Path, run: &WorkerRunRef) -> Result<RunRecei
 /// session directory.
 ///
 /// Unreadable ≠ missing (issue #161): a marker that exists but cannot be read
-/// or parsed still resolves to `None` — writes must not target a session whose
-/// state is unknown — but it is warned about, because the wrapped agent keeps
-/// reading the per-session packet that will now silently stop refreshing.
+/// or parsed — or whose recorded id disagrees with its directory — still
+/// resolves to `None` (writes must not target a session whose state is
+/// unknown), but it is warned about, because the wrapped agent keeps reading
+/// the per-session packet that will now silently stop refreshing. Only a
+/// missing marker and a closed session stay quiet.
 pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
     let id = std::env::var("TOIMIJA_SESSION").ok()?;
     if !is_valid_session_id(&id) {
@@ -331,30 +333,38 @@ pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
     }
     let dir = repo_root.join(SESSIONS_SUBDIR).join(&id);
     let marker_path = dir.join("session.json");
+    let unreadable = |error: &dyn std::fmt::Display| {
+        warn!(
+            event = "toimija.session.marker_unreadable",
+            path = %marker_path.display(),
+            error = %error
+        );
+    };
     let raw = match fs::read_to_string(&marker_path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(error) => {
-            warn!(
-                event = "toimija.session.marker_unreadable",
-                path = %marker_path.display(),
-                error = %error
-            );
+            unreadable(&error);
             return None;
         }
     };
     let marker: SessionMarker = match serde_json::from_str(&raw) {
         Ok(marker) => marker,
         Err(error) => {
-            warn!(
-                event = "toimija.session.marker_unreadable",
-                path = %marker_path.display(),
-                error = %error
-            );
+            unreadable(&error);
             return None;
         }
     };
-    (marker.id == id && marker.status == SessionStatus::Active).then_some((id, dir))
+    if marker.id != id {
+        warn!(
+            event = "toimija.session.marker_mismatch",
+            path = %marker_path.display(),
+            expected = %id,
+            found = %marker.id
+        );
+        return None;
+    }
+    (marker.status == SessionStatus::Active).then_some((id, dir))
 }
 
 /// Read the marker in a session directory. Used by the per-session refresh

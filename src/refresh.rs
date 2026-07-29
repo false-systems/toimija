@@ -203,7 +203,9 @@ fn compute(
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
             if !missing {
-                warn!(event = "toimija.session.marker_unreadable", error = %error);
+                // `:#` prints the whole context chain — the cause (EACCES,
+                // EIO, parse failure) matters as much as the path.
+                warn!(event = "toimija.session.marker_unreadable", error = %format!("{error:#}"));
             }
             None
         }

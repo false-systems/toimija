@@ -148,6 +148,66 @@ fn refresh_with_a_corrupt_marker_warns_and_stays_repo_level() {
 }
 
 #[test]
+fn refresh_with_a_mismatched_marker_id_warns_and_stays_repo_level() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // A parseable marker whose recorded id disagrees with its directory:
+    // broken, not missing — warned about, never targeted for writes.
+    write_active_marker(temp.path(), "200-2");
+    let dir = temp.path().join(".toimija/sessions/100-1");
+    fs::create_dir_all(&dir).unwrap();
+    fs::rename(
+        temp.path().join(".toimija/sessions/200-2/session.json"),
+        dir.join("session.json"),
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("TOIMIJA_SESSION", "100-1")
+        .arg("refresh")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".toimija/current.md"))
+        .stderr(predicate::str::contains("toimija.session.marker_mismatch"));
+    assert!(!dir.join("current.md").exists());
+}
+
+#[test]
+fn session_refresh_with_an_unreadable_marker_still_writes_the_packet() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let dir = temp.path().join(".toimija/sessions/100-1");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("session.json"), "not json").unwrap();
+
+    // Issue #161: the marker went unreadable mid-session. The session packet
+    // is still written (best-effort, never a failed refresh) — it just loses
+    // its session block; the warning is asserted at the CLI layer above.
+    let refreshed = toimija::refresh::refresh_session(
+        &toimija::command::ProcessCommandRunner,
+        temp.path(),
+        false,
+        None,
+        &dir,
+        &toimija::refresh::WorkSource::Unbound,
+    )
+    .unwrap();
+    assert!(
+        refreshed.packet.session.is_none(),
+        "an unreadable marker must drop the session block, not fail the refresh"
+    );
+    assert!(dir.join("current.md").exists());
+}
+
+#[test]
 fn refresh_writes_current_md_and_json() {
     if !git_available() {
         return;
