@@ -18,6 +18,7 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use false_agent_protocol::GateReceiptRef;
 use false_agent_protocol::{ConsistencyToken, RepositoryPointRef, RepositoryRef, TreeOid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -569,6 +570,225 @@ impl PassedGate {
     pub fn execution(&self) -> &GateExecution {
         &self.execution
     }
+
+    pub fn into_receipt(self) -> Result<GateReceipt> {
+        let exit_code = self
+            .execution
+            .exit_code
+            .context("a passing gate has no exit code")?;
+        let content = ReceiptContent {
+            gate: &self.gate,
+            gate_spec_digest: &self.gate_spec_digest,
+            subject: &self.subject,
+            started_at: &self.execution.started_at,
+            finished_at: &self.execution.finished_at,
+            duration_ms: self.execution.duration_ms,
+            exit_code,
+            stdout: &self.execution.stdout,
+            stderr: &self.execution.stderr,
+            environment: &self.execution.environment,
+            evidence_grade: self.evidence_grade,
+        };
+        let receipt_digest = digest_json(&content)?;
+        let id = GateReceiptRef::parse(format!(
+            "gatercpt_{}",
+            receipt_digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&receipt_digest)
+        ))
+        .map_err(anyhow::Error::from)?;
+        Ok(GateReceipt {
+            id,
+            gate: self.gate,
+            gate_spec_digest: self.gate_spec_digest,
+            subject: self.subject,
+            started_at: self.execution.started_at,
+            finished_at: self.execution.finished_at,
+            duration_ms: self.execution.duration_ms,
+            exit_code,
+            stdout: self.execution.stdout,
+            stderr: self.execution.stderr,
+            environment: self.execution.environment,
+            evidence_grade: self.evidence_grade,
+            receipt_digest,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateReceipt {
+    id: GateReceiptRef,
+    gate: GateId,
+    gate_spec_digest: GateSpecDigest,
+    subject: GateSubject,
+    started_at: String,
+    finished_at: String,
+    duration_ms: u64,
+    exit_code: i32,
+    stdout: OutputEvidence,
+    stderr: OutputEvidence,
+    environment: EnvironmentFingerprint,
+    evidence_grade: GateEvidenceGrade,
+    receipt_digest: String,
+}
+
+impl GateReceipt {
+    pub fn id(&self) -> &GateReceiptRef {
+        &self.id
+    }
+
+    pub fn gate(&self) -> &GateId {
+        &self.gate
+    }
+
+    pub fn gate_spec_digest(&self) -> &GateSpecDigest {
+        &self.gate_spec_digest
+    }
+
+    pub fn subject(&self) -> &GateSubject {
+        &self.subject
+    }
+
+    pub fn receipt_digest(&self) -> &str {
+        &self.receipt_digest
+    }
+
+    pub fn validate(&self) -> bool {
+        let content = ReceiptContent {
+            gate: &self.gate,
+            gate_spec_digest: &self.gate_spec_digest,
+            subject: &self.subject,
+            started_at: &self.started_at,
+            finished_at: &self.finished_at,
+            duration_ms: self.duration_ms,
+            exit_code: self.exit_code,
+            stdout: &self.stdout,
+            stderr: &self.stderr,
+            environment: &self.environment,
+            evidence_grade: self.evidence_grade,
+        };
+        let Ok(expected) = digest_json(&content) else {
+            return false;
+        };
+        let expected_id = format!(
+            "gatercpt_{}",
+            expected.strip_prefix("sha256:").unwrap_or(&expected)
+        );
+        expected == self.receipt_digest && self.id.as_str() == expected_id
+    }
+}
+
+#[derive(Serialize)]
+struct ReceiptContent<'a> {
+    gate: &'a GateId,
+    gate_spec_digest: &'a GateSpecDigest,
+    subject: &'a GateSubject,
+    started_at: &'a str,
+    finished_at: &'a str,
+    duration_ms: u64,
+    exit_code: i32,
+    stdout: &'a OutputEvidence,
+    stderr: &'a OutputEvidence,
+    environment: &'a EnvironmentFingerprint,
+    evidence_grade: GateEvidenceGrade,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptApplicability {
+    Current,
+    StaleRepositoryPoint,
+    StaleTree,
+    GateDefinitionChanged,
+    RepositoryMismatch,
+    InvalidReceipt,
+}
+
+pub fn receipt_applicability(
+    receipt: &GateReceipt,
+    current_subject: &GateSubject,
+    current_spec: &ResolvedGate,
+) -> ReceiptApplicability {
+    if !receipt.validate() {
+        ReceiptApplicability::InvalidReceipt
+    } else if receipt.subject.repository != current_subject.repository {
+        ReceiptApplicability::RepositoryMismatch
+    } else if receipt.gate != current_spec.spec.id
+        || receipt.gate_spec_digest != current_spec.digest
+    {
+        ReceiptApplicability::GateDefinitionChanged
+    } else if receipt.subject.tree_oid != current_subject.tree_oid {
+        ReceiptApplicability::StaleTree
+    } else if receipt.subject.repository_point != current_subject.repository_point
+        || receipt.subject.consistency_token != current_subject.consistency_token
+    {
+        ReceiptApplicability::StaleRepositoryPoint
+    } else {
+        ReceiptApplicability::Current
+    }
+}
+
+pub fn persist_receipt(repo_root: &Path, receipt: &GateReceipt) -> Result<PathBuf> {
+    if !receipt.validate() {
+        bail!("refusing to persist an invalid gate receipt");
+    }
+    let directory = repo_root.join(".toimija/runs/gates");
+    fs::create_dir_all(&directory)
+        .with_context(|| format!("failed to create {}", directory.display()))?;
+    let path = directory.join(format!("{}.json", receipt.id));
+    let mut bytes = serde_json::to_vec_pretty(receipt)?;
+    bytes.push(b'\n');
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = fs::read(&path)?;
+            if existing != bytes {
+                bail!("gate receipt path {} is not immutable", path.display());
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(path)
+}
+
+pub fn read_receipts(repo_root: &Path) -> Result<Vec<GateReceipt>> {
+    const MAX_RECEIPT_BYTES: u64 = 1024 * 1024;
+    let directory = repo_root.join(".toimija/runs/gates");
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut receipts = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().and_then(OsStr::to_str) != Some("json") {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!("gate receipt must be a regular file: {}", path.display());
+        }
+        if metadata.len() > MAX_RECEIPT_BYTES {
+            bail!("gate receipt exceeds the {MAX_RECEIPT_BYTES}-byte limit");
+        }
+        let bytes = fs::read(&path)?;
+        let receipt: GateReceipt = serde_json::from_slice(&bytes)
+            .with_context(|| format!("invalid gate receipt {}", path.display()))?;
+        if !receipt.validate() {
+            bail!("gate receipt digest mismatch: {}", path.display());
+        }
+        receipts.push(receipt);
+    }
+    receipts.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+    Ok(receipts)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1045,6 +1265,13 @@ fn environment_digest(environment: &BTreeMap<OsString, OsString>) -> String {
         digest.update([0xff]);
     }
     format!("sha256:{:x}", digest.finalize())
+}
+
+fn digest_json(value: &impl Serialize) -> Result<String> {
+    Ok(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(value)?)
+    ))
 }
 
 fn timestamp() -> String {
@@ -1551,6 +1778,25 @@ mod tests {
         PreparedGate::prepare(resolved, &subject).unwrap()
     }
 
+    #[cfg(unix)]
+    fn receipt(repo: &Path) -> (GateReceipt, ResolvedGate, VerifiedGateSubject) {
+        write_gate(repo, "printf ok");
+        let resolved = catalog(&[("check", config("./gate.sh", &[]))], &[])
+            .unwrap()
+            .resolve(&GateId::parse("check").unwrap())
+            .unwrap()
+            .pop()
+            .unwrap();
+        let subject = verify_subject(repo).unwrap();
+        let outcome = PreparedGate::prepare(resolved.clone(), &subject)
+            .unwrap()
+            .execute();
+        let GateOutcome::Passed(passed) = outcome else {
+            panic!("expected pass");
+        };
+        (passed.into_receipt().unwrap(), resolved, subject)
+    }
+
     #[test]
     fn subject_distinguishes_dirty_states_at_the_same_head() {
         let repo = repository();
@@ -1719,5 +1965,81 @@ mod tests {
             }
         });
         assert!(gone, "gate descendant {pid} survived timeout cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passing_receipt_is_content_addressed_and_persisted_immutably() {
+        let repo = repository();
+        let (receipt, resolved, subject) = receipt(repo.path());
+
+        assert!(receipt.validate());
+        assert_eq!(
+            receipt_applicability(&receipt, subject.subject(), &resolved),
+            ReceiptApplicability::Current
+        );
+        let path = persist_receipt(repo.path(), &receipt).unwrap();
+        assert_eq!(persist_receipt(repo.path(), &receipt).unwrap(), path);
+        assert_eq!(read_receipts(repo.path()).unwrap(), vec![receipt]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn applicability_distinguishes_tree_point_definition_and_repository() {
+        let repo = repository();
+        let (receipt, resolved, _) = receipt(repo.path());
+
+        std::fs::write(repo.path().join("source.txt"), "two\n").unwrap();
+        let dirty = verify_subject(repo.path()).unwrap();
+        assert_eq!(
+            receipt_applicability(&receipt, dirty.subject(), &resolved),
+            ReceiptApplicability::StaleTree
+        );
+
+        std::fs::write(repo.path().join("source.txt"), "one\n").unwrap();
+        write_gate(repo.path(), "printf ok");
+        let unstaged = verify_subject(repo.path()).unwrap();
+        git(repo.path(), &["add", "gate.sh"]);
+        let staged = verify_subject(repo.path()).unwrap();
+        assert_eq!(
+            unstaged.subject.tree_oid, staged.subject.tree_oid,
+            "staging the same bytes must keep the source tree"
+        );
+        assert_eq!(
+            receipt_applicability(&receipt, staged.subject(), &resolved),
+            ReceiptApplicability::StaleRepositoryPoint
+        );
+
+        let changed = catalog(&[("check", config("./gate.sh", &["different"]))], &[])
+            .unwrap()
+            .resolve(&GateId::parse("check").unwrap())
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            receipt_applicability(&receipt, receipt.subject(), &changed),
+            ReceiptApplicability::GateDefinitionChanged
+        );
+
+        let mut other = receipt.subject().clone();
+        other.repository = RepositoryRef::parse("repo_other").unwrap();
+        assert_eq!(
+            receipt_applicability(&receipt, &other, &resolved),
+            ReceiptApplicability::RepositoryMismatch
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tampered_receipt_is_invalid_not_current() {
+        let repo = repository();
+        let (receipt, resolved, subject) = receipt(repo.path());
+        let mut value = serde_json::to_value(receipt).unwrap();
+        value["stdout"]["tail"] = serde_json::Value::String("forged".into());
+        let forged: GateReceipt = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            receipt_applicability(&forged, subject.subject(), &resolved),
+            ReceiptApplicability::InvalidReceipt
+        );
     }
 }
