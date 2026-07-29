@@ -486,6 +486,10 @@ toimija audit-plan --surface 3 --budget 4000  # print one audit workset packet
 toimija adopt              # install the canonical agent-entry preamble
 toimija adopt --hooks      # also install best-effort Git refresh hooks
 toimija validate --plan    # print the validation plan; never runs it
+toimija gates list         # list trusted repository gates and groups
+toimija gates run rust-full # execute a trusted group on an exact snapshot
+toimija gates status       # compare receipts with current state and definitions
+toimija verify-work        # run active Teko work's required Gate IDs
 toimija doctor             # check Toimija setup
 toimija init               # create .toimija/repo.yaml if missing
 ```
@@ -509,6 +513,11 @@ toimija init               # create .toimija/repo.yaml if missing
 | `audit-plan` | Derive deterministic, bounded audit surfaces from the committed Git tree; `--surface K` prints one contract-framed workset, and prior findings are read-only pointers to the latest committed `docs/audit/<date>/` directory. No plan or findings are written. |
 | `adopt` | Install the same marker-delimited Toimija preamble in every known entry file already present, creating `AGENTS.md` only when none exists; `--hooks` adds best-effort Git refresh hooks and creates/merges the repo-local `.claude/settings.json` SessionStart hook. |
 | `validate --plan` | Print the validation plan; never runs validation. |
+| `gates list` | List trusted repository gates and non-recursive groups. |
+| `gates inspect <id>` | Show execution policy and the canonical gate-spec digest without secret environment values. |
+| `gates run <id>` | Run a trusted gate or group in disposable exact-tree workspaces; `--json` emits outcomes and receipts. |
+| `gates status` | Apply the single receipt-applicability rule to retained receipts and the exact current subject; exits non-zero unless all selected gates are current. |
+| `verify-work` | Ask Teko for required Gate IDs, execute them, import exact-current receipts, and report Teko's remaining blockers. It never closes work. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
 | `init` | Create `.toimija/repo.yaml` if missing. |
@@ -547,7 +556,8 @@ docs drift apart on them.
 
 Toimija does not:
 
-- run validation commands (`validate --plan` only prints them)
+- execute advisory validation-plan strings (`validate --plan` only prints them;
+  `gates run` executes separately configured trusted gate definitions)
 - auto-commit or auto-stash
 - fetch from the network
 - run as a hidden daemon (`watch`/`run` are foreground-only and explicitly invoked)
@@ -898,6 +908,27 @@ validation:
   full: []
   privileged: []
 
+gates:
+  rust-format:
+    description: Rust formatting check
+    program: cargo
+    args: [fmt, --all, --check]
+    timeout_seconds: 60
+    output_limit_bytes: 1048576
+    success_codes: [0]
+    source_mutation: forbid
+    network: unenforced_deny_requested
+    evidence_grade: isolated_snapshot
+  rust-test:
+    description: Full Rust test suite
+    program: cargo
+    args: [test]
+    timeout_seconds: 900
+
+gate_groups:
+  rust-full:
+    gates: [rust-format, rust-test]
+
 stewardship:
   auto_sweep: true
   sessions_retention_days: 7
@@ -912,6 +943,24 @@ boundaries:
 `context.read_first` adds repo-specific files to the Read first section when they exist.
 `context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
 Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible.
+Gate specifications are executable policy, unlike validation-plan strings.
+`program` and every `args` item remain separate values; shell executables,
+absolute or parent-traversing working directories, empty success-code sets,
+unknown fields, and cyclic groups are rejected. The execution digest covers
+all execution-relevant fields but not the cosmetic description. Repository
+config is combined with the user catalog at
+`$XDG_CONFIG_HOME/toimija/gates.toml` (or
+`~/.config/toimija/gates.toml`), where user entries take precedence. Workers
+can request only known IDs and cannot supply argv, environment, or cwd.
+
+Authoritative gates never run in the human checkout. Each gate receives a
+separate disposable materialization of the verified tree, a cleared and
+allowlisted environment, bounded stdout/stderr capture, a timeout, and
+process-group cleanup. A changed source identity, truncated output, spawn
+uncertainty, cancellation, or unverifiable post-run state produces no receipt.
+Network denial is reported as enforced only when a platform implementation
+actually enforces it; the current local implementation supports `allow` and
+`unenforced_deny_requested`, not a kernel network sandbox.
 Stewardship values are optional and default to the values above. Retention and
 history limits must be greater than zero; invalid values are refused and
 reported by `doctor` instead of being silently clamped. `auto_sweep: false`
