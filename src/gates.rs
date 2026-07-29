@@ -7,8 +7,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -412,6 +418,7 @@ pub fn verify_subject(repo_root: &Path) -> Result<VerifiedGateSubject> {
 
 pub struct GateWorkspace {
     root: PathBuf,
+    evidence_root: PathBuf,
     repo_root: PathBuf,
     lease_id: String,
 }
@@ -434,16 +441,29 @@ impl GateWorkspace {
                 return Err(error);
             }
         };
+        let evidence_root = root.with_extension("evidence");
+        if let Err(error) = fs::create_dir(&evidence_root) {
+            let _ = fs::remove_dir_all(&root);
+            let _ = crate::snapshot::release_lease(&runner, subject.repo_root(), &lease_id);
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to create gate evidence directory {}",
+                    evidence_root.display()
+                )
+            });
+        }
         let result = materialize_worktree(&runner, subject, &root)
             .and_then(|()| validate_workspace_symlinks(&root));
         if let Err(error) = result {
             let _ = remove_worktree(&runner, subject.repo_root(), &root);
             let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&evidence_root);
             let _ = crate::snapshot::release_lease(&runner, subject.repo_root(), &lease_id);
             return Err(error);
         }
         Ok(Self {
             root,
+            evidence_root,
             repo_root: subject.repo_root.clone(),
             lease_id,
         })
@@ -455,6 +475,10 @@ impl GateWorkspace {
 
     pub fn source_tree(&self) -> Result<String> {
         crate::snapshot::materialize(&crate::command::ProcessCommandRunner, &self.root)
+    }
+
+    fn output_path(&self, stream: &str) -> PathBuf {
+        self.evidence_root.join(stream)
     }
 
     pub fn changed_paths(&self, before: &str, after: &str) -> Result<Vec<PathBuf>> {
@@ -488,8 +512,545 @@ impl Drop for GateWorkspace {
         let runner = crate::command::ProcessCommandRunner;
         let _ = remove_worktree(&runner, &self.repo_root, &self.root);
         let _ = fs::remove_dir_all(&self.root);
+        let _ = fs::remove_dir_all(&self.evidence_root);
         let _ = crate::snapshot::release_lease(&runner, &self.repo_root, &self.lease_id);
     }
+}
+
+const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputEvidence {
+    pub digest: String,
+    pub bytes_observed: u64,
+    pub truncated: bool,
+    pub tail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentFingerprint {
+    pub operating_system: String,
+    pub architecture: String,
+    pub executable: String,
+    pub selected_variables_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateExecution {
+    pub started_at: String,
+    pub finished_at: String,
+    pub duration_ms: u64,
+    pub exit_code: Option<i32>,
+    pub stdout: OutputEvidence,
+    pub stderr: OutputEvidence,
+    pub environment: EnvironmentFingerprint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PassedGate {
+    gate: GateId,
+    gate_spec_digest: GateSpecDigest,
+    subject: GateSubject,
+    execution: GateExecution,
+    evidence_grade: GateEvidenceGrade,
+}
+
+impl PassedGate {
+    pub fn gate(&self) -> &GateId {
+        &self.gate
+    }
+
+    pub fn subject(&self) -> &GateSubject {
+        &self.subject
+    }
+
+    pub fn execution(&self) -> &GateExecution {
+        &self.execution
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailedGate {
+    pub gate: GateId,
+    pub subject: GateSubject,
+    pub execution: GateExecution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimedOutGate {
+    pub gate: GateId,
+    pub subject: GateSubject,
+    pub execution: GateExecution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnFailure {
+    pub gate: GateId,
+    pub subject: GateSubject,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationEvidence {
+    pub gate: GateId,
+    pub subject: GateSubject,
+    pub observed_tree: String,
+    pub changed_paths: Vec<PathBuf>,
+    pub execution: GateExecution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceFailure {
+    pub gate: GateId,
+    pub subject: GateSubject,
+    pub reason: String,
+    pub execution: GateExecution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cancellation {
+    pub gate: GateId,
+    pub subject: GateSubject,
+    pub execution: GateExecution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum GateOutcome {
+    Passed(PassedGate),
+    Failed(FailedGate),
+    TimedOut(TimedOutGate),
+    SpawnFailed(SpawnFailure),
+    SubjectMutated(MutationEvidence),
+    EvidenceIncomplete(EvidenceFailure),
+    Cancelled(Cancellation),
+}
+
+pub struct PreparedGate {
+    gate: ResolvedGate,
+    subject: GateSubject,
+    workspace: GateWorkspace,
+    cwd: PathBuf,
+    environment: BTreeMap<OsString, OsString>,
+    fingerprint: EnvironmentFingerprint,
+}
+
+impl PreparedGate {
+    pub fn prepare(gate: ResolvedGate, subject: &VerifiedGateSubject) -> Result<Self> {
+        if gate.spec.network == NetworkPolicy::Deny {
+            bail!(
+                "gate `{}` requires enforced network denial, which is unavailable",
+                gate.spec.id
+            );
+        }
+        let workspace = GateWorkspace::materialize(subject)?;
+        let baseline = workspace.source_tree()?;
+        if baseline != subject.subject.tree_oid.0 {
+            bail!(
+                "materialized gate workspace tree {baseline} does not match subject {}",
+                subject.subject.tree_oid.0
+            );
+        }
+        let cwd = match &gate.spec.cwd {
+            GateWorkingDirectory::RepositoryRoot => workspace.root().to_path_buf(),
+            GateWorkingDirectory::Relative(path) => workspace.root().join(path),
+        };
+        let root = workspace.root().canonicalize()?;
+        let cwd = cwd
+            .canonicalize()
+            .with_context(|| format!("gate cwd {} does not exist", cwd.display()))?;
+        if !cwd.starts_with(&root) || !cwd.is_dir() {
+            bail!(
+                "gate cwd {} escapes the materialized snapshot",
+                cwd.display()
+            );
+        }
+        let environment = selected_environment(&gate.spec.environment);
+        let executable = resolve_executable(
+            gate.spec.program.as_os_str(),
+            environment.get(OsStr::new("PATH")),
+            &cwd,
+        )?;
+        let fingerprint = EnvironmentFingerprint {
+            operating_system: std::env::consts::OS.into(),
+            architecture: std::env::consts::ARCH.into(),
+            executable: executable.display().to_string(),
+            selected_variables_digest: environment_digest(&environment),
+        };
+        Ok(Self {
+            gate,
+            subject: subject.subject.clone(),
+            workspace,
+            cwd,
+            environment,
+            fingerprint,
+        })
+    }
+
+    pub fn execute(self) -> GateOutcome {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        match SignalRegistration::new(Arc::clone(&cancelled)) {
+            Ok(_signals) => self.execute_with_cancellation(cancelled),
+            Err(error) => GateOutcome::SpawnFailed(SpawnFailure {
+                gate: self.gate.spec.id.clone(),
+                subject: self.subject.clone(),
+                message: format!("failed to install gate signal handlers: {error}"),
+            }),
+        }
+    }
+
+    fn execute_with_cancellation(self, cancelled: Arc<AtomicBool>) -> GateOutcome {
+        let started_at = timestamp();
+        let started = std::time::Instant::now();
+        let mut command = Command::new(self.gate.spec.program.as_os_str());
+        command
+            .args(self.gate.spec.args.iter().map(Argument::as_os_str))
+            .current_dir(&self.cwd)
+            .env_clear()
+            .envs(&self.environment)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = match command.spawn() {
+            Ok(child) => ChildGroup::new(child),
+            Err(error) => {
+                return GateOutcome::SpawnFailed(SpawnFailure {
+                    gate: self.gate.spec.id.clone(),
+                    subject: self.subject.clone(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        let stdout = child
+            .child
+            .stdout
+            .take()
+            .expect("gate stdout was configured as piped");
+        let stderr = child
+            .child
+            .stderr
+            .take()
+            .expect("gate stderr was configured as piped");
+        let limit = self.gate.spec.output_limit;
+        let stdout_path = self.workspace.output_path("stdout");
+        let stderr_path = self.workspace.output_path("stderr");
+        let stdout_reader = std::thread::spawn(move || capture_stream(stdout, &stdout_path, limit));
+        let stderr_reader = std::thread::spawn(move || capture_stream(stderr, &stderr_path, limit));
+
+        let deadline = started + self.gate.spec.timeout;
+        let (status, timed_out, was_cancelled) = loop {
+            match child.child.try_wait() {
+                Ok(Some(status)) => break (Ok(status), false, false),
+                Ok(None) if cancelled.load(Ordering::Relaxed) => {
+                    child.terminate();
+                    break (child.child.wait(), false, true);
+                }
+                Ok(None) if std::time::Instant::now() >= deadline => {
+                    child.terminate();
+                    break (child.child.wait(), true, false);
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Err(error) => break (Err(error), false, false),
+            }
+        };
+        child.reaped = status.is_ok();
+        let stdout = join_capture(stdout_reader, "stdout");
+        let stderr = join_capture(stderr_reader, "stderr");
+        let exit_code = status
+            .as_ref()
+            .ok()
+            .and_then(std::process::ExitStatus::code);
+        let execution = GateExecution {
+            started_at,
+            finished_at: timestamp(),
+            duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            exit_code,
+            stdout: stdout
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|error| failed_output(error)),
+            stderr: stderr
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|error| failed_output(error)),
+            environment: self.fingerprint.clone(),
+        };
+        let observed_tree = self.workspace.source_tree();
+        let observed_tree = match observed_tree {
+            Ok(tree) => tree,
+            Err(error) => {
+                return GateOutcome::EvidenceIncomplete(EvidenceFailure {
+                    gate: self.gate.spec.id.clone(),
+                    subject: self.subject.clone(),
+                    reason: format!("post-run subject verification failed: {error:#}"),
+                    execution,
+                });
+            }
+        };
+        if observed_tree != self.subject.tree_oid.0 {
+            let changed_paths = self
+                .workspace
+                .changed_paths(&self.subject.tree_oid.0, &observed_tree)
+                .unwrap_or_default();
+            return GateOutcome::SubjectMutated(MutationEvidence {
+                gate: self.gate.spec.id.clone(),
+                subject: self.subject.clone(),
+                observed_tree,
+                changed_paths,
+                execution,
+            });
+        }
+        if was_cancelled {
+            return GateOutcome::Cancelled(Cancellation {
+                gate: self.gate.spec.id.clone(),
+                subject: self.subject.clone(),
+                execution,
+            });
+        }
+        if timed_out {
+            return GateOutcome::TimedOut(TimedOutGate {
+                gate: self.gate.spec.id.clone(),
+                subject: self.subject.clone(),
+                execution,
+            });
+        }
+        if let Err(error) = status {
+            return GateOutcome::EvidenceIncomplete(EvidenceFailure {
+                gate: self.gate.spec.id.clone(),
+                subject: self.subject.clone(),
+                reason: format!("failed while waiting for gate: {error}"),
+                execution,
+            });
+        }
+        if let Err(error) = stdout.or(stderr) {
+            return GateOutcome::EvidenceIncomplete(EvidenceFailure {
+                gate: self.gate.spec.id.clone(),
+                subject: self.subject.clone(),
+                reason: error,
+                execution,
+            });
+        }
+        if execution.stdout.truncated || execution.stderr.truncated {
+            return GateOutcome::EvidenceIncomplete(EvidenceFailure {
+                gate: self.gate.spec.id.clone(),
+                subject: self.subject.clone(),
+                reason: "gate output exceeded the configured evidence limit".into(),
+                execution,
+            });
+        }
+        if execution
+            .exit_code
+            .is_some_and(|code| self.gate.spec.success_codes.contains(&code))
+        {
+            GateOutcome::Passed(PassedGate {
+                gate: self.gate.spec.id,
+                gate_spec_digest: self.gate.digest,
+                subject: self.subject,
+                execution,
+                evidence_grade: self.gate.spec.evidence_grade,
+            })
+        } else {
+            GateOutcome::Failed(FailedGate {
+                gate: self.gate.spec.id,
+                subject: self.subject,
+                execution,
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CapturedStream {
+    evidence: OutputEvidence,
+}
+
+fn capture_stream(
+    mut input: impl Read,
+    path: &Path,
+    limit: u64,
+) -> std::result::Result<CapturedStream, String> {
+    let mut file = fs::File::create(path).map_err(|error| error.to_string())?;
+    let mut digest = Sha256::new();
+    let mut observed = 0_u64;
+    let mut written = 0_u64;
+    let mut tail = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = input.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        let bytes = &buffer[..read];
+        digest.update(bytes);
+        observed = observed.saturating_add(read as u64);
+        tail.extend_from_slice(bytes);
+        if tail.len() > OUTPUT_TAIL_BYTES {
+            tail.drain(..tail.len() - OUTPUT_TAIL_BYTES);
+        }
+        let remaining = limit.saturating_sub(written).min(read as u64) as usize;
+        if remaining > 0 {
+            file.write_all(&bytes[..remaining])
+                .map_err(|error| error.to_string())?;
+            written += remaining as u64;
+        }
+    }
+    file.flush().map_err(|error| error.to_string())?;
+    Ok(CapturedStream {
+        evidence: OutputEvidence {
+            digest: format!("sha256:{:x}", digest.finalize()),
+            bytes_observed: observed,
+            truncated: observed > limit,
+            tail: String::from_utf8_lossy(&tail).into_owned(),
+            artifact: None,
+        },
+    })
+}
+
+fn join_capture(
+    handle: std::thread::JoinHandle<std::result::Result<CapturedStream, String>>,
+    stream: &str,
+) -> std::result::Result<OutputEvidence, String> {
+    handle
+        .join()
+        .map_err(|_| format!("{stream} capture thread panicked"))?
+        .map(|capture| capture.evidence)
+}
+
+fn failed_output(reason: &str) -> OutputEvidence {
+    OutputEvidence {
+        digest: String::new(),
+        bytes_observed: 0,
+        truncated: true,
+        tail: reason.to_string(),
+        artifact: None,
+    }
+}
+
+struct ChildGroup {
+    child: Child,
+    reaped: bool,
+}
+
+impl ChildGroup {
+    fn new(child: Child) -> Self {
+        Self {
+            child,
+            reaped: false,
+        }
+    }
+
+    fn terminate(&mut self) {
+        #[cfg(unix)]
+        if let Ok(pid) = i32::try_from(self.child.id()) {
+            // SAFETY: process_group(0) made the child PID its process-group ID.
+            unsafe {
+                libc::kill(-pid, libc::SIGTERM);
+            }
+            let deadline = std::time::Instant::now() + Duration::from_millis(250);
+            while std::time::Instant::now() < deadline {
+                if self.child.try_wait().ok().flatten().is_some() {
+                    self.reaped = true;
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // SAFETY: same dedicated process group as above.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+        let _ = self.child.kill();
+    }
+}
+
+impl Drop for ChildGroup {
+    fn drop(&mut self) {
+        if !self.reaped {
+            self.terminate();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+struct SignalRegistration {
+    #[cfg(unix)]
+    ids: Vec<signal_hook::SigId>,
+}
+
+impl SignalRegistration {
+    fn new(cancelled: Arc<AtomicBool>) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            let ids = [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]
+                .into_iter()
+                .map(|signal| signal_hook::flag::register(signal, Arc::clone(&cancelled)))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            Ok(Self { ids })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = cancelled;
+            Ok(Self {})
+        }
+    }
+}
+
+impl Drop for SignalRegistration {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        for id in self.ids.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
+    }
+}
+
+fn selected_environment(policy: &EnvironmentPolicy) -> BTreeMap<OsString, OsString> {
+    let mut environment = BTreeMap::new();
+    for key in &policy.inherit {
+        if let Some(value) = std::env::var_os(key.as_str()) {
+            environment.insert(key.as_str().into(), value);
+        }
+    }
+    for (key, value) in &policy.set {
+        environment.insert(key.as_str().into(), value.into());
+    }
+    for key in &policy.remove {
+        environment.remove(OsStr::new(key.as_str()));
+    }
+    environment
+}
+
+fn resolve_executable(program: &OsStr, path: Option<&OsString>, cwd: &Path) -> Result<PathBuf> {
+    which::which_in(program, path, cwd).with_context(|| {
+        format!(
+            "gate executable `{}` was not found",
+            program.to_string_lossy()
+        )
+    })
+}
+
+fn environment_digest(environment: &BTreeMap<OsString, OsString>) -> String {
+    let mut digest = Sha256::new();
+    for (key, value) in environment {
+        digest.update(key.as_encoded_bytes());
+        digest.update([0]);
+        digest.update(value.as_encoded_bytes());
+        digest.update([0xff]);
+    }
+    format!("sha256:{:x}", digest.finalize())
+}
+
+fn timestamp() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 impl ResolvedGate {
@@ -958,6 +1519,38 @@ mod tests {
         temp
     }
 
+    #[cfg(unix)]
+    fn write_gate(repo: &Path, source: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = repo.join("gate.sh");
+        std::fs::write(&path, format!("#!/bin/sh\n{source}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn prepared_gate(
+        repo: &Path,
+        source: &str,
+        args: &[String],
+        output_limit: u64,
+    ) -> PreparedGate {
+        write_gate(repo, source);
+        let mut gate = config("./gate.sh", &[]);
+        gate.args = args.to_vec();
+        gate.output_limit_bytes = output_limit;
+        let resolved = catalog(&[("check", gate)], &[])
+            .unwrap()
+            .resolve(&GateId::parse("check").unwrap())
+            .unwrap()
+            .pop()
+            .unwrap();
+        let subject = verify_subject(repo).unwrap();
+        PreparedGate::prepare(resolved, &subject).unwrap()
+    }
+
     #[test]
     fn subject_distinguishes_dirty_states_at_the_same_head() {
         let repo = repository();
@@ -1016,5 +1609,115 @@ mod tests {
         let subject = verify_subject(repo.path()).unwrap();
         let error = GateWorkspace::materialize(&subject).err().unwrap();
         assert!(error.to_string().contains("escapes the snapshot"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_captures_separate_complete_output() {
+        let repo = repository();
+        let outcome = prepared_gate(repo.path(), "printf out; printf err >&2", &[], 1024).execute();
+        let GateOutcome::Passed(passed) = outcome else {
+            panic!("expected pass");
+        };
+        assert_eq!(passed.execution.stdout.bytes_observed, 3);
+        assert_eq!(passed.execution.stdout.tail, "out");
+        assert_eq!(passed.execution.stderr.tail, "err");
+        assert_eq!(
+            passed.execution.stdout.digest,
+            format!("sha256:{:x}", Sha256::digest(b"out"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonzero_spawn_failure_and_cancellation_are_distinct() {
+        let repo = repository();
+        let failed = prepared_gate(repo.path(), "printf bad >&2; exit 7", &[], 1024).execute();
+        assert!(matches!(failed, GateOutcome::Failed(_)));
+
+        let prepared = prepared_gate(repo.path(), "sleep 30", &[], 1024);
+        std::fs::remove_file(prepared.workspace.root().join("gate.sh")).unwrap();
+        assert!(matches!(prepared.execute(), GateOutcome::SpawnFailed(_)));
+
+        let prepared = prepared_gate(repo.path(), "sleep 30", &[], 1024);
+        let cancelled = Arc::new(AtomicBool::new(true));
+        assert!(matches!(
+            prepared.execute_with_cancellation(cancelled),
+            GateOutcome::Cancelled(_)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversized_output_is_incomplete_and_cannot_pass() {
+        let repo = repository();
+        let outcome = prepared_gate(
+            repo.path(),
+            "i=0; while [ \"$i\" -lt 100 ]; do printf 0123456789; i=$((i + 1)); done",
+            &[],
+            32,
+        )
+        .execute();
+        let GateOutcome::EvidenceIncomplete(failure) = outcome else {
+            panic!("expected incomplete evidence");
+        };
+        assert_eq!(failure.execution.stdout.bytes_observed, 1000);
+        assert!(failure.execution.stdout.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_mutation_fails_but_ignored_build_output_does_not() {
+        let repo = repository();
+        let outcome =
+            prepared_gate(repo.path(), "printf changed > source.txt", &[], 1024).execute();
+        let GateOutcome::SubjectMutated(mutation) = outcome else {
+            panic!("expected source mutation");
+        };
+        assert_eq!(mutation.changed_paths, vec![PathBuf::from("source.txt")]);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("source.txt")).unwrap(),
+            "one\n"
+        );
+
+        std::fs::write(repo.path().join(".gitignore"), "target/\n").unwrap();
+        let outcome = prepared_gate(
+            repo.path(),
+            "mkdir -p target; printf generated > target/out",
+            &[],
+            1024,
+        )
+        .execute();
+        assert!(matches!(outcome, GateOutcome::Passed(_)));
+        assert!(!repo.path().join("target").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_the_process_group() {
+        let repo = repository();
+        let pid_file = tempfile::NamedTempFile::new().unwrap();
+        let path = pid_file.path().display().to_string();
+        let mut prepared = prepared_gate(
+            repo.path(),
+            "sleep 30 & printf '%s' \"$!\" > \"$1\"; wait",
+            std::slice::from_ref(&path),
+            1024,
+        );
+        prepared.gate.spec.timeout = Duration::from_secs(1);
+        assert!(matches!(prepared.execute(), GateOutcome::TimedOut(_)));
+
+        let pid: i32 = std::fs::read_to_string(path).unwrap().parse().unwrap();
+        let gone = (0..100).any(|_| {
+            // SAFETY: signal 0 probes liveness without sending a signal.
+            let result = unsafe { libc::kill(pid, 0) };
+            if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(gone, "gate descendant {pid} survived timeout cleanup");
     }
 }
