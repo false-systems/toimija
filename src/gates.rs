@@ -653,6 +653,18 @@ impl GateReceipt {
         &self.receipt_digest
     }
 
+    pub fn duration_ms(&self) -> u64 {
+        self.duration_ms
+    }
+
+    pub fn stdout(&self) -> &OutputEvidence {
+        &self.stdout
+    }
+
+    pub fn stderr(&self) -> &OutputEvidence {
+        &self.stderr
+    }
+
     pub fn validate(&self) -> bool {
         let content = ReceiptContent {
             gate: &self.gate,
@@ -1270,7 +1282,9 @@ fn environment_digest(environment: &BTreeMap<OsString, OsString>) -> String {
 fn digest_json(value: &impl Serialize) -> Result<String> {
     Ok(format!(
         "sha256:{:x}",
-        Sha256::digest(serde_json::to_vec(value)?)
+        Sha256::digest(
+            false_agent_protocol::digest::canonical_json(value).map_err(anyhow::Error::from)?
+        )
     ))
 }
 
@@ -1950,7 +1964,9 @@ mod tests {
             std::slice::from_ref(&path),
             1024,
         );
-        prepared.gate.spec.timeout = Duration::from_secs(1);
+        // Leave enough startup headroom when the full suite runs hundreds of
+        // tests concurrently; the descendant writes its PID before waiting.
+        prepared.gate.spec.timeout = Duration::from_secs(3);
         assert!(matches!(prepared.execute(), GateOutcome::TimedOut(_)));
 
         let pid: i32 = std::fs::read_to_string(path).unwrap().parse().unwrap();
