@@ -4,6 +4,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use assert_cmd::Command;
+use false_agent_protocol::{
+    CompletionLevel, GateRequirementSummary, ObligationKind, ObligationRef, ObligationState,
+    ObligationSummary, ProtocolVersion, ScopeSummary, SpecSummary, WorkPacketEnvelope, WorkSummary,
+    WorkflowStatusSummary,
+};
 use predicates::prelude::*;
 
 mod common;
@@ -62,6 +67,112 @@ fn write_executable(path: &Path, source: &str) {
     fs::write(path, source).unwrap();
     #[cfg(unix)]
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn frame(value: serde_json::Value) -> String {
+    let body = serde_json::to_string(&value).unwrap();
+    format!("Content-Length: {}\r\n\r\n{body}", body.len())
+}
+
+fn fake_work_frames() -> String {
+    let obligation: ObligationRef = "obl_gate-check".parse().unwrap();
+    let packet = WorkPacketEnvelope {
+        protocol: ProtocolVersion::V1,
+        spec: SpecSummary {
+            id: "spec_fixture".parse().unwrap(),
+            title: "Gate fixture".into(),
+            objective: "verify the current tree".into(),
+            goals: Vec::new(),
+            non_goals: Vec::new(),
+            source_revision: None,
+        },
+        work: WorkSummary {
+            id: "work_fixture".parse().unwrap(),
+            spec: "spec_fixture".parse().unwrap(),
+            objective: "verify the current tree".into(),
+        },
+        scope: ScopeSummary {
+            write: vec!["tracked.txt".into()],
+        },
+        obligations: vec![ObligationSummary {
+            id: obligation.clone(),
+            description: "check is current".into(),
+            kind: ObligationKind::Gate,
+        }],
+        gates: vec![GateRequirementSummary {
+            id: "gate_check".parse().unwrap(),
+            obligation: obligation.clone(),
+            command: String::new(),
+        }],
+        required_completion: CompletionLevel::Validated,
+        extensions: [(
+            "toimija.required_gates.v1".into(),
+            serde_json::json!(["check"]),
+        )]
+        .into(),
+    };
+    let status = |supported, closable| WorkflowStatusSummary {
+        obligations: vec![ObligationState {
+            obligation: obligation.clone(),
+            supported,
+            evidence: Vec::new(),
+        }],
+        blockers: if closable {
+            Vec::new()
+        } else {
+            vec![false_agent_protocol::BlockerSummary {
+                code: "obligation-gate-check".into(),
+                message: "gate check has no current Toimija receipt".into(),
+            }]
+        },
+        closable,
+    };
+    [
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "plugin": {"id": "teko", "name": "fake", "version": "1", "kind": "work"},
+                "selected_protocol": {"major": 1, "minor": 0},
+                "capabilities": [{
+                    "id": "work.v1",
+                    "methods": ["work.current", "work.explain", "work.observe_gates"]
+                }],
+                "limits": false_agent_protocol::plugin::PluginLimits::default()
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 2,
+            "result": {"state": "active", "work": packet.clone()}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 3,
+            "result": {
+                "work": "work_fixture",
+                "status": status(false, false),
+                "explanation": "missing receipt"
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 4,
+            "result": {"observed": 1}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 5,
+            "result": {"state": "active", "work": packet}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 6,
+            "result": {
+                "work": "work_fixture",
+                "status": status(true, true),
+                "explanation": "ready"
+            }
+        }),
+        serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {}}),
+    ]
+    .into_iter()
+    .map(frame)
+    .collect()
 }
 
 #[test]
@@ -198,4 +309,45 @@ fn shell_executables_and_unknown_gate_ids_fail_closed() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown gate"));
+}
+
+#[test]
+fn verify_work_runs_required_ids_imports_receipts_and_refreshes_teko() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init(temp.path());
+    write_config(temp.path(), "");
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: fixture\n\
+         composition:\n  work: teko\n  require_work: true\n\
+         gates:\n  check:\n    description: exact fixture check\n    program: /usr/bin/true\n",
+    )
+    .unwrap();
+
+    let config = tempfile::tempdir().unwrap();
+    fs::create_dir_all(config.path().join("toimija")).unwrap();
+    fs::write(
+        config.path().join("toimija/plugins.toml"),
+        "[plugins.teko]\n\
+         kind = \"work\"\n\
+         command = \"/bin/sh\"\n\
+         args = [\"-c\", \"printf %s \\\"$FAKE_FRAMES\\\"; sleep 30\"]\n\
+         timeout_ms = 5000\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("FAKE_FRAMES", fake_work_frames())
+        .args(["verify-work", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"outcome\": \"passed\""))
+        .stdout(predicate::str::contains("\"closable\": true"))
+        .stdout(predicate::str::contains("\"id\": \"gatercpt_"));
 }
