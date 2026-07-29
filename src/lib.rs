@@ -11,6 +11,7 @@ pub mod correlation;
 pub mod coverage;
 pub mod error;
 pub mod footprint;
+pub mod gates;
 pub mod git;
 pub mod handoff;
 pub mod landed;

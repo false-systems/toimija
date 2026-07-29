@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +22,8 @@ pub struct RepoConfig {
     pub composition: CompositionSection,
     pub context: ContextSection,
     pub validation: ValidationSection,
+    pub gates: BTreeMap<String, crate::gates::GateConfig>,
+    pub gate_groups: BTreeMap<String, crate::gates::GateGroupConfig>,
     pub stewardship: StewardshipSection,
     pub boundaries: Vec<String>,
 }
