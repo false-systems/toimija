@@ -6,13 +6,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use false_agent_protocol::{ConsistencyToken, RepositoryPointRef, RepositoryRef, TreeOid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+
+use crate::command::CommandRunner;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_OUTPUT_LIMIT: u64 = 1024 * 1024;
@@ -343,6 +347,151 @@ pub struct ResolvedGate {
     digest: GateSpecDigest,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateSubject {
+    pub repository: RepositoryRef,
+    pub repository_point: RepositoryPointRef,
+    pub tree_oid: TreeOid,
+    pub consistency_token: ConsistencyToken,
+}
+
+#[derive(Debug)]
+pub struct VerifiedGateSubject {
+    subject: GateSubject,
+    repo_root: PathBuf,
+}
+
+impl VerifiedGateSubject {
+    pub fn subject(&self) -> &GateSubject {
+        &self.subject
+    }
+
+    pub fn repo_root(&self) -> &Path {
+        &self.repo_root
+    }
+}
+
+pub fn verify_subject(repo_root: &Path) -> Result<VerifiedGateSubject> {
+    let runner = crate::command::ProcessCommandRunner;
+    let packet = crate::context::build_context_packet(&runner, repo_root, false)?;
+    if packet.consistency.git_operation != crate::consistency::GitOperationState::None {
+        bail!("cannot prepare gates during an in-progress Git operation");
+    }
+    if packet.consistency.conflict_state.has_conflicts {
+        bail!("cannot prepare gates with unresolved conflicts");
+    }
+    let staged = packet
+        .git
+        .staged_files
+        .iter()
+        .map(|file| &file.path)
+        .collect::<BTreeSet<_>>();
+    if packet
+        .git
+        .unstaged_files
+        .iter()
+        .any(|file| staged.contains(&file.path))
+    {
+        bail!("cannot prepare gates when one path has both staged and unstaged changes");
+    }
+    let point = crate::semantic::repository_point(&runner, &packet)?;
+    let (live, _) = crate::git::collect_git_state(&runner, repo_root)?;
+    if !packet.consistency.verify(&live).is_consistent() {
+        bail!("repository changed while the gate subject was being materialized");
+    }
+    Ok(VerifiedGateSubject {
+        subject: GateSubject {
+            repository: point.repository,
+            repository_point: point.id,
+            tree_oid: point.tree_oid,
+            consistency_token: point.consistency_token,
+        },
+        repo_root: packet.git.repo_root,
+    })
+}
+
+pub struct GateWorkspace {
+    root: PathBuf,
+    repo_root: PathBuf,
+    lease_id: String,
+}
+
+impl GateWorkspace {
+    pub fn materialize(subject: &VerifiedGateSubject) -> Result<Self> {
+        let runner = crate::command::ProcessCommandRunner;
+        let lease_id = unique_id("gate");
+        crate::snapshot::acquire_lease(
+            &runner,
+            subject.repo_root(),
+            &lease_id,
+            &subject.subject.tree_oid.0,
+            &subject.subject.consistency_token.0,
+        )?;
+        let root = match create_temp_dir(&lease_id) {
+            Ok(root) => root,
+            Err(error) => {
+                let _ = crate::snapshot::release_lease(&runner, subject.repo_root(), &lease_id);
+                return Err(error);
+            }
+        };
+        let result = materialize_worktree(&runner, subject, &root)
+            .and_then(|()| validate_workspace_symlinks(&root));
+        if let Err(error) = result {
+            let _ = remove_worktree(&runner, subject.repo_root(), &root);
+            let _ = fs::remove_dir_all(&root);
+            let _ = crate::snapshot::release_lease(&runner, subject.repo_root(), &lease_id);
+            return Err(error);
+        }
+        Ok(Self {
+            root,
+            repo_root: subject.repo_root.clone(),
+            lease_id,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn source_tree(&self) -> Result<String> {
+        crate::snapshot::materialize(&crate::command::ProcessCommandRunner, &self.root)
+    }
+
+    pub fn changed_paths(&self, before: &str, after: &str) -> Result<Vec<PathBuf>> {
+        if before == after {
+            return Ok(Vec::new());
+        }
+        let output = crate::command::ProcessCommandRunner
+            .run(
+                &self.root,
+                "git",
+                &["diff", "--name-only", "-z", before, after],
+            )
+            .context("failed to inspect gate workspace mutation")?;
+        if output.status != 0 {
+            bail!(
+                "failed to inspect gate workspace mutation: {}",
+                output.stderr_lossy().trim()
+            );
+        }
+        Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(crate::path_codec::from_git_bytes)
+            .collect())
+    }
+}
+
+impl Drop for GateWorkspace {
+    fn drop(&mut self) {
+        let runner = crate::command::ProcessCommandRunner;
+        let _ = remove_worktree(&runner, &self.repo_root, &self.root);
+        let _ = fs::remove_dir_all(&self.root);
+        let _ = crate::snapshot::release_lease(&runner, &self.repo_root, &self.lease_id);
+    }
+}
+
 impl ResolvedGate {
     pub fn spec(&self) -> &GateSpec {
         &self.spec
@@ -570,6 +719,115 @@ fn expand_group(
     Ok(())
 }
 
+fn materialize_worktree(
+    runner: &impl CommandRunner,
+    subject: &VerifiedGateSubject,
+    root: &Path,
+) -> Result<()> {
+    let identity = [
+        ("GIT_AUTHOR_NAME", OsStr::new("Toimija Gate Authority")),
+        ("GIT_AUTHOR_EMAIL", OsStr::new("gate@localhost")),
+        ("GIT_AUTHOR_DATE", OsStr::new("1970-01-01T00:00:00Z")),
+        ("GIT_COMMITTER_NAME", OsStr::new("Toimija Gate Authority")),
+        ("GIT_COMMITTER_EMAIL", OsStr::new("gate@localhost")),
+        ("GIT_COMMITTER_DATE", OsStr::new("1970-01-01T00:00:00Z")),
+    ];
+    let commit = runner
+        .run_with_env(
+            subject.repo_root(),
+            "git",
+            &["commit-tree", &subject.subject.tree_oid.0],
+            &identity,
+        )
+        .context("failed to create the temporary snapshot commit")?;
+    if commit.status != 0 {
+        bail!(
+            "failed to create the temporary snapshot commit: {}",
+            commit.stderr_lossy().trim()
+        );
+    }
+    let commit = commit.stdout_lossy();
+    let commit = commit.trim();
+    let root_text = root
+        .to_str()
+        .context("temporary gate workspace path is not UTF-8")?;
+    let added = runner
+        .run(
+            subject.repo_root(),
+            "git",
+            &["worktree", "add", "--detach", root_text, commit],
+        )
+        .context("failed to materialize the gate workspace")?;
+    if added.status != 0 {
+        bail!(
+            "failed to materialize the gate workspace: {}",
+            added.stderr_lossy().trim()
+        );
+    }
+    Ok(())
+}
+
+fn remove_worktree(runner: &impl CommandRunner, repo_root: &Path, root: &Path) -> Result<()> {
+    let root = root
+        .to_str()
+        .context("temporary gate workspace path is not UTF-8")?;
+    let output = runner.run(repo_root, "git", &["worktree", "remove", "--force", root])?;
+    if output.status != 0 {
+        bail!(
+            "failed to remove gate workspace: {}",
+            output.stderr_lossy().trim()
+        );
+    }
+    Ok(())
+}
+
+fn create_temp_dir(id: &str) -> Result<PathBuf> {
+    let root = std::env::temp_dir().join(format!("toimija-{id}"));
+    fs::create_dir(&root)
+        .with_context(|| format!("failed to create gate workspace {}", root.display()))?;
+    Ok(root)
+}
+
+fn unique_id(prefix: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{prefix}-{}-{nanos}", std::process::id())
+}
+
+fn validate_workspace_symlinks(root: &Path) -> Result<()> {
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", root.display()))?;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("failed to read {}", directory.display()))?
+        {
+            let path = entry?.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                let target = path.canonicalize().with_context(|| {
+                    format!(
+                        "gate workspace contains dangling symlink {}",
+                        path.display()
+                    )
+                })?;
+                if !target.starts_with(&canonical_root) {
+                    bail!(
+                        "gate workspace symlink {} escapes the snapshot",
+                        path.display()
+                    );
+                }
+            } else if metadata.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn user_catalog_path() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -580,6 +838,7 @@ fn user_catalog_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::{CommandRunner, ProcessCommandRunner};
 
     fn config(program: &str, args: &[&str]) -> GateConfig {
         GateConfig {
@@ -678,5 +937,84 @@ mod tests {
             .unwrap();
         assert_eq!(first.digest(), second.digest());
         assert_ne!(first.digest(), changed.digest());
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = ProcessCommandRunner.run(repo, "git", args).unwrap();
+        assert_eq!(output.status, 0, "git {args:?}: {}", output.stderr_lossy());
+    }
+
+    fn repository() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        git(temp.path(), &["init", "-q"]);
+        git(temp.path(), &["config", "user.name", "Gate Test"]);
+        git(
+            temp.path(),
+            &["config", "user.email", "gate-test@localhost"],
+        );
+        std::fs::write(temp.path().join("source.txt"), "one\n").unwrap();
+        git(temp.path(), &["add", "source.txt"]);
+        git(temp.path(), &["commit", "-q", "-m", "initial"]);
+        temp
+    }
+
+    #[test]
+    fn subject_distinguishes_dirty_states_at_the_same_head() {
+        let repo = repository();
+        let first = verify_subject(repo.path()).unwrap();
+        std::fs::write(repo.path().join("source.txt"), "two\n").unwrap();
+        let second = verify_subject(repo.path()).unwrap();
+
+        assert_ne!(first.subject.tree_oid, second.subject.tree_oid);
+        assert_ne!(
+            first.subject.consistency_token,
+            second.subject.consistency_token
+        );
+        assert_ne!(
+            first.subject.repository_point,
+            second.subject.repository_point
+        );
+    }
+
+    #[test]
+    fn workspace_is_outside_checkout_and_mutation_is_isolated() {
+        let repo = repository();
+        let subject = verify_subject(repo.path()).unwrap();
+        let workspace = GateWorkspace::materialize(&subject).unwrap();
+        let root = workspace.root().to_path_buf();
+
+        assert!(!root.starts_with(repo.path()));
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.txt")).unwrap(),
+            "one\n"
+        );
+        std::fs::write(root.join("source.txt"), "changed\n").unwrap();
+        let after = workspace.source_tree().unwrap();
+        assert_ne!(after, subject.subject.tree_oid.0);
+        assert_eq!(
+            workspace
+                .changed_paths(&subject.subject.tree_oid.0, &after)
+                .unwrap(),
+            vec![PathBuf::from("source.txt")]
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("source.txt")).unwrap(),
+            "one\n"
+        );
+        drop(workspace);
+        assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_rejects_symlinks_that_escape_the_snapshot() {
+        use std::os::unix::fs::symlink;
+
+        let repo = repository();
+        symlink("/tmp", repo.path().join("escape")).unwrap();
+        git(repo.path(), &["add", "escape"]);
+        let subject = verify_subject(repo.path()).unwrap();
+        let error = GateWorkspace::materialize(&subject).err().unwrap();
+        assert!(error.to_string().contains("escapes the snapshot"));
     }
 }
