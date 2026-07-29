@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use tracing::warn;
 
 use crate::command::CommandRunner;
 use crate::config::DEFAULT_BUDGET;
@@ -174,7 +175,10 @@ pub fn refresh_session(
 /// into the packet before rendering, so `run --intent` reaches a wrapped
 /// harness and `toimija intent` updates propagate on the next refresh.
 /// Best-effort: a missing or unreadable marker yields a packet without the
-/// session block, never a failed refresh.
+/// session block, never a failed refresh — but unreadable ≠ missing (issue
+/// #161): only `NotFound` is quiet; a marker that exists and cannot be read
+/// is warned about, because the packet it feeds silently loses its session
+/// identity.
 fn compute(
     runner: &impl CommandRunner,
     repo_root: &Path,
@@ -192,9 +196,22 @@ fn compute(
         .next()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
-    if let Some(dir) = session_dir
-        && let Ok(marker) = session::load_marker(dir)
-    {
+    let marker = match session_dir.map(session::load_marker) {
+        Some(Ok(marker)) => Some(marker),
+        Some(Err(error)) => {
+            let missing = error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+            if !missing {
+                // `:#` prints the whole context chain — the cause (EACCES,
+                // EIO, parse failure) matters as much as the path.
+                warn!(event = "toimija.session.marker_unreadable", error = %format!("{error:#}"));
+            }
+            None
+        }
+        None => None,
+    };
+    if let Some(marker) = marker {
         let point = crate::semantic::repository_point(runner, &packet)?;
         let active = match work {
             WorkSource::Discover => crate::teko::active_work_at(repo_root, &point, false)?,
