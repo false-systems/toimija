@@ -221,19 +221,28 @@ impl PluginSession {
             &bytes,
         )
         .map_err(anyhow::Error::from)?;
-        let response = match self.responses.recv_timeout(self.timeout) {
-            Ok(response) => response.map_err(anyhow::Error::msg)?,
-            Err(RecvTimeoutError::Timeout) => bail!("plugin request `{method}` timed out"),
-            Err(RecvTimeoutError::Disconnected) => bail!("plugin crashed during `{method}`"),
+        let deadline = Instant::now() + self.timeout;
+        let response = loop {
+            let response = match self
+                .responses
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(response) => response.map_err(anyhow::Error::msg)?,
+                Err(RecvTimeoutError::Timeout) => bail!("plugin request `{method}` timed out"),
+                Err(RecvTimeoutError::Disconnected) => bail!("plugin crashed during `{method}`"),
+            };
+            response.validate().map_err(anyhow::Error::from)?;
+            if response.id == id {
+                break response;
+            }
+            if response.id.get() > id.get() {
+                bail!(
+                    "plugin returned unknown response ID {}; expected {}",
+                    response.id.get(),
+                    id.get()
+                );
+            }
         };
-        response.validate().map_err(anyhow::Error::from)?;
-        if response.id != id {
-            bail!(
-                "plugin returned unknown response ID {}; expected {}",
-                response.id.get(),
-                id.get()
-            );
-        }
         if let Some(error) = response.error {
             bail!("{:?}: {}", error.code, error.message);
         }
@@ -386,5 +395,51 @@ mod tests {
         .to_string();
         assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn session_discards_a_late_timed_out_response() {
+        let responses = [
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "plugin": {"id": "teko", "name": "fake", "version": "1", "kind": "work"},
+                    "selected_protocol": {"major": 1, "minor": 0},
+                    "capabilities": [{"id": "work.v1", "methods": ["work.current"]}],
+                    "limits": false_agent_protocol::plugin::PluginLimits::default()
+                }
+            }),
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "result": "late"}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "result": "current"}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 4, "result": {}}),
+        ];
+        let late_frames = format!(
+            "{}{}{}",
+            frame(responses[1].clone()),
+            frame(responses[2].clone()),
+            frame(responses[3].clone())
+        );
+        let script = format!(
+            "printf %s '{}'; sleep 0.05; printf %s '{late_frames}'; sleep 1",
+            frame(responses[0].clone())
+        );
+        let mut session = PluginSession::spawn(
+            "teko",
+            &definition(script, 10),
+            Path::new("."),
+            "repo_fixture".parse().unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            session
+                .call::<_, Value>("slow", serde_json::json!({}))
+                .is_err()
+        );
+        std::thread::sleep(Duration::from_millis(60));
+        let response: String = session.call("next", serde_json::json!({})).unwrap();
+
+        assert_eq!(response, "current");
     }
 }
