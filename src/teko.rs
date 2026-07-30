@@ -30,6 +30,7 @@ pub struct WorkProvider {
 }
 
 const OBSERVE_GATES_METHOD: &str = "work.observe_gates";
+const REQUIRED_GATES_EXTENSION: &str = "toimija.required_gates.v1";
 
 #[derive(Serialize)]
 struct ObserveGatesParams<'a> {
@@ -201,7 +202,7 @@ impl WorkProvider {
     }
 
     fn gate_authority(&self, work: &WorkPacketEnvelope) -> Result<GateAuthority> {
-        if work.gates.is_empty() {
+        if work.gates.is_empty() || !work.extensions.contains_key(REQUIRED_GATES_EXTENSION) {
             return Ok(GateAuthority::new());
         }
         let required = required_gate_ids(work)?;
@@ -217,7 +218,7 @@ impl WorkProvider {
 pub(crate) fn required_gate_ids(packet: &WorkPacketEnvelope) -> Result<Vec<GateId>> {
     let extension = packet
         .extensions
-        .get("toimija.required_gates.v1")
+        .get(REQUIRED_GATES_EXTENSION)
         .context("active work omitted the Toimija Gate ID extension")?
         .as_array()
         .context("active work Gate ID extension is not an array")?;
