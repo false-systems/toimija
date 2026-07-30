@@ -1,6 +1,6 @@
 # Toimija
 
-**Git-native context and runtime composition for coding agents.**
+**Git-native context and trusted verification for coding agents.**
 
 ![Rust](https://img.shields.io/badge/rust-single_crate-orange)
 ![daemons](https://img.shields.io/badge/daemons-zero-success)
@@ -14,8 +14,10 @@
 
 Toimija sits between a repository and a coding harness. It compiles local Git
 state into a live context packet, optionally obtains bounded work from Teko,
-launches Codex, Claude, Kisko, or another command, keeps the packet fresh while
-the harness runs, and verifies the repository again at exit.
+launches Codex, Claude, Kisko, or another command, and keeps the packet fresh
+while the harness runs. At exit it verifies the repository again and reports
+the result. When required, it also executes trusted repository gates against
+standalone snapshots and mints receipts bound to the exact verified state.
 
 It is deliberately local and compositional. Teko, Toimija, and Kisko are
 independent products that build and release separately. They meet only at
@@ -27,8 +29,9 @@ runtime through the public
 ```mermaid
 flowchart LR
     G["Git<br/>HEAD · index · worktree · history"] --> T{{"Toimija"}}
-    R[".toimija/repo.yaml<br/>role · boundaries · validation"] --> T
-    W["Teko<br/>work provider"] -- "work.v1" --> T
+    R[".toimija/repo.yaml<br/>role · boundaries · validation · gates"] --> T
+    W["Teko<br/>work provider"] -- "work + required Gate IDs" --> T
+    T -- "receipts + observations" --> W
     T -- "worker.v1" --> K["Kisko"]
     T --> C["Codex"]
     T --> A["Claude"]
@@ -67,6 +70,7 @@ Toimija reads that evidence once and produces a bounded packet that answers:
 - Which files tend to change together?
 - Which areas are risky or high-churn?
 - What validation commands does this repository expect?
+- Which trusted gates have receipts for this exact repository state?
 - What work did Teko bind to this run?
 - Does this packet still describe the live repository?
 
@@ -123,6 +127,9 @@ Use `--` before harness arguments:
 ```bash
 toimija run --intent unknown -- codex --help
 ```
+
+For bounded work, `toimija verify-work` then runs the Gate IDs required by Teko,
+imports exact-current receipts, and reports whether anything remains blocked.
 
 ## Runtime composition
 
