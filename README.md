@@ -265,6 +265,12 @@ toimija plugins doctor
 toimija plugins inspect teko
 ```
 
+The live packet also carries an informational `Runtime providers` section for
+agents. It reports the effective work and worker provider IDs, capabilities,
+configuration source, required flag, and whether each provider is configured,
+discoverable through the exact PATH fallback, or unavailable. Building a packet
+does not spawn provider processes or dispatch work.
+
 ## The neutral protocol
 
 All runtime messages use
@@ -323,9 +329,11 @@ A packet combines:
 - coupling and risk hints with evidence and confidence;
 - collection coverage: `available`, `degraded`, or `failed`;
 - repository boundaries, exclusions, and validation plans;
+- runtime provider IDs, capabilities, source, required flag, and status;
 - session identity, entry baseline, declared intent, and scope;
 - optional active work and canonical execution context;
-- a content-based consistency token;
+- a content-based Git consistency token and refresh token covering collected
+  Git/provider state;
 - a Sauma provenance envelope.
 
 Every packet carries a workset contract:
@@ -449,6 +457,12 @@ failure into an empty, reassuring list.
 | `validate --plan` | Render validation commands without executing them |
 | `landed` | Check whether branch content reached a base ref |
 | `init`, `adopt`, `doctor` | Configure a repository and detect setup drift |
+
+On Linux, `watch` and `run` poll collected Git/provider state at roughly 500 ms
+instead of recursively polling the filesystem; other platforms try the native
+watcher first and fall back to notify polling if the readiness probe does not
+report. Those event backends also check the state token periodically so external
+provider configuration does not leave a live packet stale.
 
 Use `toimija <command> --help` for flags and examples. The
 [complete reference](docs/reference.md) documents packet fields, environment

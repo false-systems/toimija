@@ -19,7 +19,7 @@ use notify::{Config, Event, RecursiveMode, Watcher};
 use tracing::info;
 
 use crate::command::CommandRunner;
-use crate::{consistency, refresh};
+use crate::{consistency, git, refresh};
 
 /// Coalesce a burst of events for this long before refreshing once.
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -28,7 +28,10 @@ const TICK: Duration = Duration::from_millis(200);
 /// A wall/monotonic disagreement this large is suspension, not scheduler jitter.
 const SUSPENSION_THRESHOLD: Duration = Duration::from_secs(30);
 /// How long a watcher has to report its readiness probe before fallback/failure.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Polling cadence for packet-visible Git and provider state.
+const STATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Directories whose churn must never trigger a refresh.
 const IGNORED_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
 
@@ -48,13 +51,15 @@ fn detect_suspension(prev: &ClockPair, now: &ClockPair, threshold: Duration) -> 
     (slept >= threshold).then_some(slept)
 }
 
-/// A probe-proven filesystem watcher: native when available, polling fallback
-/// when the native backend does not report readiness. The payloads are never
-/// read — they are held so dropping the backend unregisters the OS watch.
-#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
+/// A probe-proven change detector: native when available, notify polling when
+/// native does not report readiness, and Git-state polling on Linux. Watcher
+/// payloads are held so dropping the backend unregisters the OS watch.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 enum Backend {
     Native(#[allow(dead_code)] notify::RecommendedWatcher),
     Poll(#[allow(dead_code)] notify::PollWatcher),
+    #[allow(dead_code)]
+    GitPoll,
 }
 
 impl Backend {
@@ -62,6 +67,7 @@ impl Backend {
         match self {
             Self::Native(_) => "native",
             Self::Poll(_) => "poll fallback",
+            Self::GitPoll => "git polling",
         }
     }
 }
@@ -72,26 +78,31 @@ impl Backend {
 pub struct Session {
     // Held only to keep the OS watch alive; dropping it unregisters the watch.
     backend: Backend,
-    rx: mpsc::Receiver<notify::Result<Event>>,
+    rx: Option<mpsc::Receiver<notify::Result<Event>>>,
+    baseline_token: Option<String>,
 }
 
 /// Begin watching `repo_root`. The fallible parts — creating the watcher and
 /// registering the path — happen here, synchronously, so a startup failure is
 /// reported to the caller rather than swallowed by a background loop.
 pub fn start(repo_root: &Path) -> Result<Session> {
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(target_os = "linux")]
     {
-        // ponytail: inotify proves the probe but drops the first real event on
-        // our ARM64 runner; retry native when that platform proves delivery.
-        start_poll(repo_root, prove_ready)
+        // Inotify can prove the readiness probe while still missing the first
+        // post-armed create event in CI/containerized Linux environments.
+        // Toimija only needs packet-visible Git state, so avoid recursively
+        // walking the whole repo through notify's polling backend.
+        fs::metadata(repo_root)
+            .with_context(|| format!("failed to watch {}", repo_root.display()))?;
+        armed(Backend::GitPoll, None)
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+    #[cfg(not(target_os = "linux"))]
     {
         start_with_probe(repo_root, prove_ready)
     }
 }
 
-#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn start_with_probe(
     repo_root: &Path,
     probe: impl FnMut(
@@ -109,7 +120,7 @@ fn start_with_probe(
 /// proved ready, the poll fallback otherwise. A native arm failure (e.g. the
 /// inotify watch limit) must not abort startup while polling can still
 /// deliver — it degrades, with the failure logged.
-#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn start_from_native(
     native: Result<(
         notify::RecommendedWatcher,
@@ -126,7 +137,7 @@ fn start_from_native(
     match native {
         Ok((native, rx)) => {
             if probe(repo_root, &rx, None, "native")? {
-                return armed(Backend::Native(native), rx);
+                return armed(Backend::Native(native), Some(rx));
             }
             drop(native);
         }
@@ -152,12 +163,16 @@ fn start_poll(
     let (poll, rx) = arm::<notify::PollWatcher>(repo_root, watcher_config())?;
     let ready = probe(repo_root, &rx, Some(&poll), "poll")?;
     anyhow::ensure!(ready, "filesystem watcher did not report readiness");
-    armed(Backend::Poll(poll), rx)
+    armed(Backend::Poll(poll), Some(rx))
 }
 
-fn armed(backend: Backend, rx: mpsc::Receiver<notify::Result<Event>>) -> Result<Session> {
+fn armed(backend: Backend, rx: Option<mpsc::Receiver<notify::Result<Event>>>) -> Result<Session> {
     info!(event = "toimija.watch.armed", backend = backend.label());
-    Ok(Session { backend, rx })
+    Ok(Session {
+        backend,
+        rx,
+        baseline_token: None,
+    })
 }
 
 fn arm<W: Watcher>(
@@ -178,6 +193,7 @@ fn arm<W: Watcher>(
     Ok((watcher, rx))
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn prove_ready(
     repo_root: &Path,
     rx: &mpsc::Receiver<notify::Result<Event>>,
@@ -199,6 +215,7 @@ fn prove_ready(
     result
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn wait_for_probe(
     rx: &mpsc::Receiver<notify::Result<Event>>,
     poll: Option<&notify::PollWatcher>,
@@ -246,12 +263,14 @@ impl Session {
     /// Refresh once after the OS watcher is registered. This closes the gap
     /// between the caller's baseline refresh and watcher readiness.
     pub fn catch_up(
-        &self,
+        &mut self,
         runner: &impl CommandRunner,
         repo_root: &Path,
         plan: &refresh::Plan,
     ) -> Result<()> {
-        plan.run(runner, repo_root).map(|_| ())
+        let refreshed = plan.run(runner, repo_root)?;
+        self.baseline_token = Some(packet_refresh_token(&refreshed.packet));
+        Ok(())
     }
 
     /// Refresh the live packet on every relevant change until `stop` is set. The
@@ -280,7 +299,24 @@ impl Session {
         mut on_refresh: impl FnMut(),
         mut clocks: impl FnMut() -> ClockPair,
     ) -> Result<()> {
+        if matches!(&self.backend, Backend::GitPoll) {
+            return run_git_polling(
+                runner,
+                repo_root,
+                plan,
+                stop,
+                on_refresh,
+                clocks,
+                self.baseline_token,
+            );
+        }
+        let rx = self
+            .rx
+            .as_ref()
+            .context("filesystem watcher backend missing event receiver")?;
         let mut previous = clocks();
+        let mut previous_token = self.baseline_token;
+        let mut last_poll = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             let now = clocks();
             if let Some(slept) = detect_suspension(&previous, &now, SUSPENSION_THRESHOLD) {
@@ -288,22 +324,26 @@ impl Session {
                     event = "toimija.watch.resumed",
                     slept_secs = slept.as_secs()
                 );
-                refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
+                if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
+                    previous_token = Some(token);
+                }
                 previous = now;
                 continue;
             }
             previous = now;
-            match self.rx.recv_timeout(TICK) {
+            match rx.recv_timeout(TICK) {
                 Ok(Ok(event)) if relevant(&event) => {
-                    drain_burst(&self.rx);
+                    drain_burst(rx, repo_root);
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
+                    if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
+                        previous_token = Some(token);
+                    }
                 }
                 // A watcher-backend error (dropped or rescan-required events):
                 // surface it, since the packet may now be stale, then keep going.
-                Ok(Err(error)) => warn_watcher_error(&error),
+                Ok(Err(error)) => warn_watcher_error(&error, repo_root),
                 // Irrelevant event: keep watching.
                 Ok(Ok(_)) => {}
                 // Woke to re-check `stop`.
@@ -318,9 +358,102 @@ impl Session {
                     break;
                 }
             }
+            poll_refresh_if_changed(
+                runner,
+                repo_root,
+                plan,
+                &mut previous_token,
+                &mut last_poll,
+                &mut on_refresh,
+            );
         }
         Ok(())
     }
+}
+
+fn run_git_polling(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    plan: &refresh::Plan,
+    stop: &AtomicBool,
+    mut on_refresh: impl FnMut(),
+    mut clocks: impl FnMut() -> ClockPair,
+    baseline_token: Option<String>,
+) -> Result<()> {
+    let mut previous = clocks();
+    let mut previous_token = baseline_token.or_else(|| match current_token(runner, repo_root) {
+        Ok(token) => Some(token),
+        Err(error) => {
+            eprintln!("toimija: Git-state poll failed (packet may be stale): {error:#}");
+            None
+        }
+    });
+    let mut last_poll = Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        let now = clocks();
+        if let Some(slept) = detect_suspension(&previous, &now, SUSPENSION_THRESHOLD) {
+            info!(
+                event = "toimija.watch.resumed",
+                slept_secs = slept.as_secs()
+            );
+            if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
+                previous_token = Some(token);
+            }
+            previous = now;
+            continue;
+        }
+        previous = now;
+
+        poll_refresh_if_changed(
+            runner,
+            repo_root,
+            plan,
+            &mut previous_token,
+            &mut last_poll,
+            &mut on_refresh,
+        );
+
+        std::thread::sleep(TICK);
+    }
+    Ok(())
+}
+
+fn poll_refresh_if_changed(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    plan: &refresh::Plan,
+    previous_token: &mut Option<String>,
+    last_poll: &mut Instant,
+    on_refresh: &mut impl FnMut(),
+) {
+    if last_poll.elapsed() < STATE_POLL_INTERVAL {
+        return;
+    }
+    *last_poll = Instant::now();
+    match current_token(runner, repo_root) {
+        Ok(current) if previous_token.as_ref() != Some(&current) => {
+            if let Some(token) = refresh_or_warn(runner, repo_root, plan, on_refresh) {
+                *previous_token = Some(token);
+            }
+        }
+        Ok(current) => *previous_token = Some(current),
+        Err(error) => {
+            eprintln!("toimija: Git-state poll failed (packet may be stale): {error:#}");
+        }
+    }
+}
+
+fn current_token(runner: &impl CommandRunner, repo_root: &Path) -> Result<String> {
+    let (mut git, _) = git::collect_git_state(runner, repo_root)?;
+    crate::context::normalize_git_state(&mut git);
+    crate::context::live_refresh_token(&git)
+}
+
+fn packet_refresh_token(packet: &crate::context::ContextPacket) -> String {
+    packet
+        .refresh_token
+        .clone()
+        .unwrap_or_else(|| packet.consistency.token.clone())
 }
 
 /// A transient refresh failure must not kill live updates: warn and keep
@@ -330,10 +463,17 @@ fn refresh_or_warn(
     repo_root: &Path,
     plan: &refresh::Plan,
     on_refresh: &mut impl FnMut(),
-) {
+) -> Option<String> {
     match plan.run(runner, repo_root) {
-        Ok(_) => on_refresh(),
-        Err(error) => eprintln!("toimija: refresh failed (packet may be stale): {error:#}"),
+        Ok(refreshed) => {
+            let token = packet_refresh_token(&refreshed.packet);
+            on_refresh();
+            Some(token)
+        }
+        Err(error) => {
+            eprintln!("toimija: refresh failed (packet may be stale): {error:#}");
+            None
+        }
     }
 }
 
@@ -349,7 +489,7 @@ pub fn watch(
 ) -> Result<()> {
     // Baseline so the live packet exists immediately, before any event.
     plan.run(runner, repo_root)?;
-    let session = start(repo_root)?;
+    let mut session = start(repo_root)?;
     session.catch_up(runner, repo_root, plan)?;
     eprintln!("toimija watch: armed ({})", session.backend_label());
     session.run(runner, repo_root, plan, stop, on_refresh)
@@ -359,10 +499,10 @@ pub fn watch(
 /// for a full debounce window, so one logical change yields one refresh. Backend
 /// errors inside the burst keep their warning — rescan-required is precisely
 /// the error that means events were lost.
-fn drain_burst(rx: &mpsc::Receiver<notify::Result<Event>>) {
+fn drain_burst(rx: &mpsc::Receiver<notify::Result<Event>>, repo_root: &Path) {
     while let Ok(result) = rx.recv_timeout(DEBOUNCE) {
         if let Err(error) = result {
-            warn_watcher_error(&error);
+            warn_watcher_error(&error, repo_root);
         }
     }
 }
@@ -370,16 +510,28 @@ fn drain_burst(rx: &mpsc::Receiver<notify::Result<Event>>) {
 /// Warn about a backend error unless it is scoped entirely to ignored
 /// directories: a build deleting files under `_build`/`target` mid-scan is
 /// churn the watch has promised not to react to, not a packet-freshness
-/// problem. A pathless error says nothing about where it happened, so it
-/// stays visible.
-fn warn_watcher_error(error: &notify::Error) {
-    if !error_is_ignorable(error) {
+/// problem. Polling can also race children that vanish mid-walk; those
+/// path-scoped `NotFound` errors are quiet unless the watched root itself is
+/// gone. A pathless error says nothing about where it happened, so it stays
+/// visible.
+fn warn_watcher_error(error: &notify::Error, repo_root: &Path) {
+    if !error_is_ignorable(error, repo_root) {
         eprintln!("toimija: file watcher error (packet may be stale): {error}");
     }
 }
 
-fn error_is_ignorable(error: &notify::Error) -> bool {
-    !error.paths.is_empty() && error.paths.iter().all(|path| is_ignored(path))
+fn error_is_ignorable(error: &notify::Error, repo_root: &Path) -> bool {
+    if error.paths.is_empty() {
+        return false;
+    }
+    if matches!(
+        &error.kind,
+        notify::ErrorKind::Io(io_error)
+            if io_error.kind() == std::io::ErrorKind::NotFound
+    ) {
+        return repo_root.try_exists().unwrap_or(false);
+    }
+    error.paths.iter().all(|path| is_ignored(path))
 }
 
 fn relevant(event: &Event) -> bool {
@@ -469,7 +621,8 @@ mod tests {
         drop(tx);
         Session {
             backend: Backend::Poll(watcher),
-            rx,
+            rx: Some(rx),
+            baseline_token: None,
         }
     }
 
@@ -685,6 +838,26 @@ mod tests {
     }
 
     #[test]
+    fn failed_refresh_does_not_mint_a_poll_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let runner = FailingRunner {
+            attempts: Cell::new(0),
+        };
+        let plan = refresh::Plan {
+            for_diff: false,
+            budget: None,
+            session_dir: None,
+            work: refresh::WorkSource::Discover,
+        };
+        let mut heartbeats = 0;
+
+        let token = refresh_or_warn(&runner, temp.path(), &plan, &mut || heartbeats += 1);
+
+        assert_eq!(token, None);
+        assert_eq!(heartbeats, 0);
+    }
+
+    #[test]
     fn live_files_are_ignored() {
         assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.md")));
         assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.json")));
@@ -772,14 +945,14 @@ mod tests {
         assert_eq!(session.backend_label(), "poll fallback");
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(target_os = "linux")]
     #[test]
-    fn linux_aarch64_uses_the_reliable_poll_backend() {
+    fn linux_uses_git_state_polling_instead_of_notify_polling() {
         let temp = tempfile::tempdir().unwrap();
 
         let session = start(temp.path()).unwrap();
 
-        assert_eq!(session.backend_label(), "poll fallback");
+        assert_eq!(session.backend_label(), "git polling");
     }
 
     #[cfg(unix)]
@@ -844,18 +1017,46 @@ mod tests {
 
     #[test]
     fn errors_scoped_to_ignored_dirs_stay_quiet_but_others_surface() {
+        let repo_root = Path::new("/repo");
         let build_churn = notify::Error::generic("walkdir error scanning")
             .add_path(PathBuf::from("/repo/_build/lib/vartio_core/priv"));
-        assert!(error_is_ignorable(&build_churn));
+        assert!(error_is_ignorable(&build_churn, repo_root));
 
         // A pathless error says nothing about where it happened.
         let pathless = notify::Error::generic("backend failure");
-        assert!(!error_is_ignorable(&pathless));
+        assert!(!error_is_ignorable(&pathless, repo_root));
 
         // One relevant path makes the whole error relevant.
         let mixed = notify::Error::generic("walkdir error scanning")
             .add_path(PathBuf::from("/repo/target/debug/x"))
             .add_path(PathBuf::from("/repo/src/main.rs"));
-        assert!(!error_is_ignorable(&mixed));
+        assert!(!error_is_ignorable(&mixed, repo_root));
+    }
+
+    #[test]
+    fn poll_scan_not_found_races_stay_quiet_but_real_io_errors_surface() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path();
+        let vanished_during_scan =
+            notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
+                .add_path(repo_root.join(".git/objects/tmp_obj_abcd"));
+        assert!(error_is_ignorable(&vanished_during_scan, repo_root));
+
+        let pathless_not_found =
+            notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(!error_is_ignorable(&pathless_not_found, repo_root));
+
+        let permission_denied =
+            notify::Error::io(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                .add_path(repo_root.join("private"));
+        assert!(!error_is_ignorable(&permission_denied, repo_root));
+
+        // Backends may canonicalize or otherwise alias the watched path. Root
+        // presence, not lexical path equality, decides whether freshness is lost.
+        let missing_repo_root = repo_root.join("missing");
+        let missing_root_error =
+            notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
+                .add_path(repo_root.join("different-spelling"));
+        assert!(!error_is_ignorable(&missing_root_error, &missing_repo_root));
     }
 }

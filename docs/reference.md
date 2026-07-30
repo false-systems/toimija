@@ -159,12 +159,18 @@ Each `run` opens a **session** with its own live packet under
 shared file. While the agent works, that session packet stays fresh: every
 relevant filesystem or Git-state change re-runs the refresh after a short
 debounce. After laptop sleep, the resumed watch loop re-proves the session within
-one tick through that same refresh and heartbeat path. Except on Linux ARM64,
-the watcher arms the platform-native backend first and reports `armed (native)`
-only after a readiness probe is observed. If that probe times out, it re-arms
-and re-proves the bounded 500 ms polling backend before reporting
-`armed (poll fallback)`. Linux ARM64 uses that polling backend directly because
-its native runner backend drops post-probe events. It is
+one tick through that same refresh and heartbeat path. On Linux, the watcher
+polls collected Git/provider state at roughly 500 ms because inotify can prove
+the readiness probe while still missing the first post-armed event in
+CI/container environments, and Toimija only needs packet-visible Git/worktree
+state. This avoids recursively scanning ignored build/vendor/session trees as
+the change source. On other platforms, the watcher arms the platform-native
+backend first
+and reports `armed (native)` only after a readiness probe is observed. If that
+probe times out, it re-arms and re-proves notify's polling backend before
+reporting `armed (poll fallback)`. Both event backends also compare the packet
+state token periodically so provider configuration outside the repository
+cannot leave the live packet stale. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
 last-writer-wins "latest" summary for sessionless readers.
@@ -437,6 +443,8 @@ The packet includes:
   (`available` / `degraded` / `failed` with a reason and source), so an empty
   list from a failed collection is never presented as a real observation
 - changed surface
+- runtime provider IDs, capabilities, source, required flag, and configured /
+  discoverable / unavailable status
 - scope
 - read order
 - coupling
@@ -450,6 +458,8 @@ The packet includes:
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state
+- a **refresh token** over the collected Git state and runtime-provider
+  discovery inputs, used by `watch` and `verify`
 - a **sauma** envelope — a local attestation digest and provenance edge set for
   the packet artifact
 

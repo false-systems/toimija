@@ -31,6 +31,11 @@ pub struct ContextPacket {
     pub repo_kind: RepoKind,
     #[serde(default)]
     pub secondary_languages: Vec<repo::DetectedLanguage>,
+    #[serde(default)]
+    pub runtime_providers: crate::plugins::RuntimeProviders,
+    /// Refresh key for collected Git state and runtime-provider discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
     pub git: GitState,
     #[serde(with = "crate::path_codec::vec")]
     pub changed_surface: Vec<PathBuf>,
@@ -174,6 +179,9 @@ pub fn build_context_packet(
             warnings.push(note.clone());
         }
     }
+    let (runtime_providers, plugin_warnings) = crate::plugins::runtime_providers(&config);
+    let refresh_token = refresh_token(&git, &runtime_providers, &plugin_warnings);
+    warnings.extend(plugin_warnings);
     // Effective ignore set = the repo's configured rules plus a small built-in
     // set of build/vendor dirs. Applied live (derived each run), not seeded into
     // repo.yaml, so it tracks the repo as it changes and never drifts. The
@@ -227,6 +235,8 @@ pub fn build_context_packet(
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
         secondary_languages: secondary_scan.languages,
+        runtime_providers,
+        refresh_token: Some(refresh_token),
         git,
         changed_surface,
         changed_surface_source,
@@ -255,6 +265,38 @@ pub fn build_context_packet(
         warnings = packet.warnings.len()
     );
     Ok(packet)
+}
+
+pub(crate) fn refresh_token(
+    git: &GitState,
+    providers: &crate::plugins::RuntimeProviders,
+    plugin_warnings: &[String],
+) -> String {
+    let mut git = git.clone();
+    git.staged_files
+        .retain(|file| !crate::consistency::is_generated_output(&file.path));
+    git.unstaged_files
+        .retain(|file| !crate::consistency::is_generated_output(&file.path));
+    git.untracked_files
+        .retain(|path| !crate::consistency::is_generated_output(path));
+    git.conflicted_files
+        .retain(|path| !crate::consistency::is_generated_output(path));
+    git.conflict_entries
+        .retain(|entry| !crate::consistency::is_generated_output(&entry.path));
+    git.dirty = !git.staged_files.is_empty()
+        || !git.unstaged_files.is_empty()
+        || !git.untracked_files.is_empty()
+        || !git.conflicted_files.is_empty();
+    let state =
+        serde_json::to_vec(&(git, providers, plugin_warnings)).expect("refresh state serializes");
+    crate::consistency::hash_bytes(&state)
+}
+
+pub(crate) fn live_refresh_token(git: &GitState) -> anyhow::Result<String> {
+    let config = RepoConfig::load_optional(&git.repo_root)?
+        .unwrap_or_else(|| RepoConfig::default_for(&git.repo_root));
+    let (providers, warnings) = crate::plugins::runtime_providers(&config);
+    Ok(refresh_token(git, &providers, &warnings))
 }
 
 /// Decide how to describe the changed surface. A merge-base means we can speak
@@ -467,6 +509,61 @@ mod tests {
     use crate::adapters::generic::GenericAdapter;
     use crate::git::{ChangeStatus, ChangedFile};
 
+    fn runtime_providers() -> crate::plugins::RuntimeProviders {
+        crate::plugins::RuntimeProviders {
+            work: crate::plugins::RuntimeProviderSummary {
+                id: "teko".to_string(),
+                kind: false_agent_protocol::plugin::PluginKind::Work,
+                capability: false_agent_protocol::plugin::WORK_V1.to_string(),
+                status: crate::plugins::RuntimeProviderStatus::Unavailable,
+                source: crate::plugins::RuntimeProviderSource::Missing,
+                required: false,
+                reason: "repo composition work provider".to_string(),
+            },
+            worker: crate::plugins::RuntimeProviderSummary {
+                id: "kisko".to_string(),
+                kind: false_agent_protocol::plugin::PluginKind::Worker,
+                capability: false_agent_protocol::plugin::WORKER_V1.to_string(),
+                status: crate::plugins::RuntimeProviderStatus::Unavailable,
+                source: crate::plugins::RuntimeProviderSource::Missing,
+                required: false,
+                reason: "repo composition default worker".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn refresh_token_covers_packet_visible_git_and_provider_state() {
+        let mut git = GitState {
+            repo_root: PathBuf::from("/repo"),
+            git_dir: Some(PathBuf::from(".git")),
+            branch: Some("feature".to_string()),
+            head_oid: Some("abc".to_string()),
+            upstream: None,
+            base: None,
+            merge_base: None,
+            detached: false,
+            dirty: false,
+            staged_files: Vec::new(),
+            unstaged_files: Vec::new(),
+            untracked_files: Vec::new(),
+            conflicted_files: Vec::new(),
+            conflict_entries: Vec::new(),
+            branch_files: Vec::new(),
+            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
+            recent_commits: Vec::new(),
+        };
+        let mut providers = runtime_providers();
+        let original = refresh_token(&git, &providers, &[]);
+
+        git.base = Some("origin/main".to_string());
+        assert_ne!(refresh_token(&git, &providers, &[]), original);
+
+        git.base = None;
+        providers.work.status = crate::plugins::RuntimeProviderStatus::Configured;
+        assert_ne!(refresh_token(&git, &providers, &[]), original);
+    }
+
     #[test]
     fn context_packet_serializes_to_json() {
         let git = GitState {
@@ -501,6 +598,8 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
+            runtime_providers: runtime_providers(),
+            refresh_token: None,
             git,
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,
@@ -556,6 +655,8 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
+            runtime_providers: runtime_providers(),
+            refresh_token: None,
             git: git.clone(),
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,
@@ -614,6 +715,8 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
+            runtime_providers: runtime_providers(),
+            refresh_token: None,
             git,
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,
