@@ -168,7 +168,9 @@ the change source. On other platforms, the watcher arms the platform-native
 backend first
 and reports `armed (native)` only after a readiness probe is observed. If that
 probe times out, it re-arms and re-proves notify's polling backend before
-reporting `armed (poll fallback)`. It is
+reporting `armed (poll fallback)`. Both event backends also compare the packet
+state token periodically so provider configuration outside the repository
+cannot leave the live packet stale. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
 last-writer-wins "latest" summary for sessionless readers.

@@ -461,7 +461,8 @@ failure into an empty, reassuring list.
 On Linux, `watch` and `run` poll collected Git/provider state at roughly 500 ms
 instead of recursively polling the filesystem; other platforms try the native
 watcher first and fall back to notify polling if the readiness probe does not
-report.
+report. Those event backends also check the state token periodically so external
+provider configuration does not leave a live packet stale.
 
 Use `toimija <command> --help` for flags and examples. The
 [complete reference](docs/reference.md) documents packet fields, environment

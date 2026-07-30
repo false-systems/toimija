@@ -30,8 +30,8 @@ const SUSPENSION_THRESHOLD: Duration = Duration::from_secs(30);
 /// How long a watcher has to report its readiness probe before fallback/failure.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Linux polling cadence for packet-visible Git state.
-const GIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// Polling cadence for packet-visible Git and provider state.
+const STATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Directories whose churn must never trigger a refresh.
 const IGNORED_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
 
@@ -315,6 +315,8 @@ impl Session {
             .as_ref()
             .context("filesystem watcher backend missing event receiver")?;
         let mut previous = clocks();
+        let mut previous_token = self.baseline_token;
+        let mut last_poll = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             let now = clocks();
             if let Some(slept) = detect_suspension(&previous, &now, SUSPENSION_THRESHOLD) {
@@ -322,7 +324,9 @@ impl Session {
                     event = "toimija.watch.resumed",
                     slept_secs = slept.as_secs()
                 );
-                let _ = refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
+                if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
+                    previous_token = Some(token);
+                }
                 previous = now;
                 continue;
             }
@@ -333,7 +337,9 @@ impl Session {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    let _ = refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
+                    if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
+                        previous_token = Some(token);
+                    }
                 }
                 // A watcher-backend error (dropped or rescan-required events):
                 // surface it, since the packet may now be stale, then keep going.
@@ -352,6 +358,14 @@ impl Session {
                     break;
                 }
             }
+            poll_refresh_if_changed(
+                runner,
+                repo_root,
+                plan,
+                &mut previous_token,
+                &mut last_poll,
+                &mut on_refresh,
+            );
         }
         Ok(())
     }
@@ -390,24 +404,43 @@ fn run_git_polling(
         }
         previous = now;
 
-        if last_poll.elapsed() >= GIT_POLL_INTERVAL {
-            last_poll = Instant::now();
-            match current_token(runner, repo_root) {
-                Ok(current) if previous_token.as_ref() != Some(&current) => {
-                    if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
-                        previous_token = Some(token);
-                    }
-                }
-                Ok(current) => previous_token = Some(current),
-                Err(error) => {
-                    eprintln!("toimija: Git-state poll failed (packet may be stale): {error:#}");
-                }
-            }
-        }
+        poll_refresh_if_changed(
+            runner,
+            repo_root,
+            plan,
+            &mut previous_token,
+            &mut last_poll,
+            &mut on_refresh,
+        );
 
         std::thread::sleep(TICK);
     }
     Ok(())
+}
+
+fn poll_refresh_if_changed(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    plan: &refresh::Plan,
+    previous_token: &mut Option<String>,
+    last_poll: &mut Instant,
+    on_refresh: &mut impl FnMut(),
+) {
+    if last_poll.elapsed() < STATE_POLL_INTERVAL {
+        return;
+    }
+    *last_poll = Instant::now();
+    match current_token(runner, repo_root) {
+        Ok(current) if previous_token.as_ref() != Some(&current) => {
+            if let Some(token) = refresh_or_warn(runner, repo_root, plan, on_refresh) {
+                *previous_token = Some(token);
+            }
+        }
+        Ok(current) => *previous_token = Some(current),
+        Err(error) => {
+            eprintln!("toimija: Git-state poll failed (packet may be stale): {error:#}");
+        }
+    }
 }
 
 fn current_token(runner: &impl CommandRunner, repo_root: &Path) -> Result<String> {
@@ -491,15 +524,14 @@ fn error_is_ignorable(error: &notify::Error, repo_root: &Path) -> bool {
     if error.paths.is_empty() {
         return false;
     }
-    if error.paths.iter().all(|path| is_ignored(path)) {
-        return true;
-    }
-    matches!(
+    if matches!(
         &error.kind,
         notify::ErrorKind::Io(io_error)
             if io_error.kind() == std::io::ErrorKind::NotFound
-                && error.paths.iter().all(|path| path != repo_root)
-    )
+    ) {
+        return repo_root.try_exists().unwrap_or(false);
+    }
+    error.paths.iter().all(|path| is_ignored(path))
 }
 
 fn relevant(event: &Event) -> bool {
@@ -1003,10 +1035,11 @@ mod tests {
 
     #[test]
     fn poll_scan_not_found_races_stay_quiet_but_real_io_errors_surface() {
-        let repo_root = Path::new("/repo");
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path();
         let vanished_during_scan =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
-                .add_path(PathBuf::from("/repo/.git/objects/tmp_obj_abcd"));
+                .add_path(repo_root.join(".git/objects/tmp_obj_abcd"));
         assert!(error_is_ignorable(&vanished_during_scan, repo_root));
 
         let pathless_not_found =
@@ -1015,11 +1048,15 @@ mod tests {
 
         let permission_denied =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-                .add_path(PathBuf::from("/repo/private"));
+                .add_path(repo_root.join("private"));
         assert!(!error_is_ignorable(&permission_denied, repo_root));
 
-        let missing_root = notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
-            .add_path(repo_root.to_path_buf());
-        assert!(!error_is_ignorable(&missing_root, repo_root));
+        // Backends may canonicalize or otherwise alias the watched path. Root
+        // presence, not lexical path equality, decides whether freshness is lost.
+        let missing_repo_root = repo_root.join("missing");
+        let missing_root_error =
+            notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
+                .add_path(repo_root.join("different-spelling"));
+        assert!(!error_is_ignorable(&missing_root_error, &missing_repo_root));
     }
 }
