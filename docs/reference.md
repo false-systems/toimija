@@ -160,11 +160,13 @@ shared file. While the agent works, that session packet stays fresh: every
 relevant filesystem or Git-state change re-runs the refresh after a short
 debounce. After laptop sleep, the resumed watch loop re-proves the session within
 one tick through that same refresh and heartbeat path. On Linux, the watcher
-uses the bounded 500 ms polling backend directly because inotify can prove the
-readiness probe while still missing the first post-armed event in CI/container
-environments. On other platforms, the watcher arms the platform-native backend
-first and reports `armed (native)` only after a readiness probe is observed. If
-that probe times out, it re-arms and re-proves the polling backend before
+uses bounded 500 ms Git-state polling because inotify can prove the readiness
+probe while still missing the first post-armed event in CI/container
+environments, and Toimija only needs packet-visible Git/worktree state. This
+avoids recursively scanning ignored build/vendor/session trees as the change
+source. On other platforms, the watcher arms the platform-native backend first
+and reports `armed (native)` only after a readiness probe is observed. If that
+probe times out, it re-arms and re-proves notify's polling backend before
 reporting `armed (poll fallback)`. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a

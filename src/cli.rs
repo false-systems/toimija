@@ -1316,7 +1316,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
 
     // 3. Start watching synchronously, so a watcher startup failure is reported
     //    here — before launching the command — instead of being silently lost.
-    let watch_session = match watch::start(&repo_root)
+    let mut watch_session = match watch::start(&repo_root)
         .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")
     {
         Ok(watch_session) => watch_session,

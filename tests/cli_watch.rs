@@ -87,7 +87,9 @@ fn watch_refreshes_on_a_file_change_then_stops() {
         diagnostics.push_str(&line);
         if matches!(
             line.trim(),
-            "toimija watch: armed (native)" | "toimija watch: armed (poll fallback)"
+            "toimija watch: armed (native)"
+                | "toimija watch: armed (poll fallback)"
+                | "toimija watch: armed (git polling)"
         ) {
             armed = true;
             break;
