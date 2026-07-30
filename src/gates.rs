@@ -81,6 +81,8 @@ impl From<GateId> for String {
     }
 }
 
+pub type GateAuthority = BTreeMap<GateId, BTreeMap<GateId, String>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Executable(OsString);
 
@@ -1334,6 +1336,21 @@ impl GateCatalog {
         Self::from_configs(repo_root, gates, groups)
     }
 
+    pub fn authority(&self, required: &[GateId]) -> GateAuthority {
+        required
+            .iter()
+            .map(|id| {
+                let members = self
+                    .resolve(id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|gate| (gate.spec.id, gate.digest.0))
+                    .collect();
+                (id.clone(), members)
+            })
+            .collect()
+    }
+
     fn from_configs(
         _repo_root: &Path,
         configs: BTreeMap<String, GateConfig>,
@@ -1795,6 +1812,11 @@ mod tests {
         let resolved = loaded.resolve(&GateId::parse("full").unwrap()).unwrap();
         assert_eq!(resolved.len(), 2);
         assert_eq!(resolved[0].spec().id.as_str(), "format");
+        let full = GateId::parse("full").unwrap();
+        let authority = loaded.authority(std::slice::from_ref(&full));
+        assert_eq!(authority[&full].len(), 2);
+        let missing = GateId::parse("missing").unwrap();
+        assert!(loaded.authority(std::slice::from_ref(&missing))[&missing].is_empty());
         assert!(catalog(&[], &[("a", &["b"]), ("b", &["a"])]).is_err());
     }
 

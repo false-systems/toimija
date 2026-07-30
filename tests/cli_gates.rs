@@ -74,9 +74,9 @@ fn frame(value: serde_json::Value) -> String {
     format!("Content-Length: {}\r\n\r\n{body}", body.len())
 }
 
-fn fake_work_frames(refreshed_work: &str) -> String {
+fn fake_work_frames(refreshed_work: &str, close: bool, teko_authority: bool) -> String {
     let obligation: ObligationRef = "obl_gate-check".parse().unwrap();
-    let packet = WorkPacketEnvelope {
+    let mut packet = WorkPacketEnvelope {
         protocol: ProtocolVersion::V1,
         spec: SpecSummary {
             id: "spec_fixture".parse().unwrap(),
@@ -111,6 +111,10 @@ fn fake_work_frames(refreshed_work: &str) -> String {
         )]
         .into(),
     };
+    if !teko_authority {
+        packet.extensions.clear();
+        packet.gates[0].command = "generic-check".into();
+    }
     let status = |supported, closable| WorkflowStatusSummary {
         obligations: vec![ObligationState {
             obligation: obligation.clone(),
@@ -129,7 +133,7 @@ fn fake_work_frames(refreshed_work: &str) -> String {
     };
     let mut refreshed_packet = packet.clone();
     refreshed_packet.work.id = refreshed_work.parse().unwrap();
-    [
+    let mut frames = vec![
         serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
             "result": {
@@ -137,7 +141,7 @@ fn fake_work_frames(refreshed_work: &str) -> String {
                 "selected_protocol": {"major": 1, "minor": 0},
                 "capabilities": [{
                     "id": "work.v1",
-                    "methods": ["work.current", "work.explain", "work.observe_gates"]
+                    "methods": ["work.current", "work.explain", "work.observe_gates", "work.close"]
                 }],
                 "limits": false_agent_protocol::plugin::PluginLimits::default()
             }
@@ -154,30 +158,44 @@ fn fake_work_frames(refreshed_work: &str) -> String {
                 "explanation": "missing receipt"
             }
         }),
-        serde_json::json!({
-            "jsonrpc": "2.0", "id": 4,
-            "result": {"observed": 1}
-        }),
-        serde_json::json!({
-            "jsonrpc": "2.0", "id": 5,
-            "result": {"state": "active", "work": refreshed_packet}
-        }),
-        serde_json::json!({
-            "jsonrpc": "2.0", "id": 6,
-            "result": {
-                "work": "work_fixture",
-                "status": status(true, true),
-                "explanation": "ready"
-            }
-        }),
-        serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {}}),
-    ]
-    .into_iter()
-    .map(frame)
-    .collect()
+    ];
+    if close {
+        frames.extend([
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 4,
+                "result": {"closed": true, "explanation": "closed by Teko"}
+            }),
+            serde_json::json!({"jsonrpc": "2.0", "id": 5, "result": {}}),
+        ]);
+    } else {
+        frames.extend([
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 4,
+                "result": {"observed": 1}
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 5,
+                "result": {"state": "active", "work": refreshed_packet}
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 6,
+                "result": {
+                    "work": "work_fixture",
+                    "status": status(true, true),
+                    "explanation": "ready"
+                }
+            }),
+            serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {}}),
+        ]);
+    }
+    frames.into_iter().map(frame).collect()
 }
 
-fn verify_work_command(refreshed_work: &str) -> (tempfile::TempDir, tempfile::TempDir, Command) {
+fn work_command(
+    refreshed_work: &str,
+    subcommand: &str,
+    teko_authority: bool,
+) -> (tempfile::TempDir, tempfile::TempDir, Command) {
     let repo = tempfile::tempdir().unwrap();
     init(repo.path());
     fs::write(
@@ -204,8 +222,11 @@ fn verify_work_command(refreshed_work: &str) -> (tempfile::TempDir, tempfile::Te
     command
         .current_dir(repo.path())
         .env("XDG_CONFIG_HOME", config.path())
-        .env("FAKE_FRAMES", fake_work_frames(refreshed_work))
-        .args(["verify-work", "--json"]);
+        .env(
+            "FAKE_FRAMES",
+            fake_work_frames(refreshed_work, subcommand == "close-work", teko_authority),
+        )
+        .args([subcommand, "--json"]);
     (repo, config, command)
 }
 
@@ -350,7 +371,7 @@ fn verify_work_runs_required_ids_imports_receipts_and_refreshes_teko() {
     if !git_available() {
         return;
     }
-    let (_repo, _config, mut command) = verify_work_command("work_fixture");
+    let (_repo, _config, mut command) = work_command("work_fixture", "verify-work", true);
     command
         .assert()
         .success()
@@ -364,8 +385,33 @@ fn verify_work_rejects_an_active_work_switch() {
     if !git_available() {
         return;
     }
-    let (_repo, _config, mut command) = verify_work_command("work_switched");
+    let (_repo, _config, mut command) = work_command("work_switched", "verify-work", true);
     command.assert().failure().stderr(predicate::str::contains(
         "active work changed from `work_fixture` to `work_switched`",
     ));
+}
+
+#[test]
+fn close_work_relays_current_authority_to_teko() {
+    if !git_available() {
+        return;
+    }
+    let (_repo, _config, mut command) = work_command("work_fixture", "close-work", true);
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"closed\": true"))
+        .stdout(predicate::str::contains("closed by Teko"));
+}
+
+#[test]
+fn generic_gated_work_provider_does_not_need_teko_extensions() {
+    if !git_available() {
+        return;
+    }
+    let (_repo, _config, mut command) = work_command("work_fixture", "explain-work", false);
+    command
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"work_fixture\""));
 }

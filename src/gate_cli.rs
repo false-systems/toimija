@@ -77,7 +77,7 @@ pub fn verify_work(args: JsonArgs) -> Result<i32> {
         }
         return Ok(0);
     };
-    let required = required_gate_ids(&active.packet)?;
+    let required = crate::teko::required_gate_ids(&active.packet)?;
     let resolved = resolve_required(&catalog, &required)?;
     if resolved.is_empty()
         && active.packet.required_completion == false_agent_protocol::CompletionLevel::Validated
@@ -100,7 +100,7 @@ pub fn verify_work(args: JsonArgs) -> Result<i32> {
         let mut provider = provider
             .lock()
             .map_err(|_| anyhow::anyhow!("work provider lock is poisoned"))?;
-        provider.observe_gate_receipts(&point, active.packet.work.id.clone(), &receipts)?;
+        provider.observe_gate_receipts(&point, &active.packet, &receipts)?;
         let refreshed = provider.current(&current_point)?;
         if let Some(ref refreshed) = refreshed
             && refreshed.packet.work.id != active.packet.work.id
@@ -170,6 +170,37 @@ pub fn verify_work(args: JsonArgs) -> Result<i32> {
     }
     let closable = refreshed.is_some_and(|active| active.status.closable);
     Ok(if passed && current && closable { 0 } else { 1 })
+}
+
+pub fn close_work(args: JsonArgs) -> Result<i32> {
+    let repo_root = repo_root()?;
+    let point = current_point(&repo_root)?;
+    let (provider, active) = crate::teko::WorkProvider::open(&repo_root, &point, true)?;
+    let Some(active) = active else {
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({"closed": false, "explanation": "No active bounded work."})
+            );
+        } else {
+            println!("No active bounded work.");
+        }
+        return Ok(0);
+    };
+    if !same_point(&point, &current_point(&repo_root)?) {
+        bail!("repository changed while preparing work closure");
+    }
+    let provider = provider.context("work provider session disappeared")?;
+    let mut provider = provider
+        .lock()
+        .map_err(|_| anyhow::anyhow!("work provider lock is poisoned"))?;
+    let result = provider.close(&point, &active.packet)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("{}", result.explanation);
+    }
+    Ok(if result.closed { 0 } else { 1 })
 }
 
 fn list(args: JsonArgs) -> Result<i32> {
@@ -474,13 +505,16 @@ fn render_run_records(records: &[GateRunRecord]) {
 }
 
 fn load_catalog() -> Result<(PathBuf, GateCatalog)> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let repo_root = crate::git::discover_repo_root(&ProcessCommandRunner, &cwd)
-        .context("not a Git repository")?;
+    let repo_root = repo_root()?;
     let config = RepoConfig::load_optional(&repo_root)?
         .unwrap_or_else(|| RepoConfig::default_for(&repo_root));
     let catalog = GateCatalog::load(&repo_root, &config)?;
     Ok((repo_root, catalog))
+}
+
+fn repo_root() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    crate::git::discover_repo_root(&ProcessCommandRunner, &cwd).context("not a Git repository")
 }
 
 fn current_point(repo_root: &Path) -> Result<RepositoryPoint> {
@@ -510,44 +544,6 @@ fn subject_from_point(point: &RepositoryPoint) -> GateSubject {
 
 fn same_point(left: &RepositoryPoint, right: &RepositoryPoint) -> bool {
     subject_from_point(left) == subject_from_point(right)
-}
-
-fn required_gate_ids(packet: &false_agent_protocol::WorkPacketEnvelope) -> Result<Vec<GateId>> {
-    let extension = packet
-        .extensions
-        .get("toimija.required_gates.v1")
-        .context("active work omitted the Toimija Gate ID extension")?
-        .as_array()
-        .context("active work Gate ID extension is not an array")?;
-    let extension_ids = extension
-        .iter()
-        .map(|value| {
-            GateId::parse(
-                value
-                    .as_str()
-                    .context("active work Gate ID is not a string")?,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let wire_ids = packet
-        .gates
-        .iter()
-        .map(|gate| {
-            if !gate.command.is_empty() {
-                bail!("active work supplied a gate command; only Gate IDs are accepted");
-            }
-            GateId::parse(
-                gate.id
-                    .as_str()
-                    .strip_prefix("gate_")
-                    .context("active work gate reference has the wrong prefix")?,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
-    if extension_ids != wire_ids {
-        bail!("active work Gate ID extension disagrees with its work packet");
-    }
-    Ok(extension_ids)
 }
 
 fn resolve_required(catalog: &GateCatalog, ids: &[GateId]) -> Result<Vec<ResolvedGate>> {

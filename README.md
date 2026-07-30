@@ -161,6 +161,7 @@ toimija gates inspect rust-test
 toimija gates run rust-full
 toimija gates status
 toimija verify-work
+toimija close-work
 ```
 
 Every passing receipt binds the repository ref, repository-point ref, tree OID,
@@ -172,7 +173,9 @@ does not claim hermetic execution or enforced network denial:
 
 `verify-work` asks active Teko work for required Gate IDs, executes each trusted
 gate, imports only exact-current receipts, refreshes Teko status, and reports
-what remains. It never closes the work.
+what remains. It never closes the work. `close-work` sends current repository
+and gate-catalog authority through `work.v1`; Teko still makes the closure
+decision.
 
 Bounded work can be required for one invocation:
 
