@@ -2,13 +2,14 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use false_agent_protocol::{
-    RepositoryPoint, WorkPacketEnvelope, WorkerRunResultEnvelope, WorkflowStatusSummary,
+    RepositoryPoint, WorkPacketEnvelope, WorkRef, WorkerRunResultEnvelope, WorkflowStatusSummary,
     plugin::PluginKind,
     work::{
         CURRENT_METHOD, CurrentWorkParams, CurrentWorkResult, EXPLAIN_METHOD, ExplainParams,
         ExplainResult, OBSERVE_METHOD, ObserveParams, ProcessOutcome,
     },
 };
+use serde::Serialize;
 
 use crate::command::ProcessCommandRunner;
 use crate::config::RepoConfig;
@@ -22,6 +23,15 @@ pub struct ActiveWork {
 
 pub struct WorkProvider {
     plugin: PluginSession,
+}
+
+const OBSERVE_GATES_METHOD: &str = "work.observe_gates";
+
+#[derive(Serialize)]
+struct ObserveGatesParams<'a> {
+    work: WorkRef,
+    repository_point: &'a RepositoryPoint,
+    receipts: &'a [crate::gates::GateReceipt],
 }
 
 pub type SharedWorkProvider = std::sync::Arc<std::sync::Mutex<WorkProvider>>;
@@ -126,6 +136,23 @@ impl WorkProvider {
             },
         )?;
         Ok(serde_json::to_string(&explained)?)
+    }
+
+    pub fn observe_gate_receipts(
+        &mut self,
+        point: &RepositoryPoint,
+        work: WorkRef,
+        receipts: &[crate::gates::GateReceipt],
+    ) -> Result<()> {
+        let _: serde_json::Value = self.plugin.call(
+            OBSERVE_GATES_METHOD,
+            ObserveGatesParams {
+                work,
+                repository_point: point,
+                receipts,
+            },
+        )?;
+        Ok(())
     }
 }
 

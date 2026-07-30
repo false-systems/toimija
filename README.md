@@ -40,9 +40,9 @@ The ownership lines are strict:
 
 | Product | Owns | Does not own |
 | --- | --- | --- |
-| **Teko** | Active work, objectives, obligations, gates, completion policy | Git truth, harness execution |
-| **Toimija** | Repository points, context packets, session lifecycle, launch validation | Task assignment, model execution, work closure |
-| **Kisko** | Model execution, actions, transcripts, structured worker results | Repository truth, work closure |
+| **Teko** | Active work, objectives, obligations, required Gate IDs, completion policy | Gate commands, Git truth, harness execution |
+| **Toimija** | Repository points, trusted gate catalog, gate execution and receipts, context packets, session lifecycle | Task assignment, model execution, work closure |
+| **Kisko** | Model execution, actions, transcripts, structured worker results | Gate certification, repository truth, work closure |
 | **Codex / Claude** | The work they perform inside the launched session | Teko or Toimija policy |
 
 Toimija is the composition point, not a product monolith. It imports no Teko or
@@ -145,6 +145,34 @@ authoritative repository point. The returned work packet may include:
 At exit, Toimija refreshes the repository point and sends the normalized worker
 result through `work.observe`. Evidence may support Teko's obligations, but only
 Teko decides whether the work is closable. A worker claim cannot close work.
+
+### Gate authority
+
+Repository gates are separate from the advisory validation plan. Teko names
+only stable Gate IDs. Toimija resolves those IDs from trusted configuration,
+materializes the exact verified Git tree into a standalone disposable
+repository, launches the configured executable directly with separate arguments
+and a bounded environment, captures bounded output, and checks the materialized
+source tree again before minting a receipt.
+
+```bash
+toimija gates list
+toimija gates inspect rust-test
+toimija gates run rust-full
+toimija gates status
+toimija verify-work
+```
+
+Every passing receipt binds the repository ref, repository-point ref, tree OID,
+consistency token, Gate ID, gate-spec digest, output digests, environment
+fingerprint, and duration. A repository or gate-definition change preserves
+the receipt as history but makes it inapplicable to current closure. Toimija
+does not claim hermetic execution or enforced network denial:
+`unenforced_deny_requested` says exactly what the local runner proves.
+
+`verify-work` asks active Teko work for required Gate IDs, executes each trusted
+gate, imports only exact-current receipts, refreshes Teko status, and reports
+what remains. It never closes the work.
 
 Bounded work can be required for one invocation:
 
@@ -411,6 +439,7 @@ failure into an empty, reassuring list.
 | `explain-work` | Explain active work, latest bound result, evidence, and blockers |
 | `enter`, `context`, `refresh`, `watch` | Produce or maintain a live packet |
 | `verify`, `snapshot` | Verify freshness or materialize an immutable Git tree |
+| `gates`, `verify-work` | Execute trusted gates on exact snapshots and import current receipts |
 | `sessions`, `intent`, `handoff`, `history` | Observe and record local session continuity |
 | `clean` | Reclaim expired Toimija-owned artifacts |
 | `audit-plan` | Partition a broad review into bounded deterministic worksets |
@@ -457,6 +486,22 @@ validation:
     - cargo test --workspace
   privileged: []
 
+gates:
+  rust-format:
+    description: Rust formatting check
+    program: cargo
+    args: [fmt, --all, --check]
+    timeout_seconds: 60
+  rust-test:
+    description: Full Rust test suite
+    program: cargo
+    args: [test]
+    timeout_seconds: 900
+
+gate_groups:
+  rust-full:
+    gates: [rust-format, rust-test]
+
 boundaries:
   - Do not add network calls.
   - Keep runtime providers optional.
@@ -482,7 +527,7 @@ Toimija intentionally does not:
 - make model-provider calls;
 - assign or dispatch work;
 - apply patches or commit changes;
-- run validation commands automatically;
+- treat advisory validation-plan strings as executable gates;
 - fetch repository or plugin data from the network;
 - run a daemon after the invoked command exits;
 - dynamically load product code;

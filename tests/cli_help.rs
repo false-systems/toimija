@@ -34,7 +34,13 @@ fn top_level_help_describes_every_subcommand() {
         .stdout(predicate::str::contains(
             "Check whether this branch's work has landed",
         ))
-        .stdout(predicate::str::contains("Print the validation plan"));
+        .stdout(predicate::str::contains("Print the validation plan"))
+        .stdout(predicate::str::contains(
+            "Inspect and execute trusted repository gates",
+        ))
+        .stdout(predicate::str::contains(
+            "Run every Gate ID required by active Teko work",
+        ));
 }
 
 #[test]
@@ -50,7 +56,8 @@ fn top_level_help_shows_the_agent_workflow_and_boundaries() {
             "toimija enter --for-diff --budget 4000",
         ))
         // The boundary framing that makes Toimija safe to trust.
-        .stdout(predicate::str::contains("advisory and local-only"))
+        .stdout(predicate::str::contains("local-only"))
+        .stdout(predicate::str::contains("trusted Gate IDs"))
         .stdout(predicate::str::contains("never touches"));
 }
 
@@ -75,6 +82,8 @@ fn every_subcommand_help_says_when_to_use_it() {
         "landed",
         "sessions",
         "validate",
+        "gates",
+        "verify-work",
         "verify",
         "correlate-pr",
         "snapshot",
@@ -113,6 +122,7 @@ fn high_traffic_subcommands_carry_examples() {
         ("context", "toimija context --for-diff"),
         ("audit-plan", "toimija audit-plan --surface"),
         ("adopt", "toimija adopt --hooks"),
+        ("verify-work", "toimija verify-work --json"),
     ] {
         Command::cargo_bin("toimija")
             .unwrap()

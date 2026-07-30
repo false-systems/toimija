@@ -38,10 +38,11 @@ use crate::watch;
         toimija enter --for-diff --budget 4000    # preflight: refresh + print the work packet\n  \
         toimija run --intent \"fix #51\" -- codex   # wrap an agent in a live session packet\n  \
         toimija sessions                          # who else is working in this repo right now\n  \
-        toimija validate --plan                   # print (never run) the validation plan\n\n\
-        Boundaries: Toimija is advisory and local-only. It reads Git state, writes only \
-        under .toimija/, executes no validation, starts no daemons, and never touches \
-        the network."
+        toimija validate --plan                   # print the advisory validation plan\n  \
+        toimija gates run rust-full               # run a trusted gate on an exact snapshot\n\n\
+        Boundaries: Toimija is local-only. It writes only under .toimija/ and \
+        disposable snapshot workspaces, executes only trusted Gate IDs without a \
+        shell, starts no daemons, and never touches the network."
 )]
 pub struct Cli {
     /// Increase log verbosity: -v for info, -vv for debug. Logs go to stderr.
@@ -248,6 +249,23 @@ pub enum Command {
     /// (from .toimija/repo.yaml, or inferred from the repo kind). Toimija never
     /// executes the plan — you or your agent run the commands.
     Validate(ValidateArgs),
+    /// Inspect and execute trusted repository gates against exact snapshots.
+    ///
+    /// Use this to list definitions, inspect policy, run a known gate, or
+    /// compare retained evidence with the exact current repository state.
+    ///
+    /// Gate IDs resolve only through Toimija configuration. Workers cannot
+    /// supply commands, argv, environment, or working directories.
+    Gates(GatesArgs),
+    /// Run every Gate ID required by active Teko work and import the receipts.
+    ///
+    /// Use this at the verification boundary after the worker returns.
+    ///
+    /// Teko names required IDs and independently decides closure. Toimija
+    /// verifies the repository, runs isolated gates, and mints exact-state
+    /// receipts; it never closes the work.
+    #[command(after_help = "Examples:\n  toimija verify-work\n  toimija verify-work --json")]
+    VerifyWork(JsonArgs),
     /// Verify the selected session or repo packet still matches live repo state.
     ///
     /// The verify-before-read gate: checks the packet's consistency fingerprint
@@ -530,6 +548,59 @@ pub struct ValidateArgs {
     pub plan: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct GatesArgs {
+    #[command(subcommand)]
+    pub command: GatesCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatesCommand {
+    /// List trusted gates and named groups.
+    List(JsonArgs),
+    /// Show one resolved gate definition without secret environment values.
+    Inspect(GateInspectArgs),
+    /// Execute one gate or group against an isolated exact snapshot.
+    Run(GateRunArgs),
+    /// Compare retained receipts with the exact current subject and definitions.
+    Status(GateStatusArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct JsonArgs {
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GateInspectArgs {
+    /// Trusted gate or group ID.
+    pub id: String,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GateRunArgs {
+    /// Trusted gate or group ID.
+    pub id: String,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GateStatusArgs {
+    /// Limit status to these gate or group IDs; repeatable.
+    #[arg(long = "gate")]
+    pub gate: Vec<String>,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum OutputFormat {
     Markdown,
@@ -559,6 +630,17 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         Command::RepositoryPoint(args) | Command::ExplainWork(args) if args.json => "json",
+        Command::VerifyWork(args) if args.json => "json",
+        Command::Gates(args)
+            if match &args.command {
+                GatesCommand::List(args) => args.json,
+                GatesCommand::Inspect(args) => args.json,
+                GatesCommand::Run(args) => args.json,
+                GatesCommand::Status(args) => args.json,
+            } =>
+        {
+            "json"
+        }
         Command::CorrelatePr(args) if args.json => "json",
         _ => "text",
     };
@@ -591,6 +673,8 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
         Command::AuditPlan(args) => run_audit_plan(args).map(|()| 0),
         Command::Validate(args) => run_validate(args).map(|()| 0),
+        Command::Gates(args) => crate::gate_cli::run(args),
+        Command::VerifyWork(args) => crate::gate_cli::verify_work(args),
         Command::Verify(args) => run_verify(args),
         Command::RepositoryPoint(args) => run_repository_point(args).map(|()| 0),
         Command::ExplainWork(args) => run_explain_work(args).map(|()| 0),
@@ -701,6 +785,8 @@ impl Command {
             Command::Sessions(_) => "sessions",
             Command::AuditPlan(_) => "audit-plan",
             Command::Validate(_) => "validate",
+            Command::Gates(_) => "gates",
+            Command::VerifyWork(_) => "verify-work",
             Command::Verify(_) => "verify",
             Command::RepositoryPoint(_) => "repository-point",
             Command::ExplainWork(_) => "explain-work",
