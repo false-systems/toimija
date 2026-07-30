@@ -265,6 +265,12 @@ toimija plugins doctor
 toimija plugins inspect teko
 ```
 
+The live packet also carries an informational `Runtime providers` section for
+agents. It reports the effective work and worker provider IDs, capabilities,
+configuration source, required flag, and whether each provider is configured,
+discoverable through the exact PATH fallback, or unavailable. Building a packet
+does not spawn provider processes or dispatch work.
+
 ## The neutral protocol
 
 All runtime messages use
@@ -323,6 +329,7 @@ A packet combines:
 - coupling and risk hints with evidence and confidence;
 - collection coverage: `available`, `degraded`, or `failed`;
 - repository boundaries, exclusions, and validation plans;
+- runtime provider IDs, capabilities, source, required flag, and status;
 - session identity, entry baseline, declared intent, and scope;
 - optional active work and canonical execution context;
 - a content-based consistency token;

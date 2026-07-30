@@ -16,7 +16,7 @@ use false_agent_protocol::{
         WORKER_V1,
     },
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,6 +104,160 @@ pub fn user_config_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .map(|root| root.join("toimija/plugins.toml"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeProviders {
+    pub work: RuntimeProviderSummary,
+    pub worker: RuntimeProviderSummary,
+}
+
+impl Default for RuntimeProviders {
+    fn default() -> Self {
+        Self {
+            work: RuntimeProviderSummary {
+                id: "teko".to_string(),
+                kind: PluginKind::Work,
+                capability: WORK_V1.to_string(),
+                status: RuntimeProviderStatus::Unavailable,
+                source: RuntimeProviderSource::Missing,
+                required: false,
+                reason: "repo composition work provider".to_string(),
+            },
+            worker: RuntimeProviderSummary {
+                id: "kisko".to_string(),
+                kind: PluginKind::Worker,
+                capability: WORKER_V1.to_string(),
+                status: RuntimeProviderStatus::Unavailable,
+                source: RuntimeProviderSource::Missing,
+                required: false,
+                reason: "repo composition default worker".to_string(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeProviderSummary {
+    pub id: String,
+    pub kind: PluginKind,
+    pub capability: String,
+    pub status: RuntimeProviderStatus,
+    pub source: RuntimeProviderSource,
+    pub required: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProviderStatus {
+    Configured,
+    Discoverable,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProviderSource {
+    UserConfig,
+    ExactPathFallback,
+    Missing,
+}
+
+pub fn runtime_providers(config: &crate::config::RepoConfig) -> (RuntimeProviders, Vec<String>) {
+    runtime_providers_from_result(config, definitions())
+}
+
+fn runtime_providers_from_result(
+    config: &crate::config::RepoConfig,
+    definitions: Result<BTreeMap<String, PluginDefinition>>,
+) -> (RuntimeProviders, Vec<String>) {
+    let (definitions, mut warnings) = match definitions {
+        Ok(definitions) => (definitions, Vec::new()),
+        Err(error) => (
+            BTreeMap::new(),
+            vec![format!(
+                "Plugin configuration could not be read; runtime provider summary may be incomplete: {error:#}"
+            )],
+        ),
+    };
+    let providers = RuntimeProviders {
+        work: runtime_provider(
+            &definitions,
+            config.composition.work.as_deref().unwrap_or("teko"),
+            PluginKind::Work,
+            WORK_V1,
+            config.composition.require_work,
+            "repo composition work provider",
+        ),
+        worker: runtime_provider(
+            &definitions,
+            config
+                .composition
+                .default_worker
+                .as_deref()
+                .unwrap_or("kisko"),
+            PluginKind::Worker,
+            WORKER_V1,
+            false,
+            "repo composition default worker",
+        ),
+    };
+    warnings.sort();
+    warnings.dedup();
+    (providers, warnings)
+}
+
+fn runtime_provider(
+    definitions: &BTreeMap<String, PluginDefinition>,
+    id: &str,
+    kind: PluginKind,
+    capability: &str,
+    required: bool,
+    reason: &str,
+) -> RuntimeProviderSummary {
+    if let Some(definition) = definitions.get(id) {
+        if definition.kind != kind {
+            return RuntimeProviderSummary {
+                id: id.to_string(),
+                kind,
+                capability: capability.to_string(),
+                status: RuntimeProviderStatus::Unavailable,
+                source: RuntimeProviderSource::UserConfig,
+                required,
+                reason: format!("{reason}; configured as {:?}", definition.kind),
+            };
+        }
+        return RuntimeProviderSummary {
+            id: id.to_string(),
+            kind,
+            capability: capability.to_string(),
+            status: RuntimeProviderStatus::Configured,
+            source: RuntimeProviderSource::UserConfig,
+            required: required || definition.required,
+            reason: reason.to_string(),
+        };
+    }
+    match discover(id, kind) {
+        Ok(Some(definition)) => RuntimeProviderSummary {
+            id: id.to_string(),
+            kind,
+            capability: capability.to_string(),
+            status: RuntimeProviderStatus::Discoverable,
+            source: RuntimeProviderSource::ExactPathFallback,
+            required: required || definition.required,
+            reason: reason.to_string(),
+        },
+        Ok(None) | Err(_) => RuntimeProviderSummary {
+            id: id.to_string(),
+            kind,
+            capability: capability.to_string(),
+            status: RuntimeProviderStatus::Unavailable,
+            source: RuntimeProviderSource::Missing,
+            required,
+            reason: reason.to_string(),
+        },
+    }
 }
 
 pub struct PluginSession {
@@ -327,6 +481,73 @@ mod tests {
             required: false,
             timeout_ms,
         }
+    }
+
+    #[test]
+    fn runtime_provider_summary_reports_configured_and_wrong_kind() {
+        let mut definitions = BTreeMap::new();
+        definitions.insert(
+            "teko".to_string(),
+            PluginDefinition {
+                kind: PluginKind::Work,
+                command: "teko".into(),
+                args: Vec::new(),
+                required: true,
+                timeout_ms: 1_000,
+            },
+        );
+        definitions.insert(
+            "bad".to_string(),
+            PluginDefinition {
+                kind: PluginKind::Worker,
+                command: "bad".into(),
+                args: Vec::new(),
+                required: false,
+                timeout_ms: 1_000,
+            },
+        );
+
+        let work = runtime_provider(
+            &definitions,
+            "teko",
+            PluginKind::Work,
+            WORK_V1,
+            false,
+            "repo composition work provider",
+        );
+        assert_eq!(work.status, RuntimeProviderStatus::Configured);
+        assert_eq!(work.source, RuntimeProviderSource::UserConfig);
+        assert!(work.required);
+
+        let wrong_kind = runtime_provider(
+            &definitions,
+            "bad",
+            PluginKind::Work,
+            WORK_V1,
+            false,
+            "repo composition work provider",
+        );
+        assert_eq!(wrong_kind.status, RuntimeProviderStatus::Unavailable);
+        assert_eq!(wrong_kind.source, RuntimeProviderSource::UserConfig);
+        assert!(wrong_kind.reason.contains("configured as Worker"));
+    }
+
+    #[test]
+    fn runtime_provider_summary_warns_when_plugin_config_is_unreadable() {
+        let mut config = crate::config::RepoConfig::default();
+        config.composition.work = Some("custom-work".to_string());
+        config.composition.default_worker = Some("custom-worker".to_string());
+
+        let (providers, warnings) =
+            runtime_providers_from_result(&config, Err(anyhow::anyhow!("bad plugin config")));
+
+        assert_eq!(providers.work.id, "custom-work");
+        assert_eq!(providers.work.status, RuntimeProviderStatus::Unavailable);
+        assert_eq!(providers.worker.id, "custom-worker");
+        assert_eq!(providers.worker.status, RuntimeProviderStatus::Unavailable);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Plugin configuration could not be read"));
+        assert!(warnings[0].contains("bad plugin config"));
     }
 
     #[test]

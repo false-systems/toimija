@@ -31,6 +31,8 @@ pub struct ContextPacket {
     pub repo_kind: RepoKind,
     #[serde(default)]
     pub secondary_languages: Vec<repo::DetectedLanguage>,
+    #[serde(default)]
+    pub runtime_providers: crate::plugins::RuntimeProviders,
     pub git: GitState,
     #[serde(with = "crate::path_codec::vec")]
     pub changed_surface: Vec<PathBuf>,
@@ -174,6 +176,8 @@ pub fn build_context_packet(
             warnings.push(note.clone());
         }
     }
+    let (runtime_providers, plugin_warnings) = crate::plugins::runtime_providers(&config);
+    warnings.extend(plugin_warnings);
     // Effective ignore set = the repo's configured rules plus a small built-in
     // set of build/vendor dirs. Applied live (derived each run), not seeded into
     // repo.yaml, so it tracks the repo as it changes and never drifts. The
@@ -227,6 +231,7 @@ pub fn build_context_packet(
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
         secondary_languages: secondary_scan.languages,
+        runtime_providers,
         git,
         changed_surface,
         changed_surface_source,
@@ -467,6 +472,29 @@ mod tests {
     use crate::adapters::generic::GenericAdapter;
     use crate::git::{ChangeStatus, ChangedFile};
 
+    fn runtime_providers() -> crate::plugins::RuntimeProviders {
+        crate::plugins::RuntimeProviders {
+            work: crate::plugins::RuntimeProviderSummary {
+                id: "teko".to_string(),
+                kind: false_agent_protocol::plugin::PluginKind::Work,
+                capability: false_agent_protocol::plugin::WORK_V1.to_string(),
+                status: crate::plugins::RuntimeProviderStatus::Unavailable,
+                source: crate::plugins::RuntimeProviderSource::Missing,
+                required: false,
+                reason: "repo composition work provider".to_string(),
+            },
+            worker: crate::plugins::RuntimeProviderSummary {
+                id: "kisko".to_string(),
+                kind: false_agent_protocol::plugin::PluginKind::Worker,
+                capability: false_agent_protocol::plugin::WORKER_V1.to_string(),
+                status: crate::plugins::RuntimeProviderStatus::Unavailable,
+                source: crate::plugins::RuntimeProviderSource::Missing,
+                required: false,
+                reason: "repo composition default worker".to_string(),
+            },
+        }
+    }
+
     #[test]
     fn context_packet_serializes_to_json() {
         let git = GitState {
@@ -501,6 +529,7 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
+            runtime_providers: runtime_providers(),
             git,
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,
@@ -556,6 +585,7 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
+            runtime_providers: runtime_providers(),
             git: git.clone(),
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,
@@ -614,6 +644,7 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
+            runtime_providers: runtime_providers(),
             git,
             changed_surface: Vec::new(),
             changed_surface_source: ChangedSurfaceSource::Unknown,

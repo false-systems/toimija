@@ -440,6 +440,8 @@ The packet includes:
   (`available` / `degraded` / `failed` with a reason and source), so an empty
   list from a failed collection is never presented as a real observation
 - changed surface
+- runtime provider IDs, capabilities, source, required flag, and configured /
+  discoverable / unavailable status
 - scope
 - read order
 - coupling

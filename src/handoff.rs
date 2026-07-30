@@ -372,6 +372,7 @@ mod tests {
             },
             repo_kind: RepoKind::Rust,
             secondary_languages: Vec::new(),
+            runtime_providers: crate::plugins::RuntimeProviders::default(),
             git: GitState {
                 repo_root: PathBuf::from("/repo"),
                 git_dir: Some(PathBuf::from(".git")),
