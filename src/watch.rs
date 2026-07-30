@@ -58,6 +58,7 @@ fn detect_suspension(prev: &ClockPair, now: &ClockPair, threshold: Duration) -> 
 enum Backend {
     Native(#[allow(dead_code)] notify::RecommendedWatcher),
     Poll(#[allow(dead_code)] notify::PollWatcher),
+    #[allow(dead_code)]
     GitPoll,
 }
 
@@ -268,7 +269,7 @@ impl Session {
         plan: &refresh::Plan,
     ) -> Result<()> {
         let refreshed = plan.run(runner, repo_root)?;
-        self.baseline_token = Some(refreshed.packet.consistency.token);
+        self.baseline_token = Some(packet_refresh_token(&refreshed.packet));
         Ok(())
     }
 
@@ -321,7 +322,7 @@ impl Session {
                     event = "toimija.watch.resumed",
                     slept_secs = slept.as_secs()
                 );
-                refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
+                let _ = refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
                 previous = now;
                 continue;
             }
@@ -332,7 +333,7 @@ impl Session {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
+                    let _ = refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
                 }
                 // A watcher-backend error (dropped or rescan-required events):
                 // surface it, since the packet may now be stale, then keep going.
@@ -381,8 +382,9 @@ fn run_git_polling(
                 event = "toimija.watch.resumed",
                 slept_secs = slept.as_secs()
             );
-            refresh_or_warn(runner, repo_root, plan, &mut on_refresh);
-            previous_token = current_token(runner, repo_root).ok();
+            if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
+                previous_token = Some(token);
+            }
             previous = now;
             continue;
         }
@@ -392,14 +394,8 @@ fn run_git_polling(
             last_poll = Instant::now();
             match current_token(runner, repo_root) {
                 Ok(current) if previous_token.as_ref() != Some(&current) => {
-                    match plan.run(runner, repo_root) {
-                        Ok(refreshed) => {
-                            previous_token = Some(refreshed.packet.consistency.token);
-                            on_refresh();
-                        }
-                        Err(error) => {
-                            eprintln!("toimija: refresh failed (packet may be stale): {error:#}");
-                        }
+                    if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
+                        previous_token = Some(token);
                     }
                 }
                 Ok(current) => previous_token = Some(current),
@@ -415,8 +411,16 @@ fn run_git_polling(
 }
 
 fn current_token(runner: &impl CommandRunner, repo_root: &Path) -> Result<String> {
-    let (git, _) = git::collect_git_state(runner, repo_root)?;
-    Ok(consistency::Consistency::fingerprint(&git).token)
+    let (mut git, _) = git::collect_git_state(runner, repo_root)?;
+    crate::context::normalize_git_state(&mut git);
+    crate::context::live_refresh_token(&git)
+}
+
+fn packet_refresh_token(packet: &crate::context::ContextPacket) -> String {
+    packet
+        .refresh_token
+        .clone()
+        .unwrap_or_else(|| packet.consistency.token.clone())
 }
 
 /// A transient refresh failure must not kill live updates: warn and keep
@@ -426,10 +430,17 @@ fn refresh_or_warn(
     repo_root: &Path,
     plan: &refresh::Plan,
     on_refresh: &mut impl FnMut(),
-) {
+) -> Option<String> {
     match plan.run(runner, repo_root) {
-        Ok(_) => on_refresh(),
-        Err(error) => eprintln!("toimija: refresh failed (packet may be stale): {error:#}"),
+        Ok(refreshed) => {
+            let token = packet_refresh_token(&refreshed.packet);
+            on_refresh();
+            Some(token)
+        }
+        Err(error) => {
+            eprintln!("toimija: refresh failed (packet may be stale): {error:#}");
+            None
+        }
     }
 }
 
@@ -791,6 +802,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(runner.attempts.get(), 1);
+        assert_eq!(heartbeats, 0);
+    }
+
+    #[test]
+    fn failed_refresh_does_not_mint_a_poll_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let runner = FailingRunner {
+            attempts: Cell::new(0),
+        };
+        let plan = refresh::Plan {
+            for_diff: false,
+            budget: None,
+            session_dir: None,
+            work: refresh::WorkSource::Discover,
+        };
+        let mut heartbeats = 0;
+
+        let token = refresh_or_warn(&runner, temp.path(), &plan, &mut || heartbeats += 1);
+
+        assert_eq!(token, None);
         assert_eq!(heartbeats, 0);
     }
 

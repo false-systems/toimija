@@ -99,6 +99,75 @@ fn fresh_packet_verifies_consistent_then_a_change_makes_it_stale() {
 }
 
 #[test]
+fn runtime_provider_changes_make_the_packet_stale() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "composition:\n  work: custom-work\n",
+    )
+    .unwrap();
+    run_git(temp.path(), &["add", ".toimija/repo.yaml"]);
+    run_git(temp.path(), &["commit", "-m", "configure work provider"]);
+
+    toimija(temp.path())
+        .env("XDG_CONFIG_HOME", config.path())
+        .arg("refresh")
+        .assert()
+        .success();
+
+    let plugin_dir = config.path().join("toimija");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::write(
+        plugin_dir.join("plugins.toml"),
+        "[plugins.custom-work]\nkind = \"work\"\ncommand = \"custom-work\"\n",
+    )
+    .unwrap();
+
+    let output = toimija(temp.path())
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["verify", "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["status"], "stale_packet");
+}
+
+#[test]
+fn remote_base_changes_make_the_packet_stale() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    run_git(temp.path(), &["branch", "-M", "feature"]);
+
+    toimija(temp.path()).arg("refresh").assert().success();
+    run_git(
+        temp.path(),
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+
+    let output = toimija(temp.path())
+        .args(["verify", "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["status"], "stale_packet");
+}
+
+#[test]
 fn verify_accepts_valid_packet_from_older_additive_schema() {
     if !git_available() {
         return;
@@ -124,6 +193,7 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
         .as_object_mut()
         .unwrap()
         .remove("history_coverage");
+    value.as_object_mut().unwrap().remove("refresh_token");
     let mut envelope = value.as_object_mut().unwrap().remove("sauma").unwrap();
     envelope["digest"] = serde_json::Value::String(toimija::sauma::digest_value(&value));
     value["sauma"] = envelope;

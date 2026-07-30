@@ -160,11 +160,12 @@ shared file. While the agent works, that session packet stays fresh: every
 relevant filesystem or Git-state change re-runs the refresh after a short
 debounce. After laptop sleep, the resumed watch loop re-proves the session within
 one tick through that same refresh and heartbeat path. On Linux, the watcher
-uses bounded 500 ms Git-state polling because inotify can prove the readiness
-probe while still missing the first post-armed event in CI/container
-environments, and Toimija only needs packet-visible Git/worktree state. This
-avoids recursively scanning ignored build/vendor/session trees as the change
-source. On other platforms, the watcher arms the platform-native backend first
+polls collected Git/provider state at roughly 500 ms because inotify can prove
+the readiness probe while still missing the first post-armed event in
+CI/container environments, and Toimija only needs packet-visible Git/worktree
+state. This avoids recursively scanning ignored build/vendor/session trees as
+the change source. On other platforms, the watcher arms the platform-native
+backend first
 and reports `armed (native)` only after a readiness probe is observed. If that
 probe times out, it re-arms and re-proves notify's polling backend before
 reporting `armed (poll fallback)`. It is
@@ -455,6 +456,8 @@ The packet includes:
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state
+- a **refresh token** over the collected Git state and runtime-provider
+  discovery inputs, used by `watch` and `verify`
 - a **sauma** envelope — a local attestation digest and provenance edge set for
   the packet artifact
 

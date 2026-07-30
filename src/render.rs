@@ -1058,6 +1058,7 @@ mod tests {
             repo_kind: RepoKind::Rust,
             secondary_languages: Vec::new(),
             runtime_providers: runtime_providers(),
+            refresh_token: None,
             git: GitState {
                 repo_root: PathBuf::from("/repo"),
                 git_dir: None,
