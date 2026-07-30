@@ -5,14 +5,16 @@ use false_agent_protocol::{
     RepositoryPoint, WorkPacketEnvelope, WorkRef, WorkerRunResultEnvelope, WorkflowStatusSummary,
     plugin::PluginKind,
     work::{
-        CURRENT_METHOD, CurrentWorkParams, CurrentWorkResult, EXPLAIN_METHOD, ExplainParams,
-        ExplainResult, OBSERVE_METHOD, ObserveParams, ProcessOutcome,
+        CLOSE_METHOD, CURRENT_METHOD, CloseResult, CurrentWorkParams, CurrentWorkResult,
+        EXPLAIN_METHOD, ExplainParams, ExplainResult, OBSERVE_METHOD, ObserveParams,
+        ProcessOutcome,
     },
 };
 use serde::Serialize;
 
 use crate::command::ProcessCommandRunner;
 use crate::config::RepoConfig;
+use crate::gates::{GateAuthority, GateCatalog, GateId};
 use crate::plugins::{PluginSession, discover};
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,8 @@ pub struct ActiveWork {
 
 pub struct WorkProvider {
     plugin: PluginSession,
+    repo_root: std::path::PathBuf,
+    work: Option<WorkPacketEnvelope>,
 }
 
 const OBSERVE_GATES_METHOD: &str = "work.observe_gates";
@@ -31,7 +35,14 @@ const OBSERVE_GATES_METHOD: &str = "work.observe_gates";
 struct ObserveGatesParams<'a> {
     work: WorkRef,
     repository_point: &'a RepositoryPoint,
+    gate_authority: &'a GateAuthority,
     receipts: &'a [crate::gates::GateReceipt],
+}
+
+#[derive(Serialize)]
+struct AuthorityParams<'a> {
+    repository_point: &'a RepositoryPoint,
+    gate_authority: &'a GateAuthority,
 }
 
 pub type SharedWorkProvider = std::sync::Arc<std::sync::Mutex<WorkProvider>>;
@@ -58,7 +69,11 @@ impl WorkProvider {
             let plugin =
                 PluginSession::spawn(provider, &definition, repo_root, point.repository.clone())
                     .with_context(|| format!("failed to initialize work provider `{provider}`"))?;
-            let mut provider = Self { plugin };
+            let mut provider = Self {
+                plugin,
+                repo_root: repo_root.to_path_buf(),
+                work: None,
+            };
             let active = provider.current(point)?;
             Ok((
                 Some(std::sync::Arc::new(std::sync::Mutex::new(provider))),
@@ -84,17 +99,23 @@ impl WorkProvider {
             },
         )?;
         match current {
-            CurrentWorkResult::None => Ok(None),
+            CurrentWorkResult::None => {
+                self.work = None;
+                Ok(None)
+            }
             CurrentWorkResult::Active { work } => {
+                let gate_authority = self.gate_authority(&work)?;
                 let explained: ExplainResult = self.plugin.call(
                     EXPLAIN_METHOD,
-                    ExplainParams {
-                        repository_point: point.clone(),
+                    AuthorityParams {
+                        repository_point: point,
+                        gate_authority: &gate_authority,
                     },
                 )?;
                 let status = explained
                     .status
                     .context("work provider returned active work without workflow status")?;
+                self.work = Some((*work).clone());
                 Ok(Some(ActiveWork {
                     packet: *work,
                     status,
@@ -129,10 +150,17 @@ impl WorkProvider {
                 outcome,
             },
         )?;
+        let gate_authority = self
+            .work
+            .as_ref()
+            .map(|work| self.gate_authority(work))
+            .transpose()?
+            .unwrap_or_default();
         let explained: ExplainResult = self.plugin.call(
             EXPLAIN_METHOD,
-            ExplainParams {
-                repository_point: point.clone(),
+            AuthorityParams {
+                repository_point: point,
+                gate_authority: &gate_authority,
             },
         )?;
         Ok(serde_json::to_string(&explained)?)
@@ -141,19 +169,87 @@ impl WorkProvider {
     pub fn observe_gate_receipts(
         &mut self,
         point: &RepositoryPoint,
-        work: WorkRef,
+        work: &WorkPacketEnvelope,
         receipts: &[crate::gates::GateReceipt],
     ) -> Result<()> {
+        let gate_authority = self.gate_authority(work)?;
         let _: serde_json::Value = self.plugin.call(
             OBSERVE_GATES_METHOD,
             ObserveGatesParams {
-                work,
+                work: work.work.id.clone(),
                 repository_point: point,
+                gate_authority: &gate_authority,
                 receipts,
             },
         )?;
         Ok(())
     }
+
+    pub fn close(
+        &mut self,
+        point: &RepositoryPoint,
+        work: &WorkPacketEnvelope,
+    ) -> Result<CloseResult> {
+        let gate_authority = self.gate_authority(work)?;
+        self.plugin.call(
+            CLOSE_METHOD,
+            AuthorityParams {
+                repository_point: point,
+                gate_authority: &gate_authority,
+            },
+        )
+    }
+
+    fn gate_authority(&self, work: &WorkPacketEnvelope) -> Result<GateAuthority> {
+        if work.gates.is_empty() {
+            return Ok(GateAuthority::new());
+        }
+        let required = required_gate_ids(work)?;
+        if required.is_empty() {
+            return Ok(GateAuthority::new());
+        }
+        let config = RepoConfig::load_optional(&self.repo_root)?
+            .unwrap_or_else(|| RepoConfig::default_for(&self.repo_root));
+        Ok(GateCatalog::load(&self.repo_root, &config)?.authority(&required))
+    }
+}
+
+pub(crate) fn required_gate_ids(packet: &WorkPacketEnvelope) -> Result<Vec<GateId>> {
+    let extension = packet
+        .extensions
+        .get("toimija.required_gates.v1")
+        .context("active work omitted the Toimija Gate ID extension")?
+        .as_array()
+        .context("active work Gate ID extension is not an array")?;
+    let extension_ids = extension
+        .iter()
+        .map(|value| {
+            GateId::parse(
+                value
+                    .as_str()
+                    .context("active work Gate ID is not a string")?,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let wire_ids = packet
+        .gates
+        .iter()
+        .map(|gate| {
+            if !gate.command.is_empty() {
+                bail!("active work supplied a gate command; only Gate IDs are accepted");
+            }
+            GateId::parse(
+                gate.id
+                    .as_str()
+                    .strip_prefix("gate_")
+                    .context("active work gate reference has the wrong prefix")?,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if extension_ids != wire_ids {
+        bail!("active work Gate ID extension disagrees with its work packet");
+    }
+    Ok(extension_ids)
 }
 
 pub fn has_active_work(repo_root: &Path) -> Result<bool> {

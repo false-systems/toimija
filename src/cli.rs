@@ -266,6 +266,12 @@ pub enum Command {
     /// receipts; it never closes the work.
     #[command(after_help = "Examples:\n  toimija verify-work\n  toimija verify-work --json")]
     VerifyWork(JsonArgs),
+    /// Close active Teko work through the authoritative work-provider protocol.
+    ///
+    /// Refreshes repository and gate-catalog truth, asks Teko to derive closure,
+    /// and reports Teko's decision. It never closes blocked work.
+    #[command(after_help = "Examples:\n  toimija close-work\n  toimija close-work --json")]
+    CloseWork(JsonArgs),
     /// Verify the selected session or repo packet still matches live repo state.
     ///
     /// The verify-before-read gate: checks the packet's consistency fingerprint
@@ -630,7 +636,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         Command::RepositoryPoint(args) | Command::ExplainWork(args) if args.json => "json",
-        Command::VerifyWork(args) if args.json => "json",
+        Command::VerifyWork(args) | Command::CloseWork(args) if args.json => "json",
         Command::Gates(args)
             if match &args.command {
                 GatesCommand::List(args) => args.json,
@@ -675,6 +681,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Validate(args) => run_validate(args).map(|()| 0),
         Command::Gates(args) => crate::gate_cli::run(args),
         Command::VerifyWork(args) => crate::gate_cli::verify_work(args),
+        Command::CloseWork(args) => crate::gate_cli::close_work(args),
         Command::Verify(args) => run_verify(args),
         Command::RepositoryPoint(args) => run_repository_point(args).map(|()| 0),
         Command::ExplainWork(args) => run_explain_work(args).map(|()| 0),
@@ -787,6 +794,7 @@ impl Command {
             Command::Validate(_) => "validate",
             Command::Gates(_) => "gates",
             Command::VerifyWork(_) => "verify-work",
+            Command::CloseWork(_) => "close-work",
             Command::Verify(_) => "verify",
             Command::RepositoryPoint(_) => "repository-point",
             Command::ExplainWork(_) => "explain-work",
