@@ -79,19 +79,20 @@ pub struct Session {
 /// registering the path — happen here, synchronously, so a startup failure is
 /// reported to the caller rather than swallowed by a background loop.
 pub fn start(repo_root: &Path) -> Result<Session> {
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(target_os = "linux")]
     {
-        // ponytail: inotify proves the probe but drops the first real event on
-        // our ARM64 runner; retry native when that platform proves delivery.
+        // Inotify can prove the readiness probe while still missing the first
+        // post-armed create event in CI/containerized Linux environments.
+        // Polling is less clever but matches the foreground-only watch contract.
         start_poll(repo_root, prove_ready)
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+    #[cfg(not(target_os = "linux"))]
     {
         start_with_probe(repo_root, prove_ready)
     }
 }
 
-#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn start_with_probe(
     repo_root: &Path,
     probe: impl FnMut(
@@ -109,7 +110,7 @@ fn start_with_probe(
 /// proved ready, the poll fallback otherwise. A native arm failure (e.g. the
 /// inotify watch limit) must not abort startup while polling can still
 /// deliver — it degrades, with the failure logged.
-#[cfg_attr(all(target_os = "linux", target_arch = "aarch64"), allow(dead_code))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn start_from_native(
     native: Result<(
         notify::RecommendedWatcher,
@@ -772,9 +773,9 @@ mod tests {
         assert_eq!(session.backend_label(), "poll fallback");
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(target_os = "linux")]
     #[test]
-    fn linux_aarch64_uses_the_reliable_poll_backend() {
+    fn linux_uses_the_reliable_poll_backend() {
         let temp = tempfile::tempdir().unwrap();
 
         let session = start(temp.path()).unwrap();
