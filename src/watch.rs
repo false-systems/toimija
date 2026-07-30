@@ -380,7 +380,16 @@ fn warn_watcher_error(error: &notify::Error) {
 }
 
 fn error_is_ignorable(error: &notify::Error) -> bool {
-    !error.paths.is_empty() && error.paths.iter().all(|path| is_ignored(path))
+    if error.paths.is_empty() {
+        return false;
+    }
+    if error.paths.iter().all(|path| is_ignored(path)) {
+        return true;
+    }
+    matches!(
+        &error.kind,
+        notify::ErrorKind::Io(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
 }
 
 fn relevant(event: &Event) -> bool {
@@ -858,5 +867,22 @@ mod tests {
             .add_path(PathBuf::from("/repo/target/debug/x"))
             .add_path(PathBuf::from("/repo/src/main.rs"));
         assert!(!error_is_ignorable(&mixed));
+    }
+
+    #[test]
+    fn poll_scan_not_found_races_stay_quiet_but_real_io_errors_surface() {
+        let vanished_during_scan =
+            notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
+                .add_path(PathBuf::from("/repo/.git/objects/tmp_obj_abcd"));
+        assert!(error_is_ignorable(&vanished_during_scan));
+
+        let pathless_not_found =
+            notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(!error_is_ignorable(&pathless_not_found));
+
+        let permission_denied =
+            notify::Error::io(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                .add_path(PathBuf::from("/repo/private"));
+        assert!(!error_is_ignorable(&permission_denied));
     }
 }

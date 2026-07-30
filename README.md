@@ -450,6 +450,10 @@ failure into an empty, reassuring list.
 | `landed` | Check whether branch content reached a base ref |
 | `init`, `adopt`, `doctor` | Configure a repository and detect setup drift |
 
+On Linux, `watch` and `run` use the bounded 500 ms polling watcher directly;
+other platforms try the native watcher first and fall back to polling if the
+readiness probe does not report.
+
 Use `toimija <command> --help` for flags and examples. The
 [complete reference](docs/reference.md) documents packet fields, environment
 variables, configuration, output guarantees, and every command.
