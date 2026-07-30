@@ -101,7 +101,17 @@ pub fn verify_work(args: JsonArgs) -> Result<i32> {
             .lock()
             .map_err(|_| anyhow::anyhow!("work provider lock is poisoned"))?;
         provider.observe_gate_receipts(&point, active.packet.work.id.clone(), &receipts)?;
-        provider.current(&current_point)?
+        let refreshed = provider.current(&current_point)?;
+        if let Some(ref refreshed) = refreshed
+            && refreshed.packet.work.id != active.packet.work.id
+        {
+            bail!(
+                "active work changed from `{}` to `{}` while verifying gates",
+                active.packet.work.id,
+                refreshed.packet.work.id
+            );
+        }
+        refreshed
     } else {
         None
     };

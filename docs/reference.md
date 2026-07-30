@@ -953,11 +953,12 @@ config is combined with the user catalog at
 `~/.config/toimija/gates.toml`), where user entries take precedence. Workers
 can request only known IDs and cannot supply argv, environment, or cwd.
 
-Authoritative gates never run in the human checkout. Each gate receives a
-separate disposable materialization of the verified tree, a cleared and
-allowlisted environment, bounded stdout/stderr capture, a timeout, and
-process-group cleanup. A changed source identity, truncated output, spawn
-uncertainty, cancellation, or unverifiable post-run state produces no receipt.
+Authoritative gates never run in the human checkout or share its Git metadata.
+Each gate receives a standalone disposable repository containing the verified
+tree, a cleared and allowlisted environment, bounded stdout/stderr capture, a
+timeout, and process-group cleanup. A changed source identity, truncated output,
+spawn uncertainty, cancellation, or unverifiable post-run state produces no
+receipt.
 Network denial is reported as enforced only when a platform implementation
 actually enforces it; the current local implementation supports `allow` and
 `unenforced_deny_requested`, not a kernel network sandbox.

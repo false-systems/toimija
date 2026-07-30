@@ -150,10 +150,10 @@ Teko decides whether the work is closable. A worker claim cannot close work.
 
 Repository gates are separate from the advisory validation plan. Teko names
 only stable Gate IDs. Toimija resolves those IDs from trusted configuration,
-materializes the exact verified Git tree into a disposable worktree, launches
-the configured executable directly with separate arguments and a bounded
-environment, captures bounded output, and checks the materialized source tree
-again before minting a receipt.
+materializes the exact verified Git tree into a standalone disposable
+repository, launches the configured executable directly with separate arguments
+and a bounded environment, captures bounded output, and checks the materialized
+source tree again before minting a receipt.
 
 ```bash
 toimija gates list

@@ -74,7 +74,7 @@ fn frame(value: serde_json::Value) -> String {
     format!("Content-Length: {}\r\n\r\n{body}", body.len())
 }
 
-fn fake_work_frames() -> String {
+fn fake_work_frames(refreshed_work: &str) -> String {
     let obligation: ObligationRef = "obl_gate-check".parse().unwrap();
     let packet = WorkPacketEnvelope {
         protocol: ProtocolVersion::V1,
@@ -127,6 +127,8 @@ fn fake_work_frames() -> String {
         },
         closable,
     };
+    let mut refreshed_packet = packet.clone();
+    refreshed_packet.work.id = refreshed_work.parse().unwrap();
     [
         serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
@@ -158,7 +160,7 @@ fn fake_work_frames() -> String {
         }),
         serde_json::json!({
             "jsonrpc": "2.0", "id": 5,
-            "result": {"state": "active", "work": packet}
+            "result": {"state": "active", "work": refreshed_packet}
         }),
         serde_json::json!({
             "jsonrpc": "2.0", "id": 6,
@@ -173,6 +175,38 @@ fn fake_work_frames() -> String {
     .into_iter()
     .map(frame)
     .collect()
+}
+
+fn verify_work_command(refreshed_work: &str) -> (tempfile::TempDir, tempfile::TempDir, Command) {
+    let repo = tempfile::tempdir().unwrap();
+    init(repo.path());
+    fs::write(
+        repo.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: fixture\n\
+         composition:\n  work: teko\n  require_work: true\n\
+         gates:\n  check:\n    description: exact fixture check\n    program: /usr/bin/true\n",
+    )
+    .unwrap();
+
+    let config = tempfile::tempdir().unwrap();
+    fs::create_dir_all(config.path().join("toimija")).unwrap();
+    fs::write(
+        config.path().join("toimija/plugins.toml"),
+        "[plugins.teko]\n\
+         kind = \"work\"\n\
+         command = \"/bin/sh\"\n\
+         args = [\"-c\", \"printf %s \\\"$FAKE_FRAMES\\\"; sleep 30\"]\n\
+         timeout_ms = 5000\n",
+    )
+    .unwrap();
+
+    let mut command = Command::cargo_bin("toimija").unwrap();
+    command
+        .current_dir(repo.path())
+        .env("XDG_CONFIG_HOME", config.path())
+        .env("FAKE_FRAMES", fake_work_frames(refreshed_work))
+        .args(["verify-work", "--json"]);
+    (repo, config, command)
 }
 
 #[test]
@@ -316,38 +350,22 @@ fn verify_work_runs_required_ids_imports_receipts_and_refreshes_teko() {
     if !git_available() {
         return;
     }
-    let temp = tempfile::tempdir().unwrap();
-    init(temp.path());
-    write_config(temp.path(), "");
-    fs::write(
-        temp.path().join(".toimija/repo.yaml"),
-        "repo:\n  name: fixture\n\
-         composition:\n  work: teko\n  require_work: true\n\
-         gates:\n  check:\n    description: exact fixture check\n    program: /usr/bin/true\n",
-    )
-    .unwrap();
-
-    let config = tempfile::tempdir().unwrap();
-    fs::create_dir_all(config.path().join("toimija")).unwrap();
-    fs::write(
-        config.path().join("toimija/plugins.toml"),
-        "[plugins.teko]\n\
-         kind = \"work\"\n\
-         command = \"/bin/sh\"\n\
-         args = [\"-c\", \"printf %s \\\"$FAKE_FRAMES\\\"; sleep 30\"]\n\
-         timeout_ms = 5000\n",
-    )
-    .unwrap();
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .env("XDG_CONFIG_HOME", config.path())
-        .env("FAKE_FRAMES", fake_work_frames())
-        .args(["verify-work", "--json"])
+    let (_repo, _config, mut command) = verify_work_command("work_fixture");
+    command
         .assert()
         .success()
         .stdout(predicate::str::contains("\"outcome\": \"passed\""))
         .stdout(predicate::str::contains("\"closable\": true"))
         .stdout(predicate::str::contains("\"id\": \"gatercpt_"));
+}
+
+#[test]
+fn verify_work_rejects_an_active_work_switch() {
+    if !git_available() {
+        return;
+    }
+    let (_repo, _config, mut command) = verify_work_command("work_switched");
+    command.assert().failure().stderr(predicate::str::contains(
+        "active work changed from `work_fixture` to `work_switched`",
+    ));
 }

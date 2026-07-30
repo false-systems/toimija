@@ -126,17 +126,12 @@ impl Argument {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateWorkingDirectoryConfig {
+    #[default]
     RepositoryRoot,
     Relative(PathBuf),
-}
-
-impl Default for GateWorkingDirectoryConfig {
-    fn default() -> Self {
-        Self::RepositoryRoot
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,42 +238,27 @@ impl EnvironmentPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceMutationPolicy {
+    #[default]
     Forbid,
 }
 
-impl Default for SourceMutationPolicy {
-    fn default() -> Self {
-        Self::Forbid
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkPolicy {
     Deny,
     Allow,
+    #[default]
     UnenforcedDenyRequested,
 }
 
-impl Default for NetworkPolicy {
-    fn default() -> Self {
-        Self::UnenforcedDenyRequested
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateEvidenceGrade {
+    #[default]
     IsolatedSnapshot,
-}
-
-impl Default for GateEvidenceGrade {
-    fn default() -> Self {
-        Self::IsolatedSnapshot
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,6 +402,7 @@ pub struct GateWorkspace {
     evidence_root: PathBuf,
     repo_root: PathBuf,
     lease_id: String,
+    subject_commit: String,
 }
 
 impl GateWorkspace {
@@ -453,20 +434,25 @@ impl GateWorkspace {
                 )
             });
         }
-        let result = materialize_worktree(&runner, subject, &root)
-            .and_then(|()| validate_workspace_symlinks(&root));
-        if let Err(error) = result {
-            let _ = remove_worktree(&runner, subject.repo_root(), &root);
-            let _ = fs::remove_dir_all(&root);
-            let _ = fs::remove_dir_all(&evidence_root);
-            let _ = crate::snapshot::release_lease(&runner, subject.repo_root(), &lease_id);
-            return Err(error);
-        }
+        let subject_commit = match materialize_repository(&runner, subject, &root, &lease_id)
+            .and_then(|commit| {
+                validate_workspace_symlinks(&root)?;
+                Ok(commit)
+            }) {
+            Ok(commit) => commit,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&root);
+                let _ = fs::remove_dir_all(&evidence_root);
+                let _ = crate::snapshot::release_lease(&runner, subject.repo_root(), &lease_id);
+                return Err(error);
+            }
+        };
         Ok(Self {
             root,
             evidence_root,
             repo_root: subject.repo_root.clone(),
             lease_id,
+            subject_commit,
         })
     }
 
@@ -475,6 +461,18 @@ impl GateWorkspace {
     }
 
     pub fn source_tree(&self) -> Result<String> {
+        validate_standalone_repository(&self.root)?;
+        let output = crate::command::ProcessCommandRunner.run(
+            &self.root,
+            "git",
+            &["update-ref", "--no-deref", "HEAD", &self.subject_commit],
+        )?;
+        if output.status != 0 {
+            bail!(
+                "failed to restore gate snapshot HEAD: {}",
+                output.stderr_lossy().trim()
+            );
+        }
         crate::snapshot::materialize(&crate::command::ProcessCommandRunner, &self.root)
     }
 
@@ -511,7 +509,6 @@ impl GateWorkspace {
 impl Drop for GateWorkspace {
     fn drop(&mut self) {
         let runner = crate::command::ProcessCommandRunner;
-        let _ = remove_worktree(&runner, &self.repo_root, &self.root);
         let _ = fs::remove_dir_all(&self.root);
         let _ = fs::remove_dir_all(&self.evidence_root);
         let _ = crate::snapshot::release_lease(&runner, &self.repo_root, &self.lease_id);
@@ -865,6 +862,7 @@ pub struct PreparedGate {
     subject: GateSubject,
     workspace: GateWorkspace,
     cwd: PathBuf,
+    executable: PathBuf,
     environment: BTreeMap<OsString, OsString>,
     fingerprint: EnvironmentFingerprint,
 }
@@ -916,6 +914,7 @@ impl PreparedGate {
             subject: subject.subject.clone(),
             workspace,
             cwd,
+            executable,
             environment,
             fingerprint,
         })
@@ -936,7 +935,7 @@ impl PreparedGate {
     fn execute_with_cancellation(self, cancelled: Arc<AtomicBool>) -> GateOutcome {
         let started_at = timestamp();
         let started = std::time::Instant::now();
-        let mut command = Command::new(self.gate.spec.program.as_os_str());
+        let mut command = Command::new(&self.executable);
         command
             .args(self.gate.spec.args.iter().map(Argument::as_os_str))
             .current_dir(&self.cwd)
@@ -993,6 +992,9 @@ impl PreparedGate {
             }
         };
         child.reaped = status.is_ok();
+        if !timed_out && !was_cancelled {
+            child.terminate();
+        }
         let stdout = join_capture(stdout_reader, "stdout");
         let stderr = join_capture(stderr_reader, "stderr");
         let exit_code = status
@@ -1189,6 +1191,11 @@ impl ChildGroup {
             while std::time::Instant::now() < deadline {
                 if self.child.try_wait().ok().flatten().is_some() {
                     self.reaped = true;
+                }
+                // SAFETY: signal 0 probes the dedicated process group.
+                if unsafe { libc::kill(-pid, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -1198,7 +1205,9 @@ impl ChildGroup {
                 libc::kill(-pid, libc::SIGKILL);
             }
         }
-        let _ = self.child.kill();
+        if !self.reaped {
+            let _ = self.child.kill();
+        }
     }
 }
 
@@ -1521,11 +1530,12 @@ fn expand_group(
     Ok(())
 }
 
-fn materialize_worktree(
+fn materialize_repository(
     runner: &impl CommandRunner,
     subject: &VerifiedGateSubject,
     root: &Path,
-) -> Result<()> {
+    id: &str,
+) -> Result<String> {
     let identity = [
         ("GIT_AUTHOR_NAME", OsStr::new("Toimija Gate Authority")),
         ("GIT_AUTHOR_EMAIL", OsStr::new("gate@localhost")),
@@ -1553,32 +1563,105 @@ fn materialize_worktree(
     let root_text = root
         .to_str()
         .context("temporary gate workspace path is not UTF-8")?;
-    let added = runner
-        .run(
-            subject.repo_root(),
-            "git",
-            &["worktree", "add", "--detach", root_text, commit],
-        )
-        .context("failed to materialize the gate workspace")?;
-    if added.status != 0 {
+    let repo_text = subject
+        .repo_root()
+        .to_str()
+        .context("repository path is not UTF-8")?;
+    let temporary_ref = format!("refs/toimija/gates/{id}");
+    let pinned = runner.run(
+        subject.repo_root(),
+        "git",
+        &["update-ref", &temporary_ref, commit],
+    )?;
+    if pinned.status != 0 {
         bail!(
-            "failed to materialize the gate workspace: {}",
-            added.stderr_lossy().trim()
+            "failed to pin the temporary snapshot commit: {}",
+            pinned.stderr_lossy().trim()
         );
     }
-    Ok(())
+    let result = (|| {
+        let initialized =
+            runner.run(subject.repo_root(), "git", &["init", "--quiet", root_text])?;
+        if initialized.status != 0 {
+            bail!(
+                "failed to initialize the standalone gate repository: {}",
+                initialized.stderr_lossy().trim()
+            );
+        }
+        let refspec = format!("{temporary_ref}:refs/toimija/subject");
+        let fetched = runner.run(
+            root,
+            "git",
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+                repo_text,
+                &refspec,
+            ],
+        )?;
+        if fetched.status != 0 {
+            bail!(
+                "failed to fetch the gate snapshot: {}",
+                fetched.stderr_lossy().trim()
+            );
+        }
+        let checked_out = runner.run(
+            root,
+            "git",
+            &["checkout", "--quiet", "--detach", "refs/toimija/subject"],
+        )?;
+        if checked_out.status != 0 {
+            bail!(
+                "failed to check out the gate snapshot: {}",
+                checked_out.stderr_lossy().trim()
+            );
+        }
+        Ok(commit.to_string())
+    })();
+    let _ = runner.run(
+        subject.repo_root(),
+        "git",
+        &["update-ref", "-d", &temporary_ref],
+    );
+    result
 }
 
-fn remove_worktree(runner: &impl CommandRunner, repo_root: &Path, root: &Path) -> Result<()> {
-    let root = root
-        .to_str()
-        .context("temporary gate workspace path is not UTF-8")?;
-    let output = runner.run(repo_root, "git", &["worktree", "remove", "--force", root])?;
+fn validate_standalone_repository(root: &Path) -> Result<()> {
+    let canonical_root = root.canonicalize()?;
+    let git_dir = root.join(".git");
+    let metadata = fs::symlink_metadata(&git_dir)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        bail!("gate snapshot Git metadata is not a standalone directory");
+    }
+    let canonical_git_dir = git_dir.canonicalize()?;
+    if !canonical_git_dir.starts_with(&canonical_root) {
+        bail!("gate snapshot Git metadata escapes the workspace");
+    }
+    let output = crate::command::ProcessCommandRunner.run(
+        root,
+        "git",
+        &["rev-parse", "--show-toplevel", "--absolute-git-dir"],
+    )?;
     if output.status != 0 {
         bail!(
-            "failed to remove gate workspace: {}",
+            "failed to verify the standalone gate repository: {}",
             output.stderr_lossy().trim()
         );
+    }
+    let stdout = output.stdout_lossy();
+    let mut lines = stdout.lines().map(PathBuf::from);
+    let top = lines
+        .next()
+        .context("gate repository omitted its worktree root")?
+        .canonicalize()?;
+    let reported_git_dir = lines
+        .next()
+        .context("gate repository omitted its Git directory")?
+        .canonicalize()?;
+    if top != canonical_root || reported_git_dir != canonical_git_dir {
+        bail!("gate snapshot repository redirects outside the workspace");
     }
     Ok(())
 }
@@ -1860,6 +1943,29 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn workspace_does_not_share_repository_metadata() {
+        let repo = repository();
+        let outcome = prepared_gate(
+            repo.path(),
+            "git update-ref refs/heads/gate-mutated HEAD",
+            &[],
+            1024,
+        )
+        .execute();
+        assert!(matches!(outcome, GateOutcome::Passed(_)));
+
+        let original = ProcessCommandRunner
+            .run(
+                repo.path(),
+                "git",
+                &["show-ref", "--verify", "--quiet", "refs/heads/gate-mutated"],
+            )
+            .unwrap();
+        assert_ne!(original.status, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn workspace_rejects_symlinks_that_escape_the_snapshot() {
         use std::os::unix::fs::symlink;
 
@@ -1886,6 +1992,28 @@ mod tests {
             passed.execution.stdout.digest,
             format!("sha256:{:x}", Sha256::digest(b"out"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_uses_the_resolved_executable() {
+        let repo = repository();
+        let mut prepared = prepared_gate(repo.path(), "exit 0", &[], 1024);
+        prepared.gate.spec.program =
+            Executable::new("toimija-gate-program-does-not-exist").unwrap();
+        assert!(matches!(prepared.execute(), GateOutcome::Passed(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_gate_reaps_descendants_before_capturing_output() {
+        let repo = repository();
+        let prepared = prepared_gate(repo.path(), "sh -c 'trap \"\" TERM; sleep 4' &", &[], 1024);
+        let started = std::time::Instant::now();
+        let outcome = prepared.execute();
+
+        assert!(matches!(outcome, GateOutcome::Passed(_)));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[cfg(unix)]
