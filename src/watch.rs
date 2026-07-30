@@ -296,7 +296,7 @@ impl Session {
             previous = now;
             match self.rx.recv_timeout(TICK) {
                 Ok(Ok(event)) if relevant(&event) => {
-                    drain_burst(&self.rx);
+                    drain_burst(&self.rx, repo_root);
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
@@ -304,7 +304,7 @@ impl Session {
                 }
                 // A watcher-backend error (dropped or rescan-required events):
                 // surface it, since the packet may now be stale, then keep going.
-                Ok(Err(error)) => warn_watcher_error(&error),
+                Ok(Err(error)) => warn_watcher_error(&error, repo_root),
                 // Irrelevant event: keep watching.
                 Ok(Ok(_)) => {}
                 // Woke to re-check `stop`.
@@ -360,10 +360,10 @@ pub fn watch(
 /// for a full debounce window, so one logical change yields one refresh. Backend
 /// errors inside the burst keep their warning — rescan-required is precisely
 /// the error that means events were lost.
-fn drain_burst(rx: &mpsc::Receiver<notify::Result<Event>>) {
+fn drain_burst(rx: &mpsc::Receiver<notify::Result<Event>>, repo_root: &Path) {
     while let Ok(result) = rx.recv_timeout(DEBOUNCE) {
         if let Err(error) = result {
-            warn_watcher_error(&error);
+            warn_watcher_error(&error, repo_root);
         }
     }
 }
@@ -371,15 +371,17 @@ fn drain_burst(rx: &mpsc::Receiver<notify::Result<Event>>) {
 /// Warn about a backend error unless it is scoped entirely to ignored
 /// directories: a build deleting files under `_build`/`target` mid-scan is
 /// churn the watch has promised not to react to, not a packet-freshness
-/// problem. A pathless error says nothing about where it happened, so it
-/// stays visible.
-fn warn_watcher_error(error: &notify::Error) {
-    if !error_is_ignorable(error) {
+/// problem. Polling can also race children that vanish mid-walk; those
+/// path-scoped `NotFound` errors are quiet unless the watched root itself is
+/// gone. A pathless error says nothing about where it happened, so it stays
+/// visible.
+fn warn_watcher_error(error: &notify::Error, repo_root: &Path) {
+    if !error_is_ignorable(error, repo_root) {
         eprintln!("toimija: file watcher error (packet may be stale): {error}");
     }
 }
 
-fn error_is_ignorable(error: &notify::Error) -> bool {
+fn error_is_ignorable(error: &notify::Error, repo_root: &Path) -> bool {
     if error.paths.is_empty() {
         return false;
     }
@@ -388,7 +390,9 @@ fn error_is_ignorable(error: &notify::Error) -> bool {
     }
     matches!(
         &error.kind,
-        notify::ErrorKind::Io(error) if error.kind() == std::io::ErrorKind::NotFound
+        notify::ErrorKind::Io(io_error)
+            if io_error.kind() == std::io::ErrorKind::NotFound
+                && error.paths.iter().all(|path| path != repo_root)
     )
 }
 
@@ -854,35 +858,41 @@ mod tests {
 
     #[test]
     fn errors_scoped_to_ignored_dirs_stay_quiet_but_others_surface() {
+        let repo_root = Path::new("/repo");
         let build_churn = notify::Error::generic("walkdir error scanning")
             .add_path(PathBuf::from("/repo/_build/lib/vartio_core/priv"));
-        assert!(error_is_ignorable(&build_churn));
+        assert!(error_is_ignorable(&build_churn, repo_root));
 
         // A pathless error says nothing about where it happened.
         let pathless = notify::Error::generic("backend failure");
-        assert!(!error_is_ignorable(&pathless));
+        assert!(!error_is_ignorable(&pathless, repo_root));
 
         // One relevant path makes the whole error relevant.
         let mixed = notify::Error::generic("walkdir error scanning")
             .add_path(PathBuf::from("/repo/target/debug/x"))
             .add_path(PathBuf::from("/repo/src/main.rs"));
-        assert!(!error_is_ignorable(&mixed));
+        assert!(!error_is_ignorable(&mixed, repo_root));
     }
 
     #[test]
     fn poll_scan_not_found_races_stay_quiet_but_real_io_errors_surface() {
+        let repo_root = Path::new("/repo");
         let vanished_during_scan =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
                 .add_path(PathBuf::from("/repo/.git/objects/tmp_obj_abcd"));
-        assert!(error_is_ignorable(&vanished_during_scan));
+        assert!(error_is_ignorable(&vanished_during_scan, repo_root));
 
         let pathless_not_found =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert!(!error_is_ignorable(&pathless_not_found));
+        assert!(!error_is_ignorable(&pathless_not_found, repo_root));
 
         let permission_denied =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
                 .add_path(PathBuf::from("/repo/private"));
-        assert!(!error_is_ignorable(&permission_denied));
+        assert!(!error_is_ignorable(&permission_denied, repo_root));
+
+        let missing_root = notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .add_path(repo_root.to_path_buf());
+        assert!(!error_is_ignorable(&missing_root, repo_root));
     }
 }
