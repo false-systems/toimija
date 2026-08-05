@@ -1,7 +1,7 @@
 # Proposal 0011 — Freshness is a repository fact: the refresh token must be observer-independent
 
 **Status:** ACCEPTED 2026-08-05 (Yair directed spec + fix in session
-1785888321-93248).
+1785888321-93248; ratified by the merge of PR #196).
 
 **Date:** 2026-08-05
 
@@ -107,4 +107,9 @@ repository until the repository itself moves.
   provider-summary fingerprint it computes itself (from the packet it just
   wrote and from a live probe), so the packet's Runtime providers section
   keeps refreshing on provider changes — without any environment fact ever
-  entering the stored token that other processes verify against.
+  entering the stored token that other processes verify against. The
+  composite's two halves are typed and compared separately, a poll-triggered
+  refresh logs which half moved, and packet-side/live-side symmetry on an
+  untouched repo is pinned by
+  `packet_and_live_watch_tokens_agree_when_nothing_changes` — an asymmetric
+  fingerprint would otherwise refresh every poll interval, silently.

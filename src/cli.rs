@@ -1607,7 +1607,7 @@ fn verify_run_entry(
                     .is_some_and(|expected| context::refresh_token(&live) != *expected);
                 if refresh_changed && attempt == 0 {
                     warn!(
-                        event = "toimija.run.packet_runtime_raced",
+                        event = "toimija.run.packet_state_raced",
                         session = %session_id,
                         "refreshing once before launch"
                     );
