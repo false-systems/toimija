@@ -95,7 +95,9 @@ jobs:
       # @main deliberately: the v0.9.0-rc.1 tag's action predates the composite
       # rewrite — it builds from source and then runs sykli in its own build
       # directory instead of the workspace. Pin to the next tagged release.
+      # Repo renamed 2026-08-04: the Elixir sykli lives at sykli-elixir; the
+      # sykli name now belongs to its Rust successor.
       - name: Run the sykli contract
-        uses: false-systems/sykli@main
+        uses: false-systems/sykli-elixir@main
         with:
           path: .

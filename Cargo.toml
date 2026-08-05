@@ -24,7 +24,7 @@ required-features = ["sykli"]
 
 [dependencies]
 # Pinned to the tag matching the sykli CLI (RC SDKs are not on crates.io).
-sykli = { git = "https://github.com/false-systems/sykli", tag = "v0.9.0-rc.1", optional = true }
+sykli = { git = "https://github.com/false-systems/sykli-elixir", tag = "v0.9.0-rc.1", optional = true }
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
 clap = { version = "4", features = ["derive"] }

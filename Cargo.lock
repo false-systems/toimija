@@ -755,7 +755,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "sykli"
 version = "0.9.0-rc.1"
-source = "git+https://github.com/false-systems/sykli?tag=v0.9.0-rc.1#5e0130eca94569d29eb5b5279d19f81d424f217c"
+source = "git+https://github.com/false-systems/sykli-elixir?tag=v0.9.0-rc.1#5e0130eca94569d29eb5b5279d19f81d424f217c"
 dependencies = [
  "regex",
  "serde",
