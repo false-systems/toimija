@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use notify::{Config, Event, RecursiveMode, Watcher};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::command::CommandRunner;
 use crate::{consistency, git, refresh};
@@ -79,7 +79,7 @@ pub struct Session {
     // Held only to keep the OS watch alive; dropping it unregisters the watch.
     backend: Backend,
     rx: Option<mpsc::Receiver<notify::Result<Event>>>,
-    baseline_token: Option<String>,
+    baseline_token: Option<WatchToken>,
 }
 
 /// Begin watching `repo_root`. The fallible parts — creating the watcher and
@@ -378,7 +378,7 @@ fn run_git_polling(
     stop: &AtomicBool,
     mut on_refresh: impl FnMut(),
     mut clocks: impl FnMut() -> ClockPair,
-    baseline_token: Option<String>,
+    baseline_token: Option<WatchToken>,
 ) -> Result<()> {
     let mut previous = clocks();
     let mut previous_token = baseline_token.or_else(|| match current_token(runner, repo_root) {
@@ -422,7 +422,7 @@ fn poll_refresh_if_changed(
     runner: &impl CommandRunner,
     repo_root: &Path,
     plan: &refresh::Plan,
-    previous_token: &mut Option<String>,
+    previous_token: &mut Option<WatchToken>,
     last_poll: &mut Instant,
     on_refresh: &mut impl FnMut(),
 ) {
@@ -432,6 +432,13 @@ fn poll_refresh_if_changed(
     *last_poll = Instant::now();
     match current_token(runner, repo_root) {
         Ok(current) if previous_token.as_ref() != Some(&current) => {
+            if let Some(previous) = previous_token.as_ref() {
+                debug!(
+                    event = "toimija.watch.state_poll_changed",
+                    repository = previous.repository != current.repository,
+                    providers = previous.providers != current.providers
+                );
+            }
             if let Some(token) = refresh_or_warn(runner, repo_root, plan, on_refresh) {
                 *previous_token = Some(token);
             }
@@ -443,17 +450,56 @@ fn poll_refresh_if_changed(
     }
 }
 
-fn current_token(runner: &impl CommandRunner, repo_root: &Path) -> Result<String> {
-    let (mut git, _) = git::collect_git_state(runner, repo_root)?;
-    crate::context::normalize_git_state(&mut git);
-    crate::context::live_refresh_token(&git)
+/// What the watcher compares between polls: the repository refresh token plus
+/// a fingerprint of the runtime-provider summary. The packet's stored token is
+/// repository-state only (proposal 0011) — observer-environment facts must
+/// never decide staleness *across* processes — but this watcher is one
+/// continuous observer comparing its own successive observations, so tracking
+/// provider drift here is sound and keeps the packet's provider section live.
+///
+/// Kept as two named facts, not one concatenated hash: the packet side and the
+/// live probe must stay symmetric or the state poll would refresh forever, and
+/// when they do diverge the poll log must be able to say which half moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatchToken {
+    repository: String,
+    providers: String,
 }
 
-fn packet_refresh_token(packet: &crate::context::ContextPacket) -> String {
-    packet
-        .refresh_token
-        .clone()
-        .unwrap_or_else(|| packet.consistency.token.clone())
+fn current_token(runner: &impl CommandRunner, repo_root: &Path) -> Result<WatchToken> {
+    let (mut git, _) = git::collect_git_state(runner, repo_root)?;
+    crate::context::normalize_git_state(&mut git);
+    Ok(WatchToken {
+        repository: crate::context::refresh_token(&git),
+        providers: live_provider_fingerprint(repo_root)?,
+    })
+}
+
+/// The packet-side counterpart of [`current_token`]. Its providers half comes
+/// from the summary the packet build computed; equality with the live probe on
+/// an untouched repo is pinned by
+/// `packet_and_live_watch_tokens_agree_when_nothing_changes`.
+fn packet_refresh_token(packet: &crate::context::ContextPacket) -> WatchToken {
+    WatchToken {
+        repository: packet
+            .refresh_token
+            .clone()
+            .unwrap_or_else(|| packet.consistency.token.clone()),
+        providers: provider_fingerprint(&packet.runtime_providers),
+    }
+}
+
+fn provider_fingerprint(providers: &crate::plugins::RuntimeProviders) -> String {
+    let bytes = serde_json::to_vec(providers).expect("provider summary serializes");
+    crate::consistency::hash_bytes(&bytes)
+}
+
+fn live_provider_fingerprint(repo_root: &Path) -> Result<String> {
+    let config = crate::config::RepoConfig::load_optional(repo_root)?
+        .unwrap_or_else(|| crate::config::RepoConfig::default_for(repo_root));
+    Ok(provider_fingerprint(
+        &crate::plugins::runtime_providers(&config).0,
+    ))
 }
 
 /// A transient refresh failure must not kill live updates: warn and keep
@@ -463,7 +509,7 @@ fn refresh_or_warn(
     repo_root: &Path,
     plan: &refresh::Plan,
     on_refresh: &mut impl FnMut(),
-) -> Option<String> {
+) -> Option<WatchToken> {
     match plan.run(runner, repo_root) {
         Ok(refreshed) => {
             let token = packet_refresh_token(&refreshed.packet);
@@ -624,6 +670,46 @@ mod tests {
             rx: Some(rx),
             baseline_token: None,
         }
+    }
+
+    #[test]
+    fn packet_and_live_watch_tokens_agree_when_nothing_changes() {
+        // D11-5's churn guard: the packet-side token (providers fingerprinted
+        // from the summary the build computed) and the live probe must agree
+        // on an untouched repo, or the state poll would trigger a refresh
+        // every interval forever — invisible to the drift tests, which only
+        // assert that a refresh *happens*. Going through the real packet
+        // build pins the whole chain: config loading, provider discovery,
+        // and fingerprinting must stay symmetric.
+        let git_runs = |args: &[&str], dir: &Path| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .is_ok_and(|output| output.status.success())
+        };
+        let temp = tempfile::tempdir().unwrap();
+        if !git_runs(&["init"], temp.path()) {
+            return; // no usable git on this machine; nothing to pin
+        }
+        assert!(git_runs(
+            &["config", "user.email", "toimija@example.invalid"],
+            temp.path()
+        ));
+        assert!(git_runs(
+            &["config", "user.name", "Toimija Test"],
+            temp.path()
+        ));
+        std::fs::write(temp.path().join("a.txt"), "x\n").unwrap();
+        assert!(git_runs(&["add", "."], temp.path()));
+        assert!(git_runs(&["commit", "-m", "init"], temp.path()));
+
+        let runner = crate::command::ProcessCommandRunner;
+        let packet = crate::context::build_context_packet(&runner, temp.path(), false).unwrap();
+        assert_eq!(
+            packet_refresh_token(&packet),
+            current_token(&runner, temp.path()).unwrap()
+        );
     }
 
     #[test]

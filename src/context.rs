@@ -180,7 +180,7 @@ pub fn build_context_packet(
         }
     }
     let (runtime_providers, plugin_warnings) = crate::plugins::runtime_providers(&config);
-    let refresh_token = refresh_token(&git, &runtime_providers, &plugin_warnings);
+    let refresh_token = refresh_token(&git);
     warnings.extend(plugin_warnings);
     // Effective ignore set = the repo's configured rules plus a small built-in
     // set of build/vendor dirs. Applied live (derived each run), not seeded into
@@ -267,11 +267,14 @@ pub fn build_context_packet(
     Ok(packet)
 }
 
-pub(crate) fn refresh_token(
-    git: &GitState,
-    providers: &crate::plugins::RuntimeProviders,
-    plugin_warnings: &[String],
-) -> String {
+/// Version key over the packet-visible repository state, including the Git-ref
+/// surface (base, upstream, merge-base, branch files, recent commits) that the
+/// consistency token deliberately omits. Repository state only: anything read
+/// from the process environment (PATH, HOME, config files outside the repo) is
+/// banned from this input, or two honest observers of the same repo would
+/// compute different versions and staleness would never converge
+/// (proposal 0011).
+pub(crate) fn refresh_token(git: &GitState) -> String {
     let mut git = git.clone();
     git.staged_files
         .retain(|file| !crate::consistency::is_generated_output(&file.path));
@@ -287,16 +290,8 @@ pub(crate) fn refresh_token(
         || !git.unstaged_files.is_empty()
         || !git.untracked_files.is_empty()
         || !git.conflicted_files.is_empty();
-    let state =
-        serde_json::to_vec(&(git, providers, plugin_warnings)).expect("refresh state serializes");
+    let state = serde_json::to_vec(&git).expect("refresh state serializes");
     crate::consistency::hash_bytes(&state)
-}
-
-pub(crate) fn live_refresh_token(git: &GitState) -> anyhow::Result<String> {
-    let config = RepoConfig::load_optional(&git.repo_root)?
-        .unwrap_or_else(|| RepoConfig::default_for(&git.repo_root));
-    let (providers, warnings) = crate::plugins::runtime_providers(&config);
-    Ok(refresh_token(git, &providers, &warnings))
 }
 
 /// Decide how to describe the changed surface. A merge-base means we can speak
@@ -533,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_token_covers_packet_visible_git_and_provider_state() {
+    fn refresh_token_covers_git_state_and_ignores_observer_environment() {
         let mut git = GitState {
             repo_root: PathBuf::from("/repo"),
             git_dir: Some(PathBuf::from(".git")),
@@ -553,15 +548,17 @@ mod tests {
             branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
             recent_commits: Vec::new(),
         };
-        let mut providers = runtime_providers();
-        let original = refresh_token(&git, &providers, &[]);
+        let original = refresh_token(&git);
 
+        // Ref movement is repository state: it must change the token.
         git.base = Some("origin/main".to_string());
-        assert_ne!(refresh_token(&git, &providers, &[]), original);
-
+        assert_ne!(refresh_token(&git), original);
         git.base = None;
-        providers.work.status = crate::plugins::RuntimeProviderStatus::Configured;
-        assert_ne!(refresh_token(&git, &providers, &[]), original);
+
+        // The token is a pure function of repository state (proposal 0011):
+        // observer-environment facts like provider discoverability have no
+        // input into it, so the same repo always yields the same token.
+        assert_eq!(refresh_token(&git), original);
     }
 
     #[test]

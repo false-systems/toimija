@@ -458,8 +458,9 @@ The packet includes:
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state
-- a **refresh token** over the collected Git state and runtime-provider
-  discovery inputs, used by `watch` and `verify`
+- a **refresh token** over the collected Git state — repository state only,
+  never observer-environment facts like provider discoverability, so the same
+  repo yields the same token from any process — used by `watch` and `verify`
 - a **sauma** envelope — a local attestation digest and provenance edge set for
   the packet artifact
 
