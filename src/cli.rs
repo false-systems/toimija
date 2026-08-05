@@ -1604,13 +1604,7 @@ fn verify_run_entry(
                     .packet
                     .refresh_token
                     .as_ref()
-                    .map(|expected| {
-                        context::live_refresh_token(&live)
-                            .map(|current| current != *expected)
-                            .context("failed to verify packet-visible runtime state")
-                    })
-                    .transpose()?
-                    .unwrap_or(false);
+                    .is_some_and(|expected| context::refresh_token(&live) != *expected);
                 if refresh_changed && attempt == 0 {
                     warn!(
                         event = "toimija.run.packet_runtime_raced",
@@ -1624,7 +1618,7 @@ fn verify_run_entry(
                 }
                 anyhow::ensure!(
                     !refresh_changed,
-                    "refusing to launch: packet-visible runtime state changed again after one refresh"
+                    "refusing to launch: packet-visible repository state changed again after one refresh"
                 );
                 info!(event = "toimija.run.packet_verified", session = %session_id);
                 return Ok(entry);
@@ -2118,21 +2112,12 @@ fn verify_status(packet_path: &std::path::Path, live: &git::GitState) -> VerifyS
             match stored.verify(live) {
                 Verdict::Consistent => {
                     if let Some(packet_token) = packet_refresh_token {
-                        match context::live_refresh_token(live) {
-                            Ok(current_token) if current_token != packet_token => {
-                                return VerifyStatus::StalePacket {
-                                    packet_token,
-                                    current_token,
-                                };
-                            }
-                            Ok(_) => {}
-                            Err(error) => {
-                                return VerifyStatus::UnverifiableRepository {
-                                    message: format!(
-                                        "could not read packet-visible runtime state: {error:#}"
-                                    ),
-                                };
-                            }
+                        let current_token = context::refresh_token(live);
+                        if current_token != packet_token {
+                            return VerifyStatus::StalePacket {
+                                packet_token,
+                                current_token,
+                            };
                         }
                     }
                     VerifyStatus::Verified {
@@ -2410,7 +2395,8 @@ impl VerifyStatus {
                 format!("unsupported_consistency_algorithm: {algorithm}")
             }
             VerifyStatus::StalePacket { .. } => {
-                "stale_packet: repository or runtime-provider state changed after the selected packet was generated".to_string()
+                "stale_packet: repository state changed after the selected packet was generated"
+                    .to_string()
             }
             VerifyStatus::SaumaDigestMismatch { .. } => {
                 "sauma_digest_mismatch: selected packet was tampered with".to_string()

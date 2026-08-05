@@ -443,17 +443,44 @@ fn poll_refresh_if_changed(
     }
 }
 
+/// What the watcher compares between polls: the repository refresh token plus
+/// a fingerprint of the runtime-provider summary. The packet's stored token is
+/// repository-state only (proposal 0011) — observer-environment facts must
+/// never decide staleness *across* processes — but this watcher is one
+/// continuous observer comparing its own successive observations, so tracking
+/// provider drift here is sound and keeps the packet's provider section live.
 fn current_token(runner: &impl CommandRunner, repo_root: &Path) -> Result<String> {
     let (mut git, _) = git::collect_git_state(runner, repo_root)?;
     crate::context::normalize_git_state(&mut git);
-    crate::context::live_refresh_token(&git)
+    Ok(format!(
+        "{}\n{}",
+        crate::context::refresh_token(&git),
+        live_provider_fingerprint(repo_root)?
+    ))
 }
 
 fn packet_refresh_token(packet: &crate::context::ContextPacket) -> String {
-    packet
+    let repo = packet
         .refresh_token
         .clone()
-        .unwrap_or_else(|| packet.consistency.token.clone())
+        .unwrap_or_else(|| packet.consistency.token.clone());
+    format!(
+        "{repo}\n{}",
+        provider_fingerprint(&packet.runtime_providers)
+    )
+}
+
+fn provider_fingerprint(providers: &crate::plugins::RuntimeProviders) -> String {
+    let bytes = serde_json::to_vec(providers).expect("provider summary serializes");
+    crate::consistency::hash_bytes(&bytes)
+}
+
+fn live_provider_fingerprint(repo_root: &Path) -> Result<String> {
+    let config = crate::config::RepoConfig::load_optional(repo_root)?
+        .unwrap_or_else(|| crate::config::RepoConfig::default_for(repo_root));
+    Ok(provider_fingerprint(
+        &crate::plugins::runtime_providers(&config).0,
+    ))
 }
 
 /// A transient refresh failure must not kill live updates: warn and keep
