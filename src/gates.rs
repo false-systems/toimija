@@ -24,6 +24,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::command::CommandRunner;
+use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
+
+/// Schema of an attested gate receipt. Additive fields may be added in v1.
+pub const RECEIPT_SCHEMA: &str = "toimija-gate-receipt.v1";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_OUTPUT_LIMIT: u64 = 1024 * 1024;
@@ -596,7 +600,7 @@ impl PassedGate {
                 .unwrap_or(&receipt_digest)
         ))
         .map_err(anyhow::Error::from)?;
-        Ok(GateReceipt {
+        let mut receipt = GateReceipt {
             id,
             gate: self.gate,
             gate_spec_digest: self.gate_spec_digest,
@@ -610,7 +614,12 @@ impl PassedGate {
             environment: self.execution.environment,
             evidence_grade: self.evidence_grade,
             receipt_digest,
-        })
+            sauma: None,
+        };
+        // Born sealed, so the in-memory receipt and the persisted one are the
+        // same artifact and a caller cannot hand on an unattested copy.
+        receipt.seal()?;
+        Ok(receipt)
     }
 }
 
@@ -629,9 +638,49 @@ pub struct GateReceipt {
     environment: EnvironmentFingerprint,
     evidence_grade: GateEvidenceGrade,
     receipt_digest: String,
+    /// The portable attestation. Absent on receipts written before gate
+    /// receipts were attested; those stay valid and immutable, they simply
+    /// cannot travel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sauma: Option<SaumaEnvelope>,
+}
+
+impl sauma::Carrier for GateReceipt {
+    fn sauma_mut(&mut self) -> &mut Option<SaumaEnvelope> {
+        &mut self.sauma
+    }
 }
 
 impl GateReceipt {
+    /// Seal the receipt so a neutral verifier can check it.
+    ///
+    /// `receipt_digest` is toimija's own self-check over the receipt's content
+    /// fields; the sauma digest is the portable content-address over the whole
+    /// artifact minus its envelope. They are independent on purpose — the first
+    /// says "this receipt is internally consistent", the second lets anyone
+    /// else say so without trusting toimija.
+    ///
+    /// The producer's `run` is deliberately left unset. Receipt paths are
+    /// content-addressed and persisting is byte-immutable, so a per-session id
+    /// in the envelope would make the same receipt serialize differently in a
+    /// later session and trip the immutability check.
+    fn seal(&mut self) -> Result<()> {
+        let provenance = vec![
+            SaumaProvenance::RepositoryPoint {
+                id: self.subject.repository_point.to_string(),
+            },
+            SaumaProvenance::Git {
+                oid: self.subject.tree_oid.0.clone(),
+            },
+            SaumaProvenance::Artifact {
+                digest: self.gate_spec_digest.0.clone(),
+            },
+        ];
+        let anchor = self.subject.consistency_token.0.clone();
+        sauma::attach(self, RECEIPT_SCHEMA, provenance, &anchor, None)
+            .context("failed to seal the gate receipt")
+    }
+
     pub fn id(&self) -> &GateReceiptRef {
         &self.id
     }
@@ -742,6 +791,9 @@ pub fn receipt_applicability(
 pub fn persist_receipt(repo_root: &Path, receipt: &GateReceipt) -> Result<PathBuf> {
     if !receipt.validate() {
         bail!("refusing to persist an invalid gate receipt");
+    }
+    if receipt.sauma.is_none() {
+        bail!("refusing to persist an unattested gate receipt");
     }
     let directory = repo_root.join(".toimija/runs/gates");
     fs::create_dir_all(&directory)
@@ -1961,6 +2013,92 @@ mod tests {
         );
         drop(workspace);
         assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_receipt_is_sealed_and_survives_the_round_trip_verifying() {
+        let repo = repository();
+        let (receipt, _resolved, _subject) = receipt(repo.path());
+
+        let envelope = receipt.sauma.clone().expect("a receipt must be attested");
+        assert_eq!(envelope.schema, RECEIPT_SCHEMA);
+        assert_eq!(envelope.producer.tool, "toimija");
+        assert_eq!(
+            envelope.anchored_at, receipt.subject.consistency_token.0,
+            "a receipt must die when the tree it describes moves"
+        );
+        assert!(
+            envelope.producer.run.is_none(),
+            "a per-session id would make the same receipt serialize differently \
+             in a later session and trip the immutability check"
+        );
+
+        // What a neutral verifier recomputes must match what was sealed.
+        let mut round_tripped = receipt.clone();
+        assert!(crate::sauma::verify(&mut round_tripped).unwrap().is_none());
+
+        // The two digests are independent: the self-check is unaffected.
+        assert!(receipt.validate());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tampering_is_caught_by_the_envelope_even_when_the_self_check_is_repaired() {
+        // The point of the portable seal. `receipt_digest` is toimija's own
+        // claim; an attacker who edits a receipt can recompute it. The sauma
+        // digest is checked by someone else.
+        let repo = repository();
+        let (receipt, _resolved, _subject) = receipt(repo.path());
+
+        let mut forged = receipt.clone();
+        forged.exit_code = 0;
+        forged.duration_ms = 1;
+        let repaired = ReceiptContent {
+            gate: &forged.gate,
+            gate_spec_digest: &forged.gate_spec_digest,
+            subject: &forged.subject,
+            started_at: &forged.started_at,
+            finished_at: &forged.finished_at,
+            duration_ms: forged.duration_ms,
+            exit_code: forged.exit_code,
+            stdout: &forged.stdout,
+            stderr: &forged.stderr,
+            environment: &forged.environment,
+            evidence_grade: forged.evidence_grade,
+        };
+        forged.receipt_digest = digest_json(&repaired).unwrap();
+        // `validate` also derives the id from the digest, so a complete forgery
+        // has to repair that too. It can.
+        forged.id = GateReceiptRef::parse(format!(
+            "gatercpt_{}",
+            forged
+                .receipt_digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&forged.receipt_digest)
+        ))
+        .unwrap();
+
+        assert!(forged.validate(), "the self-check has been fully repaired");
+        assert!(
+            crate::sauma::verify(&mut forged.clone()).unwrap().is_some(),
+            "but the portable seal still refuses it"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_receipt_written_before_attestation_still_reads() {
+        // The receipts already on disk have no envelope. They stay valid and
+        // immutable; they simply cannot travel.
+        let repo = repository();
+        let (receipt, _resolved, _subject) = receipt(repo.path());
+        let mut legacy = serde_json::to_value(&receipt).unwrap();
+        legacy.as_object_mut().unwrap().remove("sauma");
+
+        let parsed: GateReceipt = serde_json::from_value(legacy).unwrap();
+        assert!(parsed.sauma.is_none());
+        assert!(parsed.validate(), "an unattested receipt is still valid");
     }
 
     #[cfg(unix)]
