@@ -901,7 +901,23 @@ fn run_plugins(args: PluginsArgs) -> Result<()> {
                     "kisko" => Some(PluginKind::Worker),
                     _ => None,
                 })
-                .with_context(|| format!("plugin `{id}` has no configured kind"))?;
+                .with_context(|| {
+                    // The packet renders providers role-first (`work: teko`),
+                    // so `inspect work` is the natural thing to type. Say what
+                    // the argument actually is instead of reporting a missing
+                    // kind, which reads as a configuration fault.
+                    let hint = match id.as_str() {
+                        "work" => "  (did you mean `teko`? `work` is the role, not the plugin)",
+                        "worker" => {
+                            "  (did you mean `kisko`? `worker` is the role, not the plugin)"
+                        }
+                        _ => "",
+                    };
+                    format!(
+                        "unknown plugin `{id}`{hint}\n\nInspect takes a plugin ID. \
+                         Run `toimija plugins doctor` to list the ones this repo resolves."
+                    )
+                })?;
             inspect(&id, kind)
         }
         PluginsCommand::Doctor => {
