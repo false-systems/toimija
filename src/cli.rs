@@ -1476,10 +1476,10 @@ fn run_run(args: RunArgs) -> Result<i32> {
             .iter()
             .map(|entry| (&entry.key, &entry.value)),
     );
-    let launched = child
+    child
         .current_dir(&launch_plan.cwd)
-        .envs(session.env(&repo_root))
-        .status();
+        .envs(session.env(&repo_root));
+    let launched = supervise_agent(&mut child);
 
     // 6. Stop the watcher and join, whatever happened to the command. A loop
     //    error (e.g. a mid-run refresh failure) is reported, but the wrapped
@@ -1600,6 +1600,98 @@ fn run_run(args: RunArgs) -> Result<i32> {
     //    Returned (not `process::exit`) so the command.finish bookend still runs.
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     Ok(wrapped_exit_code(status))
+}
+
+/// Run the wrapped agent to completion, forwarding termination signals to it.
+///
+/// `Command::status()` alone would orphan the agent: a signal delivered to this
+/// process only (`kill <toimija-pid>`, a closing terminal's SIGHUP) kills the
+/// wrapper, and the agent tree is reparented to init and keeps running headless.
+/// The agent intentionally stays in this process's process group — it is an
+/// interactive foreground program and must keep the terminal (a background
+/// process group reading the tty is stopped with SIGTTIN) — so Ctrl-C still
+/// reaches it directly from the tty; forwarded here are the signals that target
+/// this PID specifically. Registering SIGINT also means an interrupt no longer
+/// kills the wrapper before it can close the session marker and print the exit
+/// summary.
+#[cfg(unix)]
+fn supervise_agent(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::ExitStatus> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let termination_requested = Arc::new(AtomicBool::new(false));
+    let registrations = [
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGINT,
+    ]
+    .into_iter()
+    .map(|signal| signal_hook::flag::register(signal, Arc::clone(&termination_requested)))
+    .collect::<std::io::Result<Vec<_>>>()?;
+
+    let mut child = command.spawn()?;
+    let mut forwarded_at: Option<Instant> = None;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                for id in registrations {
+                    signal_hook::low_level::unregister(id);
+                }
+                return Err(error);
+            }
+        }
+        if termination_requested.swap(false, Ordering::SeqCst) && forwarded_at.is_none() {
+            if let Ok(pid) = i32::try_from(child.id()) {
+                // SAFETY: pid is the live child just spawned above; SIGTERM to
+                // a single PID we own is the intended forwarding.
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
+                eprintln!(
+                    "toimija run: termination requested — forwarded to the agent (pid {pid})"
+                );
+            }
+            forwarded_at = Some(Instant::now());
+        }
+        if let Some(at) = forwarded_at
+            && should_force_kill(at.elapsed())
+        {
+            let _ = child.kill();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    for id in registrations {
+        signal_hook::low_level::unregister(id);
+    }
+    Ok(status)
+}
+
+#[cfg(not(unix))]
+fn supervise_agent(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::ExitStatus> {
+    command.status()
+}
+
+/// Escalation policy after SIGTERM has been forwarded to the agent.
+///
+/// Called once per 50ms poll tick; `since_forward` is how long ago the SIGTERM
+/// went out. Return true to SIGKILL the agent now.
+///
+/// Policy: a fixed grace window. An agent mid-write (session transcript, git
+/// index) gets time to flush and exit on the SIGTERM; a hung agent — the
+/// battery-drain incident this function exists to end — is force-killed once
+/// the window closes. Interactive agents normally exit on SIGTERM well under
+/// ten seconds, so twenty is generous without being unbounded. (gates.rs gives
+/// its non-interactive gate commands 250ms; agents deserve more.)
+#[cfg(unix)]
+fn should_force_kill(since_forward: std::time::Duration) -> bool {
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+    since_forward > GRACE
 }
 
 fn verify_run_entry(
