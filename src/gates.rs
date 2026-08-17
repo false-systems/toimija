@@ -592,12 +592,9 @@ impl PassedGate {
             environment: &self.execution.environment,
             evidence_grade: self.evidence_grade,
         };
-        let receipt_digest = digest_json(&content)?;
-        let id = GateReceiptRef::parse(format!(
-            "gatercpt_{}",
-            receipt_digest
-                .strip_prefix("sha256:")
-                .unwrap_or(&receipt_digest)
+        let receipt_digest = receipt_content_digest(&content)?;
+        let id = GateReceiptRef::parse(false_agent_protocol::digest::gate_receipt_id(
+            &receipt_digest,
         ))
         .map_err(anyhow::Error::from)?;
         let mut receipt = GateReceipt {
@@ -727,13 +724,10 @@ impl GateReceipt {
             environment: &self.environment,
             evidence_grade: self.evidence_grade,
         };
-        let Ok(expected) = digest_json(&content) else {
+        let Ok(expected) = receipt_content_digest(&content) else {
             return false;
         };
-        let expected_id = format!(
-            "gatercpt_{}",
-            expected.strip_prefix("sha256:").unwrap_or(&expected)
-        );
+        let expected_id = false_agent_protocol::digest::gate_receipt_id(&expected);
         expected == self.receipt_digest && self.id.as_str() == expected_id
     }
 }
@@ -1342,13 +1336,16 @@ fn environment_digest(environment: &BTreeMap<OsString, OsString>) -> String {
     format!("sha256:{:x}", digest.finalize())
 }
 
-fn digest_json(value: &impl Serialize) -> Result<String> {
-    Ok(format!(
-        "sha256:{:x}",
-        Sha256::digest(
-            false_agent_protocol::digest::canonical_json(value).map_err(anyhow::Error::from)?
-        )
-    ))
+/// Digest a receipt's content through the protocol's definition.
+///
+/// `ReceiptContent` names the fields; `gate_receipt_digest` decides which of
+/// them count, and it is the same function every consumer calls. The two used
+/// to be separate definitions that happened to agree, until attaching a sauma
+/// envelope made them disagree and broke receipt import across the stack while
+/// both test suites stayed green.
+fn receipt_content_digest(content: &ReceiptContent<'_>) -> Result<String> {
+    let value = serde_json::to_value(content)?;
+    false_agent_protocol::digest::gate_receipt_digest(&value).map_err(anyhow::Error::from)
 }
 
 fn timestamp() -> String {
@@ -2067,7 +2064,7 @@ mod tests {
             environment: &forged.environment,
             evidence_grade: forged.evidence_grade,
         };
-        forged.receipt_digest = digest_json(&repaired).unwrap();
+        forged.receipt_digest = receipt_content_digest(&repaired).unwrap();
         // `validate` also derives the id from the digest, so a complete forgery
         // has to repair that too. It can.
         forged.id = GateReceiptRef::parse(format!(
