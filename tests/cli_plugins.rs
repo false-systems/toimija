@@ -28,17 +28,15 @@ fn inspecting_a_role_instead_of_a_plugin_says_so() {
     let temp = tempfile::tempdir().unwrap();
     init(temp.path());
 
-    for (role, plugin) in [("work", "teko"), ("worker", "kisko")] {
-        Command::cargo_bin("toimija")
-            .unwrap()
-            .current_dir(temp.path())
-            .args(["plugins", "inspect", role])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains(format!("unknown plugin `{role}`")))
-            .stderr(predicate::str::contains(format!("did you mean `{plugin}`")))
-            .stderr(predicate::str::contains("plugins doctor"));
-    }
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["plugins", "inspect", "work"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown plugin `work`"))
+        .stderr(predicate::str::contains("did you mean `teko`"))
+        .stderr(predicate::str::contains("plugins doctor"));
 }
 
 #[test]

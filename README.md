@@ -14,13 +14,13 @@
 
 Toimija sits between a repository and a coding harness. It compiles local Git
 state into a live context packet, optionally obtains bounded work from Teko,
-launches Codex, Claude, Kisko, or another command, and keeps the packet fresh
+launches Codex, Claude, or another named command, and keeps the packet fresh
 while the harness runs. At exit it verifies the repository again and reports
 the result. When required, it also executes trusted repository gates against
 standalone snapshots and mints receipts bound to the exact verified state.
 
-It is deliberately local and compositional. Teko, Toimija, and Kisko are
-independent products that build and release separately. They meet only at
+It is deliberately local and compositional. Teko, Toimija, and worker commands
+build and release separately. When structured providers are used, they meet at
 runtime through the public
 [`false-agent-protocol`](https://github.com/false-systems/false-agent-protocol).
 
@@ -32,7 +32,7 @@ flowchart LR
     R[".toimija/repo.yaml<br/>role · boundaries · validation · gates"] --> T
     W["Teko<br/>work provider"] -- "work + required Gate IDs" --> T
     T -- "receipts + observations" --> W
-    T -- "worker.v1" --> K["Kisko"]
+    T -- "optional worker.v1" --> E["external worker"]
     T --> C["Codex"]
     T --> A["Claude"]
     T --> X["other commands"]
@@ -45,11 +45,12 @@ The ownership lines are strict:
 | --- | --- | --- |
 | **Teko** | Active work, objectives, obligations, required Gate IDs, completion policy | Gate commands, Git truth, harness execution |
 | **Toimija** | Repository points, trusted gate catalog, gate execution and receipts, context packets, session lifecycle | Task assignment, model execution, work closure |
-| **Kisko** | Model execution, actions, transcripts, structured worker results | Gate certification, repository truth, work closure |
+| **Kisko** | Engineering recommendations | Model execution, gate certification, repository truth, work closure |
+| **External worker** | Model execution, actions, transcripts, optional structured worker results | Gate certification, repository truth, work closure |
 | **Codex / Claude** | The work they perform inside the launched session | Teko or Toimija policy |
 
 Toimija is the composition point, not a product monolith. It imports no Teko or
-Kisko implementation crate. An absent provider simply leaves the corresponding
+worker implementation crate. An absent provider simply leaves the corresponding
 capability unbound unless the repository or command explicitly requires it.
 
 ## Why
@@ -214,10 +215,11 @@ github:false-systems/kisko#171` walks it.
 Built-in adapters launch Codex, Claude, Gemini, and generic commands through the
 same execution-context path.
 
-An external worker implements `worker.v1`. Kisko exposes it with:
+An external worker may implement `worker.v1`; select its configured plugin ID
+when launching. Direct named commands need no worker plugin.
 
 ```bash
-kisko plugin serve --stdio
+toimija run -- my-worker
 ```
 
 The worker lifecycle is:
@@ -251,16 +253,17 @@ args = ["plugin", "serve", "--stdio"]
 required = false
 timeout_ms = 5000
 
-[plugins.kisko]
+[plugins.my-worker]
 kind = "worker"
-command = "kisko"
+command = "my-worker"
 args = ["plugin", "serve", "--stdio"]
 required = false
 timeout_ms = 5000
 ```
 
-When automatic discovery is enabled, the exact executable names `teko` and
-`kisko` may be discovered on `PATH`. There is no arbitrary plugin scan.
+When automatic discovery is enabled, only the exact executable name `teko` is
+discovered on `PATH`. There is no arbitrary plugin scan; workers are selected
+from trusted user configuration or launched directly by name.
 Repository configuration may select a provider ID, but cannot introduce an
 executable path.
 
@@ -304,9 +307,9 @@ This keeps builds independent:
 ```text
 teko checkout      ── cargo build ──▶ Teko
 toimija checkout   ── cargo build ──▶ Toimija
-kisko checkout     ── cargo build ──▶ Kisko
+external worker   ── independent build ──▶ worker
                           │
-                          └── public false-agent-protocol tag
+                          └── public false-agent-protocol tag (when structured)
 ```
 
 No build requires a sibling checkout, local path dependency, private deploy key,

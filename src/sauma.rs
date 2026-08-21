@@ -44,7 +44,7 @@ pub fn digest_json(json: &str) -> String {
 /// lexicographically at every level. This is the one canonical form every
 /// producer digests over (proposal 0003 §2/§9 D-P2), so a digest is a portable
 /// content-address any walker can verify regardless of a crate's `serde_json`
-/// key-ordering (toimija enables `preserve_order`; kisko does not). No
+/// key-ordering differences between producers. No
 /// number/unicode normalization — sorted keys and compact spacing only.
 pub fn canonical_json(value: &serde_json::Value) -> String {
     let mut out = String::new();

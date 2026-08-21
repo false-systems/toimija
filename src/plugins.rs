@@ -82,10 +82,7 @@ pub fn discover(id: &str, kind: PluginKind) -> Result<Option<PluginDefinition>> 
         return Ok(Some(definition.clone()));
     }
     if file.automatic_path_discovery
-        && matches!(
-            (id, kind),
-            ("teko", PluginKind::Work) | ("kisko", PluginKind::Worker)
-        )
+        && matches!((id, kind), ("teko", PluginKind::Work))
         && which::which(id).is_ok()
     {
         return Ok(Some(PluginDefinition {
@@ -125,13 +122,13 @@ impl Default for RuntimeProviders {
                 reason: "repo composition work provider".to_string(),
             },
             worker: RuntimeProviderSummary {
-                id: "kisko".to_string(),
+                id: "none".to_string(),
                 kind: PluginKind::Worker,
                 capability: WORKER_V1.to_string(),
                 status: RuntimeProviderStatus::Unavailable,
                 source: RuntimeProviderSource::Missing,
                 required: false,
-                reason: "repo composition default worker".to_string(),
+                reason: "no default external worker; run selects the named command".to_string(),
             },
         }
     }
@@ -196,11 +193,15 @@ fn runtime_providers_from_result(
                 .composition
                 .default_worker
                 .as_deref()
-                .unwrap_or("kisko"),
+                .unwrap_or("none"),
             PluginKind::Worker,
             WORKER_V1,
             false,
-            "repo composition default worker",
+            if config.composition.default_worker.is_some() {
+                "repo composition external worker"
+            } else {
+                "no default external worker; run selects the named command"
+            },
         ),
     };
     warnings.sort();

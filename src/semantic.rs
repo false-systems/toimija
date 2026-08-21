@@ -183,15 +183,15 @@ pub fn read_result(path: &Path) -> Result<false_agent_protocol::WorkerRunResultE
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("failed to inspect {}", path.display()))?;
     if metadata.file_type().is_symlink() {
-        bail!("refusing Kisko result through symlink {}", path.display());
+        bail!("refusing worker result through symlink {}", path.display());
     }
     if metadata.len() > MAX_BYTES {
-        bail!("Kisko result exceeds the {MAX_BYTES}-byte limit");
+        bail!("worker result exceeds the {MAX_BYTES}-byte limit");
     }
     let result = serde_json::from_slice::<false_agent_protocol::WorkerRunResultEnvelope>(
         &std::fs::read(path)?,
     )
-    .context("Kisko result is not a valid worker-result envelope")?;
+    .context("worker result is not a valid worker-result envelope")?;
     result.validate().map_err(anyhow::Error::from)?;
     Ok(result)
 }
@@ -269,14 +269,14 @@ pub fn correlate_result(
     let teko_status = match entry.and_then(|entry| entry.work.as_ref().map(|work| (entry, work))) {
         Some((entry, entry_work)) => {
             let exit = exit.context(
-                "Kisko returned bound evidence, but Toimija could not refresh current repository truth",
+                "the worker returned bound evidence, but Toimija could not refresh current repository truth",
             )?;
             let exit_work = exit
                 .work
                 .as_ref()
                 .context("active work disappeared while the bound worker was running")?;
             let binding = result.binding.as_ref().context(
-                "Kisko result is unbound, but this run launched with authoritative Teko work",
+                "worker result is unbound, but this run launched with authoritative Teko work",
             )?;
             if binding.work != entry_work.work.id
                 || binding.spec != entry_work.spec.id
@@ -285,7 +285,7 @@ pub fn correlate_result(
                 || result.origin != entry.repository.id
             {
                 bail!(
-                    "Cannot attach Kisko run {} to work {}. Expected work {} implementing {} at {} with one of {} emitted context digests; result references work {} implementing {} at {} with digest {}. Teko is authoritative for active work and Toimija for emitted context; restart Kisko through Toimija with the current context.",
+                    "Cannot attach worker run {} to work {}. Expected work {} implementing {} at {} with one of {} emitted context digests; result references work {} implementing {} at {} with digest {}. Teko is authoritative for active work and Toimija for emitted context; restart the worker through Toimija with the current context.",
                     result.run,
                     binding.work,
                     entry_work.work.id,
@@ -300,7 +300,7 @@ pub fn correlate_result(
             }
             if exit_work.work.id != entry_work.work.id {
                 bail!(
-                    "Active Teko work changed from {} to {} while Kisko ran. Teko is authoritative; restart the run with the current work.",
+                    "Active Teko work changed from {} to {} while the worker ran. Teko is authoritative; restart the run with the current work.",
                     entry_work.work.id,
                     exit_work.work.id
                 );
@@ -308,7 +308,7 @@ pub fn correlate_result(
             let mut changed = false;
             match &result.destination {
                 Some(destination) if destination != &exit.repository.id => bail!(
-                    "Kisko result claims destination {}, but Toimija verified {}. Toimija is authoritative for repository truth; refresh and emit a result for the verified point.",
+                    "Worker result claims destination {}, but Toimija verified {}. Toimija is authoritative for repository truth; refresh and emit a result for the verified point.",
                     destination,
                     exit.repository.id
                 ),
@@ -335,7 +335,7 @@ pub fn correlate_result(
                     .is_some_and(|point| point != &entry.repository.id)
                 {
                     bail!(
-                        "Kisko action {} claims origin {:?}, but Toimija launched at {}. Toimija is authoritative for repository truth.",
+                        "Worker action {} claims origin {:?}, but Toimija launched at {}. Toimija is authoritative for repository truth.",
                         action.id,
                         action.transforms_from,
                         entry.repository.id
@@ -347,7 +347,7 @@ pub fn correlate_result(
                     .is_some_and(|point| point != &exit.repository.id)
                 {
                     bail!(
-                        "Kisko action {} claims destination {:?}, but Toimija verified {}. Toimija is authoritative for repository truth.",
+                        "Worker action {} claims destination {:?}, but Toimija verified {}. Toimija is authoritative for repository truth.",
                         action.id,
                         action.transforms_to,
                         exit.repository.id
@@ -382,7 +382,7 @@ pub fn correlate_result(
         None => {
             if result.binding.is_some() {
                 bail!(
-                    "Kisko result {} claims bound work, but Toimija launched no active Teko context. Teko is authoritative; restart through Toimija with active work.",
+                    "Worker result {} claims bound work, but Toimija launched no active Teko context. Teko is authoritative; restart through Toimija with active work.",
                     result.run
                 );
             }
@@ -448,8 +448,10 @@ pub fn latest_result(
 
 pub fn projection(
     context: &ExecutionContextEnvelope,
-    result: Option<&false_agent_protocol::WorkerRunResultEnvelope>,
+    _result: Option<&false_agent_protocol::WorkerRunResultEnvelope>,
 ) -> Result<SemanticProjection> {
+    // worker.v1 does not identify its producer. The result is rendered beside
+    // this projection, but must not be mislabeled as a Kisko-authored fact.
     let Some(packet) = context.work.as_ref() else {
         return SemanticProjection::derive([]).map_err(anyhow::Error::from);
     };
@@ -457,11 +459,6 @@ pub fn projection(
         product: Product::Teko,
         source_entity,
         event_sequence: None,
-    };
-    let kisko = |source_entity, event_sequence| FactSource {
-        product: Product::Kisko,
-        source_entity,
-        event_sequence,
     };
     let work = EntityRef::Work(packet.work.id.clone());
     let mut facts = vec![SemanticFact {
@@ -523,90 +520,6 @@ pub fn projection(
         evidence: Vec::new(),
     }));
 
-    if let Some(result) = result
-        && let Some(binding) = &result.binding
-        && binding.work == packet.work.id
-    {
-        let run = EntityRef::WorkerRun(result.run.clone());
-        facts.extend([
-            SemanticFact {
-                subject: work.clone(),
-                relation: Relation::BoundTo,
-                object: EntityRef::RepositoryPoint(binding.origin.clone()),
-                source: teko(Some(work.clone())),
-                evidence: Vec::new(),
-            },
-            SemanticFact {
-                subject: run.clone(),
-                relation: Relation::Executes,
-                object: work.clone(),
-                source: kisko(Some(run.clone()), None),
-                evidence: Vec::new(),
-            },
-            SemanticFact {
-                subject: run.clone(),
-                relation: Relation::TransformsFrom,
-                object: EntityRef::RepositoryPoint(result.origin.clone()),
-                source: kisko(Some(run.clone()), None),
-                evidence: Vec::new(),
-            },
-        ]);
-        if let Some(destination) = &result.destination {
-            facts.push(SemanticFact {
-                subject: run.clone(),
-                relation: Relation::TransformsTo,
-                object: EntityRef::RepositoryPoint(destination.clone()),
-                source: kisko(Some(run.clone()), None),
-                evidence: Vec::new(),
-            });
-        }
-        for (sequence, action) in result.actions.iter().enumerate() {
-            let action_ref = EntityRef::Action(action.id.clone());
-            facts.push(SemanticFact {
-                subject: run.clone(),
-                relation: Relation::ContainsAction,
-                object: action_ref.clone(),
-                source: kisko(Some(run.clone()), Some(sequence as u64)),
-                evidence: action.evidence.clone(),
-            });
-            if let Some(tool) = &action.tool_call {
-                facts.push(SemanticFact {
-                    subject: action_ref.clone(),
-                    relation: Relation::CausedBy,
-                    object: EntityRef::ToolCall(tool.clone()),
-                    source: kisko(Some(action_ref.clone()), Some(sequence as u64)),
-                    evidence: action.evidence.clone(),
-                });
-            }
-            if let Some(point) = &action.transforms_from {
-                facts.push(SemanticFact {
-                    subject: action_ref.clone(),
-                    relation: Relation::TransformsFrom,
-                    object: EntityRef::RepositoryPoint(point.clone()),
-                    source: kisko(Some(action_ref.clone()), Some(sequence as u64)),
-                    evidence: action.evidence.clone(),
-                });
-            }
-            if let Some(point) = &action.transforms_to {
-                facts.push(SemanticFact {
-                    subject: action_ref.clone(),
-                    relation: Relation::TransformsTo,
-                    object: EntityRef::RepositoryPoint(point.clone()),
-                    source: kisko(Some(action_ref.clone()), Some(sequence as u64)),
-                    evidence: action.evidence.clone(),
-                });
-            }
-        }
-        for evidence in &result.evidence {
-            facts.extend(evidence.supports.iter().map(|obligation| SemanticFact {
-                subject: EntityRef::Evidence(evidence.id.clone()),
-                relation: Relation::Supports,
-                object: EntityRef::Obligation(obligation.clone()),
-                source: kisko(Some(EntityRef::Evidence(evidence.id.clone())), None),
-                evidence: vec![evidence.id.clone()],
-            }));
-        }
-    }
     SemanticProjection::derive(facts).map_err(anyhow::Error::from)
 }
 
@@ -763,6 +676,6 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("Cannot attach Kisko run"), "{error}");
+        assert!(error.contains("Cannot attach worker run"), "{error}");
     }
 }
