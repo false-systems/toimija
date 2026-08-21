@@ -448,10 +448,8 @@ pub fn latest_result(
 
 pub fn projection(
     context: &ExecutionContextEnvelope,
-    _result: Option<&false_agent_protocol::WorkerRunResultEnvelope>,
+    result: Option<&false_agent_protocol::WorkerRunResultEnvelope>,
 ) -> Result<SemanticProjection> {
-    // worker.v1 does not identify its producer. The result is rendered beside
-    // this projection, but must not be mislabeled as a Kisko-authored fact.
     let Some(packet) = context.work.as_ref() else {
         return SemanticProjection::derive([]).map_err(anyhow::Error::from);
     };
@@ -459,6 +457,11 @@ pub fn projection(
         product: Product::Teko,
         source_entity,
         event_sequence: None,
+    };
+    let worker = |source_entity, event_sequence| FactSource {
+        product: Product::Worker,
+        source_entity,
+        event_sequence,
     };
     let work = EntityRef::Work(packet.work.id.clone());
     let mut facts = vec![SemanticFact {
@@ -519,6 +522,91 @@ pub fn projection(
         source: teko(Some(work.clone())),
         evidence: Vec::new(),
     }));
+
+    if let Some(result) = result
+        && let Some(binding) = &result.binding
+        && binding.work == packet.work.id
+    {
+        let run = EntityRef::WorkerRun(result.run.clone());
+        facts.extend([
+            SemanticFact {
+                subject: work.clone(),
+                relation: Relation::BoundTo,
+                object: EntityRef::RepositoryPoint(binding.origin.clone()),
+                source: teko(Some(work.clone())),
+                evidence: Vec::new(),
+            },
+            SemanticFact {
+                subject: run.clone(),
+                relation: Relation::Executes,
+                object: work.clone(),
+                source: worker(Some(run.clone()), None),
+                evidence: Vec::new(),
+            },
+            SemanticFact {
+                subject: run.clone(),
+                relation: Relation::TransformsFrom,
+                object: EntityRef::RepositoryPoint(result.origin.clone()),
+                source: worker(Some(run.clone()), None),
+                evidence: Vec::new(),
+            },
+        ]);
+        if let Some(destination) = &result.destination {
+            facts.push(SemanticFact {
+                subject: run.clone(),
+                relation: Relation::TransformsTo,
+                object: EntityRef::RepositoryPoint(destination.clone()),
+                source: worker(Some(run.clone()), None),
+                evidence: Vec::new(),
+            });
+        }
+        for (sequence, action) in result.actions.iter().enumerate() {
+            let action_ref = EntityRef::Action(action.id.clone());
+            facts.push(SemanticFact {
+                subject: run.clone(),
+                relation: Relation::ContainsAction,
+                object: action_ref.clone(),
+                source: worker(Some(run.clone()), Some(sequence as u64)),
+                evidence: action.evidence.clone(),
+            });
+            if let Some(tool) = &action.tool_call {
+                facts.push(SemanticFact {
+                    subject: action_ref.clone(),
+                    relation: Relation::CausedBy,
+                    object: EntityRef::ToolCall(tool.clone()),
+                    source: worker(Some(action_ref.clone()), Some(sequence as u64)),
+                    evidence: action.evidence.clone(),
+                });
+            }
+            if let Some(point) = &action.transforms_from {
+                facts.push(SemanticFact {
+                    subject: action_ref.clone(),
+                    relation: Relation::TransformsFrom,
+                    object: EntityRef::RepositoryPoint(point.clone()),
+                    source: worker(Some(action_ref.clone()), Some(sequence as u64)),
+                    evidence: action.evidence.clone(),
+                });
+            }
+            if let Some(point) = &action.transforms_to {
+                facts.push(SemanticFact {
+                    subject: action_ref.clone(),
+                    relation: Relation::TransformsTo,
+                    object: EntityRef::RepositoryPoint(point.clone()),
+                    source: worker(Some(action_ref.clone()), Some(sequence as u64)),
+                    evidence: action.evidence.clone(),
+                });
+            }
+        }
+        for evidence in &result.evidence {
+            facts.extend(evidence.supports.iter().map(|obligation| SemanticFact {
+                subject: EntityRef::Evidence(evidence.id.clone()),
+                relation: Relation::Supports,
+                object: EntityRef::Obligation(obligation.clone()),
+                source: worker(Some(EntityRef::Evidence(evidence.id.clone())), None),
+                evidence: vec![evidence.id.clone()],
+            }));
+        }
+    }
 
     SemanticProjection::derive(facts).map_err(anyhow::Error::from)
 }
@@ -615,6 +703,17 @@ mod tests {
         let result: false_agent_protocol::WorkerRunResultEnvelope =
             serde_json::from_str(false_agent_protocol::WORKER_RESULT_FIXTURE).unwrap();
         result.validate().unwrap();
+    }
+
+    #[test]
+    fn projection_preserves_neutral_worker_facts() {
+        let context = bound_context();
+        let result: false_agent_protocol::WorkerRunResultEnvelope =
+            serde_json::from_str(false_agent_protocol::WORKER_RESULT_FIXTURE).unwrap();
+        let projection = projection(&context, Some(&result)).unwrap();
+        assert!(projection.facts.iter().any(|fact| {
+            fact.source.product == Product::Worker && fact.relation == Relation::Executes
+        }));
     }
 
     #[test]
