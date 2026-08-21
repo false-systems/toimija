@@ -1,5 +1,5 @@
 //! Snapshot materialization — freeze the working tree as an immutable git tree
-//! object, so a reader (the Kisko harness) can read content *at a version* via
+//! object, so a worker can read content *at a version* via
 //! `git cat-file` instead of live disk. That closes the time-of-check /
 //! time-of-use gap: the bytes a reader sees cannot change under it, because it
 //! reads frozen git objects, not the mutable worktree.

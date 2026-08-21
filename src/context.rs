@@ -516,13 +516,13 @@ mod tests {
                 reason: "repo composition work provider".to_string(),
             },
             worker: crate::plugins::RuntimeProviderSummary {
-                id: "kisko".to_string(),
+                id: "none".to_string(),
                 kind: false_agent_protocol::plugin::PluginKind::Worker,
                 capability: false_agent_protocol::plugin::WORKER_V1.to_string(),
                 status: crate::plugins::RuntimeProviderStatus::Unavailable,
                 source: crate::plugins::RuntimeProviderSource::Missing,
                 required: false,
-                reason: "repo composition default worker".to_string(),
+                reason: "no default external worker; run selects the named command".to_string(),
             },
         }
     }

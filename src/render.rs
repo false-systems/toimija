@@ -1033,13 +1033,13 @@ mod tests {
                 reason: "repo composition work provider".to_string(),
             },
             worker: crate::plugins::RuntimeProviderSummary {
-                id: "kisko".to_string(),
+                id: "none".to_string(),
                 kind: false_agent_protocol::plugin::PluginKind::Worker,
                 capability: false_agent_protocol::plugin::WORKER_V1.to_string(),
                 status: crate::plugins::RuntimeProviderStatus::Unavailable,
                 source: crate::plugins::RuntimeProviderSource::Missing,
                 required: false,
-                reason: "repo composition default worker".to_string(),
+                reason: "no default external worker; run selects the named command".to_string(),
             },
         }
     }
@@ -1533,7 +1533,7 @@ mod tests {
 
 ## Runtime providers
 - work: `teko` (work.v1) — unavailable via missing executable/config; required: false; repo composition work provider
-- worker: `kisko` (worker.v1) — unavailable via missing executable/config; required: false; repo composition default worker
+- worker: `none` (worker.v1) — unavailable via missing executable/config; required: false; no default external worker; run selects the named command
 - note: informational only; Toimija does not dispatch work or load provider code into this process
 
 ## Workset contract
@@ -1631,13 +1631,13 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
       "reason": "repo composition work provider"
     },
     "worker": {
-      "id": "kisko",
+      "id": "none",
       "kind": "worker",
       "capability": "worker.v1",
       "status": "unavailable",
       "source": "missing",
       "required": false,
-      "reason": "repo composition default worker"
+      "reason": "no default external worker; run selects the named command"
     }
   },
   "git": {

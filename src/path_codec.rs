@@ -205,7 +205,9 @@ fn unhex(text: &str) -> Result<Vec<u8>, &'static str> {
         return Err("path bytes_hex must contain an even number of digits");
     }
     text.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digits = std::str::from_utf8(pair).map_err(|_| "path bytes_hex is not ASCII")?;
             u8::from_str_radix(digits, 16).map_err(|_| "path bytes_hex contains a non-hex digit")

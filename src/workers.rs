@@ -98,7 +98,7 @@ impl WorkerAdapter for BuiltInAdapter {
                         .display()
                         .to_string(),
                 ),
-                structured: basename(&self.program) == "kisko",
+                structured: false,
             },
         })
     }
@@ -212,15 +212,10 @@ impl WorkerAdapter for Adapter {
 }
 
 pub fn select(program: &str, repo_root: &Path, repository: &RepositoryPoint) -> Result<Adapter> {
-    if basename(program) == "kisko"
-        && let Some(definition) = discover("kisko", PluginKind::Worker)?
-    {
-        let session = PluginSession::spawn(
-            "kisko",
-            &definition,
-            repo_root,
-            repository.repository.clone(),
-        )?;
+    let id = basename(program);
+    if let Some(definition) = discover(id, PluginKind::Worker)? {
+        let session =
+            PluginSession::spawn(id, &definition, repo_root, repository.repository.clone())?;
         return Ok(Adapter::External(Box::new(ExternalPluginAdapter {
             session,
             definition,

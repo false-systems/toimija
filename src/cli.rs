@@ -291,10 +291,10 @@ pub enum Command {
     /// token. Toimija remains authoritative for this point.
     #[command(after_help = "Examples:\n  toimija repository-point --json")]
     RepositoryPoint(SemanticArgs),
-    /// Explain active work, the latest bound Kisko run, evidence, and blockers.
+    /// Explain active work, the latest bound worker run, evidence, and blockers.
     ///
     /// Derives relationships on demand from Teko, current Toimija truth, and
-    /// the latest Kisko result. Persists no graph.
+    /// the latest worker result. Persists no graph.
     #[command(after_help = "Examples:\n  toimija explain-work\n  toimija explain-work --json")]
     ExplainWork(SemanticArgs),
     /// Bind a completed bounded worker run to its pull request.
@@ -898,7 +898,6 @@ fn run_plugins(args: PluginsArgs) -> Result<()> {
                 .map(|definition| definition.kind)
                 .or(match id.as_str() {
                     "teko" => Some(PluginKind::Work),
-                    "kisko" => Some(PluginKind::Worker),
                     _ => None,
                 })
                 .with_context(|| {
@@ -909,7 +908,7 @@ fn run_plugins(args: PluginsArgs) -> Result<()> {
                     let hint = match id.as_str() {
                         "work" => "  (did you mean `teko`? `work` is the role, not the plugin)",
                         "worker" => {
-                            "  (did you mean `kisko`? `worker` is the role, not the plugin)"
+                            "  (configure a worker plugin ID in ~/.config/toimija/plugins.toml)"
                         }
                         _ => "",
                     };
@@ -922,7 +921,7 @@ fn run_plugins(args: PluginsArgs) -> Result<()> {
         }
         PluginsCommand::Doctor => {
             if configured.is_empty() {
-                for (id, kind) in [("teko", PluginKind::Work), ("kisko", PluginKind::Worker)] {
+                for (id, kind) in [("teko", PluginKind::Work)] {
                     match inspect(id, kind) {
                         Ok(()) => {}
                         Err(error) => println!("{id}\tunavailable\t{error}"),
@@ -1090,7 +1089,7 @@ fn run_explain_work(args: SemanticArgs) -> Result<()> {
                     println!("stale: latest result does not verify the current repository point");
                 }
             }
-            _ => println!("no bound Kisko result"),
+            _ => println!("no bound worker result"),
         }
         if let Some(correlation) = latest_correlation {
             println!("\nPULL REQUEST");
@@ -1560,7 +1559,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
                     process_outcome(*wrapped_status),
                 )? {
                     eprintln!(
-                        "toimija run: correlated Kisko run {} at {} ({})",
+                        "toimija run: correlated worker run {} at {} ({})",
                         correlation.result.run,
                         correlation
                             .result
@@ -1587,7 +1586,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
             }
             Err(error) if entry_execution.is_some() && semantic_result_path.is_file() => {
                 return Err(error).context(
-                    "Kisko returned bound evidence, but Toimija could not refresh repository truth",
+                    "the worker returned bound evidence, but Toimija could not refresh repository truth",
                 );
             }
             Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
