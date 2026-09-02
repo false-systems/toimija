@@ -174,6 +174,13 @@ cannot leave the live packet stale. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
 last-writer-wins "latest" summary for sessionless readers.
+While a wrapped command runs, `run` re-points its own stdout and stderr at
+`.toimija/sessions/<id>/diagnostics.log` (descriptor-level `dup2`) and hands
+the saved terminal to the child, so nothing this process prints — watcher
+output, refresh warnings, panic messages included — can interleave with the
+harness; `run` reports the captured line count and path after the command
+exits. Standalone `watch`, which owns its terminal, prints those diagnostics
+directly as before.
 
 So the wrapped agent can *find* its live packet, `run` hands it an environment
 handshake. For known agents this is the backup channel (the packet already

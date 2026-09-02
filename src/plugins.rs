@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,8 @@ use false_agent_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+const STDERR_TAIL_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PluginDefinition {
@@ -266,6 +269,8 @@ pub struct PluginSession {
     input: Option<ChildStdin>,
     responses: Receiver<Result<RpcResponse, String>>,
     reader: Option<JoinHandle<()>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    stderr_reader: Option<JoinHandle<()>>,
     next_id: u64,
     timeout: Duration,
     pub metadata: PluginInfo,
@@ -284,7 +289,7 @@ impl PluginSession {
             .current_dir(repo_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -295,6 +300,7 @@ impl PluginSession {
             .with_context(|| format!("failed to spawn plugin `{id}`"))?;
         let input = child.stdin.take().context("plugin stdin was not piped")?;
         let output = child.stdout.take().context("plugin stdout was not piped")?;
+        let stderr = child.stderr.take().context("plugin stderr was not piped")?;
         let (sender, responses) = sync_channel(8);
         let reader = std::thread::spawn(move || {
             let mut output = BufReader::new(output);
@@ -313,6 +319,9 @@ impl PluginSession {
                 }
             }
         });
+        let stderr_tail = Arc::new(Mutex::new(Vec::new()));
+        let captured_stderr = Arc::clone(&stderr_tail);
+        let stderr_reader = std::thread::spawn(move || capture_stderr(stderr, &captured_stderr));
         let unavailable = PluginInfo {
             id: PluginId::new("uninitialized").map_err(anyhow::Error::from)?,
             name: "uninitialized".into(),
@@ -324,6 +333,8 @@ impl PluginSession {
             input: Some(input),
             responses,
             reader: Some(reader),
+            stderr: stderr_tail,
+            stderr_reader: Some(stderr_reader),
             next_id: 1,
             timeout: Duration::from_millis(definition.timeout_ms),
             metadata: unavailable,
@@ -360,6 +371,15 @@ impl PluginSession {
     }
 
     pub fn call<P: serde::Serialize, R: serde::de::DeserializeOwned>(
+        &mut self,
+        method: &str,
+        params: P,
+    ) -> Result<R> {
+        let result = self.call_inner(method, params);
+        result.map_err(|error| self.with_stderr(error))
+    }
+
+    fn call_inner<P: serde::Serialize, R: serde::de::DeserializeOwned>(
         &mut self,
         method: &str,
         params: P,
@@ -409,6 +429,20 @@ impl PluginSession {
         .context("plugin returned an invalid result")
     }
 
+    fn with_stderr(&self, error: anyhow::Error) -> anyhow::Error {
+        let tail = self
+            .stderr
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let stderr = String::from_utf8_lossy(&tail);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            error
+        } else {
+            error.context(format!("plugin stderr: {stderr}"))
+        }
+    }
+
     fn shutdown(&mut self) {
         if self.input.is_some() {
             let _: Result<Value> = self.call(
@@ -449,6 +483,24 @@ impl Drop for PluginSession {
         self.shutdown();
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
+        }
+        if let Some(reader) = self.stderr_reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+fn capture_stderr(mut stderr: impl Read, tail: &Mutex<Vec<u8>>) {
+    let mut buffer = [0_u8; 1024];
+    while let Ok(read) = stderr.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        let mut tail = tail.lock().unwrap_or_else(|poison| poison.into_inner());
+        tail.extend_from_slice(&buffer[..read]);
+        let excess = tail.len().saturating_sub(STDERR_TAIL_BYTES);
+        if excess > 0 {
+            tail.drain(..excess);
         }
     }
 }
@@ -617,6 +669,40 @@ mod tests {
         .to_string();
         assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn session_captures_plugin_stderr_in_the_failure() {
+        let wrong = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "result": {
+                "plugin": {"id": "teko", "name": "fake", "version": "1", "kind": "work"},
+                "selected_protocol": {"major": 1, "minor": 0},
+                "capabilities": [{"id": "work.v1", "methods": ["work.current"]}],
+                "limits": false_agent_protocol::plugin::PluginLimits::default()
+            }
+        });
+        let script = format!(
+            "printf 'fatal from plugin\\n' >&2; sleep 0.05; printf %s '{}'; sleep 1",
+            frame(wrong)
+        );
+
+        let error = PluginSession::spawn(
+            "teko",
+            &definition(script, 1_000),
+            Path::new("."),
+            "repo_fixture".parse().unwrap(),
+        )
+        .err()
+        .unwrap();
+        let error = format!("{error:#}");
+
+        assert!(error.contains("unknown response ID"), "{error}");
+        assert!(
+            error.contains("plugin stderr: fatal from plugin"),
+            "{error}"
+        );
     }
 
     #[test]

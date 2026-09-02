@@ -9,6 +9,7 @@ pub mod consistency;
 pub mod context;
 pub mod correlation;
 pub mod coverage;
+mod diagnostics;
 pub mod error;
 pub mod footprint;
 pub mod gate_cli;

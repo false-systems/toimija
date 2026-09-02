@@ -1478,22 +1478,63 @@ fn run_run(args: RunArgs) -> Result<i32> {
     child
         .current_dir(&launch_plan.cwd)
         .envs(session.env(&repo_root));
+    // From here the terminal belongs to the wrapped command. Seal this
+    // process's own stdout/stderr at the descriptor level onto the session
+    // diagnostics log — watcher output, refresh warnings, even panic messages
+    // land there — and hand the saved real terminal to the child. Nothing we
+    // print can interleave with the harness while it runs.
+    let diagnostics_path = session.dir.join("diagnostics.log");
+    let capture = match crate::diagnostics::Capture::borrow(&diagnostics_path) {
+        Ok(capture) => Some(capture),
+        Err(error) => {
+            // Best-effort isolation: say so before the launch, while the
+            // terminal is still ours, rather than fail the run over a log.
+            eprintln!(
+                "toimija run: could not open the diagnostics log ({}); background output may interleave with the command: {error:#}",
+                rel_display(&diagnostics_path, &repo_root)
+            );
+            None
+        }
+    };
+    if let Some(capture) = &capture {
+        child.stdout(
+            capture
+                .child_stdout()
+                .context("failed to hand the wrapped command our stdout")?,
+        );
+        child.stderr(
+            capture
+                .child_stderr()
+                .context("failed to hand the wrapped command our stderr")?,
+        );
+    }
     let launched = supervise_agent(&mut child);
 
     // 6. Stop the watcher and join, whatever happened to the command. A loop
     //    error (e.g. a mid-run refresh failure) is reported, but the wrapped
     //    command's status still wins the exit code — the child has already run.
     stop.store(true, Ordering::Relaxed);
-    match watcher.join() {
+    let watcher_result = watcher.join();
+    // The wrapped command is gone and the watcher with it: take the terminal
+    // back. The capture count is final once the watcher is joined.
+    let captured = capture.map_or(0, crate::diagnostics::Capture::finish);
+    match watcher_result {
         Ok(Ok(())) => {}
         Ok(Err(error)) => eprintln!("toimija run: watcher stopped on error: {error:#}"),
-        // The default panic hook already printed message+location from inside
-        // the thread; still, include the payload here so the join site is not
-        // silent about *what* panicked.
+        // The default panic hook already printed message+location — into the
+        // capture log, if it happened while the terminal was sealed; still,
+        // include the payload here so the join site is not silent about *what*
+        // panicked.
         Err(payload) => eprintln!(
             "toimija run: watcher thread panicked: {}",
             panic_message(payload.as_ref())
         ),
+    }
+    if captured > 0 {
+        eprintln!(
+            "toimija run: captured {captured} diagnostic line(s) while the wrapped command ran — {}",
+            rel_display(&diagnostics_path, &repo_root)
+        );
     }
 
     // 7. Close the session marker (auto-close on exit), then bookend the session:

@@ -150,6 +150,43 @@ fn run_enters_then_launches_the_command() {
 }
 
 #[test]
+fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "mv .git .git-away; sleep 1; mv .git-away .git; sleep 1",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "diagnostic line(s) while the wrapped command ran",
+        ))
+        .stderr(predicate::str::contains("packet may be stale").not());
+
+    let session_dir = fs::read_dir(temp.path().join(".toimija/sessions"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let diagnostics = fs::read_to_string(session_dir.join("diagnostics.log")).unwrap();
+    assert!(diagnostics.contains("packet may be stale"), "{diagnostics}");
+}
+
+#[test]
 fn run_refuses_to_launch_without_intent() {
     if !git_available() {
         return;
