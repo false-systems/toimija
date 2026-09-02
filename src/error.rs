@@ -15,6 +15,8 @@ pub enum ToimijaError {
     },
     #[error("invalid stewardship config at {path}: {message}")]
     InvalidStewardship { path: PathBuf, message: String },
+    #[error("invalid agents config at {path}: {message}")]
+    InvalidAgents { path: PathBuf, message: String },
     #[error("failed to read config at {path}: {source}")]
     ReadConfig {
         path: PathBuf,

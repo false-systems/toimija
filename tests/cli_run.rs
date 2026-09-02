@@ -306,6 +306,114 @@ fn run_inlines_the_packet_for_gemini() {
     assert!(arg.trim_end().ends_with("Task: check gemini"), "{arg}");
 }
 
+#[cfg(unix)]
+#[test]
+fn run_inlines_the_packet_for_an_agent_configured_in_repo_yaml() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // `aider` is not a built-in agent; only the repo's `agents:` entry teaches
+    // `run` that it accepts the prompt positionally.
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "agents:\n  aider:\n    prompt: positional\n",
+    )
+    .unwrap();
+    let stub = temp.path().join("aider");
+    fs::write(
+        &stub,
+        "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > launch-arg\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&stub).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&stub, permissions).unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--task",
+            "refactor the sea gate",
+            "--",
+            stub.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "delivery: launch prompt with the packet inlined",
+        ));
+
+    let arg = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    assert!(
+        arg.starts_with("Your toimija session packet is below."),
+        "{arg}"
+    );
+    assert!(
+        arg.trim_end().ends_with("Task: refactor the sea gate"),
+        "{arg}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_inlines_the_packet_behind_a_configured_flag() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "agents:\n  flag-agent:\n    prompt: --message\n",
+    )
+    .unwrap();
+    // The configured flag arrives as $1, the composed prompt as $2 — the
+    // argv shape a `--message <prompt>` CLI expects.
+    let stub = temp.path().join("flag-agent");
+    fs::write(
+        &stub,
+        "#!/bin/sh\nprintf '%s' \"$1\" > flag-arg\nprintf '%s' \"$2\" > launch-arg\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&stub).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&stub, permissions).unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--task",
+            "flag delivery",
+            "--",
+            stub.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "delivery: launch prompt with the packet inlined",
+        ));
+
+    let flag = fs::read_to_string(temp.path().join("flag-arg")).unwrap();
+    assert_eq!(flag, "--message");
+    let arg = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    assert!(arg.contains("# Toimija Context"), "{arg}");
+    assert!(arg.trim_end().ends_with("Task: flag delivery"), "{arg}");
+}
+
 #[test]
 fn run_banners_env_var_only_delivery_for_unknown_agents() {
     if !git_available() {

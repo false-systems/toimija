@@ -126,7 +126,9 @@ agent command's exit status (signal termination is preserved too, e.g. SIGTERM �
 **Wrapped means used** (proposal 0006). `run` refuses to launch without either
 `--intent` or active Teko work; `--intent unknown` remains the explicit escape
 hatch for exploratory sessions. For known agents (`claude`, `codex`, `gemini`
-— matched by basename; all use positional prompt delivery)
+— matched by basename; all use positional prompt delivery) — and for any agent
+configured under `agents:` in `.toimija/repo.yaml` (`prompt: positional`, or a
+flag such as `prompt: --message`; configuration wins over the built-ins) —
 the packet is delivered **in the launch prompt
 itself**: `run` appends one positional argument carrying the contract framing,
 the entry packet inlined at the session budget, the live packet path, and your

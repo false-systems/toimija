@@ -29,12 +29,17 @@ pub trait WorkerAdapter {
 
 pub struct BuiltInAdapter {
     program: String,
+    prompt_style: crate::adapters::agents::PromptStyle,
 }
 
 impl BuiltInAdapter {
-    pub fn new(program: impl Into<String>) -> Self {
+    pub fn new(
+        program: impl Into<String>,
+        prompt_style: crate::adapters::agents::PromptStyle,
+    ) -> Self {
         Self {
             program: program.into(),
+            prompt_style,
         }
     }
 }
@@ -60,7 +65,13 @@ impl WorkerAdapter for BuiltInAdapter {
     ) -> Result<LaunchPlan> {
         let mut args = arguments.to_vec();
         if let Some(prompt) = prompt {
-            args.push(prompt);
+            match &self.prompt_style {
+                crate::adapters::agents::PromptStyle::Positional => args.push(prompt),
+                crate::adapters::agents::PromptStyle::Flag(flag) => {
+                    args.push(flag.clone());
+                    args.push(prompt);
+                }
+            }
         }
         Ok(LaunchPlan {
             program: self.program.clone(),
@@ -211,7 +222,12 @@ impl WorkerAdapter for Adapter {
     }
 }
 
-pub fn select(program: &str, repo_root: &Path, repository: &RepositoryPoint) -> Result<Adapter> {
+pub fn select(
+    program: &str,
+    repo_root: &Path,
+    repository: &RepositoryPoint,
+    prompt_style: crate::adapters::agents::PromptStyle,
+) -> Result<Adapter> {
     let id = basename(program);
     if let Some(definition) = discover(id, PluginKind::Worker)? {
         let session =
@@ -221,7 +237,7 @@ pub fn select(program: &str, repo_root: &Path, repository: &RepositoryPoint) -> 
             definition,
         })));
     }
-    Ok(Adapter::BuiltIn(BuiltInAdapter::new(program)))
+    Ok(Adapter::BuiltIn(BuiltInAdapter::new(program, prompt_style)))
 }
 
 pub fn validate_launch_plan(
