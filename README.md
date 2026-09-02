@@ -205,7 +205,7 @@ After opening a pull request from the exact clean destination tree, bind it to
 the completed bounded run:
 
 ```bash
-toimija correlate-pr https://github.com/false-systems/kisko/pull/171
+toimija correlate-pr https://github.com/false-systems/ohjaa/pull/4
 ```
 
 The command validates the local `origin`, session, worker result, repository
@@ -215,7 +215,7 @@ session and repository points, worker run, commit, evidence, and declared PR
 reference. The producing session is derived from Toimija's finalized run
 record; `--run` selects a specific run and `--session` asserts its producer.
 `toimija explain-work` displays the link; `sauma why
-github:false-systems/kisko#171` walks it.
+github:false-systems/ohjaa#4` walks it.
 
 ### Worker providers
 
