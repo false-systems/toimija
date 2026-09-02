@@ -123,6 +123,13 @@ Known agents such as `codex`, `claude`, and `gemini` receive the packet in their
 launch prompt. Other commands receive the session paths through environment
 variables and are reported honestly as environment-only delivery.
 
+While the harness owns the terminal, toimija seals its own stdout and stderr
+onto `.toimija/sessions/<id>/diagnostics.log` at the file-descriptor level
+and hands the saved terminal to the wrapped command: watcher output, refresh
+warnings, even panic messages land in the log, and the count is summarized
+after the command exits. Plugin stderr is captured and attached to provider
+failures instead of being interleaved with the harness output.
+
 Use `--` before harness arguments:
 
 ```bash
@@ -415,7 +422,7 @@ The runtime boundary is intentionally narrow:
 - no network access or plugin downloads;
 - no hidden daemon or background service;
 - no shell interpolation of plugin-returned launch plans;
-- framed protocol output on stdout and provider logs on stderr;
+- framed protocol output on stdout and bounded provider stderr capture;
 - initialization and request timeouts;
 - response and request-ID validation;
 - bounded protocol values and collections;
