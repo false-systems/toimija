@@ -18,6 +18,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # The arc runners' egress is rate-limited for anonymous git-over-HTTPS
+      # ("could not read Username for 'https://github.com'"), which breaks
+      # cargo's fetch of the public git dependencies (the protocol crate, the
+      # optional sykli SDK). Present the job's read-only token for the org's
+      # URLs: authenticated reads are never anonymous-limited, and the rewrite
+      # is scoped to false-systems so nothing else changes behavior.
+      - name: Authenticate git dependency fetches
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/false-systems/".insteadOf "https://github.com/false-systems/"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -65,6 +77,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      # Same rationale as the rust job: a cold cache on these runners must
+      # still be able to fetch the public git dependencies.
+      - name: Authenticate git dependency fetches
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/false-systems/".insteadOf "https://github.com/false-systems/"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
