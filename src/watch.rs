@@ -588,12 +588,31 @@ fn relevant(event: &Event) -> bool {
 /// directory. Matched on path tails/components so it is robust to the absolute,
 /// possibly symlink-resolved paths notify reports.
 fn is_ignored(path: &Path) -> bool {
-    if is_generated_output(path) {
+    if is_generated_output(path) || is_toimija_git_footprint(path) {
         return true;
     }
     path.components().any(|component| {
         matches!(component, Component::Normal(name) if IGNORED_DIRS.iter().any(|dir| name == *dir))
     })
+}
+
+/// Toimija's own Git writes must not refresh the packet that caused them.
+/// Keep HEAD, index, reflogs, and packed refs relevant: they can describe a
+/// real repository transition rather than observer bookkeeping.
+fn is_toimija_git_footprint(path: &Path) -> bool {
+    let parts: Vec<_> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .collect();
+    parts
+        .windows(2)
+        .any(|pair| pair == [".git", "objects"] || pair == ["refs", "toimija"])
+        || parts
+            .windows(2)
+            .any(|pair| pair[0] == ".git" && pair[1].starts_with("toimija-snapshot-"))
 }
 
 fn is_generated_output(path: &Path) -> bool {
@@ -988,6 +1007,19 @@ mod tests {
         assert!(!is_ignored(&PathBuf::from("/repo/src/main.rs")));
         assert!(!is_ignored(&PathBuf::from("/repo/.git/HEAD")));
         assert!(!is_ignored(&PathBuf::from("/repo/.git/index")));
+        assert!(!is_ignored(&PathBuf::from("/repo/.git/logs/HEAD")));
+        assert!(!is_ignored(&PathBuf::from("/repo/.git/packed-refs")));
+    }
+
+    #[test]
+    fn toimija_git_footprint_is_ignored_without_hiding_git_state() {
+        assert!(is_ignored(&PathBuf::from("/repo/.git/objects/ab/cdef")));
+        assert!(is_ignored(&PathBuf::from(
+            "/repo/.git/toimija-snapshot-123.index"
+        )));
+        assert!(is_ignored(&PathBuf::from(
+            "/repo/.git/refs/toimija/snapshots/demo"
+        )));
     }
 
     #[test]
