@@ -12,7 +12,7 @@ permissions:
 jobs:
   rust:
     name: Rust
-    runs-on: arc-arm64
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
@@ -42,7 +42,7 @@ jobs:
             exit 0
           fi
           if ! command -v apt-get >/dev/null 2>&1; then
-            echo "::error::runner is missing cc and apt-get; install a C toolchain on the arc-arm64 runner image"
+            echo "::error::runner is missing cc and apt-get; install a C toolchain on the runner image"
             exit 1
           fi
           sudo_cmd=""
@@ -71,7 +71,7 @@ jobs:
   # (docs/qa/ci-quality-gates.md: never silently swap a required gate).
   sykli:
     name: Sykli
-    runs-on: arc-arm64
+    runs-on: ubuntu-24.04-arm
     continue-on-error: true
 
     steps:
@@ -98,7 +98,7 @@ jobs:
             exit 0
           fi
           if ! command -v apt-get >/dev/null 2>&1; then
-            echo "::error::runner is missing cc and apt-get; install a C toolchain on the arc-arm64 runner image"
+            echo "::error::runner is missing cc and apt-get; install a C toolchain on the runner image"
             exit 1
           fi
           sudo_cmd=""
