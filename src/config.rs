@@ -25,7 +25,17 @@ pub struct RepoConfig {
     pub gates: BTreeMap<String, crate::gates::GateConfig>,
     pub gate_groups: BTreeMap<String, crate::gates::GateGroupConfig>,
     pub stewardship: StewardshipSection,
+    pub agents: BTreeMap<String, AgentPromptConfig>,
     pub boundaries: Vec<String>,
+}
+
+/// How a named agent CLI accepts the composed launch prompt (proposal 0006
+/// Part C): `positional`, or a literal flag such as `--message`. Names resolve
+/// by basename at launch; the executable itself is always named by the user
+/// after `--` — configuration describes delivery, never paths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentPromptConfig {
+    pub prompt: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -133,6 +143,7 @@ impl RepoConfig {
                 source,
             })?;
         config.validate_stewardship(&path)?;
+        config.validate_agents(&path)?;
         info!(event = "toimija.config.loaded", path = %path.display());
         Ok(config)
     }
@@ -192,6 +203,22 @@ impl RepoConfig {
                 path: path.to_path_buf(),
                 message: "stewardship.history_max_records must be greater than zero".to_string(),
             });
+        }
+        Ok(())
+    }
+
+    /// `agents:` entries teach `run` how a user-named CLI accepts the composed
+    /// launch prompt: `positional`, or a flag starting with `-`. Anything else
+    /// would build a broken argv at launch, so it is rejected here, named —
+    /// the same fail-fast contract as the stewardship checks above.
+    fn validate_agents(&self, path: &Path) -> Result<(), ToimijaError> {
+        for (name, agent) in &self.agents {
+            if let Err(message) = crate::adapters::agents::PromptStyle::from_config(&agent.prompt) {
+                return Err(ToimijaError::InvalidAgents {
+                    path: path.to_path_buf(),
+                    message: format!("agents.{name}: {message}"),
+                });
+            }
         }
         Ok(())
     }
@@ -271,6 +298,47 @@ mod tests {
         assert!(config.context.safe_to_ignore.is_empty());
         assert!(!config.validation.replace_inferred);
         assert_eq!(config.stewardship, StewardshipSection::default());
+        assert!(config.agents.is_empty());
+    }
+
+    #[test]
+    fn loads_and_validates_configured_agents() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".toimija");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("repo.yaml"),
+            "repo:\n  name: demo\n  role: local tool\nagents:\n  aider:\n    prompt: --message\n  opencode:\n    prompt: positional\n",
+        )
+        .unwrap();
+
+        let config = RepoConfig::load(temp.path()).unwrap();
+        assert_eq!(
+            config
+                .agents
+                .get("aider")
+                .map(|agent| agent.prompt.as_str()),
+            Some("--message")
+        );
+        assert_eq!(
+            config
+                .agents
+                .get("opencode")
+                .map(|agent| agent.prompt.as_str()),
+            Some("positional")
+        );
+
+        // Anything that is not `positional` or a `-flag` would build a broken
+        // argv at launch: rejected at load, named.
+        std::fs::write(
+            dir.join("repo.yaml"),
+            "repo:\n  name: demo\nagents:\n  aider:\n    prompt: message\n",
+        )
+        .unwrap();
+        let error = RepoConfig::load(temp.path()).unwrap_err();
+        let rendered = error.to_string();
+        assert!(rendered.contains("agents.aider"), "{rendered}");
+        assert!(rendered.contains("`--message`"), "{rendered}");
     }
 
     #[test]

@@ -120,8 +120,12 @@ recognized agent instruction files and adds best-effort Git refresh hooks.
 10. Normalizes the result and, for bound work, reports it to the work provider.
 
 Known agents such as `codex`, `claude`, and `gemini` receive the packet in their
-launch prompt. Other commands receive the session paths through environment
-variables and are reported honestly as environment-only delivery.
+launch prompt. An `agents:` entry in `.toimija/repo.yaml` teaches `run` how
+any other CLI accepts it — `prompt: positional`, or a flag such as
+`prompt: --message` — so the packet (and `--task`) can be inlined for any
+harness without patching toimija. Other commands receive the session paths
+through environment variables and are reported honestly as environment-only
+delivery.
 
 While the harness owns the terminal, toimija seals its own stdout and stderr
 onto `.toimija/sessions/<id>/diagnostics.log` at the file-descriptor level
@@ -535,6 +539,13 @@ gates:
 gate_groups:
   rust-full:
     gates: [rust-format, rust-test]
+
+# Teach `run` how other agent CLIs accept the composed launch prompt
+# (`positional`, or a flag). Names resolve by basename; configuration never
+# supplies executable paths — the harness is always named after `--`.
+agents:
+  # aider:
+  #   prompt: --message
 
 boundaries:
   - Do not add network calls.

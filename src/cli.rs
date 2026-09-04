@@ -411,7 +411,8 @@ pub struct RunArgs {
     #[arg(long = "scope", value_name = "PATH")]
     pub scope: Vec<String>,
     /// The task for the agent, delivered inside the composed launch prompt of a
-    /// known agent (`claude`, `codex`, `gemini`). Pass the task here, not as the agent's
+    /// known agent (`claude`, `codex`, `gemini`) or one configured under
+    /// `agents:` in `.toimija/repo.yaml`. Pass the task here, not as the agent's
     /// own positional argument.
     #[arg(long)]
     pub task: Option<String>,
@@ -1472,15 +1473,20 @@ fn run_run(args: RunArgs) -> Result<i32> {
         .command
         .split_first()
         .expect("clap `required = true` guarantees at least one argument");
-    // Proposal 0006 Part C: for a known agent the packet travels in argv — in
-    // context by construction. Anything else keeps the env-var handshake, and
-    // says so instead of silently degrading.
+    // Proposal 0006 Part C: for a known or configured agent the packet travels
+    // in argv — in context by construction. Anything else keeps the env-var
+    // handshake, and says so instead of silently degrading. The `agents:`
+    // section of repo.yaml extends the built-in table so any harness can be
+    // taught delivery without patching this crate.
+    let repo_config = RepoConfig::load_optional(&repo_root)?
+        .unwrap_or_else(|| RepoConfig::default_for(&repo_root));
     let live_packet = session.dir.join("current.md");
     let composed = crate::adapters::agents::compose_launch_prompt(
         program,
         &entry.markdown,
         &live_packet,
         args.task.as_deref(),
+        &repo_config.agents,
     );
     match &composed {
         Some(_) => eprintln!(
@@ -1491,7 +1497,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
             if args.task.is_some() {
                 eprintln!(
                     "toimija run: --task travels in the composed launch prompt and `{program}` \
-                     is not a known agent; give it its task yourself"
+                     is not a known or configured agent; give it its task yourself"
                 );
             }
         }
@@ -1500,7 +1506,10 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let execution = entry_execution
         .as_ref()
         .context("session refresh omitted its execution context")?;
-    let mut adapter = crate::workers::select(program, &repo_root, &execution.repository)?;
+    let prompt_style = crate::adapters::agents::prompt_style(program, &repo_config.agents)
+        .unwrap_or(crate::adapters::agents::PromptStyle::Positional);
+    let mut adapter =
+        crate::workers::select(program, &repo_root, &execution.repository, prompt_style)?;
     let descriptor = adapter.describe()?;
     let launch_plan = adapter.prepare(execution, &repo_root, &session.dir, rest, composed)?;
     eprintln!(
