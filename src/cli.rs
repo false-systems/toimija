@@ -415,6 +415,15 @@ pub struct RunArgs {
     /// own positional argument.
     #[arg(long)]
     pub task: Option<String>,
+    /// Sealed cycle digest for this worker leg; requires --cycle-leg and --cycle-attempt.
+    #[arg(long, requires_all = ["cycle_leg", "cycle_attempt"])]
+    pub cycle: Option<String>,
+    /// Cycle leg name; requires --cycle and --cycle-attempt.
+    #[arg(long, requires_all = ["cycle", "cycle_attempt"])]
+    pub cycle_leg: Option<String>,
+    /// Zero-based cycle attempt; requires --cycle and --cycle-leg.
+    #[arg(long, requires_all = ["cycle", "cycle_leg"])]
+    pub cycle_attempt: Option<u32>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
@@ -1269,6 +1278,27 @@ fn run_run(args: RunArgs) -> Result<i32> {
     if args.intent.is_none() && active_work.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
+    if let (Some(cycle), Some(leg), Some(attempt)) =
+        (&args.cycle, &args.cycle_leg, args.cycle_attempt)
+    {
+        let live_sessions =
+            sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
+        let duplicate = live_sessions.sessions.iter().find(|session| {
+            session.liveness != sessions::Liveness::Closed
+                && session.marker.cycle_action.as_ref().is_some_and(|action| {
+                    action.cycle == *cycle
+                        && action.leg == *leg
+                        && action.attempt == attempt
+                        && action.repository_point == point.id.to_string()
+                })
+        });
+        if let Some(session) = duplicate {
+            anyhow::bail!(
+                "cycle action {cycle}/{leg}/{attempt} is already live in session {}",
+                session.marker.id
+            );
+        }
+    }
 
     // 1. Open a session: its own packet directory + marker, so concurrent
     //    wrapped agents do not race on the single repo-level packet.
@@ -1279,6 +1309,16 @@ fn run_run(args: RunArgs) -> Result<i32> {
         args.scope.clone(),
     )
     .context("failed to open the toimija session")?;
+    if let (Some(cycle), Some(leg), Some(attempt)) =
+        (&args.cycle, &args.cycle_leg, args.cycle_attempt)
+    {
+        session.record_cycle_action(session::CycleAction {
+            cycle: cycle.clone(),
+            leg: leg.clone(),
+            attempt,
+            repository_point: point.id.to_string(),
+        })?;
+    }
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.

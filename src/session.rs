@@ -83,6 +83,9 @@ pub struct SessionMarker {
     /// `unknown`.
     #[serde(default)]
     pub scope: Vec<String>,
+    /// Immutable identity of a cycle leg when Ohjaa launched this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_action: Option<CycleAction>,
     pub started_at: u64,
     /// Unix seconds of the last observed activity — stamped by `run`'s watcher
     /// on each packet refresh (proposal 0002). Staleness measures inactivity
@@ -95,6 +98,14 @@ pub struct SessionMarker {
     /// Wrapped command's exit code, recorded on close when known.
     #[serde(default)]
     pub exit_status: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CycleAction {
+    pub cycle: String,
+    pub leg: String,
+    pub attempt: u32,
+    pub repository_point: String,
 }
 
 /// Compose a session id as `<unix-secs>-<pid>` (decision D1). Roughly sortable by
@@ -139,6 +150,7 @@ impl Session {
             head: None,
             intent,
             scope,
+            cycle_action: None,
             started_at,
             last_seen_at: Some(started_at),
             status: SessionStatus::Active,
@@ -162,6 +174,11 @@ impl Session {
     pub fn record_git(&mut self, branch: Option<String>, head: Option<String>) -> Result<()> {
         self.marker.branch = branch;
         self.marker.head = head;
+        self.write_marker()
+    }
+
+    pub fn record_cycle_action(&mut self, action: CycleAction) -> Result<()> {
+        self.marker.cycle_action = Some(action);
         self.write_marker()
     }
 

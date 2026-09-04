@@ -348,6 +348,7 @@ mod tests {
             head: Some("entry-head".to_string()),
             intent: Some("finish handoff".to_string()),
             scope: Vec::new(),
+            cycle_action: None,
             started_at: 100,
             last_seen_at: None,
             status,
