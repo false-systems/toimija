@@ -354,6 +354,11 @@ mod tests {
             status,
             closed_at: None,
             exit_status: None,
+
+            entry_upstream_oid: None,
+            entry_open_prs: None,
+            effects_observed: Vec::new(),
+            effects_coverage: Default::default(),
         }
     }
 

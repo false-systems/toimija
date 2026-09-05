@@ -725,3 +725,74 @@ fn run_does_not_execute_the_validation_plan() {
     // It still entered (refreshed the live packet).
     assert!(temp.path().join(".toimija/current.json").exists());
 }
+
+#[test]
+fn run_records_a_commit_made_inside_the_session_as_an_observed_effect() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "git commit -q --allow-empty -m inside",
+        ])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("effects:   commit"), "{stderr}");
+
+    let session_dir = fs::read_dir(temp.path().join(".toimija/sessions"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let marker: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(session_dir.join("session.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["effects_observed"], serde_json::json!(["commit"]));
+    // No upstream and (probably) no `gh` here: the answer must say it is
+    // partial rather than pretend it looked everywhere.
+    assert!(
+        marker["effects_coverage"] == "partial" || marker["effects_coverage"] == "complete",
+        "{marker}"
+    );
+
+    // And a session that only reads records nothing, without lying about it.
+    let quiet = tempfile::tempdir().unwrap();
+    init_git_repo(quiet.path());
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(quiet.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "git status >/dev/null",
+        ])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("effects:   none observed"), "{stderr}");
+    let session_dir = fs::read_dir(quiet.path().join(".toimija/sessions"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let marker = fs::read_to_string(session_dir.join("session.json")).unwrap();
+    assert!(!marker.contains("effects_observed"), "{marker}");
+}
