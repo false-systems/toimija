@@ -405,6 +405,17 @@ toimija handoff "redirect fixed; rerun the integration gate"
 toimija handoff --show <session-id>
 ```
 
+Every closed session also records the **effects** it had outside the working
+tree, detected after the fact from Git and `gh`: `commit` when HEAD moved,
+`push` when the branch's upstream ref moved to something HEAD contains,
+`open_pr` when a pull request for the branch appeared. `toimija sessions --json`
+exposes them as `effects_observed`, with `effects_coverage` set to `partial`
+whenever an inspection could not run (no `gh`, no answer within its deadline,
+git unavailable) — so an effect that was not seen is never read as an effect
+that did not happen. Consumers such as Ohjaa compare this list with what a
+cycle declared. This is detection, not prevention; preventing an undeclared
+push is a sandbox's job (Rauha), not a Git observer's.
+
 Closed sessions are summarized in `.toimija/history.jsonl`. Stewardship remains
 explicit and bounded:
 
