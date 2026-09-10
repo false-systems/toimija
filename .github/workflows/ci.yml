@@ -18,7 +18,7 @@ concurrency:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-24.04-arm
+    runs-on: arc-arm64
 
     steps:
       - name: Checkout
@@ -77,7 +77,7 @@ jobs:
   # (docs/qa/ci-quality-gates.md: never silently swap a required gate).
   sykli:
     name: Sykli
-    runs-on: ubuntu-24.04-arm
+    runs-on: arc-arm64
     continue-on-error: true
 
     steps:
