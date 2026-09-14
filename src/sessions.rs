@@ -40,7 +40,8 @@ pub const DEFAULT_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 /// The asymmetry is deliberate and one-directional: display may give
 /// `Unknown` the benefit of the doubt, but deletion (`prunable`) demands
 /// `Dead` specifically — "not provably alive" is never "provably dead".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PidCheck {
     /// The process exists: `kill -0` succeeded, or failed with EPERM
     /// (it is alive under another user, just not signalable by us).
@@ -89,6 +90,8 @@ pub struct SessionView {
     #[serde(flatten)]
     pub marker: SessionMarker,
     pub liveness: Liveness,
+    /// The process probe, distinct from heartbeat age. Never persisted in the marker.
+    pub pid_check: PidCheck,
     pub packet: String,
     pub handoffs: usize,
 }
@@ -141,6 +144,7 @@ pub fn report(
         sessions.push(SessionView {
             marker,
             liveness,
+            pid_check,
             packet,
             handoffs,
         });
@@ -766,6 +770,55 @@ mod tests {
     }
 
     #[test]
+    fn report_preserves_process_evidence_without_rewriting_the_marker() {
+        struct ProbeRunner(i32, &'static str);
+        impl CommandRunner for ProbeRunner {
+            fn run(
+                &self,
+                _cwd: &Path,
+                program: &str,
+                args: &[&str],
+            ) -> std::io::Result<CommandOutput> {
+                assert_eq!(program, "kill");
+                assert_eq!(args, ["-0", "4242"]);
+                probe(self.0, self.1)
+            }
+            fn run_with_env(
+                &self,
+                cwd: &Path,
+                program: &str,
+                args: &[&str],
+                _env: &[(&str, &std::ffi::OsStr)],
+            ) -> std::io::Result<CommandOutput> {
+                self.run(cwd, program, args)
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(SESSIONS_SUBDIR).join("100-1");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+        let raw = serde_json::to_string(&marker("100-1", SessionStatus::Active, 100)).unwrap();
+        fs::write(&path, &raw).unwrap();
+        for (status, stderr, expected) in [
+            (0, "", "alive"),
+            (1, "kill: No such process", "dead"),
+            (1, "kill: Operation not permitted", "alive"),
+            (1, "unexpected failure", "unknown"),
+        ] {
+            let report = report(
+                &ProbeRunner(status, stderr),
+                temp.path(),
+                DEFAULT_STALE_AFTER_SECS,
+            )
+            .unwrap();
+            let json = serde_json::to_value(report).unwrap();
+            assert_eq!(json["sessions"][0]["liveness"], "stale");
+            assert_eq!(json["sessions"][0]["pid_check"], expected);
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
+
+    #[test]
     fn probe_exit_zero_is_alive() {
         assert_eq!(classify_kill_probe(probe(0, "")), PidCheck::Alive);
     }
@@ -989,6 +1042,7 @@ mod tests {
                 effects_coverage: Default::default(),
             },
             liveness,
+            pid_check: PidCheck::Unknown,
             packet: format!(".toimija/sessions/{id}/current.md"),
             handoffs: 0,
         }

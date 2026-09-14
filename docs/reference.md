@@ -290,7 +290,8 @@ WARNINGS
 ```
 
 `sessions` is read-only and local: it reports presence, resolves best-effort
-liveness (`active` / `stale` / `closed`), and warns when sessions overlap (same
+liveness (`active` / `stale` / `closed`), exposes the separate `pid_check`
+(`alive` / `dead` / `unknown`) in JSON, and warns when sessions overlap (same
 branch, same worktree, intersecting declared scope, unknown intent, …).
 Staleness measures **inactivity, not lifetime**: `run`'s watcher stamps a
 `last_seen_at` heartbeat on the marker at every packet refresh, and a session

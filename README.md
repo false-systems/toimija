@@ -390,7 +390,11 @@ toimija sessions --json
 
 The session listing reports live, stale, and closed sessions plus descriptive
 overlap warnings for branch, worktree, intent, and scope. These are awareness
-signals, not locks or assignments.
+signals, not locks or assignments. JSON also exposes `pid_check` (`alive`,
+`dead`, or `unknown`), the process probe separately from heartbeat age. A
+`stale` session with a `dead` PID is no longer running under that PID; a
+`stale` session with an `alive` or `unknown` PID is still uncertain. PID reuse
+can keep an obsolete session uncertain. Listing never rewrites markers.
 
 A wrapped agent can update its own declaration:
 
