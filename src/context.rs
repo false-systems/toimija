@@ -59,9 +59,9 @@ pub struct ContextPacket {
     /// repo-level packets. Additive per the packet contract's evolution rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionBlock>,
-    /// Sauma attestation envelope for the serialized packet. The digest is over
-    /// this artifact serialized with `sauma: None`; serde's struct field order is
-    /// the canonical order for v1.
+    /// Sauma attestation envelope for the serialized packet. Current producers
+    /// emit v2; the option remains only so old documents can deserialize before
+    /// the verification boundary rejects unattested packets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sauma: Option<SaumaEnvelope>,
 }
