@@ -169,6 +169,35 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
 }
 
 #[test]
+fn verify_rejects_a_packet_after_its_sauma_envelope_is_removed() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+    let path = temp.path().join(".toimija/current.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("sauma");
+    fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let output = toimija(temp.path())
+        .args(["current", "--verify", "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["status"], "invalid_packet");
+    assert_eq!(report["message"], "packet has no Sauma envelope");
+}
+
+#[test]
 fn verify_without_a_packet_is_missing_packet() {
     if !git_available() {
         return;

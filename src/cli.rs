@@ -2330,6 +2330,11 @@ fn verify_status(packet_path: &std::path::Path, live: &git::GitState) -> VerifyS
                     algorithm: packet.consistency.algorithm,
                 };
             }
+            if packet.sauma.is_none() {
+                return VerifyStatus::InvalidPacket {
+                    message: "packet has no Sauma envelope".to_string(),
+                };
+            }
             match crate::sauma::verify_value(*raw) {
                 Ok(Some((expected, actual))) => {
                     return VerifyStatus::SaumaDigestMismatch { expected, actual };
