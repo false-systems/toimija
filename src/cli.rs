@@ -2346,6 +2346,18 @@ fn verify_status(packet_path: &std::path::Path, live: &git::GitState) -> VerifyS
                     };
                 }
             }
+            let envelope = packet.sauma.as_ref().expect("checked above");
+            if envelope.schema != packet.schema {
+                return VerifyStatus::InvalidPacket {
+                    message: "Sauma envelope schema differs from packet schema".to_string(),
+                };
+            }
+            if envelope.anchored_at != packet.consistency.token {
+                return VerifyStatus::InvalidPacket {
+                    message: "Sauma envelope anchor differs from packet consistency token"
+                        .to_string(),
+                };
+            }
             let artifact_digest = packet.sauma.as_ref().map(|sauma| sauma.digest.clone());
             let packet_refresh_token = packet.refresh_token.clone();
             let stored = packet.consistency;
