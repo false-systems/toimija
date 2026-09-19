@@ -174,6 +174,16 @@ pub fn verify_value(value: serde_json::Value) -> serde_json::Result<Option<(Stri
     };
     let envelope: SaumaEnvelope = serde_json::from_value(envelope)?;
     reject_unsupported(&envelope)?;
+    if value
+        .get("schema")
+        .or_else(|| value.get("record"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|schema| schema != envelope.schema)
+    {
+        return Err(serde_json::Error::custom(
+            "Sauma envelope schema differs from artifact schema",
+        ));
+    }
     let actual = artifact_digest_value(&value);
     Ok((actual != envelope.digest).then_some((envelope.digest, actual)))
 }

@@ -198,6 +198,51 @@ fn verify_rejects_a_packet_after_its_sauma_envelope_is_removed() {
 }
 
 #[test]
+fn verify_rejects_digest_valid_envelopes_bound_to_the_wrong_schema_or_anchor() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+    let path = temp.path().join(".toimija/current.json");
+    let original = fs::read_to_string(&path).unwrap();
+
+    for (field, replacement, message) in [
+        (
+            "schema",
+            "other-artifact.v1",
+            "Sauma envelope schema differs from artifact schema",
+        ),
+        (
+            "anchored_at",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "Sauma envelope anchor differs from packet consistency token",
+        ),
+    ] {
+        let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
+        value["sauma"][field] = serde_json::json!(replacement);
+        let digest = toimija::sauma::artifact_digest_value(&value);
+        value["sauma"]["digest"] = serde_json::json!(digest);
+        fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+        let output = toimija(temp.path())
+            .args(["current", "--verify", "--json"])
+            .assert()
+            .failure()
+            .get_output()
+            .stdout
+            .clone();
+        let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(report["status"], "invalid_packet");
+        assert_eq!(report["message"], message);
+    }
+}
+
+#[test]
 fn verify_without_a_packet_is_missing_packet() {
     if !git_available() {
         return;

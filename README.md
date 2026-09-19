@@ -378,7 +378,8 @@ toimija verify
 Same-size edits, index changes, conflicts, and unsafe Git operations cannot hide
 behind timestamps. Sauma envelopes must be v1 or v2; unknown versions are
 rejected instead of being interpreted as legacy body-only seals, and packets
-with no envelope are refused.
+with no envelope are refused. The envelope schema and anchor must match the
+packet schema and consistency token.
 
 ## Sessions and collaboration
 
