@@ -1,3 +1,4 @@
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 
 use crate::consistency;
@@ -111,6 +112,21 @@ pub fn artifact_digest_value(value: &serde_json::Value) -> String {
     digest_value(&covered)
 }
 
+pub fn is_supported_envelope(schema: &str) -> bool {
+    matches!(schema, LEGACY_ENVELOPE_SCHEMA | ENVELOPE_SCHEMA)
+}
+
+fn reject_unsupported(envelope: &SaumaEnvelope) -> serde_json::Result<()> {
+    if is_supported_envelope(&envelope.envelope) {
+        Ok(())
+    } else {
+        Err(serde_json::Error::custom(format!(
+            "unsupported Sauma envelope `{}`",
+            envelope.envelope
+        )))
+    }
+}
+
 pub trait Carrier: Serialize {
     fn sauma_mut(&mut self) -> &mut Option<SaumaEnvelope>;
 }
@@ -143,6 +159,7 @@ pub fn verify<T: Carrier>(artifact: &mut T) -> serde_json::Result<Option<(String
     let Some(envelope) = artifact.sauma_mut().clone() else {
         return Ok(None);
     };
+    reject_unsupported(&envelope)?;
     let value = serde_json::to_value(&*artifact)?;
     let actual = artifact_digest_value(&value);
     Ok((actual != envelope.digest).then_some((envelope.digest, actual)))
@@ -156,6 +173,7 @@ pub fn verify_value(value: serde_json::Value) -> serde_json::Result<Option<(Stri
         return Ok(None);
     };
     let envelope: SaumaEnvelope = serde_json::from_value(envelope)?;
+    reject_unsupported(&envelope)?;
     let actual = artifact_digest_value(&value);
     Ok((actual != envelope.digest).then_some((envelope.digest, actual)))
 }
@@ -206,5 +224,26 @@ mod tests {
         value["sauma"] = serde_json::to_value(envelope).unwrap();
 
         assert_eq!(verify_value(value).unwrap(), None);
+    }
+
+    #[test]
+    fn verification_rejects_unknown_envelope_versions() {
+        let mut value = serde_json::json!({"schema": "future"});
+        let mut envelope = legacy_envelope_from_canonical(
+            "future",
+            &canonical_json(&value),
+            Vec::new(),
+            "token",
+            None,
+        );
+        envelope.envelope = "sauma-envelope.v999".to_string();
+        value["sauma"] = serde_json::to_value(envelope).unwrap();
+
+        assert!(
+            verify_value(value)
+                .unwrap_err()
+                .to_string()
+                .contains("v999")
+        );
     }
 }

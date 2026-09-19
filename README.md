@@ -376,7 +376,8 @@ toimija verify
 
 `verify` recomputes live Git state and checks the packet's content-based token.
 Same-size edits, index changes, conflicts, and unsafe Git operations cannot hide
-behind timestamps.
+behind timestamps. Sauma envelopes must be v1 or v2; unknown versions are
+rejected instead of being interpreted as legacy body-only seals.
 
 ## Sessions and collaboration
 

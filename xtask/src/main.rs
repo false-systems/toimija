@@ -385,6 +385,9 @@ fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
         return Ok(());
     };
     let envelope: Envelope = serde_json::from_value(sauma_value)?;
+    if !toimija::sauma::is_supported_envelope(&envelope.envelope) {
+        bail!("unsupported Sauma envelope `{}`", envelope.envelope);
+    }
     if artifacts
         .iter()
         .any(|artifact| artifact.digest == envelope.digest)
@@ -516,6 +519,15 @@ mod tests {
         assert!(output.contains("kisko-model-call.v1"));
         assert!(output.contains("digest mismatch"));
         assert!(!output.contains("  ← kisko-model-call.v1"));
+    }
+
+    #[test]
+    fn walker_rejects_unknown_envelope_versions() {
+        let mut artifact = kisko_event(&format!("sha256:{}", "a".repeat(64)), false);
+        artifact["sauma"]["envelope"] = json!("sauma-envelope.v999");
+
+        let error = collect_artifact(&artifact.to_string(), &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("v999"));
     }
 
     fn temp_repo(name: &str) -> PathBuf {
