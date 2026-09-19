@@ -85,7 +85,7 @@ fn handoff_schema_matches_emitted_record_fields() {
         risk_total: 0,
         consistency_token: "token".to_string(),
         next_step: None,
-        sauma: Some(toimija::sauma::envelope_from_canonical(
+        sauma: Some(toimija::sauma::legacy_envelope_from_canonical(
             "handoff-record.v1",
             "{}",
             Vec::new(),
@@ -200,7 +200,7 @@ fn sauma_schema_matches_emitted_envelope_fields() {
     );
     assert_eq!(schema["additionalProperties"], false);
 
-    let envelope = toimija::sauma::envelope_from_canonical(
+    let envelope = toimija::sauma::legacy_envelope_from_canonical(
         "handoff-record.v1",
         "{}",
         vec![toimija::sauma::SaumaProvenance::Token {
@@ -255,8 +255,11 @@ fn correlation_schema_is_versioned_and_sauma_attested() {
         "work-correlation.v1"
     );
     assert_eq!(
-        schema["properties"]["sauma"]["$ref"],
-        "sauma-envelope.v1.schema.json"
+        schema["properties"]["sauma"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
     assert!(
         schema["required"]

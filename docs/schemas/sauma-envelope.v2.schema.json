@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://false.systems/schemas/sauma-envelope.v2.schema.json",
+  "title": "Sauma attestation envelope v2",
+  "description": "A Sauma envelope whose digest covers the complete carrying artifact after removing only sauma.digest. Producer identity is self-declared unless separately authenticated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["envelope", "schema", "digest", "provenance", "producer", "anchored_at"],
+  "properties": {
+    "envelope": { "const": "sauma-envelope.v2" },
+    "schema": { "type": "string", "minLength": 1 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "provenance": { "type": "array", "items": { "$ref": "#/$defs/provenance" } },
+    "producer": {
+      "description": "Self-declared producing tool label. Authenticate it separately when identity matters.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "version", "run"],
+      "properties": {
+        "tool": { "type": "string" },
+        "version": { "type": "string" },
+        "run": { "type": ["string", "null"] }
+      }
+    },
+    "anchored_at": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "$defs": {
+    "provenance": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "oid"],
+          "properties": { "kind": { "const": "git" }, "oid": { "type": "string" } }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "token"],
+          "properties": {
+            "kind": { "const": "token" },
+            "token": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "digest"],
+          "properties": {
+            "kind": { "const": "artifact" },
+            "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": true,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "not": { "enum": ["git", "token", "artifact"] }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

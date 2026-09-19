@@ -171,7 +171,7 @@ core standard is scheduling, and this is Rust's schedule.
   call the same entrypoint.
 - **R-R.2 Verdict record.** Each gate run emits an attested artifact:
   `{tool, tool_version, config_digest, tree_oid_or_token, verdict,
-  report_ref}` per check — the sauma envelope (`sauma-envelope.v1`) once the
+  report_ref}` per check — the sauma envelope (`sauma-envelope.v2`) once the
   retrofit lands; a JSONL file until then. The binary verdict is a declared
   projection of a preserved rich report.
 - **R-R.3 Declaration + drift guard.** The repo declares enforced cells and

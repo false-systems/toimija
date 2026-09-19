@@ -157,6 +157,7 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
         .remove("history_coverage");
     value.as_object_mut().unwrap().remove("refresh_token");
     let mut envelope = value.as_object_mut().unwrap().remove("sauma").unwrap();
+    envelope["envelope"] = serde_json::json!(toimija::sauma::LEGACY_ENVELOPE_SCHEMA);
     envelope["digest"] = serde_json::Value::String(toimija::sauma::digest_value(&value));
     value["sauma"] = envelope;
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();

@@ -194,7 +194,10 @@
     },
     "sauma": {
       "description": "Optional Sauma attestation envelope for newly emitted records. Old v1 records omit it and remain valid.",
-      "$ref": "https://false.systems/schemas/sauma-envelope.v1.schema.json"
+      "oneOf": [
+        { "$ref": "https://false.systems/schemas/sauma-envelope.v1.schema.json" },
+        { "$ref": "https://false.systems/schemas/sauma-envelope.v2.schema.json" }
+      ]
     }
   }
 }

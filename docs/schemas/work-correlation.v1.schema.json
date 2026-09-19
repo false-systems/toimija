@@ -45,6 +45,11 @@
       "type": "array",
       "items": { "type": "string", "pattern": "^ev_" }
     },
-    "sauma": { "$ref": "sauma-envelope.v1.schema.json" }
+    "sauma": {
+      "oneOf": [
+        { "$ref": "sauma-envelope.v1.schema.json" },
+        { "$ref": "sauma-envelope.v2.schema.json" }
+      ]
+    }
   }
 }

@@ -137,11 +137,13 @@ struct Artifact {
     run: Option<String>,
     anchored_at: String,
     verified: bool,
+    metadata_covered: bool,
     edges: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Envelope {
+    envelope: String,
     schema: String,
     digest: String,
     provenance: Vec<Provenance>,
@@ -283,17 +285,21 @@ fn render_chain(
 }
 
 fn links_to(child: &Artifact, parent: &Artifact) -> bool {
-    if child.anchored_at == parent.anchored_at
+    if child.metadata_covered
+        && parent.metadata_covered
+        && child.anchored_at == parent.anchored_at
         && !child.anchored_at.is_empty()
         && parent.schema == toimija::context::CONTEXT_SCHEMA
         && child.schema != toimija::context::CONTEXT_SCHEMA
     {
         return true;
     }
-    child.edges.iter().any(|edge| {
-        edge == &parent.digest
-            || (parent.schema == toimija::context::CONTEXT_SCHEMA && edge == &parent.anchored_at)
-    })
+    child.metadata_covered
+        && child.edges.iter().any(|edge| {
+            edge == &parent.digest
+                || (parent.schema == toimija::context::CONTEXT_SCHEMA
+                    && edge == &parent.anchored_at)
+        })
 }
 
 fn render_artifact(output: &mut String, artifact: &Artifact, depth: usize) -> Result<()> {
@@ -372,7 +378,7 @@ fn push_if_exists(files: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Ok(());
     };
     let Some(sauma_value) = value.get("sauma").cloned() else {
@@ -385,15 +391,17 @@ fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
     {
         return Ok(());
     }
-    if let serde_json::Value::Object(object) = &mut value {
-        object.swap_remove("sauma");
-    }
-    let actual = toimija::sauma::digest_value(&value);
-    let edges: Vec<String> = envelope
-        .provenance
-        .into_iter()
-        .filter_map(Provenance::link)
-        .collect();
+    let actual = toimija::sauma::artifact_digest_value(&value);
+    let metadata_covered = envelope.envelope == toimija::sauma::ENVELOPE_SCHEMA;
+    let edges: Vec<String> = if metadata_covered {
+        envelope
+            .provenance
+            .into_iter()
+            .filter_map(Provenance::link)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let run = envelope.producer.run;
     let producer = run
         .as_ref()
@@ -406,6 +414,7 @@ fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
         run,
         anchored_at: envelope.anchored_at,
         verified: actual == envelope.digest,
+        metadata_covered,
         edges,
     });
     Ok(())
@@ -482,7 +491,7 @@ mod tests {
         let model_call = kisko_event(token, false);
         assert_eq!(
             model_call["sauma"]["digest"].as_str().unwrap(),
-            digest_without_sauma(&model_call)
+            toimija::sauma::artifact_digest_value(&model_call)
         );
         fs::create_dir_all(root.join(".toimija/runs")).unwrap();
         fs::write(
@@ -558,12 +567,10 @@ mod tests {
             },
             "sauma": null
         });
-        event.as_object_mut().unwrap().swap_remove("sauma");
-        let digest = toimija::sauma::digest_value(&event);
         event["sauma"] = json!({
-            "envelope": "sauma-envelope.v1",
+            "envelope": "sauma-envelope.v2",
             "schema": "kisko-model-call.v1",
-            "digest": if tamper_digest { "sha256:bad" } else { &digest },
+            "digest": "",
             "provenance": [
                 {
                     "kind": "context_fragment",
@@ -581,12 +588,8 @@ mod tests {
             },
             "anchored_at": token
         });
+        let digest = toimija::sauma::artifact_digest_value(&event);
+        event["sauma"]["digest"] = json!(if tamper_digest { "sha256:bad" } else { &digest });
         event
-    }
-
-    fn digest_without_sauma(event: &serde_json::Value) -> String {
-        let mut value = event.clone();
-        value.as_object_mut().unwrap().swap_remove("sauma");
-        toimija::sauma::digest_value(&value)
     }
 }
