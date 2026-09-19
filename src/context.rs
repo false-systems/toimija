@@ -743,11 +743,9 @@ mod tests {
         packet.attach_sauma(Some("100-1".to_string())).unwrap();
         let envelope = packet.sauma.as_ref().unwrap();
         let digest = envelope.digest.clone();
-        let mut stripped = packet.clone();
-        stripped.sauma = None;
-        let value = serde_json::to_value(&stripped).unwrap();
+        let value = serde_json::to_value(&packet).unwrap();
 
-        assert_eq!(crate::sauma::digest_value(&value), digest);
+        assert_eq!(crate::sauma::artifact_digest_value(&value), digest);
         assert_eq!(envelope.schema, CONTEXT_SCHEMA);
         assert_eq!(envelope.producer.run.as_deref(), Some("100-1"));
         assert_eq!(

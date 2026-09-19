@@ -379,7 +379,7 @@ nothing reads repo state on faith.
 Work done by agents should be auditable the way commits are: *what produced
 this, from what state, and does it still verify?* Toimija's packets and handoff
 records carry a **sauma envelope** for exactly this — a small, versioned
-attestation block (schema at `docs/schemas/sauma-envelope.v1.schema.json`,
+attestation block (current schema `sauma-envelope.v2`; legacy v1 remains readable,
 design in `docs/proposals/0003-sauma-attested-artifacts.md`):
 
 - **`digest`** — sha256 over the artifact's canonical form: compact JSON with

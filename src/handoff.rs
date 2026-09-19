@@ -514,11 +514,9 @@ mod tests {
         let record =
             HandoffRecord::from_marker_packet(&marker(SessionStatus::Active), &packet(), None);
         let digest = record.sauma.as_ref().unwrap().digest.clone();
-        let mut stripped = record.clone();
-        stripped.sauma = None;
-        let value = serde_json::to_value(&stripped).unwrap();
+        let value = serde_json::to_value(&record).unwrap();
 
-        assert_eq!(crate::sauma::digest_value(&value), digest);
+        assert_eq!(crate::sauma::artifact_digest_value(&value), digest);
     }
 
     #[test]
