@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -6,7 +7,7 @@ use tracing::{info, info_span, warn};
 
 use crate::adoption;
 use crate::audit_plan;
-use crate::command::ProcessCommandRunner;
+use crate::command::{CommandRunner, ProcessCommandRunner};
 use crate::config::{self, RepoConfig};
 use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency, GitOperationState, Verdict};
 use crate::context;
@@ -2140,6 +2141,74 @@ fn run_landed(args: LandedArgs) -> Result<()> {
     Ok(())
 }
 
+/// Both halves of a snapshot — the tree, and the token that attests it — read
+/// from one worktree, behind the gates that let a tree represent the state at
+/// all.
+///
+/// The token is fingerprinted before `materialize` and checked again after.
+/// The two halves are necessarily read at different instants: `materialize`
+/// runs `read-tree`, `add -A`, `rm --cached` and `write-tree` as separate
+/// subprocesses, and a worktree that moves across that window would publish a
+/// token attesting state A beside a tree holding state B.
+///
+/// That pair has to be refused here, because no consumer can detect it. A
+/// lease's whole promise is that the tree *is* the state the token attests, so
+/// a consumer checks `token == expected` and then reads content from the tree
+/// without re-checking — correct reasoning, since git tree objects are
+/// immutable. Against an internally inconsistent pair that check passes and the
+/// consumer serves bytes from a state its token never attested.
+fn snapshot_tree_and_token(
+    runner: &impl CommandRunner,
+    cwd: &Path,
+    repo_root: &Path,
+) -> Result<(String, Consistency)> {
+    // Materialize only a *safe* state: `write-tree` should never freeze a
+    // half-finished merge/rebase or a conflicted tree. Same gate as verify.
+    let (mut live, _warnings) = git::collect_git_state(runner, cwd)?;
+    context::normalize_git_state(&mut live);
+    let consistency = Consistency::fingerprint(&live);
+    if consistency.git_operation != GitOperationState::None {
+        anyhow::bail!(
+            "refusing to snapshot: repository is in an unsafe git operation ({:?}); finish or abort it first",
+            consistency.git_operation
+        );
+    }
+    if consistency.conflict_state.has_conflicts {
+        anyhow::bail!("refusing to snapshot: repository has unresolved conflicts");
+    }
+    // A path that is both staged and modified in the worktree has different
+    // content in the index (staged) than on disk (worktree). A single tree can
+    // hold only one, so "the snapshot at this token" would be ambiguous — the
+    // token fingerprints both index and worktree, the tree cannot. Refuse.
+    let staged: std::collections::HashSet<&std::path::PathBuf> =
+        live.staged_files.iter().map(|file| &file.path).collect();
+    let mixed: Vec<String> = live
+        .unstaged_files
+        .iter()
+        .filter(|file| staged.contains(&file.path))
+        .map(|file| file.path.display().to_string())
+        .collect();
+    if !mixed.is_empty() {
+        anyhow::bail!(
+            "refusing to snapshot: {} path(s) are both staged and modified in the worktree ({}); stage or discard the worktree changes so one tree can represent the state",
+            mixed.len(),
+            mixed.join(", ")
+        );
+    }
+    let tree = snapshot::materialize(runner, repo_root)?;
+    // Re-read, and require the token to be what it was. A caller that wants
+    // resilience retries; a caller that wants truth gets it.
+    let (mut settled, _warnings) = git::collect_git_state(runner, cwd)?;
+    context::normalize_git_state(&mut settled);
+    if Consistency::fingerprint(&settled).token != consistency.token {
+        anyhow::bail!(
+            "refusing to snapshot: the worktree changed while the tree was being written, so the tree and the token would describe different states; retry"
+        );
+    }
+
+    Ok((tree, consistency))
+}
+
 fn run_snapshot(args: SnapshotArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
@@ -2173,40 +2242,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Materialize only a *safe* state: `write-tree` should never freeze a
-    // half-finished merge/rebase or a conflicted tree. Same gate as verify.
-    let (mut live, _warnings) = git::collect_git_state(&runner, &cwd)?;
-    context::normalize_git_state(&mut live);
-    let consistency = Consistency::fingerprint(&live);
-    if consistency.git_operation != GitOperationState::None {
-        anyhow::bail!(
-            "refusing to snapshot: repository is in an unsafe git operation ({:?}); finish or abort it first",
-            consistency.git_operation
-        );
-    }
-    if consistency.conflict_state.has_conflicts {
-        anyhow::bail!("refusing to snapshot: repository has unresolved conflicts");
-    }
-    // A path that is both staged and modified in the worktree has different
-    // content in the index (staged) than on disk (worktree). A single tree can
-    // hold only one, so "the snapshot at this token" would be ambiguous — the
-    // token fingerprints both index and worktree, the tree cannot. Refuse.
-    let staged: std::collections::HashSet<&std::path::PathBuf> =
-        live.staged_files.iter().map(|file| &file.path).collect();
-    let mixed: Vec<String> = live
-        .unstaged_files
-        .iter()
-        .filter(|file| staged.contains(&file.path))
-        .map(|file| file.path.display().to_string())
-        .collect();
-    if !mixed.is_empty() {
-        anyhow::bail!(
-            "refusing to snapshot: {} path(s) are both staged and modified in the worktree ({}); stage or discard the worktree changes so one tree can represent the state",
-            mixed.len(),
-            mixed.join(", ")
-        );
-    }
-    let tree = snapshot::materialize(&runner, &repo_root)?;
+    let (tree, consistency) = snapshot_tree_and_token(&runner, &cwd, &repo_root)?;
 
     if args.lease {
         // Tie the lease to the session when wrapped by `toimija run`; otherwise
@@ -2913,6 +2949,106 @@ mod tests {
     use super::*;
     use crate::git::GitState;
     use std::path::PathBuf;
+
+    /// Answers the reads `snapshot_tree_and_token` makes, and lets the worktree
+    /// move exactly once — when `write-tree` runs, which is the middle of
+    /// `materialize` and the widest part of the window.
+    struct MovingRunner {
+        moved: std::cell::Cell<bool>,
+        move_on_write_tree: bool,
+    }
+
+    impl MovingRunner {
+        fn new(move_on_write_tree: bool) -> Self {
+            Self {
+                moved: std::cell::Cell::new(false),
+                move_on_write_tree,
+            }
+        }
+
+        fn reply(&self, args: &[&str]) -> crate::command::CommandOutput {
+            let ok = |stdout: &str| crate::command::CommandOutput {
+                status: 0,
+                stdout: stdout.as_bytes().to_vec(),
+                stderr: Vec::new(),
+            };
+            match args {
+                ["rev-parse", "--show-toplevel"] => ok("/repo\n"),
+                ["rev-parse", "--git-dir"] => ok("/repo/.git\n"),
+                ["rev-parse", "HEAD"] => ok("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"),
+                ["symbolic-ref", ..] => ok("main\n"),
+                ["write-tree"] => {
+                    if self.move_on_write_tree {
+                        self.moved.set(true);
+                    }
+                    ok("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n")
+                }
+                // A file appears in the worktree partway through materializing.
+                args if args.first() == Some(&"--no-optional-locks") => {
+                    if self.moved.get() {
+                        ok(
+                            "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\0# branch.head main\0? appeared.txt\0",
+                        )
+                    } else {
+                        ok(
+                            "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\0# branch.head main\0",
+                        )
+                    }
+                }
+                // Everything else (read-tree, add, rm, merge-base, base
+                // discovery) either succeeds emptily or is allowed to fail.
+                _ => ok(""),
+            }
+        }
+    }
+
+    impl CommandRunner for MovingRunner {
+        fn run(
+            &self,
+            _cwd: &Path,
+            program: &str,
+            args: &[&str],
+        ) -> std::io::Result<crate::command::CommandOutput> {
+            assert_eq!(program, "git");
+            Ok(self.reply(args))
+        }
+
+        fn run_with_env(
+            &self,
+            _cwd: &Path,
+            program: &str,
+            args: &[&str],
+            _env: &[(&str, &std::ffi::OsStr)],
+        ) -> std::io::Result<crate::command::CommandOutput> {
+            assert_eq!(program, "git");
+            Ok(self.reply(args))
+        }
+    }
+
+    #[test]
+    fn a_worktree_that_moves_while_materializing_is_refused() {
+        let repo = PathBuf::from("/repo");
+
+        // Quiet repo: the tree and the token describe the same state, so the
+        // pair is publishable.
+        let still = MovingRunner::new(false);
+        let (tree, consistency) =
+            snapshot_tree_and_token(&still, &repo, &repo).expect("a quiet repository still leases");
+        assert_eq!(tree, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert!(!consistency.token.is_empty());
+
+        // The same run, with a file appearing while the tree is written. The
+        // token would attest the state before it, so the pair is refused
+        // rather than published.
+        let moving = MovingRunner::new(true);
+        let error = snapshot_tree_and_token(&moving, &repo, &repo)
+            .expect_err("a worktree that moved mid-materialize must not publish a pair");
+        let message = error.to_string();
+        assert!(
+            message.contains("changed while the tree was being written"),
+            "expected the pairing refusal, got {message:?}"
+        );
+    }
 
     #[test]
     fn panic_message_recovers_str_and_string_payloads() {
