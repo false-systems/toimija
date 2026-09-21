@@ -1321,6 +1321,18 @@ fn run_run(args: RunArgs) -> Result<i32> {
         })?;
     }
 
+    // The marker now exists on disk, so from here every exit path has to reach
+    // step 7 and close it. Catching termination only around the agent (step 5)
+    // left steps 2-4 fatal: an interrupt during entry or watcher arming killed
+    // the wrapper and stranded the marker `active`.
+    let termination = match TerminationWatch::install() {
+        Ok(watch) => watch,
+        Err(error) => {
+            close_session_after_startup_failure(&repo_root, &mut session);
+            return Err(error).context("failed to register termination signal handlers");
+        }
+    };
+
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
     //    The plan (session-targeted) is reused by the watch loop and the exit.
@@ -1473,6 +1485,16 @@ fn run_run(args: RunArgs) -> Result<i32> {
         })
     });
 
+    // Interrupted during entry or watcher arming: close the marker and leave,
+    // rather than launching an agent the operator has already asked to stop.
+    if let Some(number) = termination.requested() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = watcher.join();
+        close_session_after_startup_failure(&repo_root, &mut session);
+        eprintln!("toimija run: termination requested before the agent launched — session closed");
+        return Ok(i32::try_from(128 + number).unwrap_or(1));
+    }
+
     // 5. Launch the agent command, inheriting the terminal. The child also
     //    inherits the per-session handshake (`TOIMIJA_RUN`, `TOIMIJA_SESSION`,
     //    `TOIMIJA_LIVE*`, `TOIMIJA_REPO_LIVE`), so a wrapped agent can *discover*
@@ -1565,7 +1587,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
                 .context("failed to hand the wrapped command our stderr")?,
         );
     }
-    let launched = supervise_agent(&mut child);
+    let launched = supervise_agent(&mut child, &termination);
 
     // 6. Stop the watcher and join, whatever happened to the command. A loop
     //    error (e.g. a mid-run refresh failure) is reported, but the wrapped
@@ -1709,6 +1731,84 @@ fn run_run(args: RunArgs) -> Result<i32> {
     Ok(wrapped_exit_code(status))
 }
 
+/// Termination signals set a flag instead of killing the wrapper, for as long
+/// as this value lives.
+///
+/// Registration has to begin the moment a session marker exists on disk, not
+/// when the agent launches. A signal arriving during entry, watcher arming, or
+/// the first refresh would otherwise kill toimija outright with the marker
+/// still `status: active`, where it sits until the 7-day retention sweeps it —
+/// every interrupted run replenishing the stale-session warnings.
+///
+/// The flag records *which* signal arrived, so the exit code can stay honest at
+/// 128 + signal rather than guessing one.
+struct TerminationWatch {
+    signal: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(unix)]
+    registrations: Vec<signal_hook::SigId>,
+}
+
+impl TerminationWatch {
+    #[cfg(unix)]
+    fn install() -> std::io::Result<Self> {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let signal = Arc::new(AtomicUsize::new(0));
+        let registrations = [
+            signal_hook::consts::SIGTERM,
+            signal_hook::consts::SIGHUP,
+            signal_hook::consts::SIGINT,
+        ]
+        .into_iter()
+        .map(|number| {
+            signal_hook::flag::register_usize(
+                number,
+                Arc::clone(&signal),
+                usize::try_from(number).unwrap_or(0),
+            )
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+        Ok(Self {
+            signal,
+            registrations,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn install() -> std::io::Result<Self> {
+        Ok(Self {
+            signal: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    /// The signal that arrived, if one has, leaving the flag set.
+    fn requested(&self) -> Option<usize> {
+        match self.signal.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => None,
+            number => Some(number),
+        }
+    }
+
+    /// The signal that arrived since the last call, clearing the flag so a
+    /// second signal is distinguishable from the first.
+    fn take(&self) -> Option<usize> {
+        match self.signal.swap(0, std::sync::atomic::Ordering::SeqCst) {
+            0 => None,
+            number => Some(number),
+        }
+    }
+}
+
+impl Drop for TerminationWatch {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        for id in self.registrations.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
+    }
+}
+
 /// Run the wrapped agent to completion, forwarding termination signals to it.
 ///
 /// `Command::status()` alone would orphan the agent: a signal delivered to this
@@ -1724,34 +1824,17 @@ fn run_run(args: RunArgs) -> Result<i32> {
 #[cfg(unix)]
 fn supervise_agent(
     command: &mut std::process::Command,
+    termination: &TerminationWatch,
 ) -> std::io::Result<std::process::ExitStatus> {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    let termination_requested = Arc::new(AtomicBool::new(false));
-    let registrations = [
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGHUP,
-        signal_hook::consts::SIGINT,
-    ]
-    .into_iter()
-    .map(|signal| signal_hook::flag::register(signal, Arc::clone(&termination_requested)))
-    .collect::<std::io::Result<Vec<_>>>()?;
-
     let mut child = command.spawn()?;
     let mut forwarded_at: Option<Instant> = None;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(error) => {
-                for id in registrations {
-                    signal_hook::low_level::unregister(id);
-                }
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         }
-        if termination_requested.swap(false, Ordering::SeqCst) && forwarded_at.is_none() {
+        if termination.take().is_some() && forwarded_at.is_none() {
             if let Ok(pid) = i32::try_from(child.id()) {
                 // SAFETY: pid is the live child just spawned above; SIGTERM to
                 // a single PID we own is the intended forwarding.
@@ -1771,15 +1854,13 @@ fn supervise_agent(
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    for id in registrations {
-        signal_hook::low_level::unregister(id);
-    }
     Ok(status)
 }
 
 #[cfg(not(unix))]
 fn supervise_agent(
     command: &mut std::process::Command,
+    _termination: &TerminationWatch,
 ) -> std::io::Result<std::process::ExitStatus> {
     command.status()
 }
