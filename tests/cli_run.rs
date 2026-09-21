@@ -106,6 +106,115 @@ fn run_preserves_signal_termination_as_128_plus_signal() {
         .code(143);
 }
 
+/// #158: an interrupted run must not leave its session marker `active`.
+///
+/// Termination is caught from the moment the marker exists, so toimija survives
+/// the signal, forwards it to any agent it has launched, and still reaches the
+/// teardown that closes the marker. These assert the marker rather than the
+/// mechanism: a regression that registers too late, unregisters early, or
+/// returns past step 7 brings back the stale-session wall.
+#[cfg(unix)]
+fn interrupted_run_closes_marker(wait_for_agent: bool) {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let sessions = temp.path().join(".toimija/sessions");
+    let launched = temp.path().join("agent-started.txt");
+
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("toimija"))
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "touch agent-started.txt; sleep 60",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("toimija runs");
+
+    let until = |ready: &dyn Fn() -> bool, what: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+
+    // Signalling before the marker is written would prove nothing about
+    // closing it.
+    let marker = || {
+        fs::read_dir(&sessions).ok().and_then(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path().join("session.json"))
+                .find(|path| path.is_file())
+        })
+    };
+    until(&|| marker().is_some(), "the session marker");
+    if wait_for_agent {
+        until(&|| launched.is_file(), "the agent to start");
+    }
+
+    // SIGTERM to toimija itself, which is what a closing terminal or a `kill`
+    // delivers. Ctrl-C additionally reaches the agent through the tty; here the
+    // wrapper is the only target, which is the harder case.
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .expect("kill runs")
+            .success()
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        if child.try_wait().expect("wait succeeds").is_some() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("toimija did not exit after SIGTERM");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let marker = marker().expect("the session marker survives");
+    let marker: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
+    assert_ne!(
+        marker["status"], "active",
+        "the session marker stayed active after an interrupted run: {marker}"
+    );
+}
+
+/// Interrupted during entry/watcher arming — the window that was fatal before
+/// #158: handlers registered only around the agent, so steps 2-4 killed the
+/// wrapper outright.
+#[test]
+#[cfg(unix)]
+fn an_interrupted_run_still_closes_its_session_marker() {
+    interrupted_run_closes_marker(false);
+}
+
+/// Interrupted while the agent is running — the window supervise_agent already
+/// covered. Kept so that consolidating the two registrations cannot quietly
+/// drop this one.
+#[test]
+#[cfg(unix)]
+fn interrupting_a_running_agent_still_closes_its_session_marker() {
+    interrupted_run_closes_marker(true);
+}
+
 #[test]
 fn run_enters_then_launches_the_command() {
     if !git_available() {
