@@ -70,7 +70,7 @@ pub enum Command {
     /// Use this once per repo to seed the config. It never overwrites an
     /// existing file. Writes only .toimija/repo.yaml.
     Init,
-    /// Install the canonical Toimija preamble in the repo's agent entry files.
+    /// [experimental] Install the canonical Toimija preamble in the repo's agent entry files.
     ///
     /// Use this once when adopting Toimija into an existing repository. With
     /// `--hooks`, also install best-effort Git freshness hooks.
@@ -134,7 +134,7 @@ pub enum Command {
         toimija enter --json                     # machine-readable entry packet"
     )]
     Enter(ContextArgs),
-    /// Watch the repo and refresh .toimija/current.* on change (foreground).
+    /// [experimental] Watch the repo and refresh .toimija/current.* on change (foreground).
     ///
     /// Use this for a human-driven session where an editor open in the repo
     /// should keep the packet current. Debounced; ignores build dirs and its
@@ -142,7 +142,7 @@ pub enum Command {
     /// in the foreground until stopped (Ctrl-C). `run` bundles this same watch
     /// around a wrapped agent command.
     Watch(ContextArgs),
-    /// Enter, watch while an agent command runs, then exit with its status.
+    /// [experimental] Enter, watch while an agent command runs, then exit with its status.
     ///
     /// The flagship wrapper — use this to wrap any agent command in a live
     /// session: it opens a per-session packet directory under
@@ -173,7 +173,7 @@ pub enum Command {
         toimija intent \"fix #51\" --scope src/cli.rs --scope tests/cli_run.rs"
     )]
     Intent(IntentArgs),
-    /// Append or inspect a session handoff record.
+    /// [experimental] Append or inspect a session handoff record.
     ///
     /// Use this from inside a `toimija run` session when pausing or finishing:
     /// unlike `intent` (why I am here), a handoff says what I leave behind.
@@ -221,7 +221,7 @@ pub enum Command {
         toimija landed --base origin/develop --json"
     )]
     Landed(LandedArgs),
-    /// List sibling sessions live in this repo: who is here, on which branch and
+    /// [experimental] List sibling sessions live in this repo: who is here, on which branch and
     /// worktree, with what intent and scope, and where overlap warrants care.
     ///
     /// Use this before starting work in a shared repo: it reports presence
@@ -235,7 +235,7 @@ pub enum Command {
         toimija sessions --prune   # run the configured stewardship pass"
     )]
     Sessions(SessionsArgs),
-    /// Partition the committed repository tree into bounded audit worksets.
+    /// [experimental] Partition the committed repository tree into bounded audit worksets.
     ///
     /// Use this for breadth-scoped audits. Read-only and deterministic: it derives surfaces from Git state and
     /// points at committed prior findings without writing plans or findings.
@@ -308,7 +308,7 @@ pub enum Command {
         toimija correlate-pr https://github.com/false-systems/kisko/pull/171 --session 1785179852-51947 --run run_51670292"
     )]
     CorrelatePr(CorrelatePrArgs),
-    /// Materialize the working tree as an immutable git tree object.
+    /// [experimental] Materialize the working tree as an immutable git tree object.
     ///
     /// Freezes the full working state (content-addressed) so a reader can read
     /// files *at a version* via `git cat-file` instead of live disk. Prints the
