@@ -1,0 +1,21 @@
+# The canonical crate Toimija carries.
+#
+# Sauma owns the envelope, its canonical byte string and every digest over it.
+# Toimija holds that implementation here rather than fetching it from a private
+# repository on every build. There is still exactly one implementation; it is
+# distributed rather than linked.
+#
+# What keeps it honest: `vendor/sauma-canonical/` is byte-identical to
+# `sauma-canonical/` at `sauma-revision`, and `tests/vendored_canonical.rs`
+# recomputes `tree-digest` on every run, so an edit here fails the build.
+#
+# This is not a security boundary — the same commit could change both the crate
+# and this file. It makes drift visible: what a reviewer sees is a diff that
+# touches `vendor/`, which is the point.
+#
+# Refresh with `scripts/vendor-sauma-canonical.sh <sauma-checkout> <revision>`,
+# never by editing the crate in place.
+sauma-tag = untagged
+sauma-revision = ba6cee52edadd3fa707d1d669a881c44fb12f53c
+tree-digest = sha256:ecefd606deef50132591d7f465584a677d57a4780cb7777be0b0fb18b3232a9c
+files = 2
