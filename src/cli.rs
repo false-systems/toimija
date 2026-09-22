@@ -1263,6 +1263,15 @@ fn run_run(args: RunArgs) -> Result<i32> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    // Armed before a session can exist, not after. Arming once the marker is
+    // on disk leaves a window — `Session::open` returning, `record_cycle_action`
+    // writing — where a signal still kills the wrapper with the marker `active`.
+    // That window is microseconds in an ordinary run and wide enough to hit
+    // reliably under coverage instrumentation, which is how it was found. A
+    // signal arriving before this point has no marker to strand.
+    let termination =
+        TerminationWatch::install().context("failed to register termination signal handlers")?;
+
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
@@ -1302,6 +1311,12 @@ fn run_run(args: RunArgs) -> Result<i32> {
         }
     }
 
+    // Asked to stop before any marker exists: leave without creating one.
+    if let Some(number) = termination.requested() {
+        eprintln!("toimija run: termination requested before the session opened");
+        return Ok(i32::try_from(128 + number).unwrap_or(1));
+    }
+
     // 1. Open a session: its own packet directory + marker, so concurrent
     //    wrapped agents do not race on the single repo-level packet.
     let mut session = session::Session::open(
@@ -1321,18 +1336,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
             repository_point: point.id.to_string(),
         })?;
     }
-
-    // The marker now exists on disk, so from here every exit path has to reach
-    // step 7 and close it. Catching termination only around the agent (step 5)
-    // left steps 2-4 fatal: an interrupt during entry or watcher arming killed
-    // the wrapper and stranded the marker `active`.
-    let termination = match TerminationWatch::install() {
-        Ok(watch) => watch,
-        Err(error) => {
-            close_session_after_startup_failure(&repo_root, &mut session);
-            return Err(error).context("failed to register termination signal handlers");
-        }
-    };
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
