@@ -23,6 +23,8 @@
 //! Nothing outside this crate hashes an artifact. `deny.toml` enforces it by
 //! refusing any other crate a direct dependency on `sha2`.
 
+pub mod path_codec;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

@@ -19,7 +19,12 @@ pub mod git;
 pub mod handoff;
 pub mod landed;
 pub mod logging;
-mod path_codec;
+// Path encoding lives in the canonical crate: these encoders sit behind
+// `#[serde(with = ...)]` on sealed structs, so the bytes they produce are the
+// bytes that get digested. Re-exported under the old name so call sites — and
+// the `serde(with = "crate::path_codec::...")` attributes, which resolve a
+// path, not a module — are unchanged.
+pub(crate) use sauma_canonical::path_codec;
 pub mod plugins;
 pub mod refresh;
 pub mod relevance;

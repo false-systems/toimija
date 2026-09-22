@@ -1,3 +1,19 @@
+//! How a filesystem path becomes JSON, and back.
+//!
+//! This lives beside the canonical form rather than in either tool, because it
+//! *is* part of it: these encoders sit behind `#[serde(with = ...)]` on sealed
+//! structs, so the bytes they produce are the bytes that get digested. Two
+//! tools that encode a path differently produce different digests for the same
+//! artifact, which is the failure this crate exists to prevent.
+//!
+//! A valid-UTF-8 path is a plain JSON string. On Unix a path that is not valid
+//! UTF-8 still has to round-trip exactly, so it serializes as
+//! `{"bytes_hex": "..."}` — lossy decoding would silently rename a file inside
+//! an artifact that claims to describe it.
+//!
+//! `display` escapes control characters and invalid bytes, so a filename cannot
+//! forge a heading or an ANSI escape in human output.
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -60,7 +76,7 @@ fn decode<E: serde::de::Error>(encoded: EncodedPath) -> Result<PathBuf, E> {
     }
 }
 
-pub(crate) mod one {
+pub mod one {
     use super::*;
 
     pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
@@ -78,7 +94,7 @@ pub(crate) mod one {
     }
 }
 
-pub(crate) mod option {
+pub mod option {
     use super::*;
 
     pub fn serialize<S>(path: &Option<PathBuf>, serializer: S) -> Result<S::Ok, S::Error>
@@ -98,7 +114,7 @@ pub(crate) mod option {
     }
 }
 
-pub(crate) mod vec {
+pub mod vec {
     use super::*;
 
     pub fn serialize<S>(paths: &[PathBuf], serializer: S) -> Result<S::Ok, S::Error>
@@ -123,7 +139,7 @@ pub(crate) mod vec {
     }
 }
 
-pub(crate) fn from_git_bytes(bytes: &[u8]) -> PathBuf {
+pub fn from_git_bytes(bytes: &[u8]) -> PathBuf {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt as _;
@@ -135,7 +151,7 @@ pub(crate) fn from_git_bytes(bytes: &[u8]) -> PathBuf {
     }
 }
 
-pub(crate) fn display(path: &Path) -> String {
+pub fn display(path: &Path) -> String {
     if let Some(text) = path.to_str() {
         return text.chars().fold(String::new(), |mut output, character| {
             match character {
@@ -174,7 +190,7 @@ pub(crate) fn display(path: &Path) -> String {
     }
 }
 
-pub(crate) fn fingerprint(path: &Path) -> String {
+pub fn fingerprint(path: &Path) -> String {
     if path.to_str().is_some() {
         return path
             .components()

@@ -16,6 +16,6 @@
 # Refresh with `scripts/vendor-sauma-canonical.sh <sauma-checkout> <revision>`,
 # never by editing the crate in place.
 sauma-tag = untagged
-sauma-revision = ba6cee52edadd3fa707d1d669a881c44fb12f53c
-tree-digest = sha256:ecefd606deef50132591d7f465584a677d57a4780cb7777be0b0fb18b3232a9c
-files = 2
+sauma-revision = c825aebb0143ba88e22119cf955f8ad814a6125d
+tree-digest = sha256:83e370f081861daf82b5d2b525052bd6de07f97bcc0afbb6b66510f4e748f4a2
+files = 3
