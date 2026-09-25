@@ -770,6 +770,197 @@ fn run_hands_the_child_a_per_session_handshake() {
     assert_eq!(lines.next(), captured.lines().nth(1));
 }
 
+/// The facts a wrapped command can read about where it stands: the session's
+/// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
+/// point inside the sealed session packet (`session.execution.repository`),
+/// which Kelpo reads to bind evidence to a session. The worker.v1 result and
+/// context paths are gone with the worker protocol, and cleared even when the
+/// outer environment still carries them.
+#[test]
+fn run_hands_the_child_its_repository_point() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // Captured outside the repository, so capturing cannot move the point.
+    let out = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("OUT", out.path())
+        // Stale values from an outer environment must not reach the child.
+        .env("FALSE_SYSTEMS_RESULT_PATH", "/stale/result.json")
+        .env("FALSE_SYSTEMS_CONTEXT_PATH", "/stale/context.json")
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "cp \"$FALSE_SYSTEMS_REPOSITORY_POINT_PATH\" \"$OUT/point.json\" && \
+             cp \"$TOIMIJA_LIVE_JSON\" \"$OUT/packet.json\" && \
+             printf '%s|%s' \"${FALSE_SYSTEMS_RESULT_PATH-unset}\" \"${FALSE_SYSTEMS_CONTEXT_PATH-unset}\" > \"$OUT/retired.txt\"",
+        ])
+        .assert()
+        .success();
+
+    let read = |name: &str| -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(out.path().join(name)).unwrap()).unwrap()
+    };
+    let point = read("point.json");
+    let packet = read("packet.json");
+    let id = point["repository"]["id"].as_str().unwrap();
+    assert!(id.starts_with("rpoint_"), "{point}");
+    assert!(point["repository"]["tree_oid"].is_string(), "{point}");
+    assert_eq!(packet["schema"], "toimija-context.v1");
+    assert_eq!(packet["session"]["execution"]["repository"]["id"], id);
+    assert_eq!(
+        fs::read_to_string(out.path().join("retired.txt")).unwrap(),
+        "unset|unset"
+    );
+}
+
+/// The last check before launch runs after the watcher is armed. If it
+/// refuses — here because a merge started while `run` was preparing — `run`
+/// must close the session it opened, not leave an `active` marker and a
+/// stale repository point behind for siblings to trip over.
+#[cfg(unix)]
+#[test]
+fn run_closes_the_session_when_the_last_launch_check_refuses() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // `run` asks `gh` about the branch's pull requests between its first and
+    // its last pre-launch check. This `gh` starts a merge while answering.
+    let bin = tempfile::tempdir().unwrap();
+    let gh = bin.path().join("gh");
+    fs::write(
+        &gh,
+        "#!/bin/sh\ngit rev-parse HEAD > \"$(git rev-parse --git-dir)/MERGE_HEAD\"\necho '[]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("PATH", path)
+        .env_remove("TOIMIJA_SESSION")
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "touch launched",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsafe Git state"));
+
+    assert!(!temp.path().join("launched").exists(), "the agent launched");
+    let sessions: Vec<_> = fs::read_dir(temp.path().join(".toimija/sessions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    let marker: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(sessions[0].join("session.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["status"], "closed", "{marker}");
+    assert!(
+        !sessions[0].join("semantic-point.json").exists(),
+        "a closed session still publishes a repository point"
+    );
+}
+
+/// A cycle leg (Ohjaa's `--cycle`, `--cycle-leg`, `--cycle-attempt`) is
+/// recorded on the session marker with the repository point it launched at,
+/// and `sessions --json` shows it. The same leg at the same point cannot be
+/// live twice: a second `run` of it, launched while the first is still
+/// running, is refused.
+#[test]
+fn a_cycle_leg_is_recorded_and_cannot_be_live_twice() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let out = tempfile::tempdir().unwrap();
+    let leg = [
+        "--cycle",
+        "cycle-1",
+        "--cycle-leg",
+        "code",
+        "--cycle-attempt",
+        "0",
+    ];
+
+    let mut outer = vec!["run", "--intent", "cycle leg"];
+    outer.extend(leg);
+    outer.extend([
+        "--",
+        "sh",
+        "-c",
+        "\"$TOIMIJA_BIN\" run --intent again --cycle cycle-1 --cycle-leg code \
+         --cycle-attempt 0 -- true; echo $? > \"$OUT/inner\"",
+    ]);
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("OUT", out.path())
+        .env("TOIMIJA_BIN", env!("CARGO_BIN_EXE_toimija"))
+        .env_remove("TOIMIJA_SESSION")
+        .args(&outer)
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(out.path().join("inner")).unwrap().trim(),
+        "1",
+        "the duplicate leg was not refused"
+    );
+    let report = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["sessions", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&report).unwrap();
+    let actions: Vec<&serde_json::Value> = report["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|session| session.get("cycle_action"))
+        .collect();
+    assert_eq!(actions.len(), 1, "{report}");
+    assert_eq!(actions[0]["cycle"], "cycle-1");
+    assert_eq!(actions[0]["leg"], "code");
+    assert_eq!(actions[0]["attempt"], 0);
+    assert!(
+        actions[0]["repository_point"]
+            .as_str()
+            .unwrap()
+            .starts_with("rpoint_"),
+        "{report}"
+    );
+}
+
 #[test]
 fn run_closes_the_session_marker_when_the_child_fails_to_launch() {
     if !git_available() {

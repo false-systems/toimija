@@ -11,36 +11,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, ensure};
-use false_agent_protocol::{WorkerRunRef, WorkerRunResultEnvelope};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::refresh;
-use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
 
 /// Directory, relative to the repo root, holding all per-session state.
 pub const SESSIONS_SUBDIR: &str = ".toimija/sessions";
-pub const RUN_RECEIPT_SCHEMA: &str = "toimija-run-session.v1";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RunReceipt {
-    pub schema: String,
-    pub session: String,
-    pub worker_run: WorkerRunRef,
-    pub result_digest: String,
-    pub worktree: String,
-    pub closed_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sauma: Option<SaumaEnvelope>,
-}
-
-impl sauma::Carrier for RunReceipt {
-    fn sauma_mut(&mut self) -> &mut Option<SaumaEnvelope> {
-        &mut self.sauma
-    }
-}
-
+/// Handshake variables earlier versions set and this one does not: the
+/// worker.v1 result and context paths. `run` clears them for the child, so a
+/// value inherited from an outer session cannot point it at a stale file.
+pub const RETIRED_ENV: &[&str] = &["FALSE_SYSTEMS_RESULT_PATH", "FALSE_SYSTEMS_CONTEXT_PATH"];
 /// Lifecycle of a session, recorded in its marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -134,6 +117,7 @@ pub fn session_id(started_at: u64, pid: u32) -> String {
 /// An open `run` session: its directory, packet paths, and marker.
 pub struct Session {
     pub id: String,
+    repo_root: PathBuf,
     pub dir: PathBuf,
     pub md_path: PathBuf,
     pub json_path: PathBuf,
@@ -155,8 +139,7 @@ impl Session {
         let pid = std::process::id();
         let id = session_id(started_at, pid);
         let dir = repo_root.join(SESSIONS_SUBDIR).join(&id);
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("failed to create session dir {}", dir.display()))?;
+        crate::owned::ensure_dir(repo_root, &dir).context("failed to open the session")?;
         let marker = SessionMarker {
             id: id.clone(),
             pid,
@@ -179,6 +162,7 @@ impl Session {
         };
         let session = Session {
             id,
+            repo_root: repo_root.to_path_buf(),
             md_path: dir.join("current.md"),
             json_path: dir.join("current.json"),
             marker_path: dir.join("session.json"),
@@ -257,70 +241,12 @@ impl Session {
         self.write_marker()
     }
 
-    pub fn record_worker_run(
-        &self,
-        repo_root: &Path,
-        result: &WorkerRunResultEnvelope,
-    ) -> Result<PathBuf> {
-        ensure!(
-            self.marker.status == SessionStatus::Closed,
-            "cannot record a worker run for active session {}",
-            self.id
-        );
-        let closed_at = self
-            .marker
-            .closed_at
-            .context("closed session has no close timestamp")?;
-        let mut receipt = RunReceipt {
-            schema: RUN_RECEIPT_SCHEMA.into(),
-            session: self.id.clone(),
-            worker_run: result.run.clone(),
-            result_digest: result.result_digest.clone(),
-            worktree: self.marker.worktree.clone(),
-            closed_at,
-            sauma: None,
-        };
-        sauma::attach(
-            &mut receipt,
-            RUN_RECEIPT_SCHEMA,
-            vec![
-                SaumaProvenance::Session {
-                    id: self.id.clone(),
-                },
-                SaumaProvenance::WorkerRun {
-                    id: result.run.to_string(),
-                },
-                SaumaProvenance::Artifact {
-                    digest: result.result_digest.clone(),
-                },
-            ],
-            &result.result_digest,
-            Some(self.id.clone()),
-        )?;
-        let path = run_receipt_path(repo_root, &result.run);
-        if path.exists() {
-            let existing = read_run_receipt(repo_root, &result.run)?;
-            ensure!(
-                existing == receipt,
-                "worker run {} is already owned by session {}",
-                result.run,
-                existing.session
-            );
-            return Ok(path);
-        }
-        let mut bytes = serde_json::to_vec_pretty(&receipt)?;
-        bytes.push(b'\n');
-        crate::atomic_write::replace(&path, &bytes)
-            .with_context(|| format!("failed to write {}", path.display()))?;
-        Ok(path)
-    }
-
     /// The live-packet handshake the wrapped child inherits. The per-session
     /// `TOIMIJA_LIVE` is authoritative for the agent; `TOIMIJA_REPO_LIVE` is the
     /// demoted repo-level summary. Absolute paths, so they survive the agent
     /// changing directory mid-session.
     pub fn env(&self, repo_root: &Path) -> Vec<(&'static str, OsString)> {
-        let mut env = vec![
+        vec![
             ("TOIMIJA_RUN", OsString::from("1")),
             ("TOIMIJA_SESSION", OsString::from(&self.id)),
             ("TOIMIJA_LIVE", self.md_path.clone().into_os_string()),
@@ -337,62 +263,20 @@ impl Session {
                 repo_root.join(refresh::CURRENT_MD).into_os_string(),
             ),
             (
-                "FALSE_SYSTEMS_RESULT_PATH",
-                self.dir.join(crate::semantic::RESULT_FILE).into_os_string(),
-            ),
-            (
                 "FALSE_SYSTEMS_REPOSITORY_POINT_PATH",
                 self.dir.join(crate::semantic::POINT_FILE).into_os_string(),
             ),
-        ];
-        let context = self.dir.join(crate::semantic::CONTEXT_FILE);
-        if context.is_file() {
-            env.push(("FALSE_SYSTEMS_CONTEXT_PATH", context.into_os_string()));
-        }
-        env
+        ]
     }
 
     fn write_marker(&self) -> Result<()> {
         let json = serde_json::to_string_pretty(&self.marker)?;
-        crate::atomic_write::replace(&self.marker_path, format!("{json}\n").as_bytes())
-            .with_context(|| format!("failed to write {}", self.marker_path.display()))?;
-        Ok(())
+        crate::owned::replace(
+            &self.repo_root,
+            &self.marker_path,
+            format!("{json}\n").as_bytes(),
+        )
     }
-}
-
-pub fn run_receipt_path(repo_root: &Path, run: &WorkerRunRef) -> PathBuf {
-    repo_root
-        .join(".toimija/runs")
-        .join(format!("{run}.session.json"))
-}
-
-pub fn read_run_receipt(repo_root: &Path, run: &WorkerRunRef) -> Result<RunReceipt> {
-    const MAX_BYTES: u64 = 1024 * 1024;
-    let path = run_receipt_path(repo_root, run);
-    let metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("failed to inspect {}", path.display()))?;
-    ensure!(
-        metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= MAX_BYTES,
-        "run receipt must be a bounded regular file"
-    );
-    let mut receipt: RunReceipt = serde_json::from_slice(&fs::read(&path)?)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    ensure!(
-        receipt.schema == RUN_RECEIPT_SCHEMA,
-        "unsupported run receipt schema"
-    );
-    ensure!(
-        receipt
-            .sauma
-            .as_ref()
-            .is_some_and(|envelope| envelope.envelope == sauma::ENVELOPE_SCHEMA),
-        "run receipt has no supported Sauma envelope"
-    );
-    ensure!(
-        sauma::verify(&mut receipt)?.is_none(),
-        "run receipt digest mismatch"
-    );
-    Ok(receipt)
 }
 
 /// The `run` session this process was launched under, if any: a valid
@@ -484,7 +368,7 @@ pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
         return Ok(());
     }
     marker.last_seen_at = Some(now_secs());
-    stamp(&marker_path, &marker)
+    stamp(repo_root, &marker_path, &marker)
 }
 
 /// Write half of the heartbeat, split out so the prune race is testable
@@ -492,14 +376,18 @@ pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
 /// this write when a sibling's startup prune wins the interleaving. `NotFound`
 /// then means "pruned — nothing left to stamp", the same quiet outcome as a
 /// marker already missing at the read. Every other error still surfaces.
-fn stamp(marker_path: &Path, marker: &SessionMarker) -> Result<()> {
+fn stamp(repo_root: &Path, marker_path: &Path, marker: &SessionMarker) -> Result<()> {
     let json = serde_json::to_string_pretty(marker)?;
-    match crate::atomic_write::replace(marker_path, format!("{json}\n").as_bytes()) {
+    match crate::owned::replace(repo_root, marker_path, format!("{json}\n").as_bytes()) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => {
-            Err(error).with_context(|| format!("failed to write {}", marker_path.display()))
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(())
         }
+        Err(error) => Err(error),
     }
 }
 
@@ -559,8 +447,8 @@ pub fn declare_intent(
     // session that speaks is never simultaneously reported stale.
     marker.last_seen_at = Some(now_secs());
     let json = serde_json::to_string_pretty(&marker)?;
-    crate::atomic_write::replace(&marker_path, format!("{json}\n").as_bytes())
-        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    crate::owned::replace(repo_root, &marker_path, format!("{json}\n").as_bytes())
+        .context("failed to write the session marker")?;
     Ok(marker)
 }
 
@@ -698,7 +586,7 @@ mod tests {
         // the directory, then the heartbeat writes. The write must be the
         // quiet outcome, not `failed to write …/session.json.tmp-…`.
         fs::remove_dir_all(&dir).unwrap();
-        stamp(&dir.join("session.json"), &marker).unwrap();
+        stamp(temp.path(), &dir.join("session.json"), &marker).unwrap();
         assert!(!dir.exists(), "a quiet stamp must not resurrect the dir");
     }
 

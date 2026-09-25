@@ -26,30 +26,9 @@ validation:
   full: []
   privileged: []
 
-gates:
-  rust-format:
-    description: Rust formatting check
-    program: cargo
-    args: [fmt, --all, --check]
-    timeout_seconds: 60
-  rust-clippy:
-    description: Clippy with warnings denied
-    program: cargo
-    args: [clippy, --all-targets, --, -D, warnings]
-    timeout_seconds: 300
-  rust-test:
-    description: Full Rust test suite
-    program: cargo
-    args: [test]
-    timeout_seconds: 900
-
-gate_groups:
-  rust-full:
-    gates: [rust-format, rust-clippy, rust-test]
-
 boundaries:
   - Keep v0.0 as one Rust crate.
   - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Vaisto, or Kerto integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.rs contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.
   - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
   - Agent coordination — per-session live packets, sibling-session awareness, and session handoff records — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
-  - Plugins are supervised synchronous child processes discovered from trusted user configuration or exact-name PATH fallbacks. Repository configuration may select plugin IDs but cannot supply executable paths. No dynamic loading, downloads, daemons, or network.
+  - Toimija reports facts and refuses to decide. No gates, checks, or receipts (Evidence belongs to Sykli), no work providers or plugins, and no dispatch, assignment, or closure of work.

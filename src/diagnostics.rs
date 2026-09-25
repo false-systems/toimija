@@ -75,10 +75,11 @@ mod imp {
         /// and fd 2 of this process at the log. Callers print everything they
         /// want on the real terminal *before* this.
         pub fn borrow(log_path: &Path) -> io::Result<Self> {
-            let log = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)?;
+            // Never through a symlink planted at the log's path.
+            let log = crate::owned::open_nofollow(
+                log_path,
+                OpenOptions::new().create(true).append(true),
+            )?;
             // A fresh session makes the log empty anyway; truncate explicitly
             // so a reused path cannot inflate the capture count.
             log.set_len(0)?;

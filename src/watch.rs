@@ -30,7 +30,7 @@ const SUSPENSION_THRESHOLD: Duration = Duration::from_secs(30);
 /// How long a watcher has to report its readiness probe before fallback/failure.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Polling cadence for packet-visible Git and provider state.
+/// Polling cadence for packet-visible Git state.
 const STATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Directories whose churn must never trigger a refresh.
 const IGNORED_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
@@ -204,8 +204,16 @@ fn prove_ready(
         "toimija-watch-probe-{}-{backend}",
         std::process::id()
     ));
-    fs::write(&probe, b"watch readiness probe")
-        .with_context(|| format!("failed to arm watcher at {}", repo_root.display()))?;
+    // Never through a symlink planted at the probe's name.
+    crate::owned::open_nofollow(
+        &probe,
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
+    .and_then(|mut file| std::io::Write::write_all(&mut file, b"watch readiness probe"))
+    .with_context(|| format!("failed to arm watcher at {}", repo_root.display()))?;
     // Native backends may report the symlink-resolved path — FSEvents turns
     // /tmp/x into /private/tmp/x — so the wait must accept the canonical form
     // of the probe too, or native never proves ready on a symlinked checkout.
@@ -432,12 +440,8 @@ fn poll_refresh_if_changed(
     *last_poll = Instant::now();
     match current_token(runner, repo_root) {
         Ok(current) if previous_token.as_ref() != Some(&current) => {
-            if let Some(previous) = previous_token.as_ref() {
-                debug!(
-                    event = "toimija.watch.state_poll_changed",
-                    repository = previous.repository != current.repository,
-                    providers = previous.providers != current.providers
-                );
+            if previous_token.is_some() {
+                debug!(event = "toimija.watch.state_poll_changed");
             }
             if let Some(token) = refresh_or_warn(runner, repo_root, plan, on_refresh) {
                 *previous_token = Some(token);
@@ -450,56 +454,24 @@ fn poll_refresh_if_changed(
     }
 }
 
-/// What the watcher compares between polls: the repository refresh token plus
-/// a fingerprint of the runtime-provider summary. The packet's stored token is
-/// repository-state only (proposal 0011) — observer-environment facts must
-/// never decide staleness *across* processes — but this watcher is one
-/// continuous observer comparing its own successive observations, so tracking
-/// provider drift here is sound and keeps the packet's provider section live.
-///
-/// Kept as two named facts, not one concatenated hash: the packet side and the
-/// live probe must stay symmetric or the state poll would refresh forever, and
-/// when they do diverge the poll log must be able to say which half moved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct WatchToken {
-    repository: String,
-    providers: String,
-}
+/// What the watcher compares between polls: the packet's repository refresh
+/// token (proposal 0011).
+type WatchToken = String;
 
 fn current_token(runner: &impl CommandRunner, repo_root: &Path) -> Result<WatchToken> {
     let (mut git, _) = git::collect_git_state(runner, repo_root)?;
     crate::context::normalize_git_state(&mut git);
-    Ok(WatchToken {
-        repository: crate::context::refresh_token(&git),
-        providers: live_provider_fingerprint(repo_root)?,
-    })
+    Ok(crate::context::refresh_token(&git))
 }
 
-/// The packet-side counterpart of [`current_token`]. Its providers half comes
-/// from the summary the packet build computed; equality with the live probe on
-/// an untouched repo is pinned by
+/// The packet-side counterpart of [`current_token`]. Equality with the live
+/// probe on an untouched repo is pinned by
 /// `packet_and_live_watch_tokens_agree_when_nothing_changes`.
 fn packet_refresh_token(packet: &crate::context::ContextPacket) -> WatchToken {
-    WatchToken {
-        repository: packet
-            .refresh_token
-            .clone()
-            .unwrap_or_else(|| packet.consistency.token.clone()),
-        providers: provider_fingerprint(&packet.runtime_providers),
-    }
-}
-
-fn provider_fingerprint(providers: &crate::plugins::RuntimeProviders) -> String {
-    let bytes = serde_json::to_vec(providers).expect("provider summary serializes");
-    crate::consistency::hash_bytes(&bytes)
-}
-
-fn live_provider_fingerprint(repo_root: &Path) -> Result<String> {
-    let config = crate::config::RepoConfig::load_optional(repo_root)?
-        .unwrap_or_else(|| crate::config::RepoConfig::default_for(repo_root));
-    Ok(provider_fingerprint(
-        &crate::plugins::runtime_providers(&config).0,
-    ))
+    packet
+        .refresh_token
+        .clone()
+        .unwrap_or_else(|| packet.consistency.token.clone())
 }
 
 /// A transient refresh failure must not kill live updates: warn and keep
@@ -693,17 +665,21 @@ mod tests {
 
     #[test]
     fn packet_and_live_watch_tokens_agree_when_nothing_changes() {
-        // D11-5's churn guard: the packet-side token (providers fingerprinted
-        // from the summary the build computed) and the live probe must agree
-        // on an untouched repo, or the state poll would trigger a refresh
-        // every interval forever — invisible to the drift tests, which only
-        // assert that a refresh *happens*. Going through the real packet
-        // build pins the whole chain: config loading, provider discovery,
-        // and fingerprinting must stay symmetric.
+        // D11-5's churn guard: the packet-side token and the live probe must
+        // agree on an untouched repo, or the state poll would trigger a
+        // refresh every interval forever — invisible to the drift tests,
+        // which only assert that a refresh *happens*. Going through the real
+        // packet build pins the whole chain.
+        // Scrub the redirecting variables: `command::tests` sets `GIT_DIR`
+        // process-wide for a moment, and a fixture `git` that inherits it
+        // acts on that test's repository instead of this one.
         let git_runs = |args: &[&str], dir: &Path| {
             std::process::Command::new("git")
                 .args(args)
                 .current_dir(dir)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_WORK_TREE")
                 .output()
                 .is_ok_and(|output| output.status.success())
         };
@@ -807,7 +783,6 @@ mod tests {
             for_diff: false,
             budget: None,
             session_dir: None,
-            work: refresh::WorkSource::Discover,
         };
         let stop = AtomicBool::new(false);
         let mono = Instant::now();
@@ -856,7 +831,6 @@ mod tests {
             for_diff: false,
             budget: None,
             session_dir: None,
-            work: refresh::WorkSource::Discover,
         };
         let stop = AtomicBool::new(false);
         let mono = Instant::now();
@@ -902,7 +876,6 @@ mod tests {
             for_diff: false,
             budget: None,
             session_dir: None,
-            work: refresh::WorkSource::Discover,
         };
         let stop = AtomicBool::new(false);
         let mono = Instant::now();
@@ -952,7 +925,6 @@ mod tests {
             for_diff: false,
             budget: None,
             session_dir: None,
-            work: refresh::WorkSource::Discover,
         };
         let mut heartbeats = 0;
 

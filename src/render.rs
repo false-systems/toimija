@@ -311,8 +311,6 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         );
     }
 
-    write_runtime_providers(&mut output, packet);
-
     // The session block renders only on per-session packets — the wrapped
     // agent reads its own declared identity back; repo-level packets skip it.
     if let Some(session) = &packet.session {
@@ -462,51 +460,6 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     append_optional_sections(&mut output, budget, optional);
     output
-}
-
-fn write_runtime_providers(output: &mut String, packet: &ContextPacket) {
-    write_h2(output, "Runtime providers");
-    write_provider(output, "work", &packet.runtime_providers.work);
-    write_provider(output, "worker", &packet.runtime_providers.worker);
-    writeln!(
-        output,
-        "- note: informational only; Toimija does not dispatch work or load provider code into this process"
-    )
-    .unwrap();
-}
-
-fn write_provider(
-    output: &mut String,
-    label: &str,
-    provider: &crate::plugins::RuntimeProviderSummary,
-) {
-    writeln!(
-        output,
-        "- {label}: `{}` ({}) — {} via {}; required: {}; {}",
-        provider.id,
-        provider.capability,
-        runtime_status_label(provider.status),
-        runtime_source_label(provider.source),
-        provider.required,
-        provider.reason
-    )
-    .unwrap();
-}
-
-fn runtime_status_label(status: crate::plugins::RuntimeProviderStatus) -> &'static str {
-    match status {
-        crate::plugins::RuntimeProviderStatus::Configured => "configured",
-        crate::plugins::RuntimeProviderStatus::Discoverable => "discoverable",
-        crate::plugins::RuntimeProviderStatus::Unavailable => "unavailable",
-    }
-}
-
-fn runtime_source_label(source: crate::plugins::RuntimeProviderSource) -> &'static str {
-    match source {
-        crate::plugins::RuntimeProviderSource::UserConfig => "user config",
-        crate::plugins::RuntimeProviderSource::ExactPathFallback => "exact PATH fallback",
-        crate::plugins::RuntimeProviderSource::Missing => "missing executable/config",
-    }
 }
 
 fn append_optional_sections(
@@ -1021,29 +974,6 @@ mod tests {
     use crate::relevance::RelevancePacket;
     use crate::repo::{RepoInfo, RepoKind};
 
-    fn runtime_providers() -> crate::plugins::RuntimeProviders {
-        crate::plugins::RuntimeProviders {
-            work: crate::plugins::RuntimeProviderSummary {
-                id: "teko".to_string(),
-                kind: false_agent_protocol::plugin::PluginKind::Work,
-                capability: false_agent_protocol::plugin::WORK_V1.to_string(),
-                status: crate::plugins::RuntimeProviderStatus::Unavailable,
-                source: crate::plugins::RuntimeProviderSource::Missing,
-                required: false,
-                reason: "repo composition work provider".to_string(),
-            },
-            worker: crate::plugins::RuntimeProviderSummary {
-                id: "none".to_string(),
-                kind: false_agent_protocol::plugin::PluginKind::Worker,
-                capability: false_agent_protocol::plugin::WORKER_V1.to_string(),
-                status: crate::plugins::RuntimeProviderStatus::Unavailable,
-                source: crate::plugins::RuntimeProviderSource::Missing,
-                required: false,
-                reason: "no default external worker; run selects the named command".to_string(),
-            },
-        }
-    }
-
     fn packet() -> ContextPacket {
         ContextPacket {
             schema: crate::context::CONTEXT_SCHEMA.to_string(),
@@ -1057,7 +987,6 @@ mod tests {
             },
             repo_kind: RepoKind::Rust,
             secondary_languages: Vec::new(),
-            runtime_providers: runtime_providers(),
             refresh_token: None,
             git: GitState {
                 repo_root: PathBuf::from("/repo"),
@@ -1531,11 +1460,6 @@ mod tests {
 - primary: Rust (Cargo.toml at root)
 - also present: none
 
-## Runtime providers
-- work: `teko` (work.v1) — unavailable via missing executable/config; required: false; repo composition work provider
-- worker: `none` (worker.v1) — unavailable via missing executable/config; required: false; no default external worker; run selects the named command
-- note: informational only; Toimija does not dispatch work or load provider code into this process
-
 ## Workset contract
 Work from this packet's Compiled workset and Read order; they are your working
 set, not a preamble. A session's declared scope is intent, not evidence.
@@ -1620,26 +1544,6 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
   },
   "repo_kind": "Rust",
   "secondary_languages": [],
-  "runtime_providers": {
-    "work": {
-      "id": "teko",
-      "kind": "work",
-      "capability": "work.v1",
-      "status": "unavailable",
-      "source": "missing",
-      "required": false,
-      "reason": "repo composition work provider"
-    },
-    "worker": {
-      "id": "none",
-      "kind": "worker",
-      "capability": "worker.v1",
-      "status": "unavailable",
-      "source": "missing",
-      "required": false,
-      "reason": "no default external worker; run selects the named command"
-    }
-  },
   "git": {
     "repo_root": "/repo",
     "git_dir": null,

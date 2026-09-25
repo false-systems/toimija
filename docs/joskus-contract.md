@@ -73,7 +73,8 @@ The packet includes:
 - a `toimija-consistency-v2` token over the current Git work state;
 - a sauma envelope binding the artifact to its provenance;
 - on session packets, session identity, declared intent and scope, fixed entry
-  branch/HEAD, drift, and active Teko work when present.
+  branch/HEAD, drift, and an execution context carrying the session's
+  repository point (`session.execution.repository`).
 
 The consistency token is content-based. File mtimes do not affect it; same-size
 content changes do. Generated state under `.toimija/` and `.teko/` is excluded,
@@ -103,8 +104,8 @@ that nothing exists.
 ## Wrapped sessions
 
 `toimija run` creates a per-session packet, keeps it fresh while the child is
-running, and exits with the child's status. Explicit `--intent` or active Teko
-work is required; `--intent unknown` is the deliberate escape hatch.
+running, and exits with the child's status. Explicit `--intent` is required;
+`--intent unknown` is the deliberate escape hatch.
 
 Known agents (`claude`, `codex`, and `gemini`) receive the packet and task in
 their launch prompt. Other commands receive only the environment handshake:
@@ -119,6 +120,7 @@ their launch prompt. Other commands receive only the environment handshake:
 | `TOIMIJA_REPO_ROOT` | Repository root |
 | `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION` |
 | `TOIMIJA_REPO_LIVE` | Repo-level latest-summary packet |
+| `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | The session's current repository point (false-agent-protocol `RepositoryPointEnvelope`) |
 
 Toimija owns packet compilation, freshness, launch delivery, and local
 provenance. It does not call model providers, parse model output, apply patches,

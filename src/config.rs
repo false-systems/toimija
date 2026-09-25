@@ -19,11 +19,8 @@ pub const DAY_SECS: u64 = 24 * 60 * 60;
 #[serde(default)]
 pub struct RepoConfig {
     pub repo: RepoSection,
-    pub composition: CompositionSection,
     pub context: ContextSection,
     pub validation: ValidationSection,
-    pub gates: BTreeMap<String, crate::gates::GateConfig>,
-    pub gate_groups: BTreeMap<String, crate::gates::GateGroupConfig>,
     pub stewardship: StewardshipSection,
     pub agents: BTreeMap<String, AgentPromptConfig>,
     pub boundaries: Vec<String>,
@@ -36,24 +33,6 @@ pub struct RepoConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentPromptConfig {
     pub prompt: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct CompositionSection {
-    pub work: Option<String>,
-    pub default_worker: Option<String>,
-    pub require_work: bool,
-}
-
-impl Default for CompositionSection {
-    fn default() -> Self {
-        Self {
-            work: Some("teko".into()),
-            default_worker: None,
-            require_work: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -224,20 +203,20 @@ impl RepoConfig {
     }
 }
 
-pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
+/// Seed `.toimija/repo.yaml`, never overwriting one and never writing
+/// through a symlink.
+pub fn init_repo(repo_root: &Path) -> anyhow::Result<InitReport> {
+    use anyhow::Context as _;
     let mut report = InitReport {
         created: Vec::new(),
         existing: Vec::new(),
         guidance: Vec::new(),
     };
-    let dir = repo_root.join(".toimija");
-    if dir.exists() {
+    let dir = repo_root.join(crate::owned::TOIMIJA_DIR);
+    if crate::owned::dir_exists(repo_root, &dir).context("failed to initialize")? {
         report.existing.push(dir.clone());
     } else {
-        fs::create_dir_all(&dir).map_err(|source| ToimijaError::WriteFile {
-            path: dir.clone(),
-            source,
-        })?;
+        crate::owned::ensure_dir(repo_root, &dir).context("failed to initialize")?;
         report.created.push(dir.clone());
     }
 
@@ -250,10 +229,14 @@ pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
         // safe_to_ignore is for the repo's own additions only.
         let text =
             serde_yaml::to_string(&RepoConfig::default_for(repo_root)).expect("config serializes");
-        fs::write(&config_path, text).map_err(|source| ToimijaError::WriteFile {
-            path: config_path.clone(),
-            source,
-        })?;
+        use std::io::Write as _;
+        crate::owned::open(
+            repo_root,
+            &config_path,
+            fs::OpenOptions::new().write(true).create_new(true),
+        )
+        .and_then(|mut file| Ok(file.write_all(text.as_bytes())?))
+        .context("failed to initialize")?;
         report.created.push(config_path);
         // A fresh config has blank identity fields; point the human at them.
         report.guidance.push(
@@ -275,6 +258,27 @@ pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Repositories adopted before gates and runtime providers moved out
+    /// still carry `gates:`, `gate_groups:` and `composition:`. Toimija no
+    /// longer reads them, and must not refuse to load a config because they
+    /// are there.
+    #[test]
+    fn a_config_with_retired_sections_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".toimija");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("repo.yaml"),
+            "repo:\n  name: legacy\n\
+             gates:\n  rust-test:\n    program: cargo\n    args: [test]\n\
+             gate_groups:\n  full:\n    gates: [rust-test]\n\
+             composition:\n  work: teko\n  require_work: false\n",
+        )
+        .unwrap();
+        let config = RepoConfig::load(temp.path()).unwrap();
+        assert_eq!(config.repo.name, "legacy");
+    }
 
     #[test]
     fn loads_config_with_defaults() {

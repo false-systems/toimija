@@ -107,6 +107,31 @@ pub struct SnapshotLease {
     pub created_at: u64,
 }
 
+/// Whether `id` may name a lease. The id becomes a file name under
+/// `.toimija/snapshots/` and a ref name, so the rule is about path safety:
+/// 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`.
+/// That refuses `.`, `..`, hidden names, separators (`/`, `\`), and NUL,
+/// and still accepts the ids earlier versions minted, and dotted ones they
+/// took from `TOIMIJA_SESSION` such as `my.session`, so those leases can be
+/// released.
+pub fn is_valid_lease_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && !id.starts_with('.')
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn ensure_valid_lease_id(id: &str) -> Result<()> {
+    if !is_valid_lease_id(id) {
+        bail!(
+            "invalid snapshot lease id `{id}`: expected 1-128 ASCII letters, digits, `.`, `-` \
+             or `_`, not starting with `.`"
+        );
+    }
+    Ok(())
+}
+
 /// The git ref that pins a lease's tree.
 pub fn lease_ref(id: &str) -> String {
     format!("refs/toimija/snapshots/{id}")
@@ -122,6 +147,10 @@ pub fn acquire_lease(
     tree: &str,
     token: &str,
 ) -> Result<SnapshotLease> {
+    ensure_valid_lease_id(id)?;
+    // Checked before the ref exists, so a refusal leaves nothing pinned.
+    let dir = repo_root.join(SNAPSHOTS_SUBDIR);
+    crate::owned::ensure_dir(repo_root, &dir).context("failed to record the snapshot lease")?;
     plain_git(runner, repo_root, &["update-ref", &lease_ref(id), tree])?;
     let lease = SnapshotLease {
         id: id.to_string(),
@@ -130,22 +159,24 @@ pub fn acquire_lease(
         pid: std::process::id(),
         created_at: now_secs(),
     };
-    let dir = repo_root.join(SNAPSHOTS_SUBDIR);
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let json = serde_json::to_string_pretty(&lease)?;
     let path = dir.join(format!("{id}.json"));
-    fs::write(&path, format!("{json}\n"))
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    crate::owned::replace(repo_root, &path, format!("{json}\n").as_bytes())?;
     Ok(lease)
 }
 
 /// Release a lease: delete the ref (git gc may now reclaim the tree if nothing
-/// else references it) and remove the marker. Idempotent.
+/// else references it) and remove the marker. Idempotent. An id that is not a
+/// valid lease id is refused before anything is touched.
 pub fn release_lease(runner: &impl CommandRunner, repo_root: &Path, id: &str) -> Result<()> {
+    ensure_valid_lease_id(id)?;
+    let marker = repo_root.join(SNAPSHOTS_SUBDIR).join(format!("{id}.json"));
+    // Refuse a symlinked `.toimija/snapshots` before touching the ref.
+    crate::owned::dir_exists(repo_root, marker.parent().expect("a marker has a parent"))
+        .context("failed to release the snapshot lease")?;
     // Ignore a missing ref so release is idempotent.
     let _ = plain_git(runner, repo_root, &["update-ref", "-d", &lease_ref(id)]);
-    let _ = fs::remove_file(repo_root.join(SNAPSHOTS_SUBDIR).join(format!("{id}.json")));
-    Ok(())
+    crate::owned::remove_file(repo_root, &marker)
 }
 
 /// Read all lease markers, newest first. A malformed marker is skipped.
@@ -221,4 +252,37 @@ fn plain_git(runner: &impl CommandRunner, repo_root: &Path, args: &[&str]) -> Re
         bail!("git {args:?} failed: {}", output.stderr_lossy().trim());
     }
     Ok(output.stdout_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lease_ids_are_names_never_paths() {
+        for valid in [
+            "1782951227-52574",
+            "abc_DEF-123",
+            "my.session",
+            "a..b",
+            &"a".repeat(128),
+        ] {
+            assert!(is_valid_lease_id(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            ".",
+            "..",
+            ".hidden",
+            "../x",
+            "a/b",
+            "/abs",
+            "a\\b",
+            "a\0b",
+            "a b",
+            &"a".repeat(129),
+        ] {
+            assert!(!is_valid_lease_id(invalid), "{invalid}");
+        }
+    }
 }

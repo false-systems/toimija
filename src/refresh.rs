@@ -8,7 +8,6 @@
 //! policy files. The recomputation itself is read-only and runs no validation
 //! commands and makes no network calls.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,15 +45,6 @@ pub struct Plan {
     pub for_diff: bool,
     pub budget: Option<usize>,
     pub session_dir: Option<PathBuf>,
-    pub work: WorkSource,
-}
-
-#[derive(Clone, Default)]
-pub enum WorkSource {
-    #[default]
-    Discover,
-    Unbound,
-    Provider(crate::teko::SharedWorkProvider),
 }
 
 impl Plan {
@@ -62,14 +52,7 @@ impl Plan {
     /// repo-level writer.
     pub fn run(&self, runner: &impl CommandRunner, repo_root: &Path) -> Result<Refreshed> {
         match &self.session_dir {
-            Some(dir) => refresh_session(
-                runner,
-                repo_root,
-                self.for_diff,
-                self.budget,
-                dir,
-                &self.work,
-            ),
+            Some(dir) => refresh_session(runner, repo_root, self.for_diff, self.budget, dir),
             None => refresh(runner, repo_root, self.for_diff, self.budget),
         }
     }
@@ -85,17 +68,10 @@ pub fn refresh(
     for_diff: bool,
     budget_override: Option<usize>,
 ) -> Result<Refreshed> {
-    let (packet, markdown, json) = compute(
-        runner,
-        repo_root,
-        for_diff,
-        budget_override,
-        None,
-        &WorkSource::Discover,
-    )?;
+    let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override, None)?;
     let md_path = repo_root.join(CURRENT_MD);
     let json_path = repo_root.join(CURRENT_JSON);
-    write_packet(&md_path, &json_path, &markdown, &json)?;
+    write_packet(repo_root, &md_path, &json_path, &markdown, &json)?;
     Ok(Refreshed {
         packet,
         markdown,
@@ -115,7 +91,6 @@ pub fn refresh_session(
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: &Path,
-    work: &WorkSource,
 ) -> Result<Refreshed> {
     let (packet, markdown, json) = compute(
         runner,
@@ -123,27 +98,21 @@ pub fn refresh_session(
         for_diff,
         budget_override,
         Some(session_dir),
-        work,
     )?;
     let md_path = session_dir.join("current.md");
     let json_path = session_dir.join("current.json");
     // The session packet is authoritative for the agent — its failure is fatal.
-    write_packet(&md_path, &json_path, &markdown, &json)?;
-    let context_path = session_dir.join(crate::semantic::CONTEXT_FILE);
+    write_packet(repo_root, &md_path, &json_path, &markdown, &json)?;
     let execution = packet
         .session
         .as_ref()
         .and_then(|session| session.execution.as_ref());
-    if let Some(execution) = execution {
-        crate::semantic::write_json(&context_path, execution)?;
-    } else {
-        let _ = fs::remove_file(context_path);
-    }
     let point = match execution {
         Some(execution) => execution.repository.clone(),
         None => crate::semantic::repository_point(runner, &packet)?,
     };
     crate::semantic::write_json(
+        repo_root,
         &session_dir.join(crate::semantic::POINT_FILE),
         &crate::semantic::point_envelope(point),
     )?;
@@ -151,6 +120,7 @@ pub fn refresh_session(
     // failure mirroring it must not abort the already-written session packet, or
     // a transient summary write error would freeze the agent's live context.
     if let Err(error) = write_packet(
+        repo_root,
         &repo_root.join(CURRENT_MD),
         &repo_root.join(CURRENT_JSON),
         &markdown,
@@ -185,7 +155,6 @@ fn compute(
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: Option<&Path>,
-    work: &WorkSource,
 ) -> Result<(ContextPacket, String, String)> {
     let mut packet = context::build_context_packet(runner, repo_root, for_diff)
         .context("failed to build context packet")?;
@@ -212,15 +181,6 @@ fn compute(
         None => None,
     };
     if let Some(marker) = marker {
-        let point = crate::semantic::repository_point(runner, &packet)?;
-        let active = match work {
-            WorkSource::Discover => crate::teko::active_work_at(repo_root, &point, false)?,
-            WorkSource::Unbound => None,
-            WorkSource::Provider(provider) => provider
-                .lock()
-                .map_err(|_| anyhow::anyhow!("work provider session lock was poisoned"))?
-                .current(&point)?,
-        };
         packet.session = Some(context::SessionBlock {
             id: marker.id,
             intent: marker.intent,
@@ -229,7 +189,7 @@ fn compute(
             entry_branch: marker.branch,
             entry_head: marker.head,
         });
-        let execution = crate::semantic::execution_context(runner, &packet, active, generation)?;
+        let execution = crate::semantic::execution_context(runner, &packet, generation)?;
         packet
             .session
             .as_mut()
@@ -246,19 +206,22 @@ fn compute(
     Ok((packet, markdown, json))
 }
 
-/// Write a packet pair, creating the parent directory if needed. The JSON gets a
-/// trailing newline so the file is a clean, diff-friendly text artifact.
-fn write_packet(md_path: &Path, json_path: &Path, markdown: &str, json: &str) -> Result<()> {
-    if let Some(parent) = md_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
+/// Write a packet pair, creating the parent directory if needed — never
+/// through a symlink (see `owned`). The JSON gets a trailing newline so the
+/// file is a clean, diff-friendly text artifact.
+fn write_packet(
+    repo_root: &Path,
+    md_path: &Path,
+    json_path: &Path,
+    markdown: &str,
+    json: &str,
+) -> Result<()> {
+    let parent = md_path.parent().context("a packet file has a parent")?;
+    crate::owned::ensure_dir(repo_root, parent).context("failed to write the live packet")?;
     // JSON is authoritative if the process stops between these two atomic
     // replacements; the shared artifact id makes that mismatch detectable.
-    crate::atomic_write::replace(md_path, markdown.as_bytes())
-        .with_context(|| format!("failed to write {}", md_path.display()))?;
-    crate::atomic_write::replace(json_path, format!("{json}\n").as_bytes())
-        .with_context(|| format!("failed to write {}", json_path.display()))?;
+    crate::owned::replace(repo_root, md_path, markdown.as_bytes())?;
+    crate::owned::replace(repo_root, json_path, format!("{json}\n").as_bytes())?;
     Ok(())
 }
 

@@ -5,11 +5,11 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::atomic_write::{self, TEMP_MARKER};
+use crate::atomic_write::TEMP_MARKER;
 use crate::command::CommandRunner;
 use crate::handoff;
 use crate::session::SessionMarker;
@@ -17,6 +17,7 @@ use crate::sessions::{self, Liveness};
 
 pub const HISTORY_PATH: &str = ".toimija/history.jsonl";
 pub const HISTORY_LOCK_PATH: &str = ".toimija/history.lock";
+const RUNS_SUBDIR: &str = ".toimija/runs";
 const HISTORY_VERSION: u32 = 1;
 const HANDOFF_CAP: usize = 10;
 pub const DEFAULT_RUNS_RETENTION_SECS: u64 = 14 * 24 * 60 * 60;
@@ -278,17 +279,16 @@ pub fn append_record(repo_root: &Path, record: &HistoryRecord) -> Result<()> {
 
 fn lock_history(repo_root: &Path) -> Result<fs::File> {
     let path = repo_root.join(HISTORY_LOCK_PATH);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    crate::owned::ensure_dir(repo_root, &repo_root.join(crate::owned::TOIMIJA_DIR))?;
+    let file = crate::owned::open(
+        repo_root,
+        &path,
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false),
+    )?;
     file.lock()
         .with_context(|| format!("failed to lock {}", path.display()))?;
     Ok(file)
@@ -296,16 +296,12 @@ fn lock_history(repo_root: &Path) -> Result<fs::File> {
 
 fn open_history_file(repo_root: &Path) -> Result<(std::path::PathBuf, fs::File)> {
     let path = repo_root.join(HISTORY_PATH);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    crate::owned::ensure_dir(repo_root, &repo_root.join(crate::owned::TOIMIJA_DIR))?;
+    let file = crate::owned::open(
+        repo_root,
+        &path,
+        OpenOptions::new().read(true).create(true).append(true),
+    )?;
     Ok((path, file))
 }
 
@@ -380,14 +376,17 @@ pub fn journal_session(
 }
 
 /// Durably remember a concluded session, then and only then remove its dir.
+/// `toimija` is the repository's `.toimija/`, already resolved by the sweep.
 pub fn reap(
     repo_root: &Path,
+    toimija: &Path,
     dir: &Path,
     marker: &SessionMarker,
     end: HistoryEnd,
     recorded_at: u64,
     journal: &mut Journal,
 ) -> Result<bool> {
+    ensure_inside_toimija(toimija, dir)?;
     let journaled = journal.journal_session(repo_root, marker, end, recorded_at)?;
     match fs::remove_dir_all(dir) {
         Ok(()) => {}
@@ -424,6 +423,25 @@ fn sweep_inner(
     repo_root: &Path,
     options: SweepOptions,
 ) -> Result<SweepReport> {
+    // Everything this pass deletes lives under `.toimija/`, and a repository
+    // can commit any of these as a symlink. Following one would delete
+    // whatever the committer pointed it at, so refuse the whole pass instead.
+    for owned in [crate::session::SESSIONS_SUBDIR, RUNS_SUBDIR] {
+        crate::owned::dir_exists(repo_root, &repo_root.join(owned)).context("refusing to sweep")?;
+    }
+    // Resolved once: every deletion below is checked against it.
+    let toimija = match repo_root.join(crate::owned::TOIMIJA_DIR).canonicalize() {
+        Ok(toimija) => toimija,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SweepReport {
+                dry_run: options.dry_run,
+                ..SweepReport::default()
+            });
+        }
+        Err(error) => {
+            return Err(error).context("failed to resolve .toimija");
+        }
+    };
     let now = now_secs();
     let plan = sessions::reap_plan(
         runner,
@@ -433,30 +451,33 @@ fn sweep_inner(
     )?;
     let mut kept = plan.kept;
     let mut run_candidates = Vec::new();
-    for path in direct_children(&repo_root.join(".toimija/runs"))? {
+    for path in direct_children(&repo_root.join(RUNS_SUBDIR))? {
         if is_atomic_temp(&path) {
             continue;
         }
-        if older_than(&path, now, options.runs_retention_secs)? {
-            run_candidates.push(path);
-        } else {
-            kept += 1;
+        match older_than(&path, now, options.runs_retention_secs)? {
+            Some(true) => run_candidates.push(path),
+            Some(false) => kept += 1,
+            None => {}
         }
     }
     let mut temp_candidates = Vec::new();
-    for path in descendants(&repo_root.join(".toimija"))? {
-        if !is_atomic_temp(&path)
-            || !fs::symlink_metadata(&path)
-                .with_context(|| format!("failed to inspect {}", path.display()))?
-                .file_type()
-                .is_file()
-        {
+    for path in descendants(&repo_root.join(crate::owned::TOIMIJA_DIR))? {
+        if !is_atomic_temp(&path) {
             continue;
         }
-        if older_than(&path, now, ORPHAN_TEMP_RETENTION_SECS)? {
-            temp_candidates.push(path);
-        } else {
-            kept += 1;
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_file() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+            }
+        }
+        match older_than(&path, now, ORPHAN_TEMP_RETENTION_SECS)? {
+            Some(true) => temp_candidates.push(path),
+            Some(false) => kept += 1,
+            None => {}
         }
     }
     run_candidates.sort();
@@ -501,12 +522,8 @@ fn sweep_inner(
             .filter(|candidate| !recorded.contains(&candidate.marker.id))
             .count();
     } else {
-        for path in &temp_candidates {
-            fs::remove_file(path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
-        }
-        for path in &run_candidates {
-            remove_artifact(path)?;
+        for path in temp_candidates.iter().chain(&run_candidates) {
+            reclaim(&toimija, path)?;
         }
         let mut journal = None;
         let mut removed = Vec::with_capacity(plan.candidates.len());
@@ -525,6 +542,7 @@ fn sweep_inner(
             // must not abort the whole pass. Keep it for the next sweep.
             match reap(
                 repo_root,
+                &toimija,
                 &candidate.dir,
                 &candidate.marker,
                 end,
@@ -566,6 +584,32 @@ fn sweep_inner(
     Ok(report)
 }
 
+/// The last check before anything is deleted: the path's parent must resolve
+/// inside `toimija`, this repository's own `.toimija/` as the sweep resolved
+/// it. The candidate itself is not resolved — removing a symlink removes the
+/// link, never its target.
+fn ensure_inside_toimija(owned: &Path, path: &Path) -> Result<()> {
+    let parent = match path.parent().map(Path::canonicalize) {
+        Some(Ok(parent)) => Some(parent),
+        // Nothing left to resolve means nothing left to delete: a sibling
+        // sweep got there first, and the removal reports it as reclaimed.
+        Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Some(Err(error)) => {
+            return Err(error)
+                .with_context(|| format!("failed to resolve the parent of {}", path.display()));
+        }
+        None => None,
+    };
+    match parent {
+        Some(parent) if parent.starts_with(owned) => Ok(()),
+        _ => bail!(
+            "refusing to remove {}: it does not resolve inside {}",
+            path.display(),
+            owned.display()
+        ),
+    }
+}
+
 fn direct_children(dir: &Path) -> Result<Vec<PathBuf>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -587,39 +631,52 @@ fn descendants(root: &Path) -> Result<Vec<PathBuf>> {
     let mut pending = direct_children(root)?;
     let mut files = Vec::new();
     while let Some(path) = pending.pop() {
-        if fs::symlink_metadata(&path)
-            .with_context(|| format!("failed to inspect {}", path.display()))?
-            .file_type()
-            .is_dir()
-        {
-            pending.extend(direct_children(&path)?);
-        } else {
-            files.push(path);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_dir() => pending.extend(direct_children(&path)?),
+            Ok(_) => files.push(path),
+            // Reclaimed by a concurrent sweep after it was listed.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+            }
         }
     }
     Ok(files)
 }
 
-fn older_than(path: &Path, now: u64, retention_secs: u64) -> Result<bool> {
-    let modified = fs::symlink_metadata(path)
-        .with_context(|| format!("failed to inspect {}", path.display()))?
+/// Whether `path` is older than the retention window; `None` when it is
+/// already gone — a concurrent sweep reclaimed it after it was listed.
+fn older_than(path: &Path, now: u64, retention_secs: u64) -> Result<Option<bool>> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    let modified = meta
         .modified()
         .with_context(|| format!("failed to read modification time for {}", path.display()))?
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    Ok(now.saturating_sub(modified) > retention_secs)
+    Ok(Some(now.saturating_sub(modified) > retention_secs))
 }
 
-fn remove_artifact(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("failed to inspect {}", path.display()))?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
+/// Delete one expired artifact under `toimija`. Already gone — a concurrent
+/// sweep got there first — counts as reclaimed, not as a failure.
+fn reclaim(toimija: &Path, path: &Path) -> Result<()> {
+    ensure_inside_toimija(toimija, path)?;
+    let removed = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(error) => Err(error),
+    };
+    match removed {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
     }
-    .with_context(|| format!("failed to remove {}", path.display()))
 }
 
 fn compact_history(repo_root: &Path, max_records: usize) -> Result<()> {
@@ -628,13 +685,18 @@ fn compact_history(repo_root: &Path, max_records: usize) -> Result<()> {
         return Ok(());
     }
     let _lock = lock_history(repo_root)?;
-    let mut file = match OpenOptions::new().read(true).write(true).open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to read {}", path.display()));
-        }
-    };
+    let mut file =
+        match crate::owned::open(repo_root, &path, OpenOptions::new().read(true).write(true)) {
+            Ok(file) => file,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
     file.lock()
         .with_context(|| format!("failed to lock {}", path.display()))?;
     let mut bytes = Vec::new();
@@ -643,7 +705,7 @@ fn compact_history(repo_root: &Path, max_records: usize) -> Result<()> {
     let Some(compacted) = select_compaction(&bytes, max_records) else {
         return Ok(());
     };
-    atomic_write::replace(&path, &compacted)
+    crate::owned::replace(repo_root, &path, &compacted)
         .with_context(|| format!("failed to compact {}", path.display()))
 }
 
@@ -1001,6 +1063,7 @@ mod tests {
         assert!(
             reap(
                 temp.path(),
+                &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
                 HistoryEnd::Closed,
@@ -1025,6 +1088,7 @@ mod tests {
         assert!(
             reap(
                 temp.path(),
+                &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
                 HistoryEnd::Closed,
@@ -1143,6 +1207,7 @@ mod tests {
 
         reap(
             temp.path(),
+            &temp.path().join(".toimija").canonicalize().unwrap(),
             &dir,
             &marker,
             HistoryEnd::ReapedStale,
@@ -1186,6 +1251,7 @@ mod tests {
         assert!(
             !reap(
                 temp.path(),
+                &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
                 HistoryEnd::Closed,
@@ -1310,6 +1376,43 @@ mod tests {
             .map(|record| record.id)
             .collect();
         assert_eq!(ids, ["100-2", "100-3"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nothing_is_deleted_unless_its_parent_resolves_inside_toimija() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(repo.join(".toimija/runs")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".toimija/runs/escape")).unwrap();
+        let toimija = repo.join(".toimija").canonicalize().unwrap();
+
+        assert!(ensure_inside_toimija(&toimija, &repo.join(".toimija/runs/old.jsonl")).is_ok());
+        // The link itself may go; nothing reached through it may.
+        assert!(ensure_inside_toimija(&toimija, &repo.join(".toimija/runs/escape")).is_ok());
+        assert!(
+            ensure_inside_toimija(&toimija, &repo.join(".toimija/runs/escape/victim")).is_err()
+        );
+        assert!(ensure_inside_toimija(&toimija, &outside.join("victim")).is_err());
+        assert!(ensure_inside_toimija(&toimija, &repo.join("README.md")).is_err());
+    }
+
+    /// Two sweeps can list the same expired artifact; whichever removes it
+    /// second finds it gone. That is the outcome both wanted, not a failure
+    /// of `clean`.
+    #[test]
+    fn an_artifact_a_concurrent_sweep_already_reclaimed_is_not_a_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let runs = temp.path().join(".toimija/runs");
+        fs::create_dir_all(&runs).unwrap();
+        let toimija = temp.path().join(".toimija").canonicalize().unwrap();
+
+        reclaim(&toimija, &runs.join("gone.jsonl")).unwrap();
+        reclaim(&toimija, &runs.join("gone-dir")).unwrap();
+        // Gone between listing and ageing: not a candidate, not an error.
+        assert_eq!(older_than(&runs.join("gone.jsonl"), 0, 0).unwrap(), None);
     }
 
     #[test]

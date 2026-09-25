@@ -22,11 +22,6 @@ pub enum ToimijaError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to write {path}: {source}")]
-    WriteFile {
-        path: PathBuf,
-        source: std::io::Error,
-    },
     #[error("git command failed: {command} exited {status}")]
     GitCommand { command: String, status: i32 },
     #[error("required command not found: {0}")]

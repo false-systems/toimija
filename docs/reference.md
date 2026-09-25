@@ -72,7 +72,7 @@ What you get:
 |---|---|
 | **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed on every relevant change while the agent works. |
 | **A workset contract** | Every packet opens with a normative contract: work from Scope and Read order, exclusions are do-not-scan, and any expansion outside the workset is declared — *expansion is never forbidden; invisible expansion is.* |
-| **Wrapped means used** | Under `run`, using toimija is not voluntary: explicit intent or active Teko work is required to launch, known agents get the packet **in their launch prompt** (argv — they cannot not-see it), and the exit summary reports what the session actually consumed. |
+| **Wrapped means used** | Under `run`, using toimija is not voluntary: an explicit intent is required to launch, known agents get the packet **in their launch prompt** (argv — they cannot not-see it), and the exit summary reports what the session actually consumed. |
 | **Ambient adoption** | `toimija adopt` maintains one flat instruction in every agent entry file convention, drift-guarded by `doctor --strict`; `--hooks` keeps the packet fresh on every checkout/merge/commit. |
 | **Git-derived relevance** | What to inspect first, what co-changes, what is risky, and which changes may be dependency-related. Heuristic and advisory; no source parsing. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
@@ -123,9 +123,9 @@ launches the agent command, stops watching when the agent exits, and returns the
 agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
 143).
 
-**Wrapped means used** (proposal 0006). `run` refuses to launch without either
-`--intent` or active Teko work; `--intent unknown` remains the explicit escape
-hatch for exploratory sessions. For known agents (`claude`, `codex`, `gemini`
+**Wrapped means used** (proposal 0006). `run` refuses to launch without
+`--intent`; `--intent unknown` remains the explicit escape hatch for
+exploratory sessions. For known agents (`claude`, `codex`, `gemini`
 — matched by basename; all use positional prompt delivery) — and for any agent
 configured under `agents:` in `.toimija/repo.yaml` (`prompt: positional`, or a
 flag such as `prompt: --message`; configuration wins over the built-ins) —
@@ -162,7 +162,7 @@ shared file. While the agent works, that session packet stays fresh: every
 relevant filesystem or Git-state change re-runs the refresh after a short
 debounce. After laptop sleep, the resumed watch loop re-proves the session within
 one tick through that same refresh and heartbeat path. On Linux, the watcher
-polls collected Git/provider state at roughly 500 ms because inotify can prove
+polls collected Git state at roughly 500 ms because inotify can prove
 the readiness probe while still missing the first post-armed event in
 CI/container environments, and Toimija only needs packet-visible Git/worktree
 state. This avoids recursively scanning ignored build/vendor/session trees as
@@ -171,8 +171,8 @@ backend first
 and reports `armed (native)` only after a readiness probe is observed. If that
 probe times out, it re-arms and re-proves notify's polling backend before
 reporting `armed (poll fallback)`. Both event backends also compare the packet
-state token periodically so provider configuration outside the repository
-cannot leave the live packet stale. It is
+state token periodically, so a Git state change the event stream missed cannot
+leave the live packet stale. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
 last-writer-wins "latest" summary for sessionless readers.
@@ -200,6 +200,7 @@ injects into the child:
 | `TOIMIJA_REPO_ROOT` | Absolute path of the repo root the session runs in. |
 | `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
 | `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
+| `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | Absolute path to this session's current repository point, a false-agent-protocol `RepositoryPointEnvelope` (`.toimija/sessions/<id>/semantic-point.json`), rewritten on every refresh. |
 
 An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after HEAD, branch,
 index, or unfamiliar worktree changes instead of re-running `enter`; its own
@@ -312,6 +313,18 @@ Sessions are journaled before deletion; append failure keeps the directory.
 `enter` and `run` invoke that pass at the end of setup when `auto_sweep` is
 enabled; those automatic sweeps log one warning and never fail the command.
 `sessions --prune` remains available and uses the same implementation.
+The pass never enters a symlink: when `.toimija`, `.toimija/sessions`, or
+`.toimija/runs` is anything but a real directory it refuses outright (an
+explicit `clean` fails and says why), and nothing is deleted unless its parent
+resolves inside the repository's own `.toimija/`.
+
+The same holds for everything Toimija writes. Every directory it writes into
+under `.toimija/` must be a real directory, checked from the repository root
+down; files are opened with `O_NOFOLLOW` and replaced by rename, so a symlink
+is refused or replaced, never written through. A committed `.toimija ->
+../elsewhere` makes `enter`, `refresh`, `run`, `init`, `snapshot --lease`, and
+`clean` fail loudly and write nothing. The agent entry files `adopt` edits may
+be symlinks within the repository (`CLAUDE.md -> AGENTS.md`), never out of it.
 
 When the agent exits, `run` prints a one-glance session summary to stderr —
 diffing the Git state from entry to exit so you see what the session actually
@@ -351,8 +364,8 @@ flowchart LR
    index, unstaged tracked content, untracked content, conflicts, in-flight Git
    operations). No clocks, no mtimes, no file sizes: same content, same token.
    Generated state under `.toimija/` and `.teko/` is excluded so refreshes,
-   sessions, snapshots, harness runs, and Teko updates never invalidate the
-   packet; `.toimija/repo.yaml` is the exception and always counts.
+   sessions, snapshots, and harness runs never invalidate the packet (`.teko/`
+   stays a generated-state namespace in faija's tree-identity.v1); `.toimija/repo.yaml` is the exception and always counts.
 2. **Gate.** `toimija verify` (or `toimija current --verify --json` for
    machines) verifies the ambient session packet when wrapped by `run`, and the
    repo-level packet otherwise. `--packet <path>` selects one explicitly. It
@@ -453,8 +466,6 @@ The packet includes:
   (`available` / `degraded` / `failed` with a reason and source), so an empty
   list from a failed collection is never presented as a real observation
 - changed surface
-- runtime provider IDs, capabilities, source, required flag, and configured /
-  discoverable / unavailable status
 - scope
 - read order
 - coupling
@@ -462,15 +473,17 @@ The packet includes:
 - validation plan
 - warnings
 - on per-session packets, a **session** block — the session's id, declared
-  intent, scope, and active Teko contract, freshly read at each refresh (so
-  `run --intent` and `toimija intent` reach wrapped harnesses while Kisko can
-  consume the same attested bounded work)
+  intent and scope, freshly read at each refresh (so `run --intent` and
+  `toimija intent` reach wrapped harnesses), the entry branch and HEAD, and an
+  `execution` context carrying the session's repository point and changed
+  surface (Kelpo reads `session.execution.repository` to bind evidence to a
+  session)
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state
 - a **refresh token** over the collected Git state — repository state only,
-  never observer-environment facts like provider discoverability, so the same
-  repo yields the same token from any process — used by `watch` and `verify`
+  never anything read from the observer's environment, so the same repo yields
+  the same token from any process — used by `watch` and `verify`
 - a **sauma** envelope — a local attestation digest and provenance edge set for
   the packet artifact
 
@@ -507,17 +520,14 @@ toimija audit-plan --surface 3 --budget 4000  # print one audit workset packet
 toimija adopt              # install the canonical agent-entry preamble
 toimija adopt --hooks      # also install best-effort Git refresh hooks
 toimija validate --plan    # print the validation plan; never runs it
-toimija gates list         # list trusted repository gates and groups
-toimija gates run rust-full # execute a trusted group on an exact snapshot
-toimija gates status       # compare receipts with current state and definitions
-toimija verify-work        # run active Teko work's required Gate IDs
+toimija repository-point --json  # the exact current repository point
 toimija doctor             # check Toimija setup
 toimija init               # create .toimija/repo.yaml if missing
 ```
 
 | Command | What it does |
 |---|---|
-| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required unless active Teko work supplies the task (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. |
+| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. |
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` runs the same configured stewardship pass as `clean`. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `handoff ["<note>"]` | Wrapped agent appends an explicit JSONL handoff record for its own session. `--show <id>` reads records, including closed sessions; `--json` emits the written record or all shown records. |
@@ -530,15 +540,11 @@ toimija init               # create .toimija/repo.yaml if missing
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
 | `context` | Print the context packet without wrapping an agent. |
 | `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified. `--json` includes the selected path, digest, and token. |
-| `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; `--json` emits the snapshot record. Refuses in an unsafe git state. |
+| `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; a lease id is 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`, and anything else is refused before anything is touched; `--json` emits the snapshot record. Refuses in an unsafe git state. |
 | `audit-plan` | Derive deterministic, bounded audit surfaces from the committed Git tree; `--surface K` prints one contract-framed workset, and prior findings are read-only pointers to the latest committed `docs/audit/<date>/` directory. No plan or findings are written. |
 | `adopt` | Install the same marker-delimited Toimija preamble in every known entry file already present, creating `AGENTS.md` only when none exists; `--hooks` adds best-effort Git refresh hooks and creates/merges the repo-local `.claude/settings.json` SessionStart hook. |
 | `validate --plan` | Print the validation plan; never runs validation. |
-| `gates list` | List trusted repository gates and non-recursive groups. |
-| `gates inspect <id>` | Show execution policy and the canonical gate-spec digest without secret environment values. |
-| `gates run <id>` | Run a trusted gate or group in disposable exact-tree workspaces; `--json` emits outcomes and receipts. |
-| `gates status` | Apply the single receipt-applicability rule to retained receipts and the exact current subject; exits non-zero unless all selected gates are current. |
-| `verify-work` | Ask Teko for required Gate IDs, execute them, import exact-current receipts, and report Teko's remaining blockers. It never closes work. |
+| `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`; `--json` for tools. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
 | `init` | Create `.toimija/repo.yaml` if missing. |
@@ -577,8 +583,10 @@ docs drift apart on them.
 
 Toimija does not:
 
-- execute advisory validation-plan strings (`validate --plan` only prints them;
-  `gates run` executes separately configured trusted gate definitions)
+- execute validation or checks of any kind (`validate --plan` only prints the
+  plan; checks and their receipts are Evidence, which sykli owns)
+- decide: assign work, judge completion, or close anything — Toimija reports
+  facts and refuses to decide
 - auto-commit or auto-stash
 - fetch from the network
 - run as a hidden daemon (`watch`/`run` are foreground-only and explicitly invoked)
@@ -604,7 +612,6 @@ a live, repo-aware context layer an agent asks for before it works.
 .toimija/sessions/      owned by Toimija    per-session live packets, markers, handoff records from `run`/`handoff` (regenerated, git-ignored)
 .toimija/runs/          owned by run harnesses  retained transcripts (14 days by default)
 .toimija/history.jsonl  owned by Toimija    bounded durable memory of concluded sessions
-.teko/teko.redb         owned by Teko       active bounded-work state (local, git-ignored)
 AGENTS.md               owned by you        agent policy — Toimija maintains only its marker-delimited `adopt` preamble inside it
 CLAUDE.md               owned by you        agent policy — same: your prose around Toimija's markers
 scripts/                owned by you        e.g. agent-enter — Toimija only suggests text
@@ -929,27 +936,6 @@ validation:
   full: []
   privileged: []
 
-gates:
-  rust-format:
-    description: Rust formatting check
-    program: cargo
-    args: [fmt, --all, --check]
-    timeout_seconds: 60
-    output_limit_bytes: 1048576
-    success_codes: [0]
-    source_mutation: forbid
-    network: unenforced_deny_requested
-    evidence_grade: isolated_snapshot
-  rust-test:
-    description: Full Rust test suite
-    program: cargo
-    args: [test]
-    timeout_seconds: 900
-
-gate_groups:
-  rust-full:
-    gates: [rust-format, rust-test]
-
 stewardship:
   auto_sweep: true
   sessions_retention_days: 7
@@ -964,25 +950,6 @@ boundaries:
 `context.read_first` adds repo-specific files to the Read first section when they exist.
 `context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
 Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible.
-Gate specifications are executable policy, unlike validation-plan strings.
-`program` and every `args` item remain separate values; shell executables,
-absolute or parent-traversing working directories, empty success-code sets,
-unknown fields, and cyclic groups are rejected. The execution digest covers
-all execution-relevant fields but not the cosmetic description. Repository
-config is combined with the user catalog at
-`$XDG_CONFIG_HOME/toimija/gates.toml` (or
-`~/.config/toimija/gates.toml`), where user entries take precedence. Workers
-can request only known IDs and cannot supply argv, environment, or cwd.
-
-Authoritative gates never run in the human checkout or share its Git metadata.
-Each gate receives a standalone disposable repository containing the verified
-tree, a cleared and allowlisted environment, bounded stdout/stderr capture, a
-timeout, and process-group cleanup. A changed source identity, truncated output,
-spawn uncertainty, cancellation, or unverifiable post-run state produces no
-receipt.
-Network denial is reported as enforced only when a platform implementation
-actually enforces it; the current local implementation supports `allow` and
-`unenforced_deny_requested`, not a kernel network sandbox.
 Stewardship values are optional and default to the values above. Retention and
 history limits must be greater than zero; invalid values are refused and
 reported by `doctor` instead of being silently clamped. `auto_sweep: false`
