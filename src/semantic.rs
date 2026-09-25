@@ -83,10 +83,11 @@ pub fn point_envelope(point: RepositoryPoint) -> RepositoryPointEnvelope {
     }
 }
 
-pub fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
+/// Write `value` as JSON to `path`, a file under `.toimija/` whose directory
+/// already exists; never through a symlink.
+pub fn write_json(repo_root: &Path, path: &Path, value: &impl serde::Serialize) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
-    crate::atomic_write::replace(path, &bytes)
-        .with_context(|| format!("failed to write {}", path.display()))
+    crate::owned::replace(repo_root, path, &bytes)
 }
 
 fn repository_ref(root: &Path) -> Result<RepositoryRef> {

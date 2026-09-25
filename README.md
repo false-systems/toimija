@@ -256,7 +256,8 @@ toimija clean
 
 The sweep never follows a symlink: if `.toimija`, `.toimija/sessions`, or
 `.toimija/runs` is not a real directory it refuses, and nothing is deleted
-unless it resolves inside the repository's own `.toimija/`.
+unless it resolves inside the repository's own `.toimija/`. The commands that
+write there refuse a symlinked `.toimija` the same way.
 
 Toimija does not assign tasks, choose priorities, or decide which agent should
 work. GitHub issues, pull requests, labels, and the human remain the coordination
@@ -274,7 +275,8 @@ The runtime boundary is intentionally narrow:
 - no hidden daemon or background service;
 - no network access of its own; `run` asks an installed `gh` about the
   branch's pull requests to detect effects, and says so when it cannot;
-- deletion stays inside `.toimija/`, never through a symlink;
+- nothing is written, appended, or deleted through a symlink out of the
+  repository: a symlinked `.toimija`, or directory under it, is refused loudly;
 - snapshot lease ids are names, never paths.
 
 Toimija invokes harnesses only during an explicitly requested foreground

@@ -45,6 +45,13 @@ pub fn adopt(repo_root: &Path, with_hooks: bool) -> Result<AdoptionReport> {
     } else {
         (existing, false)
     };
+    // Entry files may be symlinks (`CLAUDE.md -> AGENTS.md`), but every one
+    // must resolve inside the repository. Checked for all of them before any
+    // is written, so a refusal leaves the repository as it was.
+    for path in &targets {
+        crate::owned::ensure_inside_repository(repo_root, path)
+            .context("toimija adopt changed nothing")?;
+    }
     let hook_plan = if with_hooks {
         Some(preflight_hooks(repo_root)?)
     } else {
@@ -225,6 +232,8 @@ fn install_hooks(hooks_dir: &Path) -> Result<Vec<String>> {
 
 fn prepare_settings(repo_root: &Path) -> Result<SettingsUpdate> {
     let path = repo_root.join(".claude/settings.json");
+    crate::owned::ensure_inside_repository(repo_root, &path)
+        .context("toimija adopt --hooks changed nothing")?;
     if !path.exists() {
         return Ok(SettingsUpdate {
             path,

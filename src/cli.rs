@@ -1212,7 +1212,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
             Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
         }
     }
-    remove_session_point(&session);
+    remove_session_point(&repo_root, &session);
 
     // 8. Exit with the wrapped command's status — preserving signal semantics so
     //    a cancelled/terminated child is distinguishable from a generic failure.
@@ -1449,13 +1449,13 @@ fn close_session_after_startup_failure(
             eprintln!("toimija run: could not close the failed session marker: {error:#}")
         }
     }
-    remove_session_point(session);
+    remove_session_point(repo_root, session);
 }
 
 /// A closed session no longer stands at a repository point: remove the file
 /// `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` named, so nothing reads it as current.
-fn remove_session_point(session: &session::Session) {
-    let _ = std::fs::remove_file(session.dir.join(crate::semantic::POINT_FILE));
+fn remove_session_point(repo_root: &std::path::Path, session: &session::Session) {
+    let _ = crate::owned::remove_file(repo_root, &session.dir.join(crate::semantic::POINT_FILE));
 }
 
 fn journal_closed_session(repo_root: &std::path::Path, session: &session::Session) {

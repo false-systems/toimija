@@ -204,8 +204,16 @@ fn prove_ready(
         "toimija-watch-probe-{}-{backend}",
         std::process::id()
     ));
-    fs::write(&probe, b"watch readiness probe")
-        .with_context(|| format!("failed to arm watcher at {}", repo_root.display()))?;
+    // Never through a symlink planted at the probe's name.
+    crate::owned::open_nofollow(
+        &probe,
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
+    .and_then(|mut file| std::io::Write::write_all(&mut file, b"watch readiness probe"))
+    .with_context(|| format!("failed to arm watcher at {}", repo_root.display()))?;
     // Native backends may report the symlink-resolved path — FSEvents turns
     // /tmp/x into /private/tmp/x — so the wait must accept the canonical form
     // of the probe too, or native never proves ready on a symlinked checkout.

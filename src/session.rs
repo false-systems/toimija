@@ -112,6 +112,7 @@ pub fn session_id(started_at: u64, pid: u32) -> String {
 /// An open `run` session: its directory, packet paths, and marker.
 pub struct Session {
     pub id: String,
+    repo_root: PathBuf,
     pub dir: PathBuf,
     pub md_path: PathBuf,
     pub json_path: PathBuf,
@@ -133,8 +134,7 @@ impl Session {
         let pid = std::process::id();
         let id = session_id(started_at, pid);
         let dir = repo_root.join(SESSIONS_SUBDIR).join(&id);
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("failed to create session dir {}", dir.display()))?;
+        crate::owned::ensure_dir(repo_root, &dir).context("failed to open the session")?;
         let marker = SessionMarker {
             id: id.clone(),
             pid,
@@ -157,6 +157,7 @@ impl Session {
         };
         let session = Session {
             id,
+            repo_root: repo_root.to_path_buf(),
             md_path: dir.join("current.md"),
             json_path: dir.join("current.json"),
             marker_path: dir.join("session.json"),
@@ -265,9 +266,11 @@ impl Session {
 
     fn write_marker(&self) -> Result<()> {
         let json = serde_json::to_string_pretty(&self.marker)?;
-        crate::atomic_write::replace(&self.marker_path, format!("{json}\n").as_bytes())
-            .with_context(|| format!("failed to write {}", self.marker_path.display()))?;
-        Ok(())
+        crate::owned::replace(
+            &self.repo_root,
+            &self.marker_path,
+            format!("{json}\n").as_bytes(),
+        )
     }
 }
 
@@ -360,7 +363,7 @@ pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
         return Ok(());
     }
     marker.last_seen_at = Some(now_secs());
-    stamp(&marker_path, &marker)
+    stamp(repo_root, &marker_path, &marker)
 }
 
 /// Write half of the heartbeat, split out so the prune race is testable
@@ -368,14 +371,18 @@ pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
 /// this write when a sibling's startup prune wins the interleaving. `NotFound`
 /// then means "pruned — nothing left to stamp", the same quiet outcome as a
 /// marker already missing at the read. Every other error still surfaces.
-fn stamp(marker_path: &Path, marker: &SessionMarker) -> Result<()> {
+fn stamp(repo_root: &Path, marker_path: &Path, marker: &SessionMarker) -> Result<()> {
     let json = serde_json::to_string_pretty(marker)?;
-    match crate::atomic_write::replace(marker_path, format!("{json}\n").as_bytes()) {
+    match crate::owned::replace(repo_root, marker_path, format!("{json}\n").as_bytes()) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => {
-            Err(error).with_context(|| format!("failed to write {}", marker_path.display()))
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(())
         }
+        Err(error) => Err(error),
     }
 }
 
@@ -435,8 +442,8 @@ pub fn declare_intent(
     // session that speaks is never simultaneously reported stale.
     marker.last_seen_at = Some(now_secs());
     let json = serde_json::to_string_pretty(&marker)?;
-    crate::atomic_write::replace(&marker_path, format!("{json}\n").as_bytes())
-        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    crate::owned::replace(repo_root, &marker_path, format!("{json}\n").as_bytes())
+        .context("failed to write the session marker")?;
     Ok(marker)
 }
 
@@ -574,7 +581,7 @@ mod tests {
         // the directory, then the heartbeat writes. The write must be the
         // quiet outcome, not `failed to write …/session.json.tmp-…`.
         fs::remove_dir_all(&dir).unwrap();
-        stamp(&dir.join("session.json"), &marker).unwrap();
+        stamp(temp.path(), &dir.join("session.json"), &marker).unwrap();
         assert!(!dir.exists(), "a quiet stamp must not resurrect the dir");
     }
 

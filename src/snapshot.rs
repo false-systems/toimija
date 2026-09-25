@@ -141,6 +141,9 @@ pub fn acquire_lease(
     token: &str,
 ) -> Result<SnapshotLease> {
     ensure_valid_lease_id(id)?;
+    // Checked before the ref exists, so a refusal leaves nothing pinned.
+    let dir = repo_root.join(SNAPSHOTS_SUBDIR);
+    crate::owned::ensure_dir(repo_root, &dir).context("failed to record the snapshot lease")?;
     plain_git(runner, repo_root, &["update-ref", &lease_ref(id), tree])?;
     let lease = SnapshotLease {
         id: id.to_string(),
@@ -149,12 +152,9 @@ pub fn acquire_lease(
         pid: std::process::id(),
         created_at: now_secs(),
     };
-    let dir = repo_root.join(SNAPSHOTS_SUBDIR);
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let json = serde_json::to_string_pretty(&lease)?;
     let path = dir.join(format!("{id}.json"));
-    fs::write(&path, format!("{json}\n"))
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    crate::owned::replace(repo_root, &path, format!("{json}\n").as_bytes())?;
     Ok(lease)
 }
 
@@ -163,10 +163,13 @@ pub fn acquire_lease(
 /// valid lease id is refused before anything is touched.
 pub fn release_lease(runner: &impl CommandRunner, repo_root: &Path, id: &str) -> Result<()> {
     ensure_valid_lease_id(id)?;
+    let marker = repo_root.join(SNAPSHOTS_SUBDIR).join(format!("{id}.json"));
+    // Refuse a symlinked `.toimija/snapshots` before touching the ref.
+    crate::owned::dir_exists(repo_root, marker.parent().expect("a marker has a parent"))
+        .context("failed to release the snapshot lease")?;
     // Ignore a missing ref so release is idempotent.
     let _ = plain_git(runner, repo_root, &["update-ref", "-d", &lease_ref(id)]);
-    let _ = fs::remove_file(repo_root.join(SNAPSHOTS_SUBDIR).join(format!("{id}.json")));
-    Ok(())
+    crate::owned::remove_file(repo_root, &marker)
 }
 
 /// Read all lease markers, newest first. A malformed marker is skipped.

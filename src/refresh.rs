@@ -8,7 +8,6 @@
 //! policy files. The recomputation itself is read-only and runs no validation
 //! commands and makes no network calls.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -72,7 +71,7 @@ pub fn refresh(
     let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override, None)?;
     let md_path = repo_root.join(CURRENT_MD);
     let json_path = repo_root.join(CURRENT_JSON);
-    write_packet(&md_path, &json_path, &markdown, &json)?;
+    write_packet(repo_root, &md_path, &json_path, &markdown, &json)?;
     Ok(Refreshed {
         packet,
         markdown,
@@ -103,7 +102,7 @@ pub fn refresh_session(
     let md_path = session_dir.join("current.md");
     let json_path = session_dir.join("current.json");
     // The session packet is authoritative for the agent — its failure is fatal.
-    write_packet(&md_path, &json_path, &markdown, &json)?;
+    write_packet(repo_root, &md_path, &json_path, &markdown, &json)?;
     let execution = packet
         .session
         .as_ref()
@@ -113,6 +112,7 @@ pub fn refresh_session(
         None => crate::semantic::repository_point(runner, &packet)?,
     };
     crate::semantic::write_json(
+        repo_root,
         &session_dir.join(crate::semantic::POINT_FILE),
         &crate::semantic::point_envelope(point),
     )?;
@@ -120,6 +120,7 @@ pub fn refresh_session(
     // failure mirroring it must not abort the already-written session packet, or
     // a transient summary write error would freeze the agent's live context.
     if let Err(error) = write_packet(
+        repo_root,
         &repo_root.join(CURRENT_MD),
         &repo_root.join(CURRENT_JSON),
         &markdown,
@@ -205,19 +206,22 @@ fn compute(
     Ok((packet, markdown, json))
 }
 
-/// Write a packet pair, creating the parent directory if needed. The JSON gets a
-/// trailing newline so the file is a clean, diff-friendly text artifact.
-fn write_packet(md_path: &Path, json_path: &Path, markdown: &str, json: &str) -> Result<()> {
-    if let Some(parent) = md_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
+/// Write a packet pair, creating the parent directory if needed — never
+/// through a symlink (see `owned`). The JSON gets a trailing newline so the
+/// file is a clean, diff-friendly text artifact.
+fn write_packet(
+    repo_root: &Path,
+    md_path: &Path,
+    json_path: &Path,
+    markdown: &str,
+    json: &str,
+) -> Result<()> {
+    let parent = md_path.parent().context("a packet file has a parent")?;
+    crate::owned::ensure_dir(repo_root, parent).context("failed to write the live packet")?;
     // JSON is authoritative if the process stops between these two atomic
     // replacements; the shared artifact id makes that mismatch detectable.
-    crate::atomic_write::replace(md_path, markdown.as_bytes())
-        .with_context(|| format!("failed to write {}", md_path.display()))?;
-    crate::atomic_write::replace(json_path, format!("{json}\n").as_bytes())
-        .with_context(|| format!("failed to write {}", json_path.display()))?;
+    crate::owned::replace(repo_root, md_path, markdown.as_bytes())?;
+    crate::owned::replace(repo_root, json_path, format!("{json}\n").as_bytes())?;
     Ok(())
 }
 

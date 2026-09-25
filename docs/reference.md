@@ -318,6 +318,14 @@ The pass never enters a symlink: when `.toimija`, `.toimija/sessions`, or
 explicit `clean` fails and says why), and nothing is deleted unless its parent
 resolves inside the repository's own `.toimija/`.
 
+The same holds for everything Toimija writes. Every directory it writes into
+under `.toimija/` must be a real directory, checked from the repository root
+down; files are opened with `O_NOFOLLOW` and replaced by rename, so a symlink
+is refused or replaced, never written through. A committed `.toimija ->
+../elsewhere` makes `enter`, `refresh`, `run`, `init`, `snapshot --lease`, and
+`clean` fail loudly and write nothing. The agent entry files `adopt` edits may
+be symlinks within the repository (`CLAUDE.md -> AGENTS.md`), never out of it.
+
 When the agent exits, `run` prints a one-glance session summary to stderr —
 diffing the Git state from entry to exit so you see what the session actually
 did (a switched branch, a moved HEAD, the working tree it leaves behind,

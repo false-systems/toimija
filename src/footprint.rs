@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::atomic_write::{self, TEMP_MARKER};
+use crate::atomic_write::TEMP_MARKER;
 use crate::command::CommandRunner;
 use crate::handoff;
 use crate::session::SessionMarker;
@@ -279,17 +279,16 @@ pub fn append_record(repo_root: &Path, record: &HistoryRecord) -> Result<()> {
 
 fn lock_history(repo_root: &Path) -> Result<fs::File> {
     let path = repo_root.join(HISTORY_LOCK_PATH);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    crate::owned::ensure_dir(repo_root, &repo_root.join(crate::owned::TOIMIJA_DIR))?;
+    let file = crate::owned::open(
+        repo_root,
+        &path,
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false),
+    )?;
     file.lock()
         .with_context(|| format!("failed to lock {}", path.display()))?;
     Ok(file)
@@ -297,16 +296,12 @@ fn lock_history(repo_root: &Path) -> Result<fs::File> {
 
 fn open_history_file(repo_root: &Path) -> Result<(std::path::PathBuf, fs::File)> {
     let path = repo_root.join(HISTORY_PATH);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    crate::owned::ensure_dir(repo_root, &repo_root.join(crate::owned::TOIMIJA_DIR))?;
+    let file = crate::owned::open(
+        repo_root,
+        &path,
+        OpenOptions::new().read(true).create(true).append(true),
+    )?;
     Ok((path, file))
 }
 
@@ -381,15 +376,17 @@ pub fn journal_session(
 }
 
 /// Durably remember a concluded session, then and only then remove its dir.
+/// `toimija` is the repository's `.toimija/`, already resolved by the sweep.
 pub fn reap(
     repo_root: &Path,
+    toimija: &Path,
     dir: &Path,
     marker: &SessionMarker,
     end: HistoryEnd,
     recorded_at: u64,
     journal: &mut Journal,
 ) -> Result<bool> {
-    ensure_inside_toimija(repo_root, dir)?;
+    ensure_inside_toimija(toimija, dir)?;
     let journaled = journal.journal_session(repo_root, marker, end, recorded_at)?;
     match fs::remove_dir_all(dir) {
         Ok(()) => {}
@@ -429,9 +426,22 @@ fn sweep_inner(
     // Everything this pass deletes lives under `.toimija/`, and a repository
     // can commit any of these as a symlink. Following one would delete
     // whatever the committer pointed it at, so refuse the whole pass instead.
-    for owned in [".toimija", crate::session::SESSIONS_SUBDIR, RUNS_SUBDIR] {
-        refuse_unless_real_dir(repo_root, owned)?;
+    for owned in [crate::session::SESSIONS_SUBDIR, RUNS_SUBDIR] {
+        crate::owned::dir_exists(repo_root, &repo_root.join(owned)).context("refusing to sweep")?;
     }
+    // Resolved once: every deletion below is checked against it.
+    let toimija = match repo_root.join(crate::owned::TOIMIJA_DIR).canonicalize() {
+        Ok(toimija) => toimija,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SweepReport {
+                dry_run: options.dry_run,
+                ..SweepReport::default()
+            });
+        }
+        Err(error) => {
+            return Err(error).context("failed to resolve .toimija");
+        }
+    };
     let now = now_secs();
     let plan = sessions::reap_plan(
         runner,
@@ -452,12 +462,14 @@ fn sweep_inner(
         }
     }
     let mut temp_candidates = Vec::new();
-    for path in descendants(&repo_root.join(".toimija"))? {
-        if !is_atomic_temp(&path)
-            || !fs::symlink_metadata(&path)
-                .with_context(|| format!("failed to inspect {}", path.display()))?
-                .file_type()
-                .is_file()
+    for path in descendants(&repo_root.join(crate::owned::TOIMIJA_DIR))? {
+        if !is_atomic_temp(&path) {
+            continue;
+        }
+        if !fs::symlink_metadata(&path)
+            .with_context(|| format!("failed to inspect {}", path.display()))?
+            .file_type()
+            .is_file()
         {
             continue;
         }
@@ -509,14 +521,8 @@ fn sweep_inner(
             .filter(|candidate| !recorded.contains(&candidate.marker.id))
             .count();
     } else {
-        for path in &temp_candidates {
-            ensure_inside_toimija(repo_root, path)?;
-            fs::remove_file(path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
-        }
-        for path in &run_candidates {
-            ensure_inside_toimija(repo_root, path)?;
-            remove_artifact(path)?;
+        for path in temp_candidates.iter().chain(&run_candidates) {
+            reclaim(&toimija, path)?;
         }
         let mut journal = None;
         let mut removed = Vec::with_capacity(plan.candidates.len());
@@ -535,6 +541,7 @@ fn sweep_inner(
             // must not abort the whole pass. Keep it for the next sweep.
             match reap(
                 repo_root,
+                &toimija,
                 &candidate.dir,
                 &candidate.marker,
                 end,
@@ -576,31 +583,11 @@ fn sweep_inner(
     Ok(report)
 }
 
-/// Fail unless `repo_root/relative` is absent or a real directory. A symlink
-/// is refused whatever it points at: the sweep never enters one.
-fn refuse_unless_real_dir(repo_root: &Path, relative: &str) -> Result<()> {
-    let path = repo_root.join(relative);
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => bail!(
-            "refusing to sweep: {relative} is a symlink; Toimija deletes only inside real directories under .toimija/"
-        ),
-        Ok(metadata) if !metadata.is_dir() => {
-            bail!("refusing to sweep: {relative} is not a directory")
-        }
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
-    }
-}
-
 /// The last check before anything is deleted: the path's parent must resolve
-/// inside this repository's own `.toimija/`. The candidate itself is not
-/// resolved — removing a symlink removes the link, never its target.
-fn ensure_inside_toimija(repo_root: &Path, path: &Path) -> Result<()> {
-    let owned = repo_root
-        .canonicalize()
-        .with_context(|| format!("failed to resolve {}", repo_root.display()))?
-        .join(".toimija");
+/// inside `toimija`, this repository's own `.toimija/` as the sweep resolved
+/// it. The candidate itself is not resolved — removing a symlink removes the
+/// link, never its target.
+fn ensure_inside_toimija(owned: &Path, path: &Path) -> Result<()> {
     let parent = match path.parent().map(Path::canonicalize) {
         Some(Ok(parent)) => Some(parent),
         // Nothing left to resolve means nothing left to delete: a sibling
@@ -613,7 +600,7 @@ fn ensure_inside_toimija(repo_root: &Path, path: &Path) -> Result<()> {
         None => None,
     };
     match parent {
-        Some(parent) if parent.starts_with(&owned) => Ok(()),
+        Some(parent) if parent.starts_with(owned) => Ok(()),
         _ => bail!(
             "refusing to remove {}: it does not resolve inside {}",
             path.display(),
@@ -667,7 +654,9 @@ fn older_than(path: &Path, now: u64, retention_secs: u64) -> Result<bool> {
     Ok(now.saturating_sub(modified) > retention_secs)
 }
 
-fn remove_artifact(path: &Path) -> Result<()> {
+/// Delete one expired artifact under `toimija`.
+fn reclaim(toimija: &Path, path: &Path) -> Result<()> {
+    ensure_inside_toimija(toimija, path)?;
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("failed to inspect {}", path.display()))?;
     if metadata.is_dir() {
@@ -684,13 +673,18 @@ fn compact_history(repo_root: &Path, max_records: usize) -> Result<()> {
         return Ok(());
     }
     let _lock = lock_history(repo_root)?;
-    let mut file = match OpenOptions::new().read(true).write(true).open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to read {}", path.display()));
-        }
-    };
+    let mut file =
+        match crate::owned::open(repo_root, &path, OpenOptions::new().read(true).write(true)) {
+            Ok(file) => file,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
     file.lock()
         .with_context(|| format!("failed to lock {}", path.display()))?;
     let mut bytes = Vec::new();
@@ -699,7 +693,7 @@ fn compact_history(repo_root: &Path, max_records: usize) -> Result<()> {
     let Some(compacted) = select_compaction(&bytes, max_records) else {
         return Ok(());
     };
-    atomic_write::replace(&path, &compacted)
+    crate::owned::replace(repo_root, &path, &compacted)
         .with_context(|| format!("failed to compact {}", path.display()))
 }
 
@@ -1057,6 +1051,7 @@ mod tests {
         assert!(
             reap(
                 temp.path(),
+                &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
                 HistoryEnd::Closed,
@@ -1081,6 +1076,7 @@ mod tests {
         assert!(
             reap(
                 temp.path(),
+                &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
                 HistoryEnd::Closed,
@@ -1199,6 +1195,7 @@ mod tests {
 
         reap(
             temp.path(),
+            &temp.path().join(".toimija").canonicalize().unwrap(),
             &dir,
             &marker,
             HistoryEnd::ReapedStale,
@@ -1242,6 +1239,7 @@ mod tests {
         assert!(
             !reap(
                 temp.path(),
+                &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
                 HistoryEnd::Closed,
@@ -1377,13 +1375,16 @@ mod tests {
         fs::create_dir_all(repo.join(".toimija/runs")).unwrap();
         fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, repo.join(".toimija/runs/escape")).unwrap();
+        let toimija = repo.join(".toimija").canonicalize().unwrap();
 
-        assert!(ensure_inside_toimija(&repo, &repo.join(".toimija/runs/old.jsonl")).is_ok());
+        assert!(ensure_inside_toimija(&toimija, &repo.join(".toimija/runs/old.jsonl")).is_ok());
         // The link itself may go; nothing reached through it may.
-        assert!(ensure_inside_toimija(&repo, &repo.join(".toimija/runs/escape")).is_ok());
-        assert!(ensure_inside_toimija(&repo, &repo.join(".toimija/runs/escape/victim")).is_err());
-        assert!(ensure_inside_toimija(&repo, &outside.join("victim")).is_err());
-        assert!(ensure_inside_toimija(&repo, &repo.join("README.md")).is_err());
+        assert!(ensure_inside_toimija(&toimija, &repo.join(".toimija/runs/escape")).is_ok());
+        assert!(
+            ensure_inside_toimija(&toimija, &repo.join(".toimija/runs/escape/victim")).is_err()
+        );
+        assert!(ensure_inside_toimija(&toimija, &outside.join("victim")).is_err());
+        assert!(ensure_inside_toimija(&toimija, &repo.join("README.md")).is_err());
     }
 
     #[test]

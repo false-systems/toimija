@@ -213,7 +213,8 @@ fn set_age(path: &Path, age: std::time::Duration) {
 /// `.toimija` itself) as a symlink. The footprint sweep deletes what it finds
 /// there, so following that link would delete whatever the committer pointed
 /// it at. Both the opportunistic sweep in `enter` and an explicit `clean` must
-/// leave everything outside the repository alone.
+/// leave everything outside the repository alone. (`tests/symlink_escape.rs`
+/// covers the writers.)
 #[cfg(unix)]
 #[test]
 fn the_sweep_never_follows_a_committed_symlink_out_of_the_repository() {
@@ -269,12 +270,19 @@ fn the_sweep_never_follows_a_committed_symlink_out_of_the_repository() {
         run_git(&repo, &["add", "-f", link]);
         run_git(&repo, &["commit", "-m", "commit a symlink under .toimija"]);
 
-        Command::cargo_bin("toimija")
+        // `enter` writes the packet into `.toimija/` itself, so a symlinked
+        // `.toimija` is refused outright; below it, only the sweep is at
+        // stake, and `enter` carries on with a warning.
+        let enter = Command::cargo_bin("toimija")
             .unwrap()
             .current_dir(&repo)
             .arg("enter")
-            .assert()
-            .success();
+            .assert();
+        if link == ".toimija" {
+            enter.failure().stderr(predicate::str::contains("symlink"));
+        } else {
+            enter.success();
+        }
         Command::cargo_bin("toimija")
             .unwrap()
             .current_dir(&repo)

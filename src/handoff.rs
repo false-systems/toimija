@@ -76,19 +76,20 @@ pub fn write(
         build_context_packet(runner, repo_root, true).context("failed to build handoff packet")?;
     let record = HandoffRecord::from_marker_packet(&marker, &packet, note);
     let path = handoff_path(repo_root, id)?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut file = crate::owned::open(
+        repo_root,
+        &path,
+        OpenOptions::new().create(true).append(true),
+    )
+    .context("failed to append the handoff record")?;
     serde_json::to_writer(&mut file, &record)?;
     file.write_all(b"\n")
         .with_context(|| format!("failed to write {}", path.display()))?;
 
     marker.last_seen_at = Some(now_secs());
     let json = serde_json::to_string_pretty(&marker)?;
-    fs::write(&marker_path, format!("{json}\n"))
-        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    crate::owned::replace(repo_root, &marker_path, format!("{json}\n").as_bytes())
+        .context("failed to write the session marker")?;
 
     let records_total = count_records(&path).unwrap_or(0);
     info!(

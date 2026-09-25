@@ -203,20 +203,20 @@ impl RepoConfig {
     }
 }
 
-pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
+/// Seed `.toimija/repo.yaml`, never overwriting one and never writing
+/// through a symlink.
+pub fn init_repo(repo_root: &Path) -> anyhow::Result<InitReport> {
+    use anyhow::Context as _;
     let mut report = InitReport {
         created: Vec::new(),
         existing: Vec::new(),
         guidance: Vec::new(),
     };
-    let dir = repo_root.join(".toimija");
-    if dir.exists() {
+    let dir = repo_root.join(crate::owned::TOIMIJA_DIR);
+    if crate::owned::dir_exists(repo_root, &dir).context("failed to initialize")? {
         report.existing.push(dir.clone());
     } else {
-        fs::create_dir_all(&dir).map_err(|source| ToimijaError::WriteFile {
-            path: dir.clone(),
-            source,
-        })?;
+        crate::owned::ensure_dir(repo_root, &dir).context("failed to initialize")?;
         report.created.push(dir.clone());
     }
 
@@ -229,10 +229,14 @@ pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
         // safe_to_ignore is for the repo's own additions only.
         let text =
             serde_yaml::to_string(&RepoConfig::default_for(repo_root)).expect("config serializes");
-        fs::write(&config_path, text).map_err(|source| ToimijaError::WriteFile {
-            path: config_path.clone(),
-            source,
-        })?;
+        use std::io::Write as _;
+        crate::owned::open(
+            repo_root,
+            &config_path,
+            fs::OpenOptions::new().write(true).create_new(true),
+        )
+        .and_then(|mut file| Ok(file.write_all(text.as_bytes())?))
+        .context("failed to initialize")?;
         report.created.push(config_path);
         // A fresh config has blank identity fields; point the human at them.
         report.guidance.push(

@@ -16,6 +16,7 @@ pub mod git;
 pub mod handoff;
 pub mod landed;
 pub mod logging;
+mod owned;
 // Path encoding lives in the canonical crate: these encoders sit behind
 // `#[serde(with = ...)]` on sealed structs, so the bytes they produce are the
 // bytes that get digested. Re-exported under the old name so call sites — and
