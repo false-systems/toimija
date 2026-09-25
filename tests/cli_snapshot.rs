@@ -314,3 +314,37 @@ fn a_lease_id_that_is_a_path_touches_nothing() {
         );
     }
 }
+
+/// Earlier versions accepted any `TOIMIJA_SESSION` as a lease id, so leases
+/// named like `my.session` exist. Their refs pin trees until released, so
+/// `--release` must still accept them; only ids that could be paths are
+/// refused, and `--lease` keys to such a session id too.
+#[test]
+fn a_lease_with_a_dotted_id_can_be_taken_and_released() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("TOIMIJA_SESSION", "my.session")
+        .args(["snapshot", "--lease", "--json"])
+        .assert()
+        .success();
+    let lease: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(lease["id"], "my.session");
+    let marker = temp.path().join(".toimija/snapshots/my.session.json");
+    assert!(marker.exists());
+
+    toimija(temp.path(), &["snapshot", "--release", "my.session"]).success();
+    assert!(!marker.exists());
+    let refs = git_stdout(temp.path(), &["for-each-ref", "refs/toimija/snapshots/"]);
+    assert!(refs.trim().is_empty(), "the lease ref survived: {refs}");
+
+    toimija(temp.path(), &["snapshot", "--release", ".hidden"])
+        .failure()
+        .stderr(predicates::str::contains("invalid snapshot lease id"));
+}

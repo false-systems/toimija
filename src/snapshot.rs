@@ -107,20 +107,27 @@ pub struct SnapshotLease {
     pub created_at: u64,
 }
 
-/// Whether `id` may name a lease: one to 128 ASCII letters, digits, `-` or
-/// `_`. The id becomes both a file name under `.toimija/snapshots/` and a ref
-/// name, so anything that could be a path — `..`, a separator, an absolute
-/// path — is refused. Minted ids and session ids (`<unix-secs>-<pid>`) fit.
+/// Whether `id` may name a lease. The id becomes a file name under
+/// `.toimija/snapshots/` and a ref name, so the rule is about path safety:
+/// 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`.
+/// That refuses `.`, `..`, hidden names, separators (`/`, `\`), and NUL,
+/// and still accepts the ids earlier versions minted, and dotted ones they
+/// took from `TOIMIJA_SESSION` such as `my.session`, so those leases can be
+/// released.
 pub fn is_valid_lease_id(id: &str) -> bool {
     (1..=128).contains(&id.len())
+        && !id.starts_with('.')
         && id
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
 fn ensure_valid_lease_id(id: &str) -> Result<()> {
     if !is_valid_lease_id(id) {
-        bail!("invalid snapshot lease id `{id}`: expected 1-128 ASCII letters, digits, `-` or `_`");
+        bail!(
+            "invalid snapshot lease id `{id}`: expected 1-128 ASCII letters, digits, `.`, `-` \
+             or `_`, not starting with `.`"
+        );
     }
     Ok(())
 }
@@ -253,18 +260,25 @@ mod tests {
 
     #[test]
     fn lease_ids_are_names_never_paths() {
-        for valid in ["1782951227-52574", "abc_DEF-123", &"a".repeat(128)] {
+        for valid in [
+            "1782951227-52574",
+            "abc_DEF-123",
+            "my.session",
+            "a..b",
+            &"a".repeat(128),
+        ] {
             assert!(is_valid_lease_id(valid), "{valid}");
         }
         for invalid in [
             "",
             ".",
             "..",
+            ".hidden",
             "../x",
             "a/b",
             "/abs",
             "a\\b",
-            "a.json",
+            "a\0b",
             "a b",
             &"a".repeat(129),
         ] {
