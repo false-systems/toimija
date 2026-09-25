@@ -770,6 +770,55 @@ fn run_hands_the_child_a_per_session_handshake() {
     assert_eq!(lines.next(), captured.lines().nth(1));
 }
 
+/// The facts a wrapped command can read about where it stands: the session's
+/// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
+/// point inside the sealed session packet (`session.execution.repository`),
+/// which Kelpo reads to bind evidence to a session. The worker.v1 result and
+/// context paths are gone with the worker protocol.
+#[test]
+fn run_hands_the_child_its_repository_point() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // Captured outside the repository, so capturing cannot move the point.
+    let out = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("OUT", out.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "cp \"$FALSE_SYSTEMS_REPOSITORY_POINT_PATH\" \"$OUT/point.json\" && \
+             cp \"$TOIMIJA_LIVE_JSON\" \"$OUT/packet.json\" && \
+             printf '%s|%s' \"${FALSE_SYSTEMS_RESULT_PATH-unset}\" \"${FALSE_SYSTEMS_CONTEXT_PATH-unset}\" > \"$OUT/retired.txt\"",
+        ])
+        .assert()
+        .success();
+
+    let read = |name: &str| -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(out.path().join(name)).unwrap()).unwrap()
+    };
+    let point = read("point.json");
+    let packet = read("packet.json");
+    let id = point["repository"]["id"].as_str().unwrap();
+    assert!(id.starts_with("rpoint_"), "{point}");
+    assert!(point["repository"]["tree_oid"].is_string(), "{point}");
+    assert_eq!(packet["schema"], "toimija-context.v1");
+    assert_eq!(packet["session"]["execution"]["repository"]["id"], id);
+    assert_eq!(
+        fs::read_to_string(out.path().join("retired.txt")).unwrap(),
+        "unset|unset"
+    );
+}
+
 #[test]
 fn run_closes_the_session_marker_when_the_child_fails_to_launch() {
     if !git_available() {

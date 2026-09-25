@@ -104,16 +104,10 @@ pub fn refresh_session(
     let json_path = session_dir.join("current.json");
     // The session packet is authoritative for the agent — its failure is fatal.
     write_packet(&md_path, &json_path, &markdown, &json)?;
-    let context_path = session_dir.join(crate::semantic::CONTEXT_FILE);
     let execution = packet
         .session
         .as_ref()
         .and_then(|session| session.execution.as_ref());
-    if let Some(execution) = execution {
-        crate::semantic::write_json(&context_path, execution)?;
-    } else {
-        let _ = fs::remove_file(context_path);
-    }
     let point = match execution {
         Some(execution) => execution.repository.clone(),
         None => crate::semantic::repository_point(runner, &packet)?,

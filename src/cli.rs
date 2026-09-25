@@ -959,7 +959,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
         }
     };
     print_agent_entry(&entry, &repo_root);
-    let semantic_result_path = session.dir.join(crate::semantic::RESULT_FILE);
     // The branch and HEAD are known once the packet is built; record them.
     if let Err(error) = session.record_git(
         entry.packet.git.branch.clone(),
@@ -1003,11 +1002,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
         plan.run(&runner, &repo_root)?,
         &session.id,
     )?;
-    let entry_execution = entry
-        .packet
-        .session
-        .as_ref()
-        .and_then(|session| session.execution.clone());
     eprintln!(
         "toimija run: watcher armed ({})",
         watch_session.backend_label()
@@ -1204,22 +1198,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
         let consumption = collect_consumption(&repo_root, &session, &args);
         match plan.run(&runner, &repo_root) {
             Ok(exit) => {
-                if let Some(correlation) =
-                    crate::semantic::correlate_result(&repo_root, &semantic_result_path)?
-                {
-                    eprintln!(
-                        "toimija run: correlated worker run {} at {} ({})",
-                        correlation.result.run,
-                        correlation
-                            .result
-                            .destination
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_else(|| "no destination".to_string()),
-                        correlation.durable_path.display()
-                    );
-                    session.record_worker_run(&repo_root, &correlation.result)?;
-                }
                 eprint!(
                     "\n{}",
                     render_run_summary(
@@ -1228,11 +1206,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
                         refreshes.load(Ordering::Relaxed),
                         &consumption,
                     )
-                );
-            }
-            Err(error) if entry_execution.is_some() && semantic_result_path.is_file() => {
-                return Err(error).context(
-                    "the worker returned bound evidence, but Toimija could not refresh repository truth",
                 );
             }
             Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
@@ -1479,13 +1452,7 @@ fn close_session_after_startup_failure(
 }
 
 fn cleanup_semantic_runtime(session: &session::Session) {
-    for runtime_file in [
-        crate::semantic::CONTEXT_FILE,
-        crate::semantic::POINT_FILE,
-        crate::semantic::RESULT_FILE,
-    ] {
-        let _ = std::fs::remove_file(session.dir.join(runtime_file));
-    }
+    let _ = std::fs::remove_file(session.dir.join(crate::semantic::POINT_FILE));
 }
 
 fn journal_closed_session(repo_root: &std::path::Path, session: &session::Session) {
