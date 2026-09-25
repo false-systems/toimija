@@ -662,10 +662,16 @@ mod tests {
         // refresh every interval forever — invisible to the drift tests,
         // which only assert that a refresh *happens*. Going through the real
         // packet build pins the whole chain.
+        // Scrub the redirecting variables: `command::tests` sets `GIT_DIR`
+        // process-wide for a moment, and a fixture `git` that inherits it
+        // acts on that test's repository instead of this one.
         let git_runs = |args: &[&str], dir: &Path| {
             std::process::Command::new("git")
                 .args(args)
                 .current_dir(dir)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_WORK_TREE")
                 .output()
                 .is_ok_and(|output| output.status.success())
         };
