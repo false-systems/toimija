@@ -2333,7 +2333,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         // mint a standalone id.
         let id = std::env::var("TOIMIJA_SESSION")
             .ok()
-            .filter(|value| !value.is_empty())
+            .filter(|value| snapshot::is_valid_lease_id(value))
             .unwrap_or_else(|| {
                 let secs = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

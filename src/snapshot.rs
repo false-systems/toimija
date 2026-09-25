@@ -107,6 +107,24 @@ pub struct SnapshotLease {
     pub created_at: u64,
 }
 
+/// Whether `id` may name a lease: one to 128 ASCII letters, digits, `-` or
+/// `_`. The id becomes both a file name under `.toimija/snapshots/` and a ref
+/// name, so anything that could be a path — `..`, a separator, an absolute
+/// path — is refused. Minted ids and session ids (`<unix-secs>-<pid>`) fit.
+pub fn is_valid_lease_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn ensure_valid_lease_id(id: &str) -> Result<()> {
+    if !is_valid_lease_id(id) {
+        bail!("invalid snapshot lease id `{id}`: expected 1-128 ASCII letters, digits, `-` or `_`");
+    }
+    Ok(())
+}
+
 /// The git ref that pins a lease's tree.
 pub fn lease_ref(id: &str) -> String {
     format!("refs/toimija/snapshots/{id}")
@@ -122,6 +140,7 @@ pub fn acquire_lease(
     tree: &str,
     token: &str,
 ) -> Result<SnapshotLease> {
+    ensure_valid_lease_id(id)?;
     plain_git(runner, repo_root, &["update-ref", &lease_ref(id), tree])?;
     let lease = SnapshotLease {
         id: id.to_string(),
@@ -140,8 +159,10 @@ pub fn acquire_lease(
 }
 
 /// Release a lease: delete the ref (git gc may now reclaim the tree if nothing
-/// else references it) and remove the marker. Idempotent.
+/// else references it) and remove the marker. Idempotent. An id that is not a
+/// valid lease id is refused before anything is touched.
 pub fn release_lease(runner: &impl CommandRunner, repo_root: &Path, id: &str) -> Result<()> {
+    ensure_valid_lease_id(id)?;
     // Ignore a missing ref so release is idempotent.
     let _ = plain_git(runner, repo_root, &["update-ref", "-d", &lease_ref(id)]);
     let _ = fs::remove_file(repo_root.join(SNAPSHOTS_SUBDIR).join(format!("{id}.json")));
@@ -221,4 +242,30 @@ fn plain_git(runner: &impl CommandRunner, repo_root: &Path, args: &[&str]) -> Re
         bail!("git {args:?} failed: {}", output.stderr_lossy().trim());
     }
     Ok(output.stdout_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lease_ids_are_names_never_paths() {
+        for valid in ["1782951227-52574", "abc_DEF-123", &"a".repeat(128)] {
+            assert!(is_valid_lease_id(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            "/abs",
+            "a\\b",
+            "a.json",
+            "a b",
+            &"a".repeat(129),
+        ] {
+            assert!(!is_valid_lease_id(invalid), "{invalid}");
+        }
+    }
 }

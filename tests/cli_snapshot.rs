@@ -257,3 +257,60 @@ fn inherited_git_location_cannot_redirect_snapshot_objects_or_refs() {
         "the inherited scratch index path must not be used"
     );
 }
+
+/// `--release <ID>` and a session-keyed `--lease` name a marker file under
+/// `.toimija/snapshots/` by id. An id that is really a path — `..`, a
+/// separator, an absolute path — must be refused before anything on disk is
+/// touched, inside or outside the repository.
+#[test]
+fn a_lease_id_that_is_a_path_touches_nothing() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    // A held lease creates `.toimija/snapshots/`, which a `..` walk needs.
+    toimija(&repo, &["snapshot", "--lease"]).success();
+    let inside = repo.join("victim.json");
+    let outside = temp.path().join("victim.json");
+    let absolute = temp.path().join("absolute-victim.json");
+    for victim in [&inside, &outside, &absolute] {
+        fs::write(victim, "{}\n").unwrap();
+    }
+
+    let absolute_id = temp.path().join("absolute-victim");
+    for id in [
+        "../../victim",
+        "../../../victim",
+        absolute_id.to_str().unwrap(),
+        "nested/id",
+        "..",
+        "",
+    ] {
+        toimija(&repo, &["snapshot", "--release", id])
+            .failure()
+            .stderr(predicates::str::contains("invalid snapshot lease id"));
+    }
+
+    // A hostile session id is not a lease id: `--lease` mints its own.
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(&repo)
+        .env("TOIMIJA_SESSION", "../../../victim")
+        .args(["snapshot", "--lease", "--json"])
+        .assert()
+        .success();
+    let lease: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_ne!(lease["id"], "../../../victim");
+
+    for victim in [&inside, &outside, &absolute] {
+        assert_eq!(
+            fs::read_to_string(victim).unwrap(),
+            "{}\n",
+            "{} was touched",
+            victim.display()
+        );
+    }
+}
