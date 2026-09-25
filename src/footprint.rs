@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -17,6 +17,7 @@ use crate::sessions::{self, Liveness};
 
 pub const HISTORY_PATH: &str = ".toimija/history.jsonl";
 pub const HISTORY_LOCK_PATH: &str = ".toimija/history.lock";
+const RUNS_SUBDIR: &str = ".toimija/runs";
 const HISTORY_VERSION: u32 = 1;
 const HANDOFF_CAP: usize = 10;
 pub const DEFAULT_RUNS_RETENTION_SECS: u64 = 14 * 24 * 60 * 60;
@@ -388,6 +389,7 @@ pub fn reap(
     recorded_at: u64,
     journal: &mut Journal,
 ) -> Result<bool> {
+    ensure_inside_toimija(repo_root, dir)?;
     let journaled = journal.journal_session(repo_root, marker, end, recorded_at)?;
     match fs::remove_dir_all(dir) {
         Ok(()) => {}
@@ -424,6 +426,12 @@ fn sweep_inner(
     repo_root: &Path,
     options: SweepOptions,
 ) -> Result<SweepReport> {
+    // Everything this pass deletes lives under `.toimija/`, and a repository
+    // can commit any of these as a symlink. Following one would delete
+    // whatever the committer pointed it at, so refuse the whole pass instead.
+    for owned in [".toimija", crate::session::SESSIONS_SUBDIR, RUNS_SUBDIR] {
+        refuse_unless_real_dir(repo_root, owned)?;
+    }
     let now = now_secs();
     let plan = sessions::reap_plan(
         runner,
@@ -433,7 +441,7 @@ fn sweep_inner(
     )?;
     let mut kept = plan.kept;
     let mut run_candidates = Vec::new();
-    for path in direct_children(&repo_root.join(".toimija/runs"))? {
+    for path in direct_children(&repo_root.join(RUNS_SUBDIR))? {
         if is_atomic_temp(&path) {
             continue;
         }
@@ -502,10 +510,12 @@ fn sweep_inner(
             .count();
     } else {
         for path in &temp_candidates {
+            ensure_inside_toimija(repo_root, path)?;
             fs::remove_file(path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
         }
         for path in &run_candidates {
+            ensure_inside_toimija(repo_root, path)?;
             remove_artifact(path)?;
         }
         let mut journal = None;
@@ -564,6 +574,52 @@ fn sweep_inner(
         dry_run = report.dry_run
     );
     Ok(report)
+}
+
+/// Fail unless `repo_root/relative` is absent or a real directory. A symlink
+/// is refused whatever it points at: the sweep never enters one.
+fn refuse_unless_real_dir(repo_root: &Path, relative: &str) -> Result<()> {
+    let path = repo_root.join(relative);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => bail!(
+            "refusing to sweep: {relative} is a symlink; Toimija deletes only inside real directories under .toimija/"
+        ),
+        Ok(metadata) if !metadata.is_dir() => {
+            bail!("refusing to sweep: {relative} is not a directory")
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
+}
+
+/// The last check before anything is deleted: the path's parent must resolve
+/// inside this repository's own `.toimija/`. The candidate itself is not
+/// resolved — removing a symlink removes the link, never its target.
+fn ensure_inside_toimija(repo_root: &Path, path: &Path) -> Result<()> {
+    let owned = repo_root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", repo_root.display()))?
+        .join(".toimija");
+    let parent = match path.parent().map(Path::canonicalize) {
+        Some(Ok(parent)) => Some(parent),
+        // Nothing left to resolve means nothing left to delete: a sibling
+        // sweep got there first, and the removal reports it as reclaimed.
+        Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Some(Err(error)) => {
+            return Err(error)
+                .with_context(|| format!("failed to resolve the parent of {}", path.display()));
+        }
+        None => None,
+    };
+    match parent {
+        Some(parent) if parent.starts_with(&owned) => Ok(()),
+        _ => bail!(
+            "refusing to remove {}: it does not resolve inside {}",
+            path.display(),
+            owned.display()
+        ),
+    }
 }
 
 fn direct_children(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -1310,6 +1366,24 @@ mod tests {
             .map(|record| record.id)
             .collect();
         assert_eq!(ids, ["100-2", "100-3"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nothing_is_deleted_unless_its_parent_resolves_inside_toimija() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(repo.join(".toimija/runs")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".toimija/runs/escape")).unwrap();
+
+        assert!(ensure_inside_toimija(&repo, &repo.join(".toimija/runs/old.jsonl")).is_ok());
+        // The link itself may go; nothing reached through it may.
+        assert!(ensure_inside_toimija(&repo, &repo.join(".toimija/runs/escape")).is_ok());
+        assert!(ensure_inside_toimija(&repo, &repo.join(".toimija/runs/escape/victim")).is_err());
+        assert!(ensure_inside_toimija(&repo, &outside.join("victim")).is_err());
+        assert!(ensure_inside_toimija(&repo, &repo.join("README.md")).is_err());
     }
 
     #[test]

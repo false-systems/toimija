@@ -199,3 +199,101 @@ fn enter_respects_disabled_automatic_cleanup() {
         .success();
     assert!(orphan.exists());
 }
+
+/// Age a file or directory. A read-only handle is enough: the owner may set
+/// times on any descriptor, and directories cannot be opened for writing.
+fn set_age(path: &Path, age: std::time::Duration) {
+    fs::File::open(path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(SystemTime::now() - age))
+        .unwrap();
+}
+
+/// A repository can commit `.toimija/runs` (or `.toimija/sessions`, or
+/// `.toimija` itself) as a symlink. The footprint sweep deletes what it finds
+/// there, so following that link would delete whatever the committer pointed
+/// it at. Both the opportunistic sweep in `enter` and an explicit `clean` must
+/// leave everything outside the repository alone.
+#[cfg(unix)]
+#[test]
+fn the_sweep_never_follows_a_committed_symlink_out_of_the_repository() {
+    if !git_available() {
+        return;
+    }
+    let ancient = std::time::Duration::from_secs(365 * 24 * 60 * 60);
+    for link in [".toimija/runs", ".toimija/sessions", ".toimija"] {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        // Everything a sweep would take, were it inside `.toimija`: an old
+        // transcript directory, an old transcript, an old orphaned temp file,
+        // and a closed session long past retention.
+        let victim_dir = outside.join("victim-dir");
+        fs::create_dir_all(&victim_dir).unwrap();
+        fs::write(victim_dir.join("keep.txt"), "keep\n").unwrap();
+        fs::write(outside.join("victim.jsonl"), "keep\n").unwrap();
+        fs::write(outside.join("current.json.tmp-1-1"), "keep\n").unwrap();
+        let session_dir = outside.join("100-1");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("session.json"),
+            serde_json::json!({
+                "id": "100-1",
+                "pid": 1,
+                "agent": ["claude"],
+                "branch": null,
+                "started_at": 100,
+                "status": "closed",
+                "closed_at": 100,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for path in [
+            victim_dir.as_path(),
+            &outside.join("victim.jsonl"),
+            &outside.join("current.json.tmp-1-1"),
+            &session_dir,
+        ] {
+            set_age(path, ancient);
+        }
+
+        let link_path = repo.join(link);
+        fs::create_dir_all(link_path.parent().unwrap()).unwrap();
+        let depth = Path::new(link).components().count();
+        let target = format!("{}outside", "../".repeat(depth));
+        std::os::unix::fs::symlink(&target, &link_path).unwrap();
+        run_git(&repo, &["add", "-f", link]);
+        run_git(&repo, &["commit", "-m", "commit a symlink under .toimija"]);
+
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(&repo)
+            .arg("enter")
+            .assert()
+            .success();
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(&repo)
+            .arg("clean")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("refusing to sweep"));
+
+        for survivor in [
+            victim_dir.join("keep.txt"),
+            outside.join("victim.jsonl"),
+            outside.join("current.json.tmp-1-1"),
+            session_dir.join("session.json"),
+        ] {
+            assert!(
+                survivor.exists(),
+                "{} was deleted through the committed symlink {link} -> {target}",
+                survivor.display()
+            );
+        }
+    }
+}
