@@ -52,7 +52,7 @@ fn top_level_help_shows_the_agent_workflow_and_boundaries() {
         // The boundary framing that makes Toimija safe to trust.
         .stdout(predicate::str::contains("local-only"))
         .stdout(predicate::str::contains("refuses to decide"))
-        .stdout(predicate::str::contains("never touches"));
+        .stdout(predicate::str::contains("no network calls of its own"));
 }
 
 #[test]

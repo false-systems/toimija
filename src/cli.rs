@@ -44,7 +44,8 @@ use crate::watch;
         Boundaries: Toimija reports facts and refuses to decide. It is local-only: \
         it writes only under .toimija/ and, for snapshots, Git objects and \
         refs/toimija/; it never executes validation or gates, starts no daemons, \
-        and never touches the network."
+        and makes no network calls of its own (`run` asks an installed `gh` \
+        about the branch's pull requests)."
 )]
 pub struct Cli {
     /// Increase log verbosity: -v for info, -vv for debug. Logs go to stderr.
