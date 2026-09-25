@@ -455,10 +455,10 @@ fn sweep_inner(
         if is_atomic_temp(&path) {
             continue;
         }
-        if older_than(&path, now, options.runs_retention_secs)? {
-            run_candidates.push(path);
-        } else {
-            kept += 1;
+        match older_than(&path, now, options.runs_retention_secs)? {
+            Some(true) => run_candidates.push(path),
+            Some(false) => kept += 1,
+            None => {}
         }
     }
     let mut temp_candidates = Vec::new();
@@ -466,17 +466,18 @@ fn sweep_inner(
         if !is_atomic_temp(&path) {
             continue;
         }
-        if !fs::symlink_metadata(&path)
-            .with_context(|| format!("failed to inspect {}", path.display()))?
-            .file_type()
-            .is_file()
-        {
-            continue;
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_file() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+            }
         }
-        if older_than(&path, now, ORPHAN_TEMP_RETENTION_SECS)? {
-            temp_candidates.push(path);
-        } else {
-            kept += 1;
+        match older_than(&path, now, ORPHAN_TEMP_RETENTION_SECS)? {
+            Some(true) => temp_candidates.push(path),
+            Some(false) => kept += 1,
+            None => {}
         }
     }
     run_candidates.sort();
@@ -630,41 +631,52 @@ fn descendants(root: &Path) -> Result<Vec<PathBuf>> {
     let mut pending = direct_children(root)?;
     let mut files = Vec::new();
     while let Some(path) = pending.pop() {
-        if fs::symlink_metadata(&path)
-            .with_context(|| format!("failed to inspect {}", path.display()))?
-            .file_type()
-            .is_dir()
-        {
-            pending.extend(direct_children(&path)?);
-        } else {
-            files.push(path);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_dir() => pending.extend(direct_children(&path)?),
+            Ok(_) => files.push(path),
+            // Reclaimed by a concurrent sweep after it was listed.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+            }
         }
     }
     Ok(files)
 }
 
-fn older_than(path: &Path, now: u64, retention_secs: u64) -> Result<bool> {
-    let modified = fs::symlink_metadata(path)
-        .with_context(|| format!("failed to inspect {}", path.display()))?
+/// Whether `path` is older than the retention window; `None` when it is
+/// already gone — a concurrent sweep reclaimed it after it was listed.
+fn older_than(path: &Path, now: u64, retention_secs: u64) -> Result<Option<bool>> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    let modified = meta
         .modified()
         .with_context(|| format!("failed to read modification time for {}", path.display()))?
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    Ok(now.saturating_sub(modified) > retention_secs)
+    Ok(Some(now.saturating_sub(modified) > retention_secs))
 }
 
-/// Delete one expired artifact under `toimija`.
+/// Delete one expired artifact under `toimija`. Already gone — a concurrent
+/// sweep got there first — counts as reclaimed, not as a failure.
 fn reclaim(toimija: &Path, path: &Path) -> Result<()> {
     ensure_inside_toimija(toimija, path)?;
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("failed to inspect {}", path.display()))?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
+    let removed = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(error) => Err(error),
+    };
+    match removed {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
     }
-    .with_context(|| format!("failed to remove {}", path.display()))
 }
 
 fn compact_history(repo_root: &Path, max_records: usize) -> Result<()> {
@@ -1385,6 +1397,22 @@ mod tests {
         );
         assert!(ensure_inside_toimija(&toimija, &outside.join("victim")).is_err());
         assert!(ensure_inside_toimija(&toimija, &repo.join("README.md")).is_err());
+    }
+
+    /// Two sweeps can list the same expired artifact; whichever removes it
+    /// second finds it gone. That is the outcome both wanted, not a failure
+    /// of `clean`.
+    #[test]
+    fn an_artifact_a_concurrent_sweep_already_reclaimed_is_not_a_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let runs = temp.path().join(".toimija/runs");
+        fs::create_dir_all(&runs).unwrap();
+        let toimija = temp.path().join(".toimija").canonicalize().unwrap();
+
+        reclaim(&toimija, &runs.join("gone.jsonl")).unwrap();
+        reclaim(&toimija, &runs.join("gone-dir")).unwrap();
+        // Gone between listing and ageing: not a candidate, not an error.
+        assert_eq!(older_than(&runs.join("gone.jsonl"), 0, 0).unwrap(), None);
     }
 
     #[test]
