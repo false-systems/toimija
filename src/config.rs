@@ -22,8 +22,6 @@ pub struct RepoConfig {
     pub composition: CompositionSection,
     pub context: ContextSection,
     pub validation: ValidationSection,
-    pub gates: BTreeMap<String, crate::gates::GateConfig>,
-    pub gate_groups: BTreeMap<String, crate::gates::GateGroupConfig>,
     pub stewardship: StewardshipSection,
     pub agents: BTreeMap<String, AgentPromptConfig>,
     pub boundaries: Vec<String>,
@@ -275,6 +273,25 @@ pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Repositories adopted before gates moved out still carry `gates:` and
+    /// `gate_groups:`. Toimija no longer reads them, and must not refuse to
+    /// load a config because they are there.
+    #[test]
+    fn a_config_with_retired_gate_sections_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".toimija");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("repo.yaml"),
+            "repo:\n  name: legacy\n\
+             gates:\n  rust-test:\n    program: cargo\n    args: [test]\n\
+             gate_groups:\n  full:\n    gates: [rust-test]\n",
+        )
+        .unwrap();
+        let config = RepoConfig::load(temp.path()).unwrap();
+        assert_eq!(config.repo.name, "legacy");
+    }
 
     #[test]
     fn loads_config_with_defaults() {

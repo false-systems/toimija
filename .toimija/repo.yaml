@@ -26,27 +26,6 @@ validation:
   full: []
   privileged: []
 
-gates:
-  rust-format:
-    description: Rust formatting check
-    program: cargo
-    args: [fmt, --all, --check]
-    timeout_seconds: 60
-  rust-clippy:
-    description: Clippy with warnings denied
-    program: cargo
-    args: [clippy, --all-targets, --, -D, warnings]
-    timeout_seconds: 300
-  rust-test:
-    description: Full Rust test suite
-    program: cargo
-    args: [test]
-    timeout_seconds: 900
-
-gate_groups:
-  rust-full:
-    gates: [rust-format, rust-clippy, rust-test]
-
 boundaries:
   - Keep v0.0 as one Rust crate.
   - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Vaisto, or Kerto integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.rs contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.

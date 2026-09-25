@@ -113,12 +113,6 @@ impl Consistency {
     }
 }
 
-impl Verdict {
-    pub fn is_consistent(&self) -> bool {
-        matches!(self, Verdict::Consistent)
-    }
-}
-
 fn head_state(git: &GitState) -> HeadState {
     match (&git.branch, &git.head_oid, git.detached) {
         (_, Some(oid), true) => HeadState::Detached { oid: oid.clone() },
@@ -366,7 +360,7 @@ mod tests {
     fn identical_state_verifies_as_consistent() {
         let git = git_state();
         let stored = Consistency::fingerprint(&git);
-        assert!(stored.verify(&git).is_consistent());
+        assert!(matches!(stored.verify(&git), Verdict::Consistent));
     }
 
     #[test]
@@ -477,7 +471,7 @@ mod tests {
         live.untracked_files
             .push(PathBuf::from(".toimija/anything/tool-output.json"));
         live.untracked_files.push(PathBuf::from(".teko/teko.redb"));
-        assert!(stored.verify(&live).is_consistent());
+        assert!(matches!(stored.verify(&live), Verdict::Consistent));
     }
 
     #[test]
@@ -495,7 +489,7 @@ mod tests {
         });
         live.untracked_files
             .push(PathBuf::from(".toimija/runs/kisko.jsonl"));
-        assert!(!stored.verify(&live).is_consistent());
+        assert!(!matches!(stored.verify(&live), Verdict::Consistent));
     }
 
     #[test]
