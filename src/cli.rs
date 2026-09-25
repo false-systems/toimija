@@ -92,8 +92,6 @@ pub enum Command {
         toimija doctor --strict   # CI / pre-commit gate: drift fails the build"
     )]
     Doctor(DoctorArgs),
-    /// Inspect runtime work and worker providers.
-    Plugins(PluginsArgs),
     /// Compile the current Git work state into a context packet.
     ///
     /// Use this to *see* the packet without writing anything: branch, HEAD,
@@ -486,22 +484,6 @@ pub struct DoctorArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct PluginsArgs {
-    #[command(subcommand)]
-    pub command: PluginsCommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum PluginsCommand {
-    /// List explicitly configured plugin IDs.
-    List,
-    /// Initialize configured plugins and report failures.
-    Doctor,
-    /// Initialize and print one plugin's negotiated identity.
-    Inspect { id: String },
-}
-
-#[derive(Debug, Args)]
 pub struct ValidateArgs {
     /// Print the plan only. Required: Toimija never runs validation in v0.
     #[arg(long)]
@@ -552,7 +534,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Init => run_init().map(|()| 0),
         Command::Adopt(args) => run_adopt(args).map(|()| 0),
         Command::Doctor(args) => run_doctor(args).map(|()| 0),
-        Command::Plugins(args) => run_plugins(args).map(|()| 0),
         Command::Context(args) => run_context(args).map(|()| 0),
         Command::Current(args) => run_current(args),
         Command::Refresh(args) => run_refresh(args).map(|()| 0),
@@ -660,7 +641,6 @@ impl Command {
             Command::Init => "init",
             Command::Adopt(_) => "adopt",
             Command::Doctor(_) => "doctor",
-            Command::Plugins(_) => "plugins",
             Command::Context(_) => "context",
             Command::Current(_) => "current",
             Command::Refresh(_) => "refresh",
@@ -737,85 +717,6 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
         anyhow::bail!("{reason}");
     }
     Ok(())
-}
-
-fn run_plugins(args: PluginsArgs) -> Result<()> {
-    use false_agent_protocol::plugin::PluginKind;
-
-    if matches!(args.command, PluginsCommand::List) {
-        return crate::plugins::print_list();
-    }
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let packet = context::build_context_packet(&runner, &repo_root, false)?;
-    let point = crate::semantic::repository_point(&runner, &packet)?;
-    let configured = crate::plugins::definitions()?;
-    let inspect = |id: &str, kind: PluginKind| -> Result<()> {
-        let definition = crate::plugins::discover(id, kind)?
-            .with_context(|| format!("plugin `{id}` is not configured or on PATH"))?;
-        let session = crate::plugins::PluginSession::spawn(
-            id,
-            &definition,
-            &repo_root,
-            point.repository.clone(),
-        )?;
-        println!(
-            "{}\t{:?}\t{}\t{}",
-            session.metadata.id,
-            session.metadata.kind,
-            session.metadata.version,
-            definition.command
-        );
-        Ok(())
-    };
-    match args.command {
-        PluginsCommand::List => unreachable!(),
-        PluginsCommand::Inspect { id } => {
-            let kind = configured
-                .get(&id)
-                .map(|definition| definition.kind)
-                .or(match id.as_str() {
-                    "teko" => Some(PluginKind::Work),
-                    _ => None,
-                })
-                .with_context(|| {
-                    // The packet renders providers role-first (`work: teko`),
-                    // so `inspect work` is the natural thing to type. Say what
-                    // the argument actually is instead of reporting a missing
-                    // kind, which reads as a configuration fault.
-                    let hint = match id.as_str() {
-                        "work" => "  (did you mean `teko`? `work` is the role, not the plugin)",
-                        "worker" => {
-                            "  (configure a worker plugin ID in ~/.config/toimija/plugins.toml)"
-                        }
-                        _ => "",
-                    };
-                    format!(
-                        "unknown plugin `{id}`{hint}\n\nInspect takes a plugin ID. \
-                         Run `toimija plugins doctor` to list the ones this repo resolves."
-                    )
-                })?;
-            inspect(&id, kind)
-        }
-        PluginsCommand::Doctor => {
-            if configured.is_empty() {
-                for (id, kind) in [("teko", PluginKind::Work)] {
-                    match inspect(id, kind) {
-                        Ok(()) => {}
-                        Err(error) => println!("{id}\tunavailable\t{error}"),
-                    }
-                }
-            } else {
-                for (id, definition) in configured {
-                    if let Err(error) = inspect(&id, definition.kind) {
-                        println!("{id}\tfailed\t{error}");
-                    }
-                }
-            }
-            Ok(())
-        }
-    }
 }
 
 fn run_context(args: ContextArgs) -> Result<()> {
@@ -1186,30 +1087,28 @@ fn run_run(args: RunArgs) -> Result<i32> {
             }
         }
     }
-    use crate::workers::WorkerAdapter as _;
-    let execution = entry_execution
-        .as_ref()
-        .context("session refresh omitted its execution context")?;
-    let prompt_style = crate::adapters::agents::prompt_style(program, &repo_config.agents)
-        .unwrap_or(crate::adapters::agents::PromptStyle::Positional);
-    let mut adapter =
-        crate::workers::select(program, &repo_root, &execution.repository, prompt_style)?;
-    let descriptor = adapter.describe()?;
-    let launch_plan = adapter.prepare(execution, &repo_root, &session.dir, rest, composed)?;
+    // The prompt travels where the agent reads it: last positional argument,
+    // or after the flag its `agents:` entry names.
+    let mut child_args = rest.to_vec();
+    if let Some(prompt) = composed {
+        match crate::adapters::agents::prompt_style(program, &repo_config.agents)
+            .unwrap_or(crate::adapters::agents::PromptStyle::Positional)
+        {
+            crate::adapters::agents::PromptStyle::Positional => child_args.push(prompt),
+            crate::adapters::agents::PromptStyle::Flag(flag) => {
+                child_args.push(flag);
+                child_args.push(prompt);
+            }
+        }
+    }
     eprintln!(
-        "toimija run: worker: {} · launching `{}` (session {}, watching for changes)",
-        descriptor.name, launch_plan.program, session.id
+        "toimija run: launching `{program}` (session {}, watching for changes)",
+        session.id
     );
-    let mut child = std::process::Command::new(&launch_plan.program);
-    child.args(&launch_plan.args);
-    child.envs(
-        launch_plan
-            .env
-            .iter()
-            .map(|entry| (&entry.key, &entry.value)),
-    );
+    let mut child = std::process::Command::new(program);
     child
-        .current_dir(&launch_plan.cwd)
+        .args(&child_args)
+        .current_dir(&repo_root)
         .envs(session.env(&repo_root));
     // From here the terminal belongs to the wrapped command. Seal this
     // process's own stdout/stderr at the descriptor level onto the session
@@ -1301,33 +1200,10 @@ fn run_run(args: RunArgs) -> Result<i32> {
     }
     // Skip the exit summary if the command never launched — there is nothing to
     // summarize, and the launch error is surfaced below.
-    if let Ok(wrapped_status) = &launched {
+    if launched.is_ok() {
         let consumption = collect_consumption(&repo_root, &session, &args);
         match plan.run(&runner, &repo_root) {
             Ok(exit) => {
-                let exit_execution = exit
-                    .packet
-                    .session
-                    .as_ref()
-                    .and_then(|session| session.execution.as_ref());
-                if let (Some(origin), Some(destination)) =
-                    (entry_execution.as_ref(), exit_execution)
-                {
-                    let normalized =
-                        adapter.finalize(false_agent_protocol::worker::FinalizeParams {
-                            outcome: process_outcome(*wrapped_status),
-                            origin: origin.repository.clone(),
-                            destination: destination.repository.clone(),
-                            structured_result_path: semantic_result_path
-                                .is_file()
-                                .then(|| semantic_result_path.display().to_string()),
-                            session_id: session.id.clone(),
-                        })?;
-                    eprintln!(
-                        "toimija run: worker result grade: {:?}",
-                        normalized.result_grade
-                    );
-                }
                 if let Some(correlation) =
                     crate::semantic::correlate_result(&repo_root, &semantic_result_path)?
                 {
@@ -1780,25 +1656,6 @@ fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
         .code()
         .or_else(|| status.signal().map(|signal| 128 + signal))
         .unwrap_or(1)
-}
-
-fn process_outcome(status: std::process::ExitStatus) -> false_agent_protocol::work::ProcessOutcome {
-    if let Some(code) = status.code() {
-        return false_agent_protocol::work::ProcessOutcome::Exited { code };
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        false_agent_protocol::work::ProcessOutcome::Signaled {
-            signal: status.signal().unwrap_or(-1),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        false_agent_protocol::work::ProcessOutcome::Interrupted {
-            reason: "process ended without an exit code".into(),
-        }
-    }
 }
 
 #[cfg(not(unix))]
@@ -2367,7 +2224,8 @@ impl VerifyStatus {
                     map.insert(
                         "message".to_string(),
                         serde_json::Value::String(
-                            "The repository or runtime-provider state changed after the selected packet was generated.".to_string(),
+                            "The repository state changed after the selected packet was generated."
+                                .to_string(),
                         ),
                     );
                 }

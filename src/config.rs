@@ -19,7 +19,6 @@ pub const DAY_SECS: u64 = 24 * 60 * 60;
 #[serde(default)]
 pub struct RepoConfig {
     pub repo: RepoSection,
-    pub composition: CompositionSection,
     pub context: ContextSection,
     pub validation: ValidationSection,
     pub stewardship: StewardshipSection,
@@ -34,24 +33,6 @@ pub struct RepoConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentPromptConfig {
     pub prompt: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct CompositionSection {
-    pub work: Option<String>,
-    pub default_worker: Option<String>,
-    pub require_work: bool,
-}
-
-impl Default for CompositionSection {
-    fn default() -> Self {
-        Self {
-            work: Some("teko".into()),
-            default_worker: None,
-            require_work: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -274,11 +255,12 @@ pub fn init_repo(repo_root: &Path) -> Result<InitReport, ToimijaError> {
 mod tests {
     use super::*;
 
-    /// Repositories adopted before gates moved out still carry `gates:` and
-    /// `gate_groups:`. Toimija no longer reads them, and must not refuse to
-    /// load a config because they are there.
+    /// Repositories adopted before gates and runtime providers moved out
+    /// still carry `gates:`, `gate_groups:` and `composition:`. Toimija no
+    /// longer reads them, and must not refuse to load a config because they
+    /// are there.
     #[test]
-    fn a_config_with_retired_gate_sections_still_loads() {
+    fn a_config_with_retired_sections_still_loads() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join(".toimija");
         std::fs::create_dir_all(&dir).unwrap();
@@ -286,7 +268,8 @@ mod tests {
             dir.join("repo.yaml"),
             "repo:\n  name: legacy\n\
              gates:\n  rust-test:\n    program: cargo\n    args: [test]\n\
-             gate_groups:\n  full:\n    gates: [rust-test]\n",
+             gate_groups:\n  full:\n    gates: [rust-test]\n\
+             composition:\n  work: teko\n  require_work: false\n",
         )
         .unwrap();
         let config = RepoConfig::load(temp.path()).unwrap();

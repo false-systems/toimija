@@ -31,9 +31,7 @@ pub struct ContextPacket {
     pub repo_kind: RepoKind,
     #[serde(default)]
     pub secondary_languages: Vec<repo::DetectedLanguage>,
-    #[serde(default)]
-    pub runtime_providers: crate::plugins::RuntimeProviders,
-    /// Refresh key for collected Git state and runtime-provider discovery.
+    /// Refresh key for the collected, packet-visible Git state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
     pub git: GitState,
@@ -179,9 +177,7 @@ pub fn build_context_packet(
             warnings.push(note.clone());
         }
     }
-    let (runtime_providers, plugin_warnings) = crate::plugins::runtime_providers(&config);
     let refresh_token = refresh_token(&git);
-    warnings.extend(plugin_warnings);
     // Effective ignore set = the repo's configured rules plus a small built-in
     // set of build/vendor dirs. Applied live (derived each run), not seeded into
     // repo.yaml, so it tracks the repo as it changes and never drifts. The
@@ -235,7 +231,6 @@ pub fn build_context_packet(
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
         secondary_languages: secondary_scan.languages,
-        runtime_providers,
         refresh_token: Some(refresh_token),
         git,
         changed_surface,
@@ -504,29 +499,6 @@ mod tests {
     use crate::adapters::generic::GenericAdapter;
     use crate::git::{ChangeStatus, ChangedFile};
 
-    fn runtime_providers() -> crate::plugins::RuntimeProviders {
-        crate::plugins::RuntimeProviders {
-            work: crate::plugins::RuntimeProviderSummary {
-                id: "teko".to_string(),
-                kind: false_agent_protocol::plugin::PluginKind::Work,
-                capability: false_agent_protocol::plugin::WORK_V1.to_string(),
-                status: crate::plugins::RuntimeProviderStatus::Unavailable,
-                source: crate::plugins::RuntimeProviderSource::Missing,
-                required: false,
-                reason: "repo composition work provider".to_string(),
-            },
-            worker: crate::plugins::RuntimeProviderSummary {
-                id: "none".to_string(),
-                kind: false_agent_protocol::plugin::PluginKind::Worker,
-                capability: false_agent_protocol::plugin::WORKER_V1.to_string(),
-                status: crate::plugins::RuntimeProviderStatus::Unavailable,
-                source: crate::plugins::RuntimeProviderSource::Missing,
-                required: false,
-                reason: "no default external worker; run selects the named command".to_string(),
-            },
-        }
-    }
-
     #[test]
     fn refresh_token_covers_git_state_and_ignores_observer_environment() {
         let mut git = GitState {
@@ -556,8 +528,8 @@ mod tests {
         git.base = None;
 
         // The token is a pure function of repository state (proposal 0011):
-        // observer-environment facts like provider discoverability have no
-        // input into it, so the same repo always yields the same token.
+        // nothing read from the observer's environment is an input to it, so
+        // the same repo always yields the same token.
         assert_eq!(refresh_token(&git), original);
     }
 
@@ -595,7 +567,6 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
-            runtime_providers: runtime_providers(),
             refresh_token: None,
             git,
             changed_surface: Vec::new(),
@@ -652,7 +623,6 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
-            runtime_providers: runtime_providers(),
             refresh_token: None,
             git: git.clone(),
             changed_surface: Vec::new(),
@@ -712,7 +682,6 @@ mod tests {
             },
             repo_kind: RepoKind::Generic,
             secondary_languages: Vec::new(),
-            runtime_providers: runtime_providers(),
             refresh_token: None,
             git,
             changed_surface: Vec::new(),

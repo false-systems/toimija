@@ -22,7 +22,6 @@ pub mod logging;
 // the `serde(with = "crate::path_codec::...")` attributes, which resolve a
 // path, not a module — are unchanged.
 pub(crate) use sauma_canonical::path_codec;
-pub mod plugins;
 pub mod refresh;
 pub mod relevance;
 pub mod render;
@@ -35,4 +34,3 @@ pub mod snapshot;
 pub mod snippet;
 pub mod validate;
 pub mod watch;
-pub mod workers;

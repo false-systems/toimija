@@ -98,11 +98,6 @@ fn fresh_packet_verifies_consistent_then_a_change_makes_it_stale() {
     );
 }
 
-// `runtime_provider_changes_make_the_packet_stale` used to live here: provider
-// drift was fatal staleness. Proposal 0011 abolished that (the refresh token is
-// a pure function of repository state); its replacement is
-// `provider_environment_differences_do_not_make_a_packet_stale` below.
-
 #[test]
 fn remote_base_changes_make_the_packet_stale() {
     if !git_available() {
@@ -544,52 +539,6 @@ fn ignored_file_does_not_change_token() {
         .args(["current", "--verify", "--json"])
         .assert()
         .success();
-}
-
-#[test]
-fn provider_environment_differences_do_not_make_a_packet_stale() {
-    // Proposal 0011: freshness is a repository fact. The same untouched repo
-    // must verify fresh from any observer, even one whose environment
-    // resolves a different runtime-provider set than the compiling shell did.
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_repo_with_commit(temp.path());
-
-    // Compile the packet under a user config that declares a work provider.
-    let with_provider = tempfile::tempdir().unwrap();
-    fs::create_dir_all(with_provider.path().join("toimija")).unwrap();
-    fs::write(
-        with_provider.path().join("toimija/plugins.toml"),
-        "[plugins.teko]\nkind = \"work\"\ncommand = \"teko\"\n",
-    )
-    .unwrap();
-    toimija(temp.path())
-        .env("XDG_CONFIG_HOME", with_provider.path())
-        .arg("refresh")
-        .assert()
-        .success();
-
-    // Verify from an environment with no configured providers and PATH
-    // discovery disabled. Only the observer changed; the repository did not.
-    let without_provider = tempfile::tempdir().unwrap();
-    fs::create_dir_all(without_provider.path().join("toimija")).unwrap();
-    fs::write(
-        without_provider.path().join("toimija/plugins.toml"),
-        "automatic_path_discovery = false\n",
-    )
-    .unwrap();
-    let output = toimija(temp.path())
-        .env("XDG_CONFIG_HOME", without_provider.path())
-        .args(["verify", "--json"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(report["status"], "verified");
 }
 
 fn git_stdout(path: &Path, args: &[&str]) -> String {

@@ -45,7 +45,6 @@ false-agent-protocol = { version = "0.1.3", git = "https://github.com/false-syst
 libc = "0.2"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
-toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 which = "8"
