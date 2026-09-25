@@ -819,6 +819,69 @@ fn run_hands_the_child_its_repository_point() {
     );
 }
 
+/// The last check before launch runs after the watcher is armed. If it
+/// refuses — here because a merge started while `run` was preparing — `run`
+/// must close the session it opened, not leave an `active` marker and a
+/// stale repository point behind for siblings to trip over.
+#[cfg(unix)]
+#[test]
+fn run_closes_the_session_when_the_last_launch_check_refuses() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // `run` asks `gh` about the branch's pull requests between its first and
+    // its last pre-launch check. This `gh` starts a merge while answering.
+    let bin = tempfile::tempdir().unwrap();
+    let gh = bin.path().join("gh");
+    fs::write(
+        &gh,
+        "#!/bin/sh\ngit rev-parse HEAD > \"$(git rev-parse --git-dir)/MERGE_HEAD\"\necho '[]'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("PATH", path)
+        .env_remove("TOIMIJA_SESSION")
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "touch launched",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsafe Git state"));
+
+    assert!(!temp.path().join("launched").exists(), "the agent launched");
+    let sessions: Vec<_> = fs::read_dir(temp.path().join(".toimija/sessions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    let marker: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(sessions[0].join("session.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["status"], "closed", "{marker}");
+    assert!(
+        !sessions[0].join("semantic-point.json").exists(),
+        "a closed session still publishes a repository point"
+    );
+}
+
 #[test]
 fn run_closes_the_session_marker_when_the_child_fails_to_launch() {
     if !git_available() {

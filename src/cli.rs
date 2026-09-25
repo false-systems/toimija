@@ -995,14 +995,15 @@ fn run_run(args: RunArgs) -> Result<i32> {
     // `catch_up` may rewrite the session packet even when repository identity
     // is unchanged. Launch with the packet as it stands now, verified, rather
     // than the earlier preflight rendering.
-    let entry = verify_run_entry(
-        &runner,
-        &cwd,
-        &repo_root,
-        &plan,
-        plan.run(&runner, &repo_root)?,
-        &session.id,
-    )?;
+    let entry = match plan.run(&runner, &repo_root).and_then(|refreshed| {
+        verify_run_entry(&runner, &cwd, &repo_root, &plan, refreshed, &session.id)
+    }) {
+        Ok(entry) => entry,
+        Err(error) => {
+            close_session_after_startup_failure(&repo_root, &mut session);
+            return Err(error);
+        }
+    };
     eprintln!(
         "toimija run: watcher armed ({})",
         watch_session.backend_label()
