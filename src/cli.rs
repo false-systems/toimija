@@ -887,29 +887,34 @@ fn run_run(args: RunArgs) -> Result<i32> {
     if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
-    let preflight = context::build_context_packet(&runner, &repo_root, false)?;
-    let point = crate::semantic::repository_point(&runner, &preflight)?;
-    if let (Some(cycle), Some(leg), Some(attempt)) =
-        (&args.cycle, &args.cycle_leg, args.cycle_attempt)
-    {
-        let live_sessions =
-            sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
-        let duplicate = live_sessions.sessions.iter().find(|session| {
-            session.liveness != sessions::Liveness::Closed
-                && session.marker.cycle_action.as_ref().is_some_and(|action| {
-                    action.cycle == *cycle
-                        && action.leg == *leg
-                        && action.attempt == attempt
-                        && action.repository_point == point.id.to_string()
-                })
-        });
-        if let Some(session) = duplicate {
-            anyhow::bail!(
-                "cycle action {cycle}/{leg}/{attempt} is already live in session {}",
-                session.marker.id
-            );
+    // A cycle leg is identified by the repository point it launches at, so
+    // only a leg pays for materializing that point before the session opens.
+    let cycle_action = match (&args.cycle, &args.cycle_leg, args.cycle_attempt) {
+        (Some(cycle), Some(leg), Some(attempt)) => {
+            let preflight = context::build_context_packet(&runner, &repo_root, false)?;
+            let point = crate::semantic::repository_point(&runner, &preflight)?;
+            let action = session::CycleAction {
+                cycle: cycle.clone(),
+                leg: leg.clone(),
+                attempt,
+                repository_point: point.id.to_string(),
+            };
+            let live_sessions =
+                sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
+            let duplicate = live_sessions.sessions.iter().find(|session| {
+                session.liveness != sessions::Liveness::Closed
+                    && session.marker.cycle_action.as_ref() == Some(&action)
+            });
+            if let Some(session) = duplicate {
+                anyhow::bail!(
+                    "cycle action {cycle}/{leg}/{attempt} is already live in session {}",
+                    session.marker.id
+                );
+            }
+            Some(action)
         }
-    }
+        _ => None,
+    };
 
     // Asked to stop before any marker exists: leave without creating one.
     if let Some(number) = termination.requested() {
@@ -926,15 +931,8 @@ fn run_run(args: RunArgs) -> Result<i32> {
         args.scope.clone(),
     )
     .context("failed to open the toimija session")?;
-    if let (Some(cycle), Some(leg), Some(attempt)) =
-        (&args.cycle, &args.cycle_leg, args.cycle_attempt)
-    {
-        session.record_cycle_action(session::CycleAction {
-            cycle: cycle.clone(),
-            leg: leg.clone(),
-            attempt,
-            repository_point: point.id.to_string(),
-        })?;
+    if let Some(action) = cycle_action {
+        session.record_cycle_action(action)?;
     }
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
