@@ -1106,6 +1106,9 @@ fn run_run(args: RunArgs) -> Result<i32> {
         .args(&child_args)
         .current_dir(&repo_root)
         .envs(session.env(&repo_root));
+    for retired in session::RETIRED_ENV {
+        child.env_remove(retired);
+    }
     // From here the terminal belongs to the wrapped command. Seal this
     // process's own stdout/stderr at the descriptor level onto the session
     // diagnostics log — watcher output, refresh warnings, even panic messages

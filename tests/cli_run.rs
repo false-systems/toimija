@@ -774,7 +774,8 @@ fn run_hands_the_child_a_per_session_handshake() {
 /// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
 /// point inside the sealed session packet (`session.execution.repository`),
 /// which Kelpo reads to bind evidence to a session. The worker.v1 result and
-/// context paths are gone with the worker protocol.
+/// context paths are gone with the worker protocol, and cleared even when the
+/// outer environment still carries them.
 #[test]
 fn run_hands_the_child_its_repository_point() {
     if !git_available() {
@@ -789,6 +790,9 @@ fn run_hands_the_child_its_repository_point() {
         .unwrap()
         .current_dir(temp.path())
         .env("OUT", out.path())
+        // Stale values from an outer environment must not reach the child.
+        .env("FALSE_SYSTEMS_RESULT_PATH", "/stale/result.json")
+        .env("FALSE_SYSTEMS_CONTEXT_PATH", "/stale/context.json")
         .args([
             "run",
             "--intent",
