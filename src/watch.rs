@@ -807,7 +807,6 @@ mod tests {
             for_diff: false,
             budget: None,
             session_dir: None,
-            work: refresh::WorkSource::Discover,
         };
         let stop = AtomicBool::new(false);
         let mono = Instant::now();
@@ -856,7 +855,6 @@ mod tests {
             for_diff: false,
             budget: None,
             session_dir: None,
-            work: refresh::WorkSource::Discover,
         };
         let stop = AtomicBool::new(false);
         let mono = Instant::now();
@@ -902,7 +900,6 @@ mod tests {
             for_diff: false,
             budget: None,
             session_dir: None,
-            work: refresh::WorkSource::Discover,
         };
         let stop = AtomicBool::new(false);
         let mono = Instant::now();
@@ -952,7 +949,6 @@ mod tests {
             for_diff: false,
             budget: None,
             session_dir: None,
-            work: refresh::WorkSource::Discover,
         };
         let mut heartbeats = 0;
 

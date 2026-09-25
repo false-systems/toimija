@@ -37,9 +37,6 @@ fn top_level_help_describes_every_subcommand() {
         .stdout(predicate::str::contains("Print the validation plan"))
         .stdout(predicate::str::contains(
             "Inspect and execute trusted repository gates",
-        ))
-        .stdout(predicate::str::contains(
-            "Run every Gate ID required by active Teko work",
         ));
 }
 
@@ -83,9 +80,7 @@ fn every_subcommand_help_says_when_to_use_it() {
         "sessions",
         "validate",
         "gates",
-        "verify-work",
         "verify",
-        "correlate-pr",
         "snapshot",
         "audit-plan",
         "adopt",
@@ -115,14 +110,12 @@ fn high_traffic_subcommands_carry_examples() {
         ("clean", "toimija clean --dry-run"),
         ("current", "toimija current --verify --json"),
         ("verify", "toimija verify --json"),
-        ("correlate-pr", "toimija correlate-pr https://github.com/"),
         ("landed", "toimija landed"),
         ("doctor", "toimija doctor --strict"),
         ("snapshot", "toimija snapshot --lease"),
         ("context", "toimija context --for-diff"),
         ("audit-plan", "toimija audit-plan --surface"),
         ("adopt", "toimija adopt --hooks"),
-        ("verify-work", "toimija verify-work --json"),
     ] {
         Command::cargo_bin("toimija")
             .unwrap()

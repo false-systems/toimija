@@ -149,8 +149,7 @@ pub enum Command {
     /// `.toimija/sessions/<id>/`, prints the entry packet, keeps it fresh while
     /// the command runs, mirrors `.toimija/current.*`, and exits with the
     /// wrapped command's status (128+signal preserved). `--intent` is required
-    /// unless active Teko work supplies the bounded task (`--intent unknown`
-    /// remains the explicit escape hatch). Known agents (claude, codex, gemini)
+    /// (`--intent unknown` remains the explicit escape hatch). Known agents (claude, codex, gemini)
     /// get the packet inlined in their launch prompt — pass the task via
     /// `--task`; other commands keep the TOIMIJA_* env handshake behind an
     /// honest banner. `--scope` tells sibling sessions what you expect to touch
@@ -258,21 +257,6 @@ pub enum Command {
     /// Gate IDs resolve only through Toimija configuration. Workers cannot
     /// supply commands, argv, environment, or working directories.
     Gates(GatesArgs),
-    /// Run every Gate ID required by active Teko work and import the receipts.
-    ///
-    /// Use this at the verification boundary after the worker returns.
-    ///
-    /// Teko names required IDs and independently decides closure. Toimija
-    /// verifies the repository, runs isolated gates, and mints exact-state
-    /// receipts; it never closes the work.
-    #[command(after_help = "Examples:\n  toimija verify-work\n  toimija verify-work --json")]
-    VerifyWork(JsonArgs),
-    /// Close active Teko work through the authoritative work-provider protocol.
-    ///
-    /// Refreshes repository and gate-catalog truth, asks Teko to derive closure,
-    /// and reports Teko's decision. It never closes blocked work.
-    #[command(after_help = "Examples:\n  toimija close-work\n  toimija close-work --json")]
-    CloseWork(JsonArgs),
     /// Verify the selected session or repo packet still matches live repo state.
     ///
     /// The verify-before-read gate: checks the packet's consistency fingerprint
@@ -292,22 +276,6 @@ pub enum Command {
     /// token. Toimija remains authoritative for this point.
     #[command(after_help = "Examples:\n  toimija repository-point --json")]
     RepositoryPoint(SemanticArgs),
-    /// Explain active work, the latest bound worker run, evidence, and blockers.
-    ///
-    /// Derives relationships on demand from Teko, current Toimija truth, and
-    /// the latest worker result. Persists no graph.
-    #[command(after_help = "Examples:\n  toimija explain-work\n  toimija explain-work --json")]
-    ExplainWork(SemanticArgs),
-    /// Bind a completed bounded worker run to its pull request.
-    ///
-    /// Use this after creating a PR from the exact clean destination tree.
-    /// Toimija validates the repository, session, run, commit, and destination,
-    /// then writes one Sauma-attested correlation artifact. No network calls.
-    #[command(
-        after_help = "Examples:\n  toimija correlate-pr https://github.com/false-systems/kisko/pull/171\n  \
-        toimija correlate-pr https://github.com/false-systems/kisko/pull/171 --session 1785179852-51947 --run run_51670292"
-    )]
-    CorrelatePr(CorrelatePrArgs),
     /// [experimental] Materialize the working tree as an immutable git tree object.
     ///
     /// Freezes the full working state (content-addressed) so a reader can read
@@ -340,21 +308,6 @@ pub struct ContextArgs {
 #[derive(Debug, Args)]
 pub struct SemanticArgs {
     /// Emit the versioned machine projection as JSON.
-    #[arg(long)]
-    pub json: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct CorrelatePrArgs {
-    /// Canonical GitHub pull-request URL for this repository.
-    pub url: String,
-    /// Assert the Toimija session that produced the run.
-    #[arg(long)]
-    pub session: Option<String>,
-    /// Worker run to correlate; defaults to the latest durable result.
-    #[arg(long)]
-    pub run: Option<String>,
-    /// Emit the correlation artifact as JSON.
     #[arg(long)]
     pub json: bool,
 }
@@ -400,9 +353,6 @@ pub struct RunArgs {
     /// Output budget for the Markdown packet.
     #[arg(long)]
     pub budget: Option<usize>,
-    /// Refuse to launch unless a valid work.v1 provider returns active work.
-    #[arg(long)]
-    pub require_work: bool,
     /// Free-text declaration of why this session is here, surfaced to sibling
     /// sessions by `toimija sessions`. Advisory only — never an assignment.
     #[arg(long)]
@@ -646,8 +596,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Handoff(args) if args.json => "json",
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
-        Command::RepositoryPoint(args) | Command::ExplainWork(args) if args.json => "json",
-        Command::VerifyWork(args) | Command::CloseWork(args) if args.json => "json",
+        Command::RepositoryPoint(args) if args.json => "json",
         Command::Gates(args)
             if match &args.command {
                 GatesCommand::List(args) => args.json,
@@ -658,7 +607,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         {
             "json"
         }
-        Command::CorrelatePr(args) if args.json => "json",
         _ => "text",
     };
     let span = info_span!(
@@ -691,12 +639,8 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::AuditPlan(args) => run_audit_plan(args).map(|()| 0),
         Command::Validate(args) => run_validate(args).map(|()| 0),
         Command::Gates(args) => crate::gate_cli::run(args),
-        Command::VerifyWork(args) => crate::gate_cli::verify_work(args),
-        Command::CloseWork(args) => crate::gate_cli::close_work(args),
         Command::Verify(args) => run_verify(args),
         Command::RepositoryPoint(args) => run_repository_point(args).map(|()| 0),
-        Command::ExplainWork(args) => run_explain_work(args).map(|()| 0),
-        Command::CorrelatePr(args) => run_correlate_pr(args).map(|()| 0),
         Command::Snapshot(args) => run_snapshot(args).map(|()| 0),
     };
 
@@ -804,12 +748,8 @@ impl Command {
             Command::AuditPlan(_) => "audit-plan",
             Command::Validate(_) => "validate",
             Command::Gates(_) => "gates",
-            Command::VerifyWork(_) => "verify-work",
-            Command::CloseWork(_) => "close-work",
             Command::Verify(_) => "verify",
             Command::RepositoryPoint(_) => "repository-point",
-            Command::ExplainWork(_) => "explain-work",
-            Command::CorrelatePr(_) => "correlate-pr",
             Command::Snapshot(_) => "snapshot",
         }
     }
@@ -1001,166 +941,6 @@ fn run_repository_point(args: SemanticArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_explain_work(args: SemanticArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let packet = context::build_context_packet(&runner, &repo_root, false)?;
-    let point = crate::semantic::repository_point(&runner, &packet)?;
-    let latest_correlation = crate::correlation::latest(&repo_root)?;
-    let Some(active) = crate::teko::active_work_at(&repo_root, &point, false)? else {
-        let explained = crate::teko::explain_at(&repo_root, &point)?;
-        if args.json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "protocol": false_agent_protocol::ProtocolVersion::V1,
-                    "work": explained,
-                    "latest_result": crate::semantic::latest_result(&repo_root)?,
-                    "latest_correlation": latest_correlation,
-                }))?
-            );
-        } else {
-            println!("{}", explained.explanation);
-            if let Some(correlation) = latest_correlation {
-                println!(
-                    "Pull request: {} ({})",
-                    correlation.pull_request.url, correlation.pull_request.r#ref
-                );
-            }
-        }
-        return Ok(());
-    };
-    let execution = crate::semantic::execution_context(&runner, &packet, Some(active), 0)?;
-    let work = execution
-        .work
-        .as_ref()
-        .expect("active work was used to build the execution context");
-    let workflow_status = execution
-        .workflow_status
-        .as_ref()
-        .expect("active work was used to build workflow status");
-    let latest = crate::semantic::latest_result(&repo_root)?;
-    let latest_correlation =
-        latest_correlation.filter(|correlation| correlation.work == work.work.id);
-    let projection = crate::semantic::projection(&execution, latest.as_ref())?;
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "protocol": false_agent_protocol::ProtocolVersion::V1,
-                "execution": execution,
-                "latest_result": latest,
-                "latest_correlation": latest_correlation,
-                "projection": projection,
-            }))?
-        );
-    } else {
-        println!("WORK");
-        println!(
-            "{} implements {} — {}",
-            work.work.id, work.spec.id, work.work.objective
-        );
-        println!("\nCURRENT");
-        println!(
-            "{} · tree {}{}",
-            execution.repository.id,
-            execution.repository.tree_oid.0,
-            if execution.repository.dirty {
-                " · dirty"
-            } else {
-                " · clean"
-            }
-        );
-        println!("\nEXECUTION");
-        match &latest {
-            Some(result)
-                if result
-                    .binding
-                    .as_ref()
-                    .is_some_and(|binding| binding.work == work.work.id) =>
-            {
-                println!(
-                    "{} executed {} · {} material action(s)",
-                    result.run,
-                    work.work.id,
-                    result.actions.len()
-                );
-                println!(
-                    "{} → {}",
-                    result.origin,
-                    result
-                        .destination
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "unverified destination".to_string())
-                );
-                println!("evidence: {}", result.evidence.len());
-                if result.destination.as_ref() != Some(&execution.repository.id) {
-                    println!("stale: latest result does not verify the current repository point");
-                }
-            }
-            _ => println!("no bound worker result"),
-        }
-        if let Some(correlation) = latest_correlation {
-            println!("\nPULL REQUEST");
-            println!(
-                "{} · {}",
-                correlation.pull_request.r#ref, correlation.pull_request.url
-            );
-            println!(
-                "{} → commit {}",
-                correlation.destination, correlation.commit
-            );
-        }
-        println!("\nCLOSURE");
-        if workflow_status.closable {
-            println!("ready to close");
-        } else {
-            println!("blocked");
-            for blocker in &workflow_status.blockers {
-                println!("- [{}] {}", blocker.code, blocker.message);
-            }
-        }
-    }
-    info!(
-        event = "semantic_projection_rendered",
-        work = %work.work.id,
-        facts = projection.facts.len(),
-        protocol_major = execution.protocol.major,
-        protocol_minor = execution.protocol.minor
-    );
-    Ok(())
-}
-
-fn run_correlate_pr(args: CorrelatePrArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let (correlation, path) = crate::correlation::create(
-        &runner,
-        &repo_root,
-        crate::correlation::CorrelateInput {
-            url: args.url,
-            session: args.session,
-            run: args.run,
-        },
-    )?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&correlation)?);
-    } else {
-        println!("correlated pull request {}", correlation.pull_request.r#ref);
-        println!("spec: {}", correlation.spec);
-        println!("work: {}", correlation.work);
-        println!("session: {}", correlation.session);
-        println!("worker run: {}", correlation.worker_run);
-        println!("destination: {}", correlation.destination);
-        println!("commit: {}", correlation.commit);
-        println!("artifact: {}", rel_display(&path, &repo_root));
-    }
-    Ok(())
-}
-
 fn run_current(args: CurrentArgs) -> Result<i32> {
     if args.write {
         return run_refresh(ContextArgs {
@@ -1230,7 +1010,6 @@ fn ambient_refresh(
         for_diff: args.for_diff,
         budget: args.budget,
         session_dir: ambient.as_ref().map(|(_, dir)| dir.clone()),
-        work: refresh::WorkSource::Discover,
     };
     let refreshed = plan.run(runner, repo_root)?;
     if let Some((id, _)) = &ambient
@@ -1277,16 +1056,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
     let preflight = context::build_context_packet(&runner, &repo_root, false)?;
     let point = crate::semantic::repository_point(&runner, &preflight)?;
-    let (work_provider, active_work) =
-        crate::teko::WorkProvider::open(&repo_root, &point, args.require_work)?;
-    if active_work.is_some() {
-        eprintln!("work provider: teko");
-    } else {
-        eprintln!("no work provider available");
-    }
-    // An active work item is the authoritative intent. Exploratory runs still
-    // require the existing explicit intent handshake.
-    if args.intent.is_none() && active_work.is_none() {
+    if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
     if let (Some(cycle), Some(leg), Some(attempt)) =
@@ -1344,11 +1114,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
         for_diff: args.for_diff,
         budget: args.budget,
         session_dir: Some(session.dir.clone()),
-        work: work_provider
-            .as_ref()
-            .map_or(refresh::WorkSource::Unbound, |provider| {
-                refresh::WorkSource::Provider(std::sync::Arc::clone(provider))
-            }),
     };
     let entry = match plan.run(&runner, &repo_root) {
         Ok(entry) => entry,
@@ -1357,24 +1122,13 @@ fn run_run(args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
-    let mut entry = match verify_run_entry(&runner, &cwd, &repo_root, &plan, entry, &session.id) {
+    let entry = match verify_run_entry(&runner, &cwd, &repo_root, &plan, entry, &session.id) {
         Ok(entry) => entry,
         Err(error) => {
             close_session_after_startup_failure(&repo_root, &mut session);
             return Err(error);
         }
     };
-    if let Some(execution) = entry
-        .packet
-        .session
-        .as_ref()
-        .and_then(|session| session.execution.as_ref())
-    {
-        entry.markdown.push_str("\n\n");
-        entry
-            .markdown
-            .push_str(&crate::semantic::render_execution(execution));
-    }
     print_agent_entry(&entry, &repo_root);
     let semantic_result_path = session.dir.join(crate::semantic::RESULT_FILE);
     // The branch and HEAD are known once the packet is built; record them.
@@ -1409,11 +1163,10 @@ fn run_run(args: RunArgs) -> Result<i32> {
         close_session_after_startup_failure(&repo_root, &mut session);
         return Err(error).context("failed to refresh after arming the file watcher");
     }
-    // `catch_up` may replace the context file even when repository identity is
-    // unchanged. Capture the exact envelope the child will read, so its digest
-    // binding is compared with the launch artifact rather than the earlier
-    // preflight rendering.
-    entry = verify_run_entry(
+    // `catch_up` may rewrite the session packet even when repository identity
+    // is unchanged. Launch with the packet as it stands now, verified, rather
+    // than the earlier preflight rendering.
+    let entry = verify_run_entry(
         &runner,
         &cwd,
         &repo_root,
@@ -1421,28 +1174,11 @@ fn run_run(args: RunArgs) -> Result<i32> {
         plan.run(&runner, &repo_root)?,
         &session.id,
     )?;
-    if let Some(execution) = entry
-        .packet
-        .session
-        .as_ref()
-        .and_then(|session| session.execution.as_ref())
-    {
-        entry.markdown.push_str("\n\n");
-        entry
-            .markdown
-            .push_str(&crate::semantic::render_execution(execution));
-    }
     let entry_execution = entry
         .packet
         .session
         .as_ref()
         .and_then(|session| session.execution.clone());
-    let emitted_context_digests = Arc::new(std::sync::Mutex::new(
-        entry_execution
-            .iter()
-            .map(|execution| execution.context_digest.clone())
-            .collect::<std::collections::BTreeSet<_>>(),
-    ));
     eprintln!(
         "toimija run: watcher armed ({})",
         watch_session.backend_label()
@@ -1459,7 +1195,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
     // terminal) and just bumps the counter.
     let refreshes = Arc::new(AtomicUsize::new(0));
     let watcher_refreshes = Arc::clone(&refreshes);
-    let watcher_digests = Arc::clone(&emitted_context_digests);
     let watch_root = repo_root.clone();
     let watch_plan = plan.clone();
     let heartbeat_id = session.id.clone();
@@ -1467,19 +1202,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
         let runner = ProcessCommandRunner;
         watch_session.run(&runner, &watch_root, &watch_plan, &watcher_stop, || {
             watcher_refreshes.fetch_add(1, Ordering::Relaxed);
-            if let Some(dir) = &watch_plan.session_dir {
-                let path = dir.join(crate::semantic::CONTEXT_FILE);
-                if let Ok(bytes) = std::fs::read(path)
-                    && let Ok(context) = serde_json::from_slice::<
-                        false_agent_protocol::context::ExecutionContextEnvelope,
-                    >(&bytes)
-                {
-                    watcher_digests
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner())
-                        .insert(context.context_digest);
-                }
-            }
             // Heartbeat (proposal 0002): an event worth a refresh is worth a
             // `last_seen_at` stamp, so staleness measures inactivity rather
             // than lifetime. Best-effort — never interrupts the watch loop.
@@ -1678,20 +1400,9 @@ fn run_run(args: RunArgs) -> Result<i32> {
                         normalized.result_grade
                     );
                 }
-                let session_observer = crate::semantic::SessionWorkObserver {
-                    provider: work_provider.as_ref().map(std::sync::Arc::clone),
-                };
-                if let Some(correlation) = crate::semantic::correlate_result(
-                    &session_observer,
-                    &repo_root,
-                    entry_execution.as_ref(),
-                    exit_execution,
-                    &semantic_result_path,
-                    &emitted_context_digests
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner()),
-                    process_outcome(*wrapped_status),
-                )? {
+                if let Some(correlation) =
+                    crate::semantic::correlate_result(&repo_root, &semantic_result_path)?
+                {
                     eprintln!(
                         "toimija run: correlated worker run {} at {} ({})",
                         correlation.result.run,
@@ -1703,9 +1414,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
                             .unwrap_or_else(|| "no destination".to_string()),
                         correlation.durable_path.display()
                     );
-                    if let Some(status) = correlation.teko_status {
-                        eprintln!("{}", crate::semantic::render_teko_status(&status));
-                    }
                     session.record_worker_run(&repo_root, &correlation.result)?;
                 }
                 eprint!(
@@ -2200,7 +1908,6 @@ fn run_watch(args: ContextArgs) -> Result<()> {
         for_diff: args.for_diff,
         budget: args.budget,
         session_dir: None,
-        work: refresh::WorkSource::Discover,
     };
     watch::watch(&runner, &repo_root, &plan, &stop, || {
         eprintln!(

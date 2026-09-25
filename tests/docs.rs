@@ -5,7 +5,6 @@ const README: &str = include_str!("../README.md");
 const HANDOFF_SCHEMA: &str = include_str!("../docs/schemas/handoff-record.v1.schema.json");
 const HISTORY_SCHEMA: &str = include_str!("../docs/schemas/history-record.v1.schema.json");
 const SAUMA_SCHEMA: &str = include_str!("../docs/schemas/sauma-envelope.v1.schema.json");
-const CORRELATION_SCHEMA: &str = include_str!("../docs/schemas/work-correlation.v1.schema.json");
 
 #[test]
 fn readme_states_the_git_state_thesis() {
@@ -245,29 +244,6 @@ fn sauma_schema_matches_emitted_envelope_fields() {
             );
         }
     }
-}
-
-#[test]
-fn correlation_schema_is_versioned_and_sauma_attested() {
-    let schema: serde_json::Value = serde_json::from_str(CORRELATION_SCHEMA).unwrap();
-    assert_eq!(
-        schema["properties"]["schema"]["const"],
-        "work-correlation.v1"
-    );
-    assert_eq!(
-        schema["properties"]["sauma"]["oneOf"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert!(
-        schema["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|field| field == "pull_request")
-    );
 }
 
 /// Pins the sauma canonical form and digest to a fixed vector so the digest law

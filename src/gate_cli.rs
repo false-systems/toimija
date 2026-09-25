@@ -1,8 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use false_agent_protocol::RepositoryPoint;
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::{GateInspectArgs, GateRunArgs, GateStatusArgs, GatesArgs, GatesCommand, JsonArgs};
@@ -56,151 +55,6 @@ pub fn run(args: GatesArgs) -> Result<i32> {
         GatesCommand::Run(args) => run_gate(args),
         GatesCommand::Status(args) => status(args),
     }
-}
-
-pub fn verify_work(args: JsonArgs) -> Result<i32> {
-    let (repo_root, catalog) = load_catalog()?;
-    let (point, verified) = verified_point_and_subject(&repo_root)?;
-    let (provider, active) = crate::teko::WorkProvider::open(&repo_root, &point, true)?;
-    let Some(active) = active else {
-        if args.json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "work": null,
-                    "message": "No active bounded work.",
-                }))?
-            );
-        } else {
-            println!("No active bounded work.");
-            println!("Use `toimija gates run <id>` to run a repository gate directly.");
-        }
-        return Ok(0);
-    };
-    let required = crate::teko::required_gate_ids(&active.packet)?;
-    let resolved = resolve_required(&catalog, &required)?;
-    if resolved.is_empty()
-        && active.packet.required_completion == false_agent_protocol::CompletionLevel::Validated
-    {
-        bail!("active work requires validated completion but names no Gate IDs");
-    }
-    let mut report = execute(&repo_root, verified.subject().clone(), &verified, resolved)?;
-    let current_point = current_point(&repo_root)?;
-    let current = report.current && same_point(&point, &current_point);
-    report.current = current;
-    report.current_subject = Some(subject_from_point(&current_point));
-
-    let receipts = report
-        .gates
-        .iter()
-        .filter_map(|record| record.receipt.clone())
-        .collect::<Vec<_>>();
-    let refreshed = if current {
-        let provider = provider.context("work provider session disappeared")?;
-        let mut provider = provider
-            .lock()
-            .map_err(|_| anyhow::anyhow!("work provider lock is poisoned"))?;
-        provider.observe_gate_receipts(&point, &active.packet, &receipts)?;
-        let refreshed = provider.current(&current_point)?;
-        if let Some(ref refreshed) = refreshed
-            && refreshed.packet.work.id != active.packet.work.id
-        {
-            bail!(
-                "active work changed from `{}` to `{}` while verifying gates",
-                active.packet.work.id,
-                refreshed.packet.work.id
-            );
-        }
-        refreshed
-    } else {
-        None
-    };
-
-    let passed = report.gates.iter().all(|record| record.outcome == "passed");
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "work": active.packet.work.id,
-                "required_gates": required,
-                "run": report,
-                "workflow": refreshed.as_ref().map(|active| &active.status),
-            }))?
-        );
-    } else {
-        println!("VERIFY WORK");
-        println!("\nwork\n  {}", active.packet.work.id);
-        println!(
-            "\nsubject\n  repository point {}\n  tree {}",
-            point.id, point.tree_oid.0
-        );
-        println!("\ngates");
-        render_run_records(&report.gates);
-        if !current {
-            println!("\ngate evidence is stale");
-            println!("  tested repository point {}", point.id);
-            println!("  current repository point {}", current_point.id);
-            println!("\nnext\n  rerun required gates");
-        } else if let Some(ref refreshed) = refreshed {
-            println!(
-                "\nscope\n  {}",
-                if refreshed.status.closable {
-                    "valid"
-                } else {
-                    "checked"
-                }
-            );
-            println!(
-                "\ncompletion\n  {}",
-                if refreshed.status.closable {
-                    "validated"
-                } else {
-                    "blocked"
-                }
-            );
-            println!("\nTeko");
-            if refreshed.status.closable {
-                println!("  ready to close");
-            } else {
-                for blocker in &refreshed.status.blockers {
-                    println!("  [{}] {}", blocker.code, blocker.message);
-                }
-            }
-        }
-    }
-    let closable = refreshed.is_some_and(|active| active.status.closable);
-    Ok(if passed && current && closable { 0 } else { 1 })
-}
-
-pub fn close_work(args: JsonArgs) -> Result<i32> {
-    let repo_root = repo_root()?;
-    let point = current_point(&repo_root)?;
-    let (provider, active) = crate::teko::WorkProvider::open(&repo_root, &point, true)?;
-    let Some(active) = active else {
-        if args.json {
-            println!(
-                "{}",
-                serde_json::json!({"closed": false, "explanation": "No active bounded work."})
-            );
-        } else {
-            println!("No active bounded work.");
-        }
-        return Ok(0);
-    };
-    if !same_point(&point, &current_point(&repo_root)?) {
-        bail!("repository changed while preparing work closure");
-    }
-    let provider = provider.context("work provider session disappeared")?;
-    let mut provider = provider
-        .lock()
-        .map_err(|_| anyhow::anyhow!("work provider lock is poisoned"))?;
-    let result = provider.close(&point, &active.packet)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        println!("{}", result.explanation);
-    }
-    Ok(if result.closed { 0 } else { 1 })
 }
 
 fn list(args: JsonArgs) -> Result<i32> {
@@ -515,35 +369,6 @@ fn load_catalog() -> Result<(PathBuf, GateCatalog)> {
 fn repo_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     crate::git::discover_repo_root(&ProcessCommandRunner, &cwd).context("not a Git repository")
-}
-
-fn current_point(repo_root: &Path) -> Result<RepositoryPoint> {
-    let packet = crate::context::build_context_packet(&ProcessCommandRunner, repo_root, false)?;
-    crate::semantic::repository_point(&ProcessCommandRunner, &packet)
-}
-
-fn verified_point_and_subject(
-    repo_root: &Path,
-) -> Result<(RepositoryPoint, crate::gates::VerifiedGateSubject)> {
-    let point = current_point(repo_root)?;
-    let subject = verify_subject(repo_root)?;
-    if subject_from_point(&point) != *subject.subject() {
-        bail!("repository changed while preparing gate authority");
-    }
-    Ok((point, subject))
-}
-
-fn subject_from_point(point: &RepositoryPoint) -> GateSubject {
-    GateSubject {
-        repository: point.repository.clone(),
-        repository_point: point.id.clone(),
-        tree_oid: point.tree_oid.clone(),
-        consistency_token: point.consistency_token.clone(),
-    }
-}
-
-fn same_point(left: &RepositoryPoint, right: &RepositoryPoint) -> bool {
-    subject_from_point(left) == subject_from_point(right)
 }
 
 fn resolve_required(catalog: &GateCatalog, ids: &[GateId]) -> Result<Vec<ResolvedGate>> {

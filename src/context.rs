@@ -75,7 +75,7 @@ pub struct SessionBlock {
     pub id: String,
     pub intent: Option<String>,
     pub scope: Vec<String>,
-    /// Ephemeral projection of active Teko work plus current Toimija truth.
+    /// Ephemeral execution context: the session's repository point and changed surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<false_agent_protocol::context::ExecutionContextEnvelope>,
     /// Branch and HEAD captured when `run` entered the session. They stay fixed

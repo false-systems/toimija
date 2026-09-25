@@ -197,7 +197,6 @@ fn session_refresh_with_an_unreadable_marker_still_writes_the_packet() {
         false,
         None,
         &dir,
-        &toimija::refresh::WorkSource::Unbound,
     )
     .unwrap();
     assert!(
