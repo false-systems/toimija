@@ -884,11 +884,11 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let preflight = context::build_context_packet(&runner, &repo_root, false)?;
-    let point = crate::semantic::repository_point(&runner, &preflight)?;
     if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
+    let preflight = context::build_context_packet(&runner, &repo_root, false)?;
+    let point = crate::semantic::repository_point(&runner, &preflight)?;
     if let (Some(cycle), Some(leg), Some(attempt)) =
         (&args.cycle, &args.cycle_leg, args.cycle_attempt)
     {
@@ -1212,7 +1212,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
             Err(error) => eprintln!("toimija run: could not compute exit summary: {error:#}"),
         }
     }
-    cleanup_semantic_runtime(&session);
+    remove_session_point(&session);
 
     // 8. Exit with the wrapped command's status — preserving signal semantics so
     //    a cancelled/terminated child is distinguishable from a generic failure.
@@ -1449,10 +1449,12 @@ fn close_session_after_startup_failure(
             eprintln!("toimija run: could not close the failed session marker: {error:#}")
         }
     }
-    cleanup_semantic_runtime(session);
+    remove_session_point(session);
 }
 
-fn cleanup_semantic_runtime(session: &session::Session) {
+/// A closed session no longer stands at a repository point: remove the file
+/// `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` named, so nothing reads it as current.
+fn remove_session_point(session: &session::Session) {
     let _ = std::fs::remove_file(session.dir.join(crate::semantic::POINT_FILE));
 }
 
