@@ -237,6 +237,10 @@ checkpoint` still excluded.
   cross-repo "one Toimija" north star is a later proposal; `session.json` must not
   be shaped in a way that blocks it (keep the marker self-describing: it already
   records id, pid, agent, branch, timestamps).
+  *Amended 2026-09-26 (issue #225, a person's decision):* a session opened
+  outside any Git repository lives under the machine-local state directory's
+  `.toimija/`, since there is no repo to hold it. Still one directory per
+  session and the same marker; still not cross-repo sessions.
 
 ### Layer 1 scope (this PR)
 

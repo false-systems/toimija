@@ -154,10 +154,17 @@ pub enum Command {
     /// `--task`; other commands keep the TOIMIJA_* env handshake behind an
     /// honest banner. `--scope` tells sibling sessions what you expect to touch
     /// — advisory, never an assignment.
+    ///
+    /// Outside any Git repository it opens a session with no packet instead:
+    /// the marker lives in the machine-local state directory
+    /// (`$TOIMIJA_STATE_DIR`, else `$XDG_STATE_HOME/toimija`, else
+    /// `~/.local/state/toimija`), never in the folder, and
+    /// `toimija sessions --outside-repos` lists it.
     #[command(
         after_help = "Examples:\n  toimija run --intent \"fix #51\" --task \"fix the login redirect\" -- claude   # packet + task in the launch prompt\n  \
         toimija run --intent \"fix #51\" --scope src/cli.rs -- codex   # declare intent/scope for siblings\n  \
-        toimija run --intent unknown --for-diff --budget 4000 -- sh -c '…'   # tune the packet the child sees"
+        toimija run --intent unknown --for-diff --budget 4000 -- sh -c '…'   # tune the packet the child sees\n  \
+        cd ~/projects && toimija run --intent \"cross-repo sweep\" --scope ~/projects/a -- claude   # outside a repo: a session, no packet"
     )]
     Run(RunArgs),
     /// Declare or update this session's intent — tell siblings why you are here.
@@ -227,11 +234,13 @@ pub enum Command {
     /// (LIVE / STALE / CLOSED) and descriptive overlap warnings. Read-only
     /// unless `--prune`, which runs the same configured stewardship pass as
     /// `clean` (including expired sessions). Assigns nothing, signals nothing,
-    /// no network.
+    /// no network. Outside a repository, or with `--outside-repos`, it lists
+    /// the sessions `run` opened outside any repository instead.
     #[command(
         after_help = "Examples:\n  toimija sessions           # LIVE / STALE / CLOSED listing + warnings\n  \
         toimija sessions --json    # machine-readable report\n  \
-        toimija sessions --prune   # run the configured stewardship pass"
+        toimija sessions --prune   # run the configured stewardship pass\n  \
+        toimija sessions --outside-repos   # sessions opened outside any repository"
     )]
     Sessions(SessionsArgs),
     /// [experimental] Partition the committed repository tree into bounded audit worksets.
@@ -419,6 +428,11 @@ pub struct SessionsArgs {
     /// Run the configured stewardship pass. Live sessions are never touched.
     #[arg(long)]
     pub prune: bool,
+    /// List the sessions `run` opened outside any Git repository (kept in the
+    /// machine-local state directory) instead of this repository's. The
+    /// default when not inside a repository.
+    #[arg(long)]
+    pub outside_repos: bool,
 }
 
 #[derive(Debug, Args)]
@@ -883,7 +897,15 @@ fn run_run(args: RunArgs) -> Result<i32> {
 
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let repo_root = match git::discover_repo_root(&runner, &cwd) {
+        Ok(repo_root) => repo_root,
+        // Git ran and said no: a session outside any repository (issue #225).
+        // A missing git stays an error — that is not the same as "no repo".
+        Err(crate::error::ToimijaError::NotGitRepo) => {
+            return run_outside_repo(args, &cwd, &termination);
+        }
+        Err(error) => return Err(error).context("not a Git repository"),
+    };
     if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
@@ -1438,6 +1460,192 @@ fn verify_run_entry(
         }
     }
     unreachable!("the two-attempt entry gate always returns or errors")
+}
+
+/// `run` outside any Git repository (issue #225): a visible session with no
+/// packet. The marker lives under the machine-local state root (never in
+/// `folder`), a heartbeat keeps it from reading stale while the agent works,
+/// and `toimija sessions --outside-repos` lists it. What needs Git — the
+/// packet and its watcher, a cycle leg, effects, the exit summary — is not
+/// attempted, and the agent is told so in its launch prompt.
+fn run_outside_repo(
+    args: RunArgs,
+    folder: &std::path::Path,
+    termination: &TerminationWatch,
+) -> Result<i32> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    if args.intent.is_none() {
+        return Err(refuse_missing_intent(&args.command).into());
+    }
+    if args.cycle.is_some() {
+        anyhow::bail!(
+            "not a Git repository: a cycle leg is identified by a repository point, so it \
+             cannot run outside one"
+        );
+    }
+    if args.for_diff || args.budget.is_some() {
+        anyhow::bail!(
+            "not a Git repository: --for-diff and --budget shape the context packet, and \
+             outside a repository there is none"
+        );
+    }
+    let state_root = session::outside_root().with_context(|| {
+        format!(
+            "not a Git repository, and no state directory for a session outside one: set {} \
+             or HOME to an absolute path",
+            session::STATE_DIR_ENV
+        )
+    })?;
+    if let Some(number) = termination.requested() {
+        eprintln!("toimija run: termination requested before the session opened");
+        return Ok(i32::try_from(128 + number).unwrap_or(1));
+    }
+    let mut session = session::Session::open_outside(
+        &state_root,
+        folder,
+        &args.command,
+        args.intent.clone(),
+        args.scope.clone(),
+    )
+    .context("failed to open the toimija session")?;
+    eprintln!(
+        "toimija run: {} is not inside a Git repository — session {} has no context packet; \
+         it is recorded under {} and listed by `toimija sessions --outside-repos`",
+        folder.display(),
+        session.id,
+        state_root.display()
+    );
+    let runner = ProcessCommandRunner;
+    opportunistic_sweep(&runner, &state_root);
+
+    // No watcher means no refresh-driven heartbeat: stamp `last_seen_at` on a
+    // timer instead, so a long-working agent is not reported stale.
+    let stop = Arc::new(AtomicBool::new(false));
+    let heartbeat = {
+        let stop = Arc::clone(&stop);
+        let root = state_root.clone();
+        let id = session.id.clone();
+        std::thread::spawn(move || {
+            let mut ticks = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                ticks += 1;
+                if ticks.is_multiple_of(60)
+                    && let Err(error) = session::touch(&root, &id)
+                {
+                    warn!(event = "toimija.session.heartbeat_failed", error = %format!("{error:#}"));
+                }
+            }
+        })
+    };
+    let stop_heartbeat = || {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+    };
+
+    if let Some(number) = termination.requested() {
+        stop_heartbeat();
+        close_session_after_startup_failure(&state_root, &mut session);
+        eprintln!("toimija run: termination requested before the agent launched — session closed");
+        return Ok(i32::try_from(128 + number).unwrap_or(1));
+    }
+
+    let (program, rest) = args
+        .command
+        .split_first()
+        .expect("clap `required = true` guarantees at least one argument");
+    // No repo, so no repo.yaml `agents:` table: only the built-in agents.
+    let agents = std::collections::BTreeMap::new();
+    let composed = crate::adapters::agents::compose_outside_prompt(
+        program,
+        folder,
+        args.task.as_deref(),
+        &agents,
+    );
+    match &composed {
+        Some(_) => eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`"),
+        None => {
+            eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
+            if args.task.is_some() {
+                eprintln!(
+                    "toimija run: --task travels in the composed launch prompt and `{program}` \
+                     is not a known agent; give it its task yourself"
+                );
+            }
+        }
+    }
+    let mut child_args = rest.to_vec();
+    if let Some(prompt) = composed {
+        match crate::adapters::agents::prompt_style(program, &agents)
+            .unwrap_or(crate::adapters::agents::PromptStyle::Positional)
+        {
+            crate::adapters::agents::PromptStyle::Positional => child_args.push(prompt),
+            crate::adapters::agents::PromptStyle::Flag(flag) => {
+                child_args.push(flag);
+                child_args.push(prompt);
+            }
+        }
+    }
+    eprintln!(
+        "toimija run: launching `{program}` (session {}, outside any repository)",
+        session.id
+    );
+    let mut child = std::process::Command::new(program);
+    child
+        .args(&child_args)
+        .current_dir(folder)
+        .envs(session.env_outside());
+    for cleared in session::RETIRED_ENV.iter().chain(session::REPO_ONLY_ENV) {
+        child.env_remove(cleared);
+    }
+    let diagnostics_path = session.dir.join("diagnostics.log");
+    let capture = match crate::diagnostics::Capture::borrow(&diagnostics_path) {
+        Ok(capture) => Some(capture),
+        Err(error) => {
+            eprintln!(
+                "toimija run: could not open the diagnostics log ({}); background output may interleave with the command: {error:#}",
+                diagnostics_path.display()
+            );
+            None
+        }
+    };
+    if let Some(capture) = &capture {
+        child.stdout(
+            capture
+                .child_stdout()
+                .context("failed to hand the wrapped command our stdout")?,
+        );
+        child.stderr(
+            capture
+                .child_stderr()
+                .context("failed to hand the wrapped command our stderr")?,
+        );
+    }
+    let launched = supervise_agent(&mut child, termination);
+    stop_heartbeat();
+    let captured = capture.map_or(0, crate::diagnostics::Capture::finish);
+    if captured > 0 {
+        eprintln!(
+            "toimija run: captured {captured} diagnostic line(s) while the wrapped command ran — {}",
+            diagnostics_path.display()
+        );
+    }
+    let exit_status = launched
+        .as_ref()
+        .ok()
+        .map(|status| wrapped_exit_code(*status));
+    match session.close(exit_status) {
+        Ok(()) => journal_closed_session(&state_root, &session),
+        Err(error) => eprintln!(
+            "toimija run: could not close the session marker; it stays 'active' on disk \
+             and may show as a live session. Remove {}: {error:#}",
+            session.dir.join("session.json").display(),
+        ),
+    }
+    let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
+    Ok(wrapped_exit_code(status))
 }
 
 fn close_session_after_startup_failure(
@@ -2251,7 +2459,34 @@ impl VerifyStatus {
 fn run_sessions(args: SessionsArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let outside = args.outside_repos
+        || matches!(
+            git::discover_repo_root(&runner, &cwd),
+            Err(crate::error::ToimijaError::NotGitRepo)
+        );
+    let repo_root = if outside {
+        // Sessions `run` opened outside any repository (issue #225). Reading
+        // them never creates the state directory; an absent one holds none.
+        session::outside_root().with_context(|| {
+            format!(
+                "no state directory for sessions outside repositories: set {} or HOME to an \
+                 absolute path",
+                session::STATE_DIR_ENV
+            )
+        })?
+    } else {
+        git::discover_repo_root(&runner, &cwd).context("not a Git repository")?
+    };
+    if outside && !args.json {
+        println!(
+            "Sessions outside any Git repository ({}):",
+            repo_root.display()
+        );
+    }
+    if args.prune && outside && !repo_root.is_dir() {
+        println!("Nothing to prune: no session has been recorded outside a repository.");
+        return Ok(());
+    }
     if args.prune {
         let config = RepoConfig::load_optional(&repo_root)?
             .unwrap_or_else(|| RepoConfig::default_for(&repo_root));
@@ -2353,7 +2588,6 @@ fn run_audit_plan(args: AuditPlanArgs) -> Result<()> {
 fn run_intent(args: IntentArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
     // The wrapped agent's own session id, injected by `run`'s env handshake.
     let id = std::env::var("TOIMIJA_SESSION").map_err(|_| {
         anyhow::anyhow!(
@@ -2361,6 +2595,7 @@ fn run_intent(args: IntentArgs) -> Result<()> {
              so run it from inside `toimija run -- <agent>` (the handshake provides the id)"
         )
     })?;
+    let repo_root = session_root(&runner, &cwd, &id)?;
     let marker = session::declare_intent(&repo_root, &id, args.text, args.scope)?;
     info!(event = "toimija.session.intent_declared", session = %marker.id);
     println!(
@@ -2372,6 +2607,29 @@ fn run_intent(args: IntentArgs) -> Result<()> {
         println!("  scope: {}", marker.scope.join(", "));
     }
     Ok(())
+}
+
+/// Where session `id` lives: the repository the command runs in when its
+/// marker is there, else the state root when `run` opened it outside any
+/// repository (issue #225) — so an agent from such a session can still speak
+/// after changing into a repo. The root is found by looking, never taken from
+/// the environment, so a handshake cannot steer writes elsewhere.
+fn session_root(
+    runner: &ProcessCommandRunner,
+    cwd: &std::path::Path,
+    id: &str,
+) -> Result<std::path::PathBuf> {
+    let repo = git::discover_repo_root(runner, cwd);
+    if let Ok(repo_root) = &repo
+        && session::marker_exists(repo_root, id)
+    {
+        return Ok(repo_root.clone());
+    }
+    if let Some(outside) = session::outside_root().filter(|root| session::marker_exists(root, id)) {
+        return Ok(outside);
+    }
+    // Neither holds it: let the repository path report the missing marker.
+    repo.context("not a Git repository")
 }
 
 fn run_handoff(args: HandoffArgs) -> Result<()> {
