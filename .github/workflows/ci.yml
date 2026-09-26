@@ -119,11 +119,13 @@ jobs:
           $sudo_cmd apt-get install -y --no-install-recommends build-essential ca-certificates
 
       # The Rust sykli, which took the name on 2026-08-04 (the Elixir one it
-      # succeeded lives at sykli-elixir and is retired here). It has no
-      # release yet, so the Action builds its own checkout: `version: source`
-      # at @main. Pin to a release tag once one is published.
+      # succeeded lives at sykli-elixir and is retired here). Its Action can
+      # only install a release, or build the sykli repo itself (`version:
+      # source` builds the *caller's* checkout), and there is no release yet.
+      # So install it the way its README documents, pinned to the commit the
+      # contract was locked with; move to the Action once a release exists.
+      - name: Install sykli
+        run: cargo install --locked --git https://github.com/false-systems/sykli --rev 5a55ae30e68409a80c3c59af32515e7e8e30b702 sykli
+
       - name: Run the sykli contract
-        uses: false-systems/sykli@main
-        with:
-          contract: sykli.rs
-          version: source
+        run: sykli run
