@@ -13,9 +13,9 @@ default-run = "toimija"
 
 [features]
 # The sykli CI contract (sykli.rs) — off by default so ordinary builds and
-# tests never compile the SDK. The sykli CLI falls back to
-# `cargo run --features sykli --bin sykli -- --emit` automatically.
-sykli = ["dep:sykli"]
+# tests never build it; it needs nothing beyond serde_json. `sykli run`
+# compiles it with `cargo run --features sykli --bin sykli -- --emit`.
+sykli = []
 
 [[bin]]
 name = "sykli"
@@ -23,8 +23,6 @@ path = "sykli.rs"
 required-features = ["sykli"]
 
 [dependencies]
-# Pinned to the tag matching the sykli CLI (RC SDKs are not on crates.io).
-sykli = { git = "https://github.com/false-systems/sykli-elixir", tag = "v0.9.0-rc.1", optional = true }
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
 clap = { version = "4", features = ["derive"] }
