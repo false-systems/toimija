@@ -108,6 +108,31 @@ pub fn compose_launch_prompt(
     Some(prompt)
 }
 
+/// Compose the launch prompt for a session outside any Git repository (issue
+/// #225): no packet to inline, and the agent is told so rather than left to
+/// look for one. `None` for agents without a resolved delivery style.
+pub fn compose_outside_prompt(
+    program: &str,
+    folder: &Path,
+    task: Option<&str>,
+    configured: &BTreeMap<String, AgentPromptConfig>,
+) -> Option<String> {
+    prompt_style(program, configured)?;
+    let mut prompt = format!(
+        "You are in a toimija session outside any Git repository ({}). There is no \
+         session packet: toimija compiles Git context, and this folder has none. \
+         Sessions in the repositories you touch do not count you as a sibling, so \
+         declare why you are here and what you will touch \
+         (`toimija intent \"<why>\" --scope <path>`); `toimija sessions --outside-repos` \
+         lists you.\n",
+        folder.display()
+    );
+    if let Some(task) = task {
+        prompt.push_str(&format!("\nTask: {task}\n"));
+    }
+    Some(prompt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

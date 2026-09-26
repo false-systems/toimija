@@ -217,6 +217,32 @@ The entry branch and HEAD remain fixed in later packets; if current Git state
 moves, mandatory Markdown renders a `Session drift` block and JSON retains both
 the entry baseline and current `git` state.
 
+### Outside a repository
+
+In a folder that is not inside a Git repository, `run` opens a session with no
+packet instead of refusing (issue #225). There is no Git context to compile, so
+there is no entry packet, watcher, repository point, effects observation, or
+exit summary; a cycle leg, `--for-diff`, and `--budget` are refused. What
+remains is what makes the session visible:
+
+- the marker, under the machine-local state directory — `$TOIMIJA_STATE_DIR`,
+  else `$XDG_STATE_HOME/toimija`, else `~/.local/state/toimija` — at
+  `<state>/.toimija/sessions/<id>/session.json`, with `worktree` set to the
+  folder. Nothing is written in the folder itself;
+- a heartbeat every minute, since no watcher stamps `last_seen_at`;
+- `TOIMIJA_RUN=1`, `TOIMIJA_SESSION`, `TOIMIJA_RUN_ID`, and `TOIMIJA_LIVE` /
+  `TOIMIJA_CURRENT_MD` naming a short note that says why there is no packet.
+  The repository-only variables (`TOIMIJA_LIVE_JSON`, `TOIMIJA_CURRENT_JSON`,
+  `TOIMIJA_REPO_ROOT`, `TOIMIJA_REPO_LIVE`,
+  `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`) are cleared, so values inherited from
+  an outer session cannot leak in;
+- for known agents, a launch prompt that says there is no packet, then the task.
+
+`toimija sessions --outside-repos` (the default when not inside a repository)
+lists these sessions, and `toimija intent` finds its session there even after
+the agent changes into a repository. Sessions inside the repositories the agent
+touches do not count it as a sibling: its declared scope is how they can know.
+
 ## Multi-agent sessions
 
 Several agents can work one repo at once without trampling each other's context.
@@ -527,8 +553,8 @@ toimija init               # create .toimija/repo.yaml if missing
 
 | Command | What it does |
 |---|---|
-| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. |
-| `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` runs the same configured stewardship pass as `clean`. |
+| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. Outside a repository: a session with no packet (see "Outside a repository"). |
+| `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` runs the same configured stewardship pass as `clean`; `--outside-repos` (the default outside a repository) lists sessions opened outside any repository. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `handoff ["<note>"]` | Wrapped agent appends an explicit JSONL handoff record for its own session. `--show <id>` reads records, including closed sessions; `--json` emits the written record or all shown records. |
 | `history` | List durable concluded-session records newest first; `--json` emits every valid record. Malformed lines are counted and skipped. |

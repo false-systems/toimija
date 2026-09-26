@@ -24,6 +24,49 @@ pub const SESSIONS_SUBDIR: &str = ".toimija/sessions";
 /// worker.v1 result and context paths. `run` clears them for the child, so a
 /// value inherited from an outer session cannot point it at a stale file.
 pub const RETIRED_ENV: &[&str] = &["FALSE_SYSTEMS_RESULT_PATH", "FALSE_SYSTEMS_CONTEXT_PATH"];
+
+/// Handshake variables that only mean something inside a repository. A
+/// session outside one clears them for the child, so values inherited from an
+/// outer session cannot point it at another session's repo or packet.
+pub const REPO_ONLY_ENV: &[&str] = &[
+    "TOIMIJA_LIVE_JSON",
+    "TOIMIJA_CURRENT_JSON",
+    "TOIMIJA_REPO_ROOT",
+    "TOIMIJA_REPO_LIVE",
+    "FALSE_SYSTEMS_REPOSITORY_POINT_PATH",
+];
+
+/// Overrides where sessions opened outside any Git repository live.
+pub const STATE_DIR_ENV: &str = "TOIMIJA_STATE_DIR";
+
+/// Where sessions opened outside any Git repository live (issue #225):
+/// machine-local state, never a `.toimija/` folder in the directory the agent
+/// works in. `$TOIMIJA_STATE_DIR`, else `$XDG_STATE_HOME/toimija`, else
+/// `$HOME/.local/state/toimija`; only absolute paths count. `None` when none
+/// resolves. Sessions sit under `<root>/.toimija/sessions/` like a repo's, so
+/// every write still goes through the one `.toimija/` guard.
+pub fn outside_root() -> Option<PathBuf> {
+    let absolute = |name: &str| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    absolute(STATE_DIR_ENV)
+        .or_else(|| absolute("XDG_STATE_HOME").map(|path| path.join("toimija")))
+        .or_else(|| absolute("HOME").map(|path| path.join(".local/state/toimija")))
+}
+
+/// Whether `root` holds a marker for session `id`. The id is checked for the
+/// `<unix-secs>-<pid>` shape first, so it can never name a path.
+pub fn marker_exists(root: &Path, id: &str) -> bool {
+    is_valid_session_id(id)
+        && root
+            .join(SESSIONS_SUBDIR)
+            .join(id)
+            .join("session.json")
+            .is_file()
+}
+
 /// Lifecycle of a session, recorded in its marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -135,6 +178,49 @@ impl Session {
         intent: Option<String>,
         scope: Vec<String>,
     ) -> Result<Session> {
+        Self::open_at(repo_root, repo_root, agent, intent, scope)
+    }
+
+    /// Open a session for an agent working in `folder`, which is not inside
+    /// any Git repository (issue #225). The session lives under `state_root`
+    /// (see [`outside_root`]) and records `folder` as its worktree. It has no
+    /// context packet: `current.md` only says why, so the listing's packet path
+    /// is never a file that does not exist.
+    pub fn open_outside(
+        state_root: &Path,
+        folder: &Path,
+        agent: &[String],
+        intent: Option<String>,
+        scope: Vec<String>,
+    ) -> Result<Session> {
+        fs::create_dir_all(state_root).with_context(|| {
+            format!(
+                "failed to create the state directory {}",
+                state_root.display()
+            )
+        })?;
+        let session = Self::open_at(state_root, folder, agent, intent, scope)?;
+        let note = format!(
+            "# Toimija session outside a repository\n\n\
+             - session: {}\n\
+             - folder: {}\n\n\
+             This folder is not inside a Git repository, so there is no Git context to \
+             compile and this file is not refreshed.\n",
+            session.id,
+            folder.display()
+        );
+        crate::owned::replace(state_root, &session.md_path, note.as_bytes())?;
+        Ok(session)
+    }
+
+    /// Open a session under `repo_root` whose agent works in `worktree`.
+    fn open_at(
+        repo_root: &Path,
+        worktree: &Path,
+        agent: &[String],
+        intent: Option<String>,
+        scope: Vec<String>,
+    ) -> Result<Session> {
         let started_at = now_secs();
         let pid = std::process::id();
         let id = session_id(started_at, pid);
@@ -144,7 +230,7 @@ impl Session {
             id: id.clone(),
             pid,
             agent: agent.to_vec(),
-            worktree: repo_root.display().to_string(),
+            worktree: worktree.display().to_string(),
             branch: None,
             head: None,
             intent,
@@ -234,7 +320,25 @@ impl Session {
     /// Close the session: status -> closed, stamp `closed_at` and the wrapped
     /// command's `exit_status` (when known), rewrite the marker. `run` calls this
     /// when the wrapped command exits (decision D4).
+    ///
+    /// The wrapped agent may have rewritten the marker on disk while it ran —
+    /// `toimija intent` declares intent and scope, heartbeats stamp
+    /// `last_seen_at` — so those are taken from disk first. Writing the copy
+    /// held since entry would erase what the session declared about itself.
     pub fn close(&mut self, exit_status: Option<i32>) -> Result<()> {
+        match load_marker(&self.dir) {
+            Ok(on_disk) if on_disk.id == self.marker.id => {
+                self.marker.intent = on_disk.intent;
+                self.marker.scope = on_disk.scope;
+                self.marker.last_seen_at = self.marker.last_seen_at.max(on_disk.last_seen_at);
+            }
+            // Unreadable or replaced: close with what entry knew, and say so.
+            Ok(_) | Err(_) => warn!(
+                event = "toimija.session.close_without_declarations",
+                session = %self.id,
+                "the marker on disk could not be read back; declared intent and scope may be lost"
+            ),
+        }
         self.marker.status = SessionStatus::Closed;
         self.marker.closed_at = Some(now_secs());
         self.marker.exit_status = exit_status;
@@ -266,6 +370,18 @@ impl Session {
                 "FALSE_SYSTEMS_REPOSITORY_POINT_PATH",
                 self.dir.join(crate::semantic::POINT_FILE).into_os_string(),
             ),
+        ]
+    }
+
+    /// The handshake for a session outside any repository: who it is, and the
+    /// note standing in for a packet. Pair with clearing [`REPO_ONLY_ENV`].
+    pub fn env_outside(&self) -> Vec<(&'static str, OsString)> {
+        vec![
+            ("TOIMIJA_RUN", OsString::from("1")),
+            ("TOIMIJA_SESSION", OsString::from(&self.id)),
+            ("TOIMIJA_RUN_ID", OsString::from(&self.id)),
+            ("TOIMIJA_LIVE", self.md_path.clone().into_os_string()),
+            ("TOIMIJA_CURRENT_MD", self.md_path.clone().into_os_string()),
         ]
     }
 
@@ -600,6 +716,33 @@ mod tests {
         let error = declare_intent(temp.path(), &session.id, "too late".to_string(), Vec::new())
             .unwrap_err();
         assert!(error.to_string().contains("closed"));
+    }
+
+    #[test]
+    fn close_keeps_the_intent_and_scope_the_session_declared_while_it_ran() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut session = Session::open(
+            temp.path(),
+            &["claude".to_string()],
+            Some("launch intent".to_string()),
+            vec!["src/a.rs".to_string()],
+        )
+        .unwrap();
+        declare_intent(
+            temp.path(),
+            &session.id,
+            "declared mid-session".to_string(),
+            vec!["src/b.rs".to_string()],
+        )
+        .unwrap();
+
+        session.close(Some(3)).unwrap();
+
+        let closed = load_marker(&session.dir).unwrap();
+        assert_eq!(closed.status, SessionStatus::Closed);
+        assert_eq!(closed.exit_status, Some(3));
+        assert_eq!(closed.intent.as_deref(), Some("declared mid-session"));
+        assert_eq!(closed.scope, vec!["src/a.rs", "src/b.rs"]);
     }
 
     #[test]

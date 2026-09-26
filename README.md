@@ -111,6 +111,18 @@ recognized agent instruction files and adds best-effort Git refresh hooks.
 6. Reads the repository again after the harness exits and summarizes what the
    session did.
 
+**Outside a repository.** Sometimes an agent has to work from a folder that is
+not a Git repository — `~/projects`, say, across several repos. There `run`
+opens a session with no packet (there is no Git context to compile): a marker,
+a heartbeat, and the `TOIMIJA_RUN`/`TOIMIJA_SESSION` handshake, with the task
+in a known agent's launch prompt and a note saying why there is no packet. The
+marker lives in the machine-local state directory (`$TOIMIJA_STATE_DIR`, else
+`$XDG_STATE_HOME/toimija`, else `~/.local/state/toimija`), never as a
+`.toimija/` folder where the agent works, and `toimija sessions
+--outside-repos` lists it. Sessions in the repos it touches do not count it as
+a sibling, so the agent should declare its scope. A cycle leg, `--for-diff`,
+and `--budget` need a repository and are refused there.
+
 Known agents such as `codex`, `claude`, and `gemini` receive the packet in their
 launch prompt. An `agents:` entry in `.toimija/repo.yaml` teaches `run` how
 any other CLI accepts it — `prompt: positional`, or a flag such as
@@ -212,6 +224,7 @@ not race on one shared packet.
 ```bash
 toimija sessions
 toimija sessions --json
+toimija sessions --outside-repos   # sessions `run` opened outside any repository
 ```
 
 The session listing reports live, stale, and closed sessions plus descriptive
@@ -221,6 +234,8 @@ signals, not locks or assignments. JSON also exposes `pid_check` (`alive`,
 `stale` session with a `dead` PID is no longer running under that PID; a
 `stale` session with an `alive` or `unknown` PID is still uncertain. PID reuse
 can keep an obsolete session uncertain. Listing never rewrites markers.
+Outside a repository, `toimija sessions` lists the sessions opened outside
+any repository, and says so.
 
 A wrapped agent can update its own declaration:
 
