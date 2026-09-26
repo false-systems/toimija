@@ -234,7 +234,25 @@ impl Session {
     /// Close the session: status -> closed, stamp `closed_at` and the wrapped
     /// command's `exit_status` (when known), rewrite the marker. `run` calls this
     /// when the wrapped command exits (decision D4).
+    ///
+    /// The wrapped agent may have rewritten the marker on disk while it ran —
+    /// `toimija intent` declares intent and scope, heartbeats stamp
+    /// `last_seen_at` — so those are taken from disk first. Writing the copy
+    /// held since entry would erase what the session declared about itself.
     pub fn close(&mut self, exit_status: Option<i32>) -> Result<()> {
+        match load_marker(&self.dir) {
+            Ok(on_disk) if on_disk.id == self.marker.id => {
+                self.marker.intent = on_disk.intent;
+                self.marker.scope = on_disk.scope;
+                self.marker.last_seen_at = self.marker.last_seen_at.max(on_disk.last_seen_at);
+            }
+            // Unreadable or replaced: close with what entry knew, and say so.
+            Ok(_) | Err(_) => warn!(
+                event = "toimija.session.close_without_declarations",
+                session = %self.id,
+                "the marker on disk could not be read back; declared intent and scope may be lost"
+            ),
+        }
         self.marker.status = SessionStatus::Closed;
         self.marker.closed_at = Some(now_secs());
         self.marker.exit_status = exit_status;
@@ -600,6 +618,33 @@ mod tests {
         let error = declare_intent(temp.path(), &session.id, "too late".to_string(), Vec::new())
             .unwrap_err();
         assert!(error.to_string().contains("closed"));
+    }
+
+    #[test]
+    fn close_keeps_the_intent_and_scope_the_session_declared_while_it_ran() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut session = Session::open(
+            temp.path(),
+            &["claude".to_string()],
+            Some("launch intent".to_string()),
+            vec!["src/a.rs".to_string()],
+        )
+        .unwrap();
+        declare_intent(
+            temp.path(),
+            &session.id,
+            "declared mid-session".to_string(),
+            vec!["src/b.rs".to_string()],
+        )
+        .unwrap();
+
+        session.close(Some(3)).unwrap();
+
+        let closed = load_marker(&session.dir).unwrap();
+        assert_eq!(closed.status, SessionStatus::Closed);
+        assert_eq!(closed.exit_status, Some(3));
+        assert_eq!(closed.intent.as_deref(), Some("declared mid-session"));
+        assert_eq!(closed.scope, vec!["src/a.rs", "src/b.rs"]);
     }
 
     #[test]
