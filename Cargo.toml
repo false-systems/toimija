@@ -8,19 +8,7 @@ default-members = ["."]
 name = "toimija"
 version = "0.1.1"
 edition = "2024"
-# The sykli CI bin exists alongside the CLI; bare `cargo run` stays toimija.
 default-run = "toimija"
-
-[features]
-# The sykli CI contract (sykli.rs) — off by default so ordinary builds and
-# tests never build it; it needs nothing beyond serde_json. `sykli run`
-# compiles it with `cargo run --features sykli --bin sykli -- --emit`.
-sykli = []
-
-[[bin]]
-name = "sykli"
-path = "sykli.rs"
-required-features = ["sykli"]
 
 [dependencies]
 anyhow = "1"

@@ -49,7 +49,7 @@ fn aborting_commit(result: Result<()>) -> Result<()> {
 }
 
 /// The full repo gate behind one entrypoint (guardrails R-R.1): the same three
-/// checks `sykli.rs` encodes, in cheapest-first order — plus xtask's own tests,
+/// checks `sykli.json` declares, in cheapest-first order — plus xtask's own tests,
 /// which `default-members = ["."]` hides from plain `cargo test` (xtask is
 /// already compiled to run this, so its tests cost almost nothing here). A
 /// human, CI, and the harness run this identically as `cargo xtask gate`.

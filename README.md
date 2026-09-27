@@ -449,6 +449,37 @@ Release artifacts are built by GitHub Actions for `v*` tags. The public
 `false-agent-protocol` dependency is fetched over HTTPS, so a fresh checkout
 requires no sibling repository or private Git credentials.
 
+## Declared work graph
+
+The same gate is this repository's [sykli](https://github.com/false-systems/sykli)
+contract: `sykli.json` (`sykli-contract.v1`), pinned by `sykli.lock`, run
+with `sykli run` and by the advisory `Sykli` CI job. Receipts are
+content-addressed, so a task whose inputs have not changed is a cache hit.
+Sykli here is CI only; Sykli delegation inside toimija's commands stays out of
+scope (`.toimija/repo.yaml`).
+
+| task | runs | after | reads |
+| --- | --- | --- | --- |
+| `fmt` | `cargo fmt --check` | | every `.rs` and `Cargo.toml` |
+| `clippy` | `cargo clippy --all-targets -- -D warnings` | `fmt` | the code: `.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/` |
+| `test` | `cargo test` | `fmt` | every tracked file |
+| `doctor` | `cargo run --quiet -- doctor --strict` | `test` | every tracked file |
+
+`fmt`, `clippy` and `test` are the three checks AGENTS.md asks for before
+claiming completion. `test` and the drift guard read far more than code
+(fixtures, the agent docs, `repo.yaml`, this README), so they declare every
+tracked file except the contract and its lock; an undeclared input would be
+served from cache. `doctor` dogfoods the drift guard after `test`, when the
+debug binary is already built.
+
+Inputs are exact paths, not globs. A new tracked file goes into `test` and
+`doctor` (and into `fmt` and `clippy` if it is code) by hand; then
+`git add -A && sykli lock` re-pins the contract, which must be staged because
+the inputs come from Git. `sykli run` refuses to start while a tracked `.rs`,
+Cargo manifest or lockfile, `rust-toolchain*`, `.cargo/config*` or file under
+`tests/` is in no task's inputs, and `sykli plan --explain` warns about any
+other changed file that no task declares.
+
 ## Documentation
 
 - [Complete command and packet reference](docs/reference.md)
