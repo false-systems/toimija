@@ -172,7 +172,12 @@ and reports `armed (native)` only after a readiness probe is observed. If that
 probe times out, it re-arms and re-proves notify's polling backend before
 reporting `armed (poll fallback)`. Both event backends also compare the packet
 state token periodically, so a Git state change the event stream missed cannot
-leave the live packet stale. It is
+leave the live packet stale. When a refresh itself fails — an unparseable
+`.toimija/repo.yaml`, say — the packet cannot be rebuilt, so it says so instead:
+a notice at the top of the Markdown packet names the failure and since when,
+above the last good content, and the next successful refresh replaces it. The
+failure is written, and logged, once per distinct error rather than on every
+retry. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
 last-writer-wins "latest" summary for sessionless readers.

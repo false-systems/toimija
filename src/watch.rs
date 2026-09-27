@@ -474,8 +474,10 @@ fn packet_refresh_token(packet: &crate::context::ContextPacket) -> WatchToken {
         .unwrap_or_else(|| packet.consistency.token.clone())
 }
 
-/// A transient refresh failure must not kill live updates: warn and keep
-/// watching so the packet can recover on the next event or resume.
+/// A transient refresh failure must not kill live updates: keep watching so
+/// the packet can recover on the next event or resume. But the agent reads the
+/// packet, not this process's stderr, so the failure goes into the packet
+/// itself (issue #229) — once per distinct failure, not on every retry.
 fn refresh_or_warn(
     runner: &impl CommandRunner,
     repo_root: &Path,
@@ -489,7 +491,17 @@ fn refresh_or_warn(
             Some(token)
         }
         Err(error) => {
-            eprintln!("toimija: refresh failed (packet may be stale): {error:#}");
+            match plan.mark_stale(repo_root, &error) {
+                Ok(true) => {
+                    eprintln!("toimija: refresh failed; the packet now says it is stale: {error:#}")
+                }
+                // Already said, in the packet and here: a retry is not news.
+                Ok(false) => {}
+                Err(mark) => eprintln!(
+                    "toimija: refresh failed (packet may be stale): {error:#}; \
+                     marking the packet stale also failed: {mark:#}"
+                ),
+            }
             None
         }
     }
@@ -932,6 +944,45 @@ mod tests {
 
         assert_eq!(token, None);
         assert_eq!(heartbeats, 0);
+    }
+
+    #[test]
+    fn a_failed_refresh_says_so_in_the_packet_once_and_keeps_the_last_good_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let md = temp.path().join(refresh::CURRENT_MD);
+        std::fs::create_dir_all(md.parent().unwrap()).unwrap();
+        std::fs::write(&md, "# Toimija Context\n- HEAD: abc123\n").unwrap();
+        let runner = FailingRunner {
+            attempts: Cell::new(0),
+        };
+        let plan = refresh::Plan {
+            for_diff: false,
+            budget: None,
+            session_dir: None,
+        };
+
+        refresh_or_warn(&runner, temp.path(), &plan, &mut || {});
+        let marked = std::fs::read_to_string(&md).unwrap();
+        assert!(
+            marked.contains("Refresh failed — this packet is stale."),
+            "{marked}"
+        );
+        assert!(
+            marked.ends_with("# Toimija Context\n- HEAD: abc123\n"),
+            "the last good packet is kept under the notice: {marked}"
+        );
+
+        // The same failure on the next poll is not written again.
+        let error = anyhow::anyhow!("failed to build context packet: bad config");
+        assert!(plan.mark_stale(temp.path(), &error).unwrap());
+        assert!(!plan.mark_stale(temp.path(), &error).unwrap());
+        // A different failure replaces the notice instead of stacking.
+        let other = anyhow::anyhow!("another failure");
+        assert!(plan.mark_stale(temp.path(), &other).unwrap());
+        let replaced = std::fs::read_to_string(&md).unwrap();
+        assert_eq!(replaced.matches("Refresh failed").count(), 1, "{replaced}");
+        assert!(replaced.contains("another failure"), "{replaced}");
+        assert!(replaced.ends_with("- HEAD: abc123\n"), "{replaced}");
     }
 
     #[test]
