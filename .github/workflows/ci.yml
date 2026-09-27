@@ -26,8 +26,8 @@ jobs:
 
       # The arc runners' egress is rate-limited for anonymous git-over-HTTPS
       # ("could not read Username for 'https://github.com'"), which breaks
-      # cargo's fetch of the public git dependencies (the protocol crate, the
-      # optional sykli SDK). Present the job's read-only token for the org's
+      # cargo's fetch of the public git dependencies (the protocol crate).
+      # Present the job's read-only token for the org's
       # URLs: authenticated reads are never anonymous-limited, and the rewrite
       # is scoped to false-systems so nothing else changes behavior.
       - name: Authenticate git dependency fetches
@@ -118,12 +118,14 @@ jobs:
           $sudo_cmd apt-get update
           $sudo_cmd apt-get install -y --no-install-recommends build-essential ca-certificates
 
-      # @main deliberately: the v0.9.0-rc.1 tag's action predates the composite
-      # rewrite — it builds from source and then runs sykli in its own build
-      # directory instead of the workspace. Pin to the next tagged release.
-      # Repo renamed 2026-08-04: the Elixir sykli lives at sykli-elixir; the
-      # sykli name now belongs to its Rust successor.
+      # The Rust sykli, which took the name on 2026-08-04 (the Elixir one it
+      # succeeded lives at sykli-elixir and is retired here). Its Action can
+      # only install a release, or build the sykli repo itself (`version:
+      # source` builds the *caller's* checkout), and there is no release yet.
+      # So install it the way its README documents, pinned to the commit the
+      # contract was locked with; move to the Action once a release exists.
+      - name: Install sykli
+        run: cargo install --locked --git https://github.com/false-systems/sykli --rev 5a55ae30e68409a80c3c59af32515e7e8e30b702 sykli
+
       - name: Run the sykli contract
-        uses: false-systems/sykli-elixir@main
-        with:
-          path: .
+        run: sykli run
