@@ -56,6 +56,71 @@ impl Plan {
             None => refresh(runner, repo_root, self.for_diff, self.budget),
         }
     }
+
+    /// Say in the packet that refreshing it failed, so an agent reading it is
+    /// never handed a stale packet that looks fresh (issue #229). The notice
+    /// heads the Markdown packet this plan writes — the session packet and its
+    /// repo-level mirror, or the repo-level packet — above the last good
+    /// content, which is kept. It replaces an earlier notice rather than
+    /// stacking, and the next successful refresh rewrites the packet without
+    /// it. The JSON packet is left as written: it is what tools verify.
+    ///
+    /// `Ok(false)` when the packet already carries this failure, so one that
+    /// repeats on every poll is written, and reported, once.
+    pub fn mark_stale(&self, repo_root: &Path, error: &anyhow::Error) -> Result<bool> {
+        let reason = format!("{error:#}").replace('\n', " ");
+        let primary = match &self.session_dir {
+            Some(dir) => dir.join("current.md"),
+            None => repo_root.join(CURRENT_MD),
+        };
+        let changed = mark_stale_at(repo_root, &primary, &reason)?;
+        if changed && self.session_dir.is_some() {
+            // The demoted mirror is stale too; best-effort, like its writes.
+            let _ = mark_stale_at(repo_root, &repo_root.join(CURRENT_MD), &reason);
+        }
+        Ok(changed)
+    }
+}
+
+const STALE_BEGIN: &str = "<!-- toimija:stale:begin -->";
+const STALE_END: &str = "<!-- toimija:stale:end -->";
+
+/// Put the stale notice for `reason` at the top of the Markdown packet at
+/// `md_path`, replacing any earlier notice. `Ok(false)` when it already says
+/// exactly this.
+fn mark_stale_at(repo_root: &Path, md_path: &Path, reason: &str) -> Result<bool> {
+    let current = match std::fs::read_to_string(md_path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", md_path.display()));
+        }
+    };
+    let body = match current
+        .strip_prefix(STALE_BEGIN)
+        .and_then(|rest| rest.split_once(STALE_END))
+    {
+        Some((notice, body)) => {
+            if notice.contains(reason) {
+                return Ok(false);
+            }
+            body.trim_start_matches('\n')
+        }
+        None => current.as_str(),
+    };
+    let since = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "an unknown time".to_owned());
+    let notice = format!(
+        "{STALE_BEGIN}\n\
+         > **Refresh failed — this packet is stale.** Since {since}, refreshing it fails:\n\
+         > {reason}\n\
+         > Everything below is from the last successful refresh. Fix the cause; the next \
+         successful refresh replaces this packet.\n\
+         {STALE_END}\n\n"
+    );
+    crate::owned::replace(repo_root, md_path, format!("{notice}{body}").as_bytes())?;
+    Ok(true)
 }
 
 /// Recompute the context packet for `repo_root` and write it to the repo-level
