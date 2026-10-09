@@ -533,7 +533,10 @@ The packet includes:
 
 - an **artifact ID** shared by the Markdown/JSON pair; each file is atomically
   replaced, and JSON is authoritative if an interrupted refresh leaves IDs that
-  do not match
+  do not match. The bytes are staged in `.toimija/tmp/`, whose own
+  `.gitignore` (`*`) hides it from Git, so a reader that lists untracked files
+  and then stats them (`git add --all`, as `sykli run` does) never meets a temp
+  file the rename is about to take away
 - branch / HEAD / dirty state
 - staged / unstaged / untracked files
 - rename/copy origin paths and similarity when Git reports them, plus conflict

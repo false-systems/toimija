@@ -11,7 +11,11 @@
 //! - every file opened for writing or appending is opened with `O_NOFOLLOW`,
 //!   so a symlink there is refused, not followed;
 //! - atomic replacement renames onto the target, which replaces a symlink
-//!   instead of writing through it.
+//!   instead of writing through it. The bytes are staged in `.toimija/tmp/`,
+//!   a real directory checked the same way, whose own `.gitignore` hides
+//!   everything in it from Git: a reader that lists untracked files and then
+//!   stats them (`git add --all`, so Sykli) never meets a temp file that the
+//!   rename is about to take away.
 //!
 //! Human-owned files Toimija edits outside `.toimija/` (the agent entry files
 //! `adopt` maintains) may be symlinks — `CLAUDE.md -> AGENTS.md` is common —
@@ -26,6 +30,15 @@ use anyhow::{Context, Result, bail};
 
 /// The directory Toimija owns, relative to the repository root.
 pub const TOIMIJA_DIR: &str = ".toimija";
+
+/// Where atomic replacements stage their bytes, relative to the repository
+/// root. It ignores itself: see [`STAGING_IGNORE`].
+pub const STAGING_DIR: &str = ".toimija/tmp";
+
+/// The `.gitignore` written inside [`STAGING_DIR`]. `*` matches every entry,
+/// this file included, so Git lists nothing there whatever the repository's
+/// own ignore rules say.
+const STAGING_IGNORE: &[u8] = b"*\n";
 
 /// Make sure `dir` — `.toimija` or a directory beneath it — exists as a real
 /// directory, creating missing components one at a time. Refuses a component
@@ -113,12 +126,43 @@ pub fn open(repo_root: &Path, path: &Path, options: &mut OpenOptions) -> Result<
 
 /// Atomically replace `path`, a file under `.toimija/`, with `contents`. Its
 /// directory must already exist as a real one ([`ensure_dir`] creates it). A
-/// symlink at `path` is replaced, never written through.
+/// symlink at `path` is replaced, never written through. The bytes are staged
+/// in [`STAGING_DIR`], which Git never lists.
 pub fn replace(repo_root: &Path, path: &Path, contents: &[u8]) -> Result<()> {
+    replace_staged(repo_root, path, contents, |_| Ok(()))
+}
+
+fn replace_staged(
+    repo_root: &Path,
+    path: &Path,
+    contents: &[u8],
+    before_rename: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<()> {
     require_parent(repo_root, path)?;
-    crate::atomic_write::replace(path, contents)
+    let staging =
+        staging_dir(repo_root).with_context(|| format!("failed to write {}", path.display()))?;
+    crate::atomic_write::replace_before_rename(path, &staging, contents, before_rename)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// The staging directory, made a real directory and given its `.gitignore`
+/// before any temp file is created in it — so there is no moment at which Git
+/// could list one. An existing `.gitignore` is left as it is; one that is a
+/// symlink is never followed (`O_EXCL` refuses to create through it).
+fn staging_dir(repo_root: &Path) -> Result<PathBuf> {
+    use std::io::Write as _;
+    let staging = repo_root.join(STAGING_DIR);
+    ensure_dir(repo_root, &staging)?;
+    let ignore = staging.join(".gitignore");
+    match open_nofollow(&ignore, OpenOptions::new().write(true).create_new(true)) {
+        Ok(mut file) => file
+            .write_all(STAGING_IGNORE)
+            .with_context(|| format!("failed to write {}", ignore.display()))?,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(refusal_or(repo_root, &ignore, error, "create")),
+    }
+    Ok(staging)
 }
 
 /// Remove `path`, a file under `.toimija/`. Already gone is fine, including
@@ -299,5 +343,83 @@ mod tests {
         assert!(ensure_inside_repository(&repo, &repo.join("new/file.md")).is_ok());
         assert!(ensure_inside_repository(&repo, &repo.join("escape/file.md")).is_err());
         assert!(ensure_inside_repository(&repo, &repo.join("escape")).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod staging_tests {
+    use super::*;
+    use crate::command::{CommandRunner, ProcessCommandRunner};
+
+    /// Sykli (`git add --all` on a scratch index) and every other Git reader
+    /// list untracked files, then stat them. A temp file Git can list
+    /// vanishes under it at the rename: `fatal: unable to stat
+    /// '.toimija/current.json.tmp-…'` (audit 2026-10-09, 2 of 12 runs).
+    #[test]
+    fn git_never_lists_a_replacement_in_flight() {
+        let runner = ProcessCommandRunner;
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        if runner
+            .run(repo, "git", &["init", "-q"])
+            .map_or(true, |output| output.status != 0)
+        {
+            return; // no usable git here
+        }
+        ensure_dir(repo, &repo.join(".toimija/sessions/100-1")).unwrap();
+        for target in [
+            repo.join(".toimija/current.json"),
+            repo.join(".toimija/sessions/100-1/current.json"),
+        ] {
+            let mut listed = String::new();
+            let mut staged_at = PathBuf::new();
+            replace_staged(repo, &target, b"{}\n", |temp_file| {
+                staged_at = temp_file.to_path_buf();
+                let output = runner
+                    .run(
+                        repo,
+                        "git",
+                        &["ls-files", "--others", "--exclude-standard", "-z"],
+                    )
+                    .unwrap();
+                listed = output.stdout_lossy().into_owned();
+                Ok(())
+            })
+            .unwrap();
+            assert!(
+                staged_at.starts_with(repo.join(STAGING_DIR)),
+                "{}",
+                staged_at.display()
+            );
+            assert!(
+                !listed.contains(crate::atomic_write::TEMP_MARKER),
+                "git listed a temp file it would then fail to stat: {listed:?}"
+            );
+            assert!(!listed.contains(".toimija/tmp"), "{listed:?}");
+            assert_eq!(fs::read(&target).unwrap(), b"{}\n");
+        }
+        assert_eq!(
+            fs::read(repo.join(STAGING_DIR).join(".gitignore")).unwrap(),
+            STAGING_IGNORE
+        );
+    }
+
+    #[test]
+    fn a_symlinked_staging_directory_is_refused_and_nothing_lands_behind_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(repo.join(".toimija")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(STAGING_DIR)).unwrap();
+
+        let error = format!(
+            "{:#}",
+            replace(&repo, &repo.join(".toimija/current.json"), b"{}").unwrap_err()
+        );
+
+        assert!(error.contains("symlink"), "{error}");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(!repo.join(".toimija/current.json").exists());
     }
 }
