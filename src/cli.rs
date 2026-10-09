@@ -1121,12 +1121,14 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         ),
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
-            if args.task.is_some() {
-                eprintln!(
-                    "toimija run: --task travels in the composed launch prompt and `{program}` \
-                     is not a known or configured agent; give it its task yourself"
-                );
-            }
+            let items = undelivered(true, &args);
+            warn_undelivered(
+                program,
+                "is not a known or configured agent",
+                &items,
+                "or teach toimija its prompt under `agents:` in .toimija/repo.yaml",
+            );
+            record_undelivered(&mut session, items);
         }
     }
     // The prompt travels where the agent reads it: last positional argument,
@@ -1616,12 +1618,16 @@ fn run_outside_repo(
         Some(_) => eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`"),
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
-            if args.task.is_some() {
-                eprintln!(
-                    "toimija run: --task travels in the composed launch prompt and `{program}` \
-                     is not a known agent; give it its task yourself"
-                );
-            }
+            // No packet outside a repository, so only what the caller passed
+            // can be lost here.
+            let items = undelivered(false, &args);
+            warn_undelivered(
+                program,
+                "is not a known agent",
+                &items,
+                "or run a known agent",
+            );
+            record_undelivered(&mut session, items);
         }
     }
     let handshake = session.env_outside();
@@ -1706,6 +1712,61 @@ fn run_outside_repo(
     }
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     Ok(wrapped_exit_code(status))
+}
+
+/// What `run` had for an agent it cannot deliver to, in the order a launch
+/// prompt carries it: the packet (inside a repository), the task, the
+/// caller's briefing.
+fn undelivered(packet: bool, args: &RunArgs) -> Vec<String> {
+    [
+        (packet, "packet"),
+        (args.task.is_some(), "task"),
+        (args.briefing.is_some(), "briefing"),
+    ]
+    .into_iter()
+    .filter(|(lost, _)| *lost)
+    .map(|(_, item)| item.to_string())
+    .collect()
+}
+
+/// Say, before the launch and while the terminal is still ours, what the
+/// agent will not have in its context. Nothing lost, nothing said.
+fn warn_undelivered(program: &str, why: &str, items: &[String], remedy: &str) {
+    if items.is_empty() {
+        return;
+    }
+    eprintln!(
+        "toimija run: warning: `{program}` {why}; not delivered: {}",
+        items.join(", ")
+    );
+    let handed: Vec<&str> = items
+        .iter()
+        .map(String::as_str)
+        .filter(|item| *item != "packet")
+        .collect();
+    let packet = items.iter().any(|item| item == "packet");
+    let mut steps = Vec::new();
+    if packet {
+        steps.push("point it at its packet ($TOIMIJA_LIVE)".to_string());
+    }
+    if !handed.is_empty() {
+        steps.push(format!("give it its {} yourself", handed.join(" and ")));
+    }
+    eprintln!("toimija run: {}, {remedy}", steps.join(" and "));
+}
+
+/// Keep the loss on the session marker, where `sessions --json` shows it.
+/// Best-effort: a marker write failing here is reported but does not stop the
+/// launch.
+fn record_undelivered(session: &mut session::Session, items: Vec<String>) {
+    if items.is_empty() {
+        return;
+    }
+    if let Err(error) = session.record_undelivered(items) {
+        eprintln!(
+            "toimija run: could not record the undelivered briefing on the session: {error:#}"
+        );
+    }
 }
 
 fn close_session_after_startup_failure(

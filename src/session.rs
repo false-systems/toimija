@@ -140,6 +140,11 @@ pub struct SessionMarker {
     /// `partial` when one could not, so an absent effect proves nothing.
     #[serde(default)]
     pub effects_coverage: crate::effects::EffectsCoverage,
+    /// What `run` had for the agent but could not put in its context, because
+    /// it has no delivery for that agent: `packet`, `task`, `briefing`. Empty
+    /// when everything was delivered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undelivered: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +250,7 @@ impl Session {
             entry_open_prs: None,
             effects_observed: Vec::new(),
             effects_coverage: crate::effects::EffectsCoverage::default(),
+            undelivered: Vec::new(),
         };
         let session = Session {
             id,
@@ -269,6 +275,12 @@ impl Session {
 
     pub fn record_cycle_action(&mut self, action: CycleAction) -> Result<()> {
         self.marker.cycle_action = Some(action);
+        self.write_marker()
+    }
+
+    /// Record what the agent was not handed (see [`SessionMarker::undelivered`]).
+    pub fn record_undelivered(&mut self, items: Vec<String>) -> Result<()> {
+        self.marker.undelivered = items;
         self.write_marker()
     }
 

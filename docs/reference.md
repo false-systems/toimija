@@ -148,7 +148,9 @@ the entry packet inlined at the session budget, the live packet path, and your
 `--task`. The agent cannot not-see it. Pass the agent's task via `--task`, not
 as the agent's own positional argument. Unknown agents keep the env-var
 handshake behind an honest banner — `delivery: env-var only — not guaranteed` —
-never a silent degradation.
+never a silent degradation. A warning names what the agent was not handed
+(`not delivered: packet, task, briefing`), and the session marker records it
+as `undelivered`, so `sessions --json` shows it after the fact.
 
 `--briefing` carries background instructions apart from the task. A known or
 configured agent gets them at the end of its launch prompt, after the packet

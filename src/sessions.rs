@@ -780,6 +780,7 @@ mod tests {
             entry_open_prs: None,
             effects_observed: Vec::new(),
             effects_coverage: Default::default(),
+            undelivered: Vec::new(),
         }
     }
 
@@ -1089,6 +1090,7 @@ mod tests {
                 entry_open_prs: None,
                 effects_observed: Vec::new(),
                 effects_coverage: Default::default(),
+                undelivered: Vec::new(),
             },
             liveness,
             pid_check: PidCheck::Unknown,

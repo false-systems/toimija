@@ -1375,3 +1375,75 @@ fn a_briefing_may_start_with_a_hyphen_and_a_blank_one_is_dropped() {
     assert!(blank.ends_with("\n"));
     assert!(!blank.trim_end_matches('\n').ends_with(' '), "{blank:?}");
 }
+
+fn only_marker(path: &Path) -> serde_json::Value {
+    let sessions = path.join(".toimija/sessions");
+    let dirs: Vec<_> = fs::read_dir(&sessions)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    serde_json::from_str(&fs::read_to_string(dirs[0].join("session.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn an_unknown_agent_is_told_its_briefing_was_not_delivered_and_the_session_records_it() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--task",
+            "t",
+            "--briefing",
+            "knowledge the agent needed",
+            "--",
+            "sh",
+            "-c",
+            "true",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "toimija run: warning: `sh` is not a known or configured agent; \
+             not delivered: packet, task, briefing",
+        ))
+        .stderr(predicate::str::contains("agents:"));
+
+    let marker = only_marker(temp.path());
+    assert_eq!(
+        marker["undelivered"],
+        serde_json::json!(["packet", "task", "briefing"])
+    );
+}
+
+#[test]
+fn an_unknown_agent_without_task_or_briefing_still_hears_its_packet_was_not_delivered() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["run", "--intent", "test", "--", "sh", "-c", "true"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("not delivered: packet"));
+
+    assert_eq!(
+        only_marker(temp.path())["undelivered"],
+        serde_json::json!(["packet"])
+    );
+}
