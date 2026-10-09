@@ -1,9 +1,9 @@
 //! Agent launch adapters (proposal 0006 Part C): argv composition for known
 //! agent CLIs. The composed launch prompt is the one delivery channel with a
 //! guarantee — the agent cannot not-see its own argv — so under `toimija run`
-//! the packet is in context by construction. Idle Codex launches use its local
-//! prompt renderer to preserve native instructions before adding the packet;
-//! no model request, protocol, IPC, or SDK is needed.
+//! the packet is in context by construction. Idle Codex launches carry it in
+//! Codex's `developer_instructions` setting instead, which Codex adds to its
+//! own instructions; no model request, protocol, IPC, or SDK is needed.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -89,12 +89,20 @@ pub fn idle_codex(
     if basename(program) != "codex" || has_task || configured.contains_key("codex") {
         return false;
     }
-    // Only inspect interactive launches. Appending `debug prompt-input` to
-    // `codex exec` would itself submit a task, defeating idle startup.
-    let mut args = rest.iter();
+    // Only interactive launches wait idle. A subcommand such as `codex exec`
+    // or `codex resume` keeps its positional prompt.
+    let mut args = rest.iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--" | "-h" | "--help" | "-V" | "--version" => return false,
+            // `-i/--image` takes one or more files, as Codex's parser does: every
+            // value up to the next flag is an image, not a subcommand.
+            "-i" | "--image" => {
+                if args.next().is_none() {
+                    return false;
+                }
+                while args.next_if(|value| !value.starts_with('-')).is_some() {}
+            }
             "-c"
             | "--config"
             | "-m"
@@ -112,9 +120,7 @@ pub fn idle_codex(
             | "-a"
             | "--ask-for-approval"
             | "--remote"
-            | "--remote-auth-token-env"
-            | "-i"
-            | "--image" => {
+            | "--remote-auth-token-env" => {
                 if args.next().is_none() {
                     return false;
                 }
@@ -134,44 +140,14 @@ pub fn launch_args(
     configured: &BTreeMap<String, AgentPromptConfig>,
 ) -> anyhow::Result<Vec<String>> {
     if idle_codex(program, rest, has_task, configured) {
-        use anyhow::Context;
-        // This slot replaces Codex's first developer block, including generated
-        // permission/skill guidance. Ask Codex to resolve it, with the same
-        // profile/options, before appending ours. This makes no model request.
-        let output = std::process::Command::new(program)
-            .args(rest)
-            .args(["debug", "prompt-input"])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .context("could not render Codex instructions for idle startup; use --task for noninteractive commands")?;
-        anyhow::ensure!(
-            output.status.success(),
-            "could not preserve Codex instructions for idle startup: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let items: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
-            .context("Codex prompt renderer did not return a message list")?;
-        let mut instructions = String::new();
-        if let Some(message) = items.iter().find(|item| item["role"] == "developer") {
-            for part in message["content"]
-                .as_array()
-                .context("Codex developer instructions have no content array")?
-            {
-                instructions.push_str(
-                    part["text"]
-                        .as_str()
-                        .context("Codex developer instructions contain non-text content")?,
-                );
-                instructions.push('\n');
-            }
-        }
-        instructions.push_str(&prompt);
+        // Codex adds `developer_instructions` to its own developer message
+        // (skills, permissions, collaboration mode), checked against the
+        // offline `codex debug prompt-input` of 0.161.0: the slot carries only
+        // toimija's packet and briefing. It does replace a `developer_instructions`
+        // set in the user's Codex config for this session.
         return Ok(vec![
             "-c".into(),
-            format!(
-                "developer_instructions={}",
-                serde_json::to_string(&instructions)?
-            ),
+            format!("developer_instructions={}", serde_json::to_string(&prompt)?),
         ]);
     }
     Ok(
@@ -346,6 +322,47 @@ mod tests {
             .unwrap(),
             vec!["--message", "context"]
         );
+    }
+
+    #[test]
+    fn idle_codex_gets_only_the_prompt_and_starts_no_renderer() {
+        // A program that does not exist proves nothing is spawned to build
+        // the arguments: the slot is filled from the prompt alone.
+        assert_eq!(
+            launch_args(
+                "/not-installed/codex",
+                &[],
+                "packet\nbriefing".into(),
+                false,
+                &no_config()
+            )
+            .unwrap(),
+            vec!["-c", "developer_instructions=\"packet\\nbriefing\""]
+        );
+    }
+
+    #[test]
+    fn images_take_every_value_up_to_the_next_flag() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        assert!(idle_codex(
+            "codex",
+            &args(&["-i", "a.png", "b.png", "--no-alt-screen"]),
+            false,
+            &no_config()
+        ));
+        assert!(idle_codex(
+            "codex",
+            &args(&["--image", "a.png", "-m", "o3"]),
+            false,
+            &no_config()
+        ));
+        assert!(!idle_codex("codex", &args(&["-i"]), false, &no_config()));
+        assert!(!idle_codex(
+            "codex",
+            &args(&["-m", "o3", "exec"]),
+            false,
+            &no_config()
+        ));
     }
 
     #[test]

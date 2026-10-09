@@ -850,8 +850,16 @@ fn idle_codex_gets_context_without_a_startup_message() {
             if in_repo {
                 init_git_repo(folder.path());
             }
+            // The stub records every invocation. Codex keeps its own
+            // instructions when `developer_instructions` is set (the slot is
+            // additive), so toimija has nothing to render first: the agent is
+            // the only Codex process it starts.
             let stub = folder.path().join("codex");
-            fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' \"$@\" > captured-args\nprintf '%s\\n' '[{\"role\":\"developer\",\"content\":[{\"text\":\"Native permissions and configured instructions.\"}]}]'\n").unwrap();
+            fs::write(
+                &stub,
+                "#!/bin/sh\n{ printf '%s\\n' '--- call'; printf '%s\\n' \"$@\"; } >> captured-args\n",
+            )
+            .unwrap();
             fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
             let mut command = Command::cargo_bin("toimija").unwrap();
             command
@@ -870,7 +878,9 @@ fn idle_codex_gets_context_without_a_startup_message() {
             }
             command.arg("--").arg(&stub).assert().success();
             let captured = fs::read_to_string(folder.path().join("captured-args")).unwrap();
-            let lines: Vec<_> = captured.lines().collect();
+            assert_eq!(captured.matches("--- call").count(), 1, "{captured}");
+            assert!(!captured.contains("prompt-input"), "{captured}");
+            let lines: Vec<_> = captured.lines().skip(1).collect();
             let has_task = task.is_some_and(|task| !task.is_empty());
             let prompt = if has_task {
                 assert!(!captured.contains("developer_instructions="));
@@ -886,8 +896,20 @@ fn idle_codex_gets_context_without_a_startup_message() {
                     .iter()
                     .find_map(|line| line.strip_prefix("developer_instructions="))
                     .unwrap();
-                assert!(encoded.contains("Native permissions and configured instructions."));
-                serde_json::from_str::<String>(encoded).unwrap()
+                let instructions = serde_json::from_str::<String>(encoded).unwrap();
+                // Only toimija's own text: the contract or the outside-repo
+                // note first, the briefing last.
+                let opening = if in_repo {
+                    "Your toimija session packet is below."
+                } else {
+                    "You are in a toimija session outside any Git repository"
+                };
+                assert!(instructions.starts_with(opening), "{instructions}");
+                assert!(
+                    instructions.ends_with("Keep all rules.\nQuotes: \"x\" and \\ paths.\n"),
+                    "{instructions}"
+                );
+                instructions
             };
             assert!(prompt.contains("Keep all rules.\nQuotes: \"x\" and \\ paths."));
             assert_eq!(prompt.contains("# Toimija Context"), in_repo);

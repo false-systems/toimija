@@ -127,12 +127,10 @@ and `--budget` need a repository and are refused there.
 Codex adapter supplies the packet and optional `--briefing` through the
 per-session `developer_instructions` configuration instead of a positional
 prompt. Codex opens and waits for your first message: no acknowledgement turn
-is requested. Before using that override, Toimija runs Codex's local
-`debug prompt-input` renderer with the same launch options and preserves its
-existing developer block, including permission guidance and configured
-instructions. No model is called to do this; an unreadable renderer fails the
-launch rather than dropping instructions. The first task still has the full
-context. Explicit `agents.codex` prompt
+is requested. Codex adds that setting to its own developer instructions
+(skills, permissions, collaboration mode), so the slot carries only the packet
+and the briefing; a `developer_instructions` set in your own Codex config is
+replaced for that session. The first task still has the full context. Explicit `agents.codex` prompt
 configuration retains its configured delivery. Subcommands such as `codex exec`
 and `codex resume` retain prompt delivery; only interactive launches wait.
 

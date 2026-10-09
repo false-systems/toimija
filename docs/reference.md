@@ -126,10 +126,12 @@ agent command's exit status (signal termination is preserved too, e.g. SIGTERM â
 For the built-in Codex adapter, omitting `--task` (or giving a blank task)
 delivers the packet and optional `--briefing` as per-session
 `developer_instructions`, without a positional message. The TUI waits for
-the first user task without requesting a model acknowledgement. Codex's local
-`debug prompt-input` renderer resolves the existing developer block with the
-same launch options; Toimija preserves it before appending the packet and
-briefing. A renderer failure aborts launch rather than dropping instructions.
+the first user task without requesting a model acknowledgement. Codex adds
+the setting to its own developer instructions (skills, permissions,
+collaboration mode), so the slot carries only the packet and the briefing;
+`codex debug prompt-input` with the same options shows the result offline. A
+`developer_instructions` set in your own Codex config is replaced for that
+session.
 Explicit tasks keep positional delivery, and an `agents.codex` configuration keeps its
 declared prompt style. Subcommands such as `codex exec` and `codex resume`
 retain prompt delivery rather than being inspected as interactive launches.
