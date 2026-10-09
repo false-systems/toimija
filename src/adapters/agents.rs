@@ -113,7 +113,9 @@ pub fn compose_launch_prompt(
     prompt.push_str(
         "Your toimija session packet is below. It is your workset contract: work from it, \
          and declare any expansion (`toimija intent \"<why>\" --scope <path>`) before \
-         reading outside it.\n",
+         reading outside it. Use its Git facts, read order and validation plan directly; \
+         do not repeat discovery unless a fact is missing, stale or contradicted. \
+         Read the named files to answer the task's remaining questions.\n",
     );
     prompt.push_str(&format!(
         "Live packet (re-read after HEAD, branch, index, or unfamiliar worktree changes; \
@@ -142,10 +144,11 @@ pub fn compose_outside_prompt(
     let mut prompt = format!(
         "You are in a toimija session outside any Git repository ({}). There is no \
          session packet: toimija compiles Git context, and this folder has none. \
-         Sessions in the repositories you touch do not count you as a sibling, so \
-         declare why you are here and what you will touch \
+         When work is assigned, declare why you are here and what you will touch \
          (`toimija intent \"<why>\" --scope <path>`); `toimija sessions --outside-repos` \
-         lists you.\n",
+         lists you. With no concrete task, acknowledge and wait instead of running \
+         discovery or bookkeeping tools. Once a repository is selected, read its \
+         Toimija context once and use that workset instead of scanning the workspace.\n",
         folder.display()
     );
     if let Some(task) = task {
@@ -259,6 +262,11 @@ mod tests {
         .unwrap();
         assert!(prompt.starts_with("Your toimija session packet is below."));
         assert!(prompt.contains("workset contract"));
+        assert!(
+            prompt.contains(
+                "do not repeat discovery unless a fact is missing, stale or contradicted"
+            )
+        );
         assert!(prompt.contains("your own expected source edits do not require a full re-read"));
         assert!(prompt.contains("run `toimija verify` before commit or handoff"));
         assert!(prompt.contains(".toimija/sessions/1-1/current.md"));
@@ -276,5 +284,15 @@ mod tests {
         // differs (resolved in workers::prepare, not here).
         let configured = config(&[("aider", "--message")]);
         assert!(compose_launch_prompt("aider", "packet", &live, None, &configured).is_some());
+    }
+
+    #[test]
+    fn outside_prompt_defers_discovery_until_there_is_work() {
+        let prompt =
+            compose_outside_prompt("codex", Path::new("/projects"), None, &no_config()).unwrap();
+        assert!(prompt.contains("With no concrete task, acknowledge and wait"));
+        assert!(prompt.contains("toimija intent"));
+        assert!(prompt.contains("Once a repository is selected"));
+        assert!(!prompt.contains("Task:"));
     }
 }

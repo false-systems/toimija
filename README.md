@@ -171,6 +171,13 @@ packet carries it as `session.execution.repository`.
 
 ## The live packet
 
+The delivered packet replaces repository discovery: use its Git facts, read
+order and validation plan directly, then read the named files for unresolved
+task details. Refresh when those facts become stale or contradictory. A session
+outside a repository with no concrete task waits for work; it does not spend
+model calls on startup-only discovery or bookkeeping. Scope is still declared
+before repository work, and verification before commit or handoff still applies.
+
 Toimija writes human-readable Markdown and complete machine-readable JSON:
 
 ```text

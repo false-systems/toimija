@@ -643,6 +643,12 @@ one opt-in gate is `doctor --strict`.
 
 ## Ownership: `.toimija/` is Toimija's, root files are yours
 
+Launch prompts tell agents to use delivered facts instead of repeating
+discovery. Missing, stale or contradictory facts justify a refresh; unresolved
+task details justify reading the named files. Outside a repository, an unassigned
+session waits for work before invoking discovery or bookkeeping tools. This
+does not waive scope declarations or pre-commit/handoff verification.
+
 Toimija should not own agent policy; it should make agent work cheaper by keeping
 a live, repo-aware context layer an agent asks for before it works.
 
