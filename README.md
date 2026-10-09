@@ -431,6 +431,13 @@ Adapters contribute planning hints; they do not parse source code. `toimija
 validate --plan` prints commands and provenance but never executes them.
 Running checks and keeping their receipts is Evidence, and Evidence is Sykli's.
 
+A repository with a `sykli.json` at its root has declared its gate, so the plan
+is that gate, exactly — `sykli run sykli.json --json > .sykli/receipt.json &&
+sykli verify .sykli/receipt.json --contract sykli.json` — with the task names
+the contract declares (`source: sykli.json`). Nothing is inferred beside it;
+commands in `.toimija/repo.yaml` still add to it, and `replace_inferred: true`
+still replaces it.
+
 ## Boundaries
 
 Toimija reports facts and refuses to decide. It intentionally does not:

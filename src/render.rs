@@ -208,6 +208,15 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
     let mut output = String::new();
     write_h2(&mut output, "Validation plan");
     writeln!(&mut output, "- source: {}", source_label(&plan.source)).unwrap();
+    if let Some(gate) = &plan.gate {
+        write_h3(&mut output, &format!("Gate ({})", gate.contract));
+        writeln!(&mut output, "- {}", gate.command).unwrap();
+        if gate.tasks.is_empty() {
+            writeln!(&mut output, "- tasks: unknown").unwrap();
+        } else {
+            writeln!(&mut output, "- tasks: {}", gate.tasks.join(", ")).unwrap();
+        }
+    }
     if !plan.focused.is_empty() {
         write_h3(&mut output, "Focused (from changed surface)");
         writeln!(
@@ -217,14 +226,20 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
         .unwrap();
         write_str_list(&mut output, &plan.focused, "none");
     }
-    write_h3(&mut output, "Fast");
-    write_str_list(&mut output, &plan.fast, "none");
-    write_h3(&mut output, "Strict");
-    write_str_list(&mut output, &plan.strict, "none");
-    write_h3(&mut output, "Full");
-    write_str_list(&mut output, &plan.full, "none");
-    write_h3(&mut output, "Privileged");
-    write_str_list(&mut output, &plan.privileged, "none");
+    // Beside a declared gate only the tiers the repo config adds are shown;
+    // without one every tier renders, an empty one as `none`.
+    for (title, commands) in [
+        ("Fast", &plan.fast),
+        ("Strict", &plan.strict),
+        ("Full", &plan.full),
+        ("Privileged", &plan.privileged),
+    ] {
+        if plan.gate.is_some() && commands.is_empty() {
+            continue;
+        }
+        write_h3(&mut output, title);
+        write_str_list(&mut output, commands, "none");
+    }
     write_h3(&mut output, "Notes");
     write_str_list(&mut output, &plan.notes, "none");
     output
@@ -959,6 +974,8 @@ fn source_label(source: &ValidationSource) -> &'static str {
         ValidationSource::RepoConfig => "repo config",
         ValidationSource::Inferred => "inferred",
         ValidationSource::InferredAndRepoConfig => "inferred and repo config",
+        ValidationSource::Sykli => "sykli.json",
+        ValidationSource::SykliAndRepoConfig => "sykli.json and repo config",
         ValidationSource::Unknown => "unknown",
     }
 }
