@@ -391,6 +391,55 @@ pub fn prunable(
     now_secs.saturating_sub(reference) > retention_secs
 }
 
+/// Whether the session a packet names is still running, as `verify` asks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedSession {
+    /// The marker is open and its process is not provably gone.
+    Live,
+    /// The marker was closed: the session ended normally.
+    Closed,
+    /// The marker is still open but its process is provably gone: the session
+    /// was killed before it could close.
+    Ended,
+    /// No readable marker for that id in this repository.
+    Unknown,
+}
+
+impl NamedSession {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Closed => "closed",
+            Self::Ended => "ended",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Resolve the session `id` that a packet names. Unlike [`liveness`], an idle
+/// marker is not judged here: an agent that has not touched a file for a while
+/// is still the session it was, and its packet still briefs it. Only a closed
+/// marker, a provably dead process, or no marker at all ends it.
+pub fn named_session(runner: &dyn CommandRunner, repo_root: &Path, id: &str) -> NamedSession {
+    if !crate::session::is_valid_session_id(id) {
+        return NamedSession::Unknown;
+    }
+    let dir = repo_root.join(SESSIONS_SUBDIR).join(id);
+    let Ok(marker) = crate::session::load_marker(&dir) else {
+        return NamedSession::Unknown;
+    };
+    if marker.id != id {
+        return NamedSession::Unknown;
+    }
+    match marker.status {
+        SessionStatus::Closed => NamedSession::Closed,
+        SessionStatus::Active if check_pid(runner, repo_root, marker.pid) == PidCheck::Dead => {
+            NamedSession::Ended
+        }
+        SessionStatus::Active => NamedSession::Live,
+    }
+}
+
 /// Best-effort process liveness via `kill -0 <pid>`. Routed through the runner
 /// so it is mockable in tests. `LC_ALL=C` pins the probe's diagnostics to the
 /// untranslated strerror text so classification does not depend on the host

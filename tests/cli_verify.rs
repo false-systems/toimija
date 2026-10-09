@@ -594,3 +594,96 @@ fn an_empty_live_json_handshake_reads_as_unset() {
     assert_eq!(value["status"], "verified");
     assert_eq!(value["packet_path"], session_packet.display().to_string());
 }
+
+fn only_session_id(path: &Path) -> String {
+    let mut ids: Vec<String> = fs::read_dir(path.join(".toimija/sessions"))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    ids.pop().unwrap()
+}
+
+#[test]
+fn verify_refuses_a_packet_that_names_a_closed_session() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path())
+        .args(["run", "--intent", "gone now", "--", "true"])
+        .assert()
+        .success();
+    let id = only_session_id(temp.path());
+
+    // The session's own packet is consistent with the tree, but the session
+    // it briefs has ended: reading it as current would hand over a dead brief.
+    let packet = format!(".toimija/sessions/{id}/current.json");
+    let assert = toimija(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .args(["verify", "--packet", &packet, "--json"])
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "session_not_live");
+    assert_eq!(value["session"], id.as_str());
+    assert_eq!(value["state"], "closed");
+
+    toimija(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .args(["verify", "--packet", &packet])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("session_not_live"))
+        .stderr(predicates::str::contains(id.as_str()));
+}
+
+#[cfg(unix)]
+#[test]
+fn verify_refuses_a_repo_packet_left_by_a_killed_session() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    // The agent kills `run` outright: no close, no exit refresh. The repo
+    // packet still mirrors the session, whose marker still says active.
+    toimija(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "killed",
+            "--",
+            "sh",
+            "-c",
+            "kill -9 $PPID",
+        ])
+        .assert()
+        .failure();
+    let id = only_session_id(temp.path());
+    let repo_packet: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(repo_packet["session"]["id"], id.as_str());
+
+    let assert = toimija(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .args(["verify", "--json"])
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "session_not_live");
+    assert_eq!(value["session"], id.as_str());
+    assert_eq!(value["state"], "ended");
+
+    // A sessionless refresh drops the dead brief, and the packet verifies.
+    toimija(temp.path()).arg("refresh").assert().success();
+    toimija(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .arg("verify")
+        .assert()
+        .success();
+}

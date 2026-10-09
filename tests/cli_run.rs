@@ -708,13 +708,69 @@ fn run_intent_reaches_the_session_packet() {
     assert!(md.contains("## Session"));
     assert!(md.contains("- intent: test drive 2"));
 
-    // The repo-level summary mirrors the same bytes under `run` (D3) — a
-    // sessionless refresh afterwards would rewrite it without the block.
+    // The repo-level summary mirrors the session packet only while the session
+    // runs (D3). Once it has ended, the repo packet carries no session block:
+    // the next agent must not read a dead session's brief as its own.
     let repo_json: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(repo_json["session"]["intent"], "test drive 2");
+    assert!(repo_json["session"].is_null(), "{}", repo_json["session"]);
+}
+
+#[test]
+fn a_session_that_ends_leaves_no_brief_in_the_repo_packet() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let outside = tempfile::tempdir().unwrap();
+    let during = outside.path().join("during.json");
+
+    // While the agent works, the repo-level packet mirrors its session.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("DURING", &during)
+        .args([
+            "run",
+            "--intent",
+            "dead brief",
+            "--scope",
+            "src/a.rs",
+            "--",
+            "sh",
+            "-c",
+            "cp .toimija/current.json \"$DURING\"",
+        ])
+        .assert()
+        .success();
+    let while_live: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&during).unwrap()).unwrap();
+    assert_eq!(while_live["session"]["intent"], "dead brief");
+
+    // After it exits, the repo packet has the final Git facts and no brief.
+    let md = fs::read_to_string(temp.path().join(".toimija/current.md")).unwrap();
+    assert!(!md.contains("## Session"), "{md}");
+    assert!(!md.contains("dead brief"), "{md}");
+    let json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(json["session"].is_null(), "{}", json["session"]);
+    assert!(
+        json["sauma"]["producer"]["run"].is_null(),
+        "{}",
+        json["sauma"]
+    );
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .arg("verify")
+        .assert()
+        .success();
 }
 
 #[test]

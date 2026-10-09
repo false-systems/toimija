@@ -133,14 +133,20 @@ pub fn refresh(
     for_diff: bool,
     budget_override: Option<usize>,
 ) -> Result<Refreshed> {
-    let (packet, markdown, json) = compute(runner, repo_root, for_diff, budget_override, None)?;
+    let computed = compute(runner, repo_root, for_diff, budget_override, None)?;
     let md_path = repo_root.join(CURRENT_MD);
     let json_path = repo_root.join(CURRENT_JSON);
-    write_packet(repo_root, &md_path, &json_path, &markdown, &json)?;
+    write_packet(
+        repo_root,
+        &md_path,
+        &json_path,
+        &computed.markdown,
+        &computed.json,
+    )?;
     Ok(Refreshed {
-        packet,
-        markdown,
-        json,
+        packet: computed.packet,
+        markdown: computed.markdown,
+        json: computed.json,
         md_path,
         json_path,
     })
@@ -150,6 +156,11 @@ pub fn refresh(
 /// (`session_dir/current.{md,json}`) — the authoritative packet for a wrapped
 /// agent — and also mirror it to the repo-level `.toimija/current.*` summary
 /// (demoted, last-writer-wins). Used by `run`'s entry, watch loop, and exit.
+///
+/// The mirror carries the session block only while the session is open. The
+/// exit refresh runs after the marker is closed, and then the repo-level
+/// summary gets the same final facts without the block: a closed session's
+/// id, intent and scope must not survive in the packet the next agent reads.
 pub fn refresh_session(
     runner: &impl CommandRunner,
     repo_root: &Path,
@@ -157,7 +168,12 @@ pub fn refresh_session(
     budget_override: Option<usize>,
     session_dir: &Path,
 ) -> Result<Refreshed> {
-    let (packet, markdown, json) = compute(
+    let Computed {
+        packet,
+        markdown,
+        json,
+        session_closed,
+    } = compute(
         runner,
         repo_root,
         for_diff,
@@ -184,13 +200,21 @@ pub fn refresh_session(
     // The repo-level summary is demoted (last-writer-wins) and best-effort: a
     // failure mirroring it must not abort the already-written session packet, or
     // a transient summary write error would freeze the agent's live context.
-    if let Err(error) = write_packet(
-        repo_root,
-        &repo_root.join(CURRENT_MD),
-        &repo_root.join(CURRENT_JSON),
-        &markdown,
-        &json,
-    ) {
+    let mirror = if session_closed {
+        sessionless(&packet, budget_override)
+    } else {
+        Ok((markdown.clone(), json.clone()))
+    };
+    let mirrored = mirror.and_then(|(markdown, json)| {
+        write_packet(
+            repo_root,
+            &repo_root.join(CURRENT_MD),
+            &repo_root.join(CURRENT_JSON),
+            &markdown,
+            &json,
+        )
+    });
+    if let Err(error) = mirrored {
         eprintln!(
             "toimija: could not update the repo-level summary (session packet is fresh): {error:#}"
         );
@@ -202,6 +226,36 @@ pub fn refresh_session(
         md_path,
         json_path,
     })
+}
+
+/// A built packet and its two renderings, plus whether the session it was
+/// built for has already closed.
+struct Computed {
+    packet: ContextPacket,
+    markdown: String,
+    json: String,
+    session_closed: bool,
+}
+
+/// The same packet with no session block, sealed and rendered afresh: what the
+/// repo-level summary holds once the session that mirrored into it has ended.
+fn sessionless(packet: &ContextPacket, budget_override: Option<usize>) -> Result<(String, String)> {
+    let mut packet = packet.clone();
+    packet.session = None;
+    packet.attach_sauma(None)?;
+    Ok(render_pair(&packet, budget_override)?)
+}
+
+fn render_pair(
+    packet: &ContextPacket,
+    budget_override: Option<usize>,
+) -> serde_json::Result<(String, String)> {
+    let budget = budget_override
+        .or(packet.config_default_budget())
+        .unwrap_or(DEFAULT_BUDGET);
+    let markdown = render::render_context_markdown(packet, budget);
+    let json = serde_json::to_string_pretty(packet)?;
+    Ok((markdown, json))
 }
 
 /// Build the packet and its two renderings. The read-only half of a refresh:
@@ -220,7 +274,7 @@ fn compute(
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: Option<&Path>,
-) -> Result<(ContextPacket, String, String)> {
+) -> Result<Computed> {
     let mut packet = context::build_context_packet(runner, repo_root, for_diff)
         .context("failed to build context packet")?;
     let artifact_id = artifact_id();
@@ -245,6 +299,9 @@ fn compute(
         }
         None => None,
     };
+    let session_closed = marker
+        .as_ref()
+        .is_some_and(|marker| marker.status == session::SessionStatus::Closed);
     if let Some(marker) = marker {
         packet.session = Some(context::SessionBlock {
             id: marker.id,
@@ -263,12 +320,13 @@ fn compute(
     }
     let run = packet.session.as_ref().map(|session| session.id.clone());
     packet.attach_sauma(run)?;
-    let budget = budget_override
-        .or(packet.config_default_budget())
-        .unwrap_or(DEFAULT_BUDGET);
-    let markdown = render::render_context_markdown(&packet, budget);
-    let json = serde_json::to_string_pretty(&packet)?;
-    Ok((packet, markdown, json))
+    let (markdown, json) = render_pair(&packet, budget_override)?;
+    Ok(Computed {
+        packet,
+        markdown,
+        json,
+        session_closed,
+    })
 }
 
 /// Write a packet pair, creating the parent directory if needed — never

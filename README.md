@@ -203,7 +203,11 @@ Toimija writes human-readable Markdown and complete machine-readable JSON:
 ```
 
 The per-session packet is authoritative for a wrapped harness. The repo-level
-pair is a last-writer-wins summary for sessionless readers.
+pair is a last-writer-wins summary for sessionless readers. It carries a
+session's block (id, intent, scope) only while that session runs: when `run`
+exits, the repo-level pair is rewritten without it, and `toimija verify` fails
+(`session_not_live`) on any packet that briefs a session that has closed or
+whose process is gone.
 
 A packet combines:
 
