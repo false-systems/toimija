@@ -150,6 +150,19 @@ as the agent's own positional argument. Unknown agents keep the env-var
 handshake behind an honest banner — `delivery: env-var only — not guaranteed` —
 never a silent degradation.
 
+`--briefing` carries background instructions apart from the task. A known or
+configured agent gets them at the end of its launch prompt, after the packet
+and the task (for `claude`, in the same positional prompt); an idle Codex launch
+gets them after the packet in its session instructions. An agent toimija does
+not recognise has no launch prompt, so it cannot receive them. A blank
+`--briefing`, like a blank `--task`, is none, and both may start with `-`.
+
+Launch prompts tell agents to use delivered facts instead of repeating
+discovery. Missing, stale or contradictory facts justify a refresh; unresolved
+task details justify reading the named files. Outside a repository, an unassigned
+session waits for work before invoking discovery or bookkeeping tools. This
+does not waive scope declarations or pre-commit/handoff verification.
+
 ```mermaid
 sequenceDiagram
     participant Y as you
@@ -662,12 +675,6 @@ Default posture is advisory: it warns and explains; it does not block humans. Th
 one opt-in gate is `doctor --strict`.
 
 ## Ownership: `.toimija/` is Toimija's, root files are yours
-
-Launch prompts tell agents to use delivered facts instead of repeating
-discovery. Missing, stale or contradictory facts justify a refresh; unresolved
-task details justify reading the named files. Outside a repository, an unassigned
-session waits for work before invoking discovery or bookkeeping tools. This
-does not waive scope declarations or pre-commit/handoff verification.
 
 Toimija should not own agent policy; it should make agent work cheaper by keeping
 a live, repo-aware context layer an agent asks for before it works.

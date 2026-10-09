@@ -1268,3 +1268,54 @@ fn run_records_a_commit_made_inside_the_session_as_an_observed_effect() {
     let marker = fs::read_to_string(session_dir.join("session.json")).unwrap();
     assert!(!marker.contains("effects_observed"), "{marker}");
 }
+
+/// The instructions an idle Codex stub was launched with.
+#[cfg(unix)]
+fn idle_codex_instructions(briefing: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = tempfile::tempdir().unwrap();
+    init_git_repo(folder.path());
+    let stub = folder.path().join("codex");
+    fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' \"$@\" > captured-args\n").unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(folder.path())
+        .args([
+            "run",
+            "--intent",
+            "briefing shapes",
+            "--briefing",
+            briefing,
+            "--",
+        ])
+        .arg(&stub)
+        .assert()
+        .success();
+    let captured = fs::read_to_string(folder.path().join("captured-args")).unwrap();
+    let encoded = captured
+        .lines()
+        .find_map(|line| line.strip_prefix("developer_instructions="))
+        .unwrap();
+    serde_json::from_str::<String>(encoded).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_briefing_may_start_with_a_hyphen_and_a_blank_one_is_dropped() {
+    if !git_available() {
+        return;
+    }
+    // Launchers write briefings as Markdown, where a list starts with `- `.
+    let listed = idle_codex_instructions("- check the receipt first");
+    assert!(
+        listed.ends_with("\n- check the receipt first\n"),
+        "{listed}"
+    );
+
+    // A blank briefing is no briefing, like a blank task.
+    let blank = idle_codex_instructions("  \n ");
+    assert!(!blank.ends_with("\n  \n \n"), "{blank:?}");
+    assert!(blank.ends_with("\n"));
+    assert!(!blank.trim_end_matches('\n').ends_with(' '), "{blank:?}");
+}

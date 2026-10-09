@@ -377,7 +377,7 @@ impl Session {
     /// note standing in for a packet. Pair with clearing [`REPO_ONLY_ENV`].
     pub fn env_outside(&self) -> Vec<(&'static str, OsString)> {
         vec![
-            ("TOIMIJA_STATE_DIR", self.repo_root.clone().into_os_string()),
+            (STATE_DIR_ENV, self.repo_root.clone().into_os_string()),
             ("TOIMIJA_RUN", OsString::from("1")),
             ("TOIMIJA_SESSION", OsString::from(&self.id)),
             ("TOIMIJA_RUN_ID", OsString::from(&self.id)),

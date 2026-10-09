@@ -147,7 +147,7 @@ pub fn launch_args(
         // set in the user's Codex config for this session.
         return Ok(vec![
             "-c".into(),
-            format!("developer_instructions={}", serde_json::to_string(&prompt)?),
+            format!("developer_instructions={}", toml_string(&prompt)?),
         ]);
     }
     Ok(
@@ -180,7 +180,7 @@ pub fn shell_env_args(
             args.push("-c".into());
             args.push(format!(
                 "shell_environment_policy.set.{key}={}",
-                serde_json::to_string(value)?
+                toml_string(value)?
             ));
         }
         for key in cleared {
@@ -189,6 +189,13 @@ pub fn shell_env_args(
         }
     }
     Ok(args)
+}
+
+/// A `-c` value as a TOML basic string. JSON's string escapes are TOML's,
+/// except that JSON leaves U+007F raw and TOML forbids it; Codex would then
+/// take the whole value as a literal, quotes and escapes included.
+fn toml_string(value: &str) -> serde_json::Result<String> {
+    Ok(serde_json::to_string(value)?.replace('\u{7f}', "\\u007f"))
 }
 
 /// Compose the launch prompt for a known or configured agent: contract
@@ -352,6 +359,22 @@ mod tests {
             .unwrap(),
             vec!["-c", "developer_instructions=\"packet\\nbriefing\""]
         );
+    }
+
+    #[test]
+    fn values_are_toml_strings_even_with_a_delete_character() {
+        // TOML forbids a raw U+007F in a basic string, and Codex takes a `-c`
+        // value that fails to parse as a literal: the agent would get the
+        // quotes and escapes verbatim. JSON leaves U+007F raw.
+        let value = "a\u{7f}b \"q\" \\ \n";
+        let args = launch_args("codex", &[], value.into(), false, &no_config()).unwrap();
+        let encoded = args[1].strip_prefix("developer_instructions=").unwrap();
+        assert!(!encoded.contains('\u{7f}'), "{encoded:?}");
+        assert!(encoded.contains("\\u007f"), "{encoded:?}");
+        assert_eq!(serde_json::from_str::<String>(encoded).unwrap(), value);
+        let env = [("TOIMIJA_LIVE", OsString::from(value))];
+        let set = shell_env_args("codex", &env, &[]).unwrap();
+        assert!(!set[1].contains('\u{7f}'), "{:?}", set[1]);
     }
 
     #[test]

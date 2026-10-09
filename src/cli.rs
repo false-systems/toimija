@@ -365,12 +365,16 @@ pub struct RunArgs {
     /// The task for the agent, delivered inside the composed launch prompt of a
     /// known agent (`claude`, `codex`, `gemini`) or one configured under
     /// `agents:` in `.toimija/repo.yaml`. Pass the task here, not as the agent's
-    /// own positional argument.
-    #[arg(long)]
+    /// own positional argument. May start with `-`; a blank task is none.
+    #[arg(long, allow_hyphen_values = true)]
     pub task: Option<String>,
-    /// Background instructions, separate from an assigned task. An idle Codex
-    /// launch receives these and its packet without starting a model turn.
-    #[arg(long)]
+    /// Background instructions, separate from an assigned task: appended after
+    /// the packet (and the task) in a known or configured agent's launch
+    /// prompt. An idle Codex launch receives them with its packet as session
+    /// instructions, without starting a model turn. An agent toimija does not
+    /// recognise cannot receive them. May start with `-`; a blank briefing is
+    /// none.
+    #[arg(long, allow_hyphen_values = true)]
     pub briefing: Option<String>,
     /// Sealed cycle digest for this worker leg; requires --cycle-leg and --cycle-attempt.
     #[arg(long, requires_all = ["cycle_leg", "cycle_attempt"])]
@@ -891,6 +895,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     args.task = args.task.filter(|task| !task.trim().is_empty());
+    args.briefing = args.briefing.filter(|briefing| !briefing.trim().is_empty());
 
     // Armed before a session can exist, not after. Arming once the marker is
     // on disk leaves a window — `Session::open` returning, `record_cycle_action`
