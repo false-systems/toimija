@@ -372,6 +372,12 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         packet.git.upstream.as_deref().unwrap_or("unavailable")
     )
     .unwrap();
+    writeln!(
+        &mut output,
+        "- ahead/behind: {}",
+        ahead_behind_label(&packet.git)
+    )
+    .unwrap();
     writeln!(&mut output, "- merge-base: {}", merge_base_label(packet)).unwrap();
     writeln!(&mut output, "- dirty: {}", packet.git.dirty).unwrap();
     writeln!(&mut output, "- staged: {}", packet.git.staged_files.len()).unwrap();
@@ -672,6 +678,21 @@ fn write_risk(output: &mut String, packet: &ContextPacket) {
             relevance_evidence_label(hint.source, &hint.evidence)
         )
         .unwrap();
+    }
+}
+
+/// `<n> ahead, <m> behind <ref> (<what the ref is>)`, or why it is unknown.
+fn ahead_behind_label(git: &crate::git::GitState) -> String {
+    match (git.ahead, git.behind, git.ahead_behind_ref.as_deref()) {
+        (Some(ahead), Some(behind), Some(against)) => {
+            let kind = match git.upstream.as_deref() {
+                Some(upstream) if upstream == against => "upstream",
+                Some(_) => "upstream gone",
+                None => "no upstream",
+            };
+            format!("{ahead} ahead, {behind} behind {against} ({kind})")
+        }
+        _ => "unknown — no upstream and no remote default branch".to_string(),
     }
 }
 
@@ -1011,6 +1032,9 @@ mod tests {
                 branch: Some("main".to_string()),
                 head_oid: Some("abc".to_string()),
                 upstream: None,
+                ahead: None,
+                behind: None,
+                ahead_behind_ref: None,
                 base: None,
                 merge_base: None,
                 detached: false,
@@ -1043,6 +1067,9 @@ mod tests {
                 branch: Some("main".to_string()),
                 head_oid: Some("abc".to_string()),
                 upstream: None,
+                ahead: None,
+                behind: None,
+                ahead_behind_ref: None,
                 base: None,
                 merge_base: None,
                 detached: false,
@@ -1491,6 +1518,7 @@ visible output). Expansion is never forbidden; invisible expansion is.
 - HEAD: abc
 - detached: false
 - upstream: unavailable
+- ahead/behind: unknown — no upstream and no remote default branch
 - merge-base: unavailable
 - dirty: false
 - staged: 0
@@ -1567,6 +1595,9 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "branch": "main",
     "head_oid": "abc",
     "upstream": null,
+    "ahead": null,
+    "behind": null,
+    "ahead_behind_ref": null,
     "base": null,
     "merge_base": null,
     "detached": false,

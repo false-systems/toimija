@@ -553,3 +553,140 @@ fn conflict_json_keeps_index_stages_for_a_spaced_path() {
         assert_eq!(stage["oid"].as_str().unwrap().len(), 40);
     }
 }
+
+fn context_json(path: &Path) -> serde_json::Value {
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(path)
+        .args(["context", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn context_markdown(path: &Path) -> String {
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(path)
+        .arg("context")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn commit_file(path: &Path, name: &str) {
+    fs::write(path.join(name), format!("{name}\n")).unwrap();
+    run_git(path, &["add", name]);
+    run_git(path, &["commit", "-m", name]);
+}
+
+#[test]
+fn ahead_and_behind_are_counted_against_the_upstream_without_fetching() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let origin = temp.path().join("origin.git");
+    let work = temp.path().join("work");
+    let other = temp.path().join("other");
+    fs::create_dir_all(&work).unwrap();
+    init_repo(&work);
+    run_git(&work, &["branch", "-M", "main"]);
+    run_git(
+        temp.path(),
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            work.to_str().unwrap(),
+            "origin.git",
+        ],
+    );
+    run_git(
+        &work,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    run_git(&work, &["fetch", "-q", "origin"]);
+    run_git(&work, &["branch", "--set-upstream-to=origin/main"]);
+
+    let even = context_json(&work);
+    assert_eq!(even["git"]["ahead"], 0);
+    assert_eq!(even["git"]["behind"], 0);
+    assert_eq!(even["git"]["ahead_behind_ref"], "origin/main");
+
+    // One local commit, and someone else's commit on the upstream.
+    commit_file(&work, "mine.txt");
+    run_git(
+        temp.path(),
+        &["clone", "-q", origin.to_str().unwrap(), "other"],
+    );
+    run_git(&other, &["config", "user.email", "toimija@example.invalid"]);
+    run_git(&other, &["config", "user.name", "Toimija Test"]);
+    commit_file(&other, "theirs.txt");
+    run_git(&other, &["push", "-q", "origin", "HEAD:main"]);
+
+    // Before a fetch the upstream has not moved here: toimija never fetches.
+    let before_fetch = context_json(&work);
+    assert_eq!(before_fetch["git"]["ahead"], 1);
+    assert_eq!(before_fetch["git"]["behind"], 0);
+
+    run_git(&work, &["fetch", "-q", "origin"]);
+    let after_fetch = context_json(&work);
+    assert_eq!(after_fetch["git"]["ahead"], 1);
+    assert_eq!(after_fetch["git"]["behind"], 1);
+    let markdown = context_markdown(&work);
+    assert!(
+        markdown.contains("- ahead/behind: 1 ahead, 1 behind origin/main (upstream)"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn without_an_upstream_ahead_and_behind_use_the_remote_default_branch() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    run_git(temp.path(), &["branch", "-M", "main"]);
+    let origin = temp.path().to_str().unwrap();
+    run_git(temp.path(), &["remote", "add", "origin", origin]);
+    run_git(
+        temp.path(),
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    run_git(temp.path(), &["checkout", "-q", "-b", "feature"]);
+    commit_file(temp.path(), "a.txt");
+    commit_file(temp.path(), "b.txt");
+
+    let packet = context_json(temp.path());
+    assert!(packet["git"]["upstream"].is_null());
+    assert_eq!(packet["git"]["ahead"], 2);
+    assert_eq!(packet["git"]["behind"], 0);
+    assert_eq!(packet["git"]["ahead_behind_ref"], "origin/main");
+    let markdown = context_markdown(temp.path());
+    assert!(
+        markdown.contains("- ahead/behind: 2 ahead, 0 behind origin/main (no upstream)"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn ahead_and_behind_are_unknown_with_nothing_to_compare_against() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+
+    let packet = context_json(temp.path());
+    assert!(packet["git"]["ahead"].is_null());
+    assert!(packet["git"]["behind"].is_null());
+    let markdown = context_markdown(temp.path());
+    assert!(
+        markdown.contains("- ahead/behind: unknown — no upstream and no remote default branch"),
+        "{markdown}"
+    );
+}

@@ -538,6 +538,9 @@ The packet includes:
   and then stats them (`git add --all`, as `sykli run` does) never meets a temp
   file the rename is about to take away
 - branch / HEAD / dirty state
+- ahead / behind: commits HEAD has that its upstream lacks and the reverse, counted
+  from local refs (no fetch); without an upstream, against `origin/<default>`;
+  `git.ahead_behind_ref` names which
 - staged / unstaged / untracked files
 - rename/copy origin paths and similarity when Git reports them, plus conflict
   index stages (mode and object ID)
@@ -903,6 +906,7 @@ visible output). Expansion is never forbidden; invisible expansion is.
 - HEAD: abc123
 - detached: false
 - upstream: unavailable
+- ahead/behind: unknown — no upstream and no remote default branch
 - merge-base: origin/main @ def456
 - dirty: true
 - staged: 0
