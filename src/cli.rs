@@ -1127,29 +1127,29 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     // The prompt travels where the agent reads it: last positional argument,
     // or after the flag its `agents:` entry names.
     let handshake = session.env(&repo_root);
-    let child_args = match crate::adapters::agents::shell_env_args(program, &handshake).and_then(
-        |mut child_args| {
-            child_args.extend_from_slice(rest);
-            if let Some(prompt) = composed {
-                child_args.extend(crate::adapters::agents::launch_args(
-                    program,
-                    rest,
-                    prompt,
-                    args.task.is_some(),
-                    &repo_config.agents,
-                )?);
+    let child_args =
+        match crate::adapters::agents::shell_env_args(program, &handshake, session::RETIRED_ENV)
+            .and_then(|mut child_args| {
+                child_args.extend_from_slice(rest);
+                if let Some(prompt) = composed {
+                    child_args.extend(crate::adapters::agents::launch_args(
+                        program,
+                        rest,
+                        prompt,
+                        args.task.is_some(),
+                        &repo_config.agents,
+                    )?);
+                }
+                Ok(child_args)
+            }) {
+            Ok(args) => args,
+            Err(error) => {
+                stop.store(true, Ordering::Relaxed);
+                let _ = watcher.join();
+                close_session_after_startup_failure(&repo_root, &mut session);
+                return Err(error);
             }
-            Ok(child_args)
-        },
-    ) {
-        Ok(args) => args,
-        Err(error) => {
-            stop.store(true, Ordering::Relaxed);
-            let _ = watcher.join();
-            close_session_after_startup_failure(&repo_root, &mut session);
-            return Err(error);
-        }
-    };
+        };
     eprintln!(
         "toimija run: launching `{program}` (session {}, watching for changes)",
         session.id
@@ -1620,8 +1620,13 @@ fn run_outside_repo(
         }
     }
     let handshake = session.env_outside();
-    let child_args = match crate::adapters::agents::shell_env_args(program, &handshake).and_then(
-        |mut child_args| {
+    let cleared: Vec<&str> = session::RETIRED_ENV
+        .iter()
+        .chain(session::REPO_ONLY_ENV)
+        .copied()
+        .collect();
+    let child_args = match crate::adapters::agents::shell_env_args(program, &handshake, &cleared)
+        .and_then(|mut child_args| {
             child_args.extend_from_slice(rest);
             if let Some(prompt) = composed {
                 child_args.extend(crate::adapters::agents::launch_args(
@@ -1633,8 +1638,7 @@ fn run_outside_repo(
                 )?);
             }
             Ok(child_args)
-        },
-    ) {
+        }) {
         Ok(args) => args,
         Err(error) => {
             stop_heartbeat();
@@ -1648,8 +1652,8 @@ fn run_outside_repo(
     );
     let mut child = std::process::Command::new(program);
     child.args(&child_args).current_dir(folder).envs(handshake);
-    for cleared in session::RETIRED_ENV.iter().chain(session::REPO_ONLY_ENV) {
-        child.env_remove(cleared);
+    for key in &cleared {
+        child.env_remove(key);
     }
     let diagnostics_path = session.dir.join("diagnostics.log");
     let capture = match crate::diagnostics::Capture::borrow(&diagnostics_path) {
@@ -2260,7 +2264,8 @@ fn select_verify_packet(
     if let Some((_id, session_dir)) = session::ambient_session(repo_root) {
         let expected = normalize_absolute(&session_dir.join("current.json"))
             .ok_or_else(|| "invalid ambient session packet path".to_string())?;
-        if let Some(path) = std::env::var_os("TOIMIJA_LIVE_JSON") {
+        // Empty reads as unset: `run` clears it that way for Codex tools.
+        if let Some(path) = std::env::var_os("TOIMIJA_LIVE_JSON").filter(|path| !path.is_empty()) {
             let selected = validate_packet_path(repo_root, cwd, std::path::Path::new(&path))?;
             if selected != expected {
                 return Err(format!(

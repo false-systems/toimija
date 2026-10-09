@@ -836,6 +836,30 @@ fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
                 state.path().display().to_string()
             );
         }
+        // Codex tools may run in a daemon an earlier session started, whose
+        // environment still holds that session's handshake. `set` can only add
+        // variables, so what the child loses is set empty for the tools too.
+        let mut cleared = vec!["FALSE_SYSTEMS_RESULT_PATH", "FALSE_SYSTEMS_CONTEXT_PATH"];
+        if !in_repo {
+            cleared.extend([
+                "TOIMIJA_LIVE_JSON",
+                "TOIMIJA_CURRENT_JSON",
+                "TOIMIJA_REPO_ROOT",
+                "TOIMIJA_REPO_LIVE",
+                "FALSE_SYSTEMS_REPOSITORY_POINT_PATH",
+            ]);
+        }
+        for key in cleared {
+            let line = format!("shell_environment_policy.set.{key}=\"\"");
+            assert!(lines.contains(&line.as_str()), "{key}: {stdout}");
+        }
+        let repo_roots: Vec<String> = lines
+            .iter()
+            .filter_map(|line| line.strip_prefix("shell_environment_policy.set.TOIMIJA_REPO_ROOT="))
+            .map(|encoded| serde_json::from_str::<String>(encoded).unwrap())
+            .collect();
+        assert_eq!(repo_roots.len(), 1, "{stdout}");
+        assert_eq!(repo_roots[0].is_empty(), !in_repo, "{stdout}");
     }
 }
 

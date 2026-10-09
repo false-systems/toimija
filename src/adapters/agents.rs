@@ -161,7 +161,16 @@ pub fn launch_args(
 /// Codex may execute tools in a pre-existing daemon rather than a descendant
 /// of the wrapped CLI. Carry this run's handshake in thread configuration too.
 /// Dotted keys preserve unrelated shell settings; no inheritance policy changes.
-pub fn shell_env_args(program: &str, env: &[(&str, OsString)]) -> anyhow::Result<Vec<String>> {
+///
+/// `set` can only add variables, and that daemon's environment may still hold
+/// an earlier session's handshake. So each variable `run` removes from the
+/// child (`cleared`) is set empty for the tools; toimija reads an empty
+/// handshake value as unset.
+pub fn shell_env_args(
+    program: &str,
+    env: &[(&str, OsString)],
+    cleared: &[&str],
+) -> anyhow::Result<Vec<String>> {
     let mut args = Vec::new();
     if basename(program) == "codex" {
         for (key, value) in env {
@@ -173,6 +182,10 @@ pub fn shell_env_args(program: &str, env: &[(&str, OsString)]) -> anyhow::Result
                 "shell_environment_policy.set.{key}={}",
                 serde_json::to_string(value)?
             ));
+        }
+        for key in cleared {
+            args.push("-c".into());
+            args.push(format!("shell_environment_policy.set.{key}=\"\""));
         }
     }
     Ok(args)
@@ -369,19 +382,23 @@ mod tests {
     fn codex_carries_dynamic_handshake_without_changing_environment_policy() {
         let value = "/tmp/session with \"quotes\"/back\\slash\nand-newline";
         let env = [("TOIMIJA_LIVE", OsString::from(value))];
-        let args = shell_env_args("/tools/codex", &env).unwrap();
+        let args = shell_env_args("/tools/codex", &env, &[]).unwrap();
         assert_eq!(args[0], "-c");
         let encoded = args[1]
             .strip_prefix("shell_environment_policy.set.TOIMIJA_LIVE=")
             .unwrap();
         assert_eq!(serde_json::from_str::<String>(encoded).unwrap(), value);
-        assert!(shell_env_args("claude", &env).unwrap().is_empty());
-        assert!(shell_env_args("codex-wrapper", &env).unwrap().is_empty());
+        assert!(shell_env_args("claude", &env, &["X"]).unwrap().is_empty());
+        assert!(
+            shell_env_args("codex-wrapper", &env, &["X"])
+                .unwrap()
+                .is_empty()
+        );
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;
             let invalid = [("TOIMIJA_LIVE", OsString::from_vec(vec![0xff]))];
-            assert!(shell_env_args("codex", &invalid).is_err());
+            assert!(shell_env_args("codex", &invalid, &[]).is_err());
         }
     }
 

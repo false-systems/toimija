@@ -147,6 +147,10 @@ For Codex, `run` also carries its generated handshake through per-session
 already-running Codex daemon, which cannot inherit the terminal wrapper's
 environment. This passes only this run's Toimija identity and paths; it does not
 change global configuration, environment filtering, or sandbox permissions.
+Variables `run` removes from the agent's environment (the retired ones, and
+outside a repository the repository paths) are set empty for Codex tools, since
+`set` cannot remove a variable the daemon already has; toimija reads an empty
+handshake value as unset.
 Restart an existing Codex session through the updated wrapper to receive it.
 
 While the harness owns the terminal, toimija seals its own stdout and stderr

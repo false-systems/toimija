@@ -234,7 +234,14 @@ unrepresentable non-UTF-8 values fail before launching. No global Codex config,
 inheritance policy or sandbox setting is changed. Other agents retain the
 ordinary environment handshake. Outside repositories, `TOIMIJA_STATE_DIR` is
 also set to the resolved session-state location, so `intent` finds the marker
-even when the daemon started with a different state directory.
+even when the daemon started with a different state directory. Each variable
+`run` removes from the agent's environment (`FALSE_SYSTEMS_RESULT_PATH`,
+`FALSE_SYSTEMS_CONTEXT_PATH`, and outside repositories `TOIMIJA_LIVE_JSON`,
+`TOIMIJA_CURRENT_JSON`, `TOIMIJA_REPO_ROOT`, `TOIMIJA_REPO_LIVE`,
+`FALSE_SYSTEMS_REPOSITORY_POINT_PATH`) is set to `""` for Codex tools, because
+`set` can only add variables and a daemon started by an earlier session may
+still hold its values. Toimija reads an empty handshake value as unset; other
+readers should too.
 
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
 agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
