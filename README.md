@@ -123,7 +123,20 @@ marker lives in the machine-local state directory (`$TOIMIJA_STATE_DIR`, else
 a sibling, so the agent should declare its scope. A cycle leg, `--for-diff`,
 and `--budget` need a repository and are refused there.
 
-Known agents such as `codex`, `claude`, and `gemini` receive the packet in their
+**Idle Codex startup.** Without `--task` (or with a blank task), the built-in
+Codex adapter supplies the packet and optional `--briefing` through the
+per-session `developer_instructions` configuration instead of a positional
+prompt. Codex opens and waits for your first message: no acknowledgement turn
+is requested. Before using that override, Toimija runs Codex's local
+`debug prompt-input` renderer with the same launch options and preserves its
+existing developer block, including permission guidance and configured
+instructions. No model is called to do this; an unreadable renderer fails the
+launch rather than dropping instructions. The first task still has the full
+context. Explicit `agents.codex` prompt
+configuration retains its configured delivery. Subcommands such as `codex exec`
+and `codex resume` retain prompt delivery; only interactive launches wait.
+
+Known agents such as `codex`, `claude`, and `gemini` otherwise receive the packet in their
 launch prompt. An `agents:` entry in `.toimija/repo.yaml` teaches `run` how
 any other CLI accepts it — `prompt: positional`, or a flag such as
 `prompt: --message` — so the packet (and `--task`) can be inlined for any

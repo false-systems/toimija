@@ -368,6 +368,10 @@ pub struct RunArgs {
     /// own positional argument.
     #[arg(long)]
     pub task: Option<String>,
+    /// Background instructions, separate from an assigned task. An idle Codex
+    /// launch receives these and its packet without starting a model turn.
+    #[arg(long)]
+    pub briefing: Option<String>,
     /// Sealed cycle digest for this worker leg; requires --cycle-leg and --cycle-attempt.
     #[arg(long, requires_all = ["cycle_leg", "cycle_attempt"])]
     pub cycle: Option<String>,
@@ -882,9 +886,11 @@ fn print_agent_entry(refreshed: &refresh::Refreshed, repo_root: &std::path::Path
     println!("{}", refreshed.markdown);
 }
 
-fn run_run(args: RunArgs) -> Result<i32> {
+fn run_run(mut args: RunArgs) -> Result<i32> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    args.task = args.task.filter(|task| !task.trim().is_empty());
 
     // Armed before a session can exist, not after. Arming once the marker is
     // on disk leaves a window — `Session::open` returning, `record_cycle_action`
@@ -1082,14 +1088,29 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let repo_config = RepoConfig::load_optional(&repo_root)?
         .unwrap_or_else(|| RepoConfig::default_for(&repo_root));
     let live_packet = session.dir.join("current.md");
-    let composed = crate::adapters::agents::compose_launch_prompt(
+    let mut composed = crate::adapters::agents::compose_launch_prompt(
         program,
         &entry.markdown,
         &live_packet,
         args.task.as_deref(),
         &repo_config.agents,
     );
+    if let (Some(prompt), Some(briefing)) = (&mut composed, &args.briefing) {
+        prompt.push_str(&format!("\n{briefing}\n"));
+    }
     match &composed {
+        Some(_)
+            if crate::adapters::agents::idle_codex(
+                program,
+                rest,
+                args.task.is_some(),
+                &repo_config.agents,
+            ) =>
+        {
+            eprintln!(
+                "toimija run: delivery: Codex session instructions; waiting for your first task"
+            );
+        }
         Some(_) => eprintln!(
             "toimija run: delivery: launch prompt with the packet inlined for `{program}`"
         ),
@@ -1106,7 +1127,21 @@ fn run_run(args: RunArgs) -> Result<i32> {
     // The prompt travels where the agent reads it: last positional argument,
     // or after the flag its `agents:` entry names.
     let handshake = session.env(&repo_root);
-    let mut child_args = match crate::adapters::agents::shell_env_args(program, &handshake) {
+    let child_args = match crate::adapters::agents::shell_env_args(program, &handshake).and_then(
+        |mut child_args| {
+            child_args.extend_from_slice(rest);
+            if let Some(prompt) = composed {
+                child_args.extend(crate::adapters::agents::launch_args(
+                    program,
+                    rest,
+                    prompt,
+                    args.task.is_some(),
+                    &repo_config.agents,
+                )?);
+            }
+            Ok(child_args)
+        },
+    ) {
         Ok(args) => args,
         Err(error) => {
             stop.store(true, Ordering::Relaxed);
@@ -1115,18 +1150,6 @@ fn run_run(args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
-    child_args.extend_from_slice(rest);
-    if let Some(prompt) = composed {
-        match crate::adapters::agents::prompt_style(program, &repo_config.agents)
-            .unwrap_or(crate::adapters::agents::PromptStyle::Positional)
-        {
-            crate::adapters::agents::PromptStyle::Positional => child_args.push(prompt),
-            crate::adapters::agents::PromptStyle::Flag(flag) => {
-                child_args.push(flag);
-                child_args.push(prompt);
-            }
-        }
-    }
     eprintln!(
         "toimija run: launching `{program}` (session {}, watching for changes)",
         session.id
@@ -1568,13 +1591,23 @@ fn run_outside_repo(
         .expect("clap `required = true` guarantees at least one argument");
     // No repo, so no repo.yaml `agents:` table: only the built-in agents.
     let agents = std::collections::BTreeMap::new();
-    let composed = crate::adapters::agents::compose_outside_prompt(
+    let mut composed = crate::adapters::agents::compose_outside_prompt(
         program,
         folder,
         args.task.as_deref(),
         &agents,
     );
+    if let (Some(prompt), Some(briefing)) = (&mut composed, &args.briefing) {
+        prompt.push_str(&format!("\n{briefing}\n"));
+    }
     match &composed {
+        Some(_)
+            if crate::adapters::agents::idle_codex(program, rest, args.task.is_some(), &agents) =>
+        {
+            eprintln!(
+                "toimija run: delivery: Codex session instructions; waiting for your first task"
+            );
+        }
         Some(_) => eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`"),
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
@@ -1587,7 +1620,21 @@ fn run_outside_repo(
         }
     }
     let handshake = session.env_outside();
-    let mut child_args = match crate::adapters::agents::shell_env_args(program, &handshake) {
+    let child_args = match crate::adapters::agents::shell_env_args(program, &handshake).and_then(
+        |mut child_args| {
+            child_args.extend_from_slice(rest);
+            if let Some(prompt) = composed {
+                child_args.extend(crate::adapters::agents::launch_args(
+                    program,
+                    rest,
+                    prompt,
+                    args.task.is_some(),
+                    &agents,
+                )?);
+            }
+            Ok(child_args)
+        },
+    ) {
         Ok(args) => args,
         Err(error) => {
             stop_heartbeat();
@@ -1595,18 +1642,6 @@ fn run_outside_repo(
             return Err(error);
         }
     };
-    child_args.extend_from_slice(rest);
-    if let Some(prompt) = composed {
-        match crate::adapters::agents::prompt_style(program, &agents)
-            .unwrap_or(crate::adapters::agents::PromptStyle::Positional)
-        {
-            crate::adapters::agents::PromptStyle::Positional => child_args.push(prompt),
-            crate::adapters::agents::PromptStyle::Flag(flag) => {
-                child_args.push(flag);
-                child_args.push(prompt);
-            }
-        }
-    }
     eprintln!(
         "toimija run: launching `{program}` (session {}, outside any repository)",
         session.id

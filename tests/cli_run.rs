@@ -792,7 +792,14 @@ fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
             .current_dir(folder.path())
             .env("TOIMIJA_STATE_DIR", state.path())
             .env("GIT_CEILING_DIRECTORIES", folder.path().parent().unwrap())
-            .args(["run", "--intent", "handshake", "--"])
+            .args([
+                "run",
+                "--intent",
+                "handshake",
+                "--task",
+                "check handshake",
+                "--",
+            ])
             .arg(&stub)
             .args(["exec", "--model", "example"])
             .output()
@@ -828,6 +835,63 @@ fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
                 serde_json::from_str::<String>(encoded).unwrap(),
                 state.path().display().to_string()
             );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn idle_codex_gets_context_without_a_startup_message() {
+    use std::os::unix::fs::PermissionsExt;
+    for in_repo in [false, true] {
+        for task in [None, Some(""), Some("fix the parser")] {
+            let folder = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            if in_repo {
+                init_git_repo(folder.path());
+            }
+            let stub = folder.path().join("codex");
+            fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' \"$@\" > captured-args\nprintf '%s\\n' '[{\"role\":\"developer\",\"content\":[{\"text\":\"Native permissions and configured instructions.\"}]}]'\n").unwrap();
+            fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut command = Command::cargo_bin("toimija").unwrap();
+            command
+                .current_dir(folder.path())
+                .env("TOIMIJA_STATE_DIR", state.path())
+                .env("GIT_CEILING_DIRECTORIES", folder.path().parent().unwrap())
+                .args([
+                    "run",
+                    "--intent",
+                    "test idle startup",
+                    "--briefing",
+                    "Keep all rules.\nQuotes: \"x\" and \\ paths.",
+                ]);
+            if let Some(task) = task {
+                command.args(["--task", task]);
+            }
+            command.arg("--").arg(&stub).assert().success();
+            let captured = fs::read_to_string(folder.path().join("captured-args")).unwrap();
+            let lines: Vec<_> = captured.lines().collect();
+            let has_task = task.is_some_and(|task| !task.is_empty());
+            let prompt = if has_task {
+                assert!(!captured.contains("developer_instructions="));
+                assert!(captured.contains("Task: fix the parser"));
+                captured.clone()
+            } else {
+                assert!(
+                    lines
+                        .chunks(2)
+                        .all(|pair| pair.len() == 2 && pair[0] == "-c")
+                );
+                let encoded = lines
+                    .iter()
+                    .find_map(|line| line.strip_prefix("developer_instructions="))
+                    .unwrap();
+                assert!(encoded.contains("Native permissions and configured instructions."));
+                serde_json::from_str::<String>(encoded).unwrap()
+            };
+            assert!(prompt.contains("Keep all rules.\nQuotes: \"x\" and \\ paths."));
+            assert_eq!(prompt.contains("# Toimija Context"), in_repo);
+            assert_eq!(prompt.contains("outside any Git repository"), !in_repo);
         }
     }
 }

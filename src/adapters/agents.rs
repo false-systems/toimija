@@ -1,8 +1,9 @@
 //! Agent launch adapters (proposal 0006 Part C): argv composition for known
 //! agent CLIs. The composed launch prompt is the one delivery channel with a
 //! guarantee — the agent cannot not-see its own argv — so under `toimija run`
-//! the packet is in context by construction, not by instruction. Pure string
-//! work: no protocol, no IPC, no SDK.
+//! the packet is in context by construction. Idle Codex launches use its local
+//! prompt renderer to preserve native instructions before adding the packet;
+//! no model request, protocol, IPC, or SDK is needed.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -75,6 +76,110 @@ fn basename(program: &str) -> &str {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(program)
+}
+
+/// An idle Codex TUI needs context, not a user message that starts a model turn.
+/// Other agents retain their configured prompt delivery.
+pub fn idle_codex(
+    program: &str,
+    rest: &[String],
+    has_task: bool,
+    configured: &BTreeMap<String, AgentPromptConfig>,
+) -> bool {
+    if basename(program) != "codex" || has_task || configured.contains_key("codex") {
+        return false;
+    }
+    // Only inspect interactive launches. Appending `debug prompt-input` to
+    // `codex exec` would itself submit a task, defeating idle startup.
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--" | "-h" | "--help" | "-V" | "--version" => return false,
+            "-c"
+            | "--config"
+            | "-m"
+            | "--model"
+            | "-p"
+            | "--profile"
+            | "--local-provider"
+            | "-s"
+            | "--sandbox"
+            | "-C"
+            | "--cd"
+            | "--add-dir"
+            | "--enable"
+            | "--disable"
+            | "-a"
+            | "--ask-for-approval"
+            | "--remote"
+            | "--remote-auth-token-env"
+            | "-i"
+            | "--image" => {
+                if args.next().is_none() {
+                    return false;
+                }
+            }
+            value if value.starts_with('-') => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+pub fn launch_args(
+    program: &str,
+    rest: &[String],
+    prompt: String,
+    has_task: bool,
+    configured: &BTreeMap<String, AgentPromptConfig>,
+) -> anyhow::Result<Vec<String>> {
+    if idle_codex(program, rest, has_task, configured) {
+        use anyhow::Context;
+        // This slot replaces Codex's first developer block, including generated
+        // permission/skill guidance. Ask Codex to resolve it, with the same
+        // profile/options, before appending ours. This makes no model request.
+        let output = std::process::Command::new(program)
+            .args(rest)
+            .args(["debug", "prompt-input"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .context("could not render Codex instructions for idle startup; use --task for noninteractive commands")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "could not preserve Codex instructions for idle startup: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let items: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+            .context("Codex prompt renderer did not return a message list")?;
+        let mut instructions = String::new();
+        if let Some(message) = items.iter().find(|item| item["role"] == "developer") {
+            for part in message["content"]
+                .as_array()
+                .context("Codex developer instructions have no content array")?
+            {
+                instructions.push_str(
+                    part["text"]
+                        .as_str()
+                        .context("Codex developer instructions contain non-text content")?,
+                );
+                instructions.push('\n');
+            }
+        }
+        instructions.push_str(&prompt);
+        return Ok(vec![
+            "-c".into(),
+            format!(
+                "developer_instructions={}",
+                serde_json::to_string(&instructions)?
+            ),
+        ]);
+    }
+    Ok(
+        match prompt_style(program, configured).unwrap_or(PromptStyle::Positional) {
+            PromptStyle::Positional => vec![prompt],
+            PromptStyle::Flag(flag) => vec![flag, prompt],
+        },
+    )
 }
 
 /// Codex may execute tools in a pre-existing daemon rather than a descendant
@@ -187,6 +292,60 @@ mod tests {
         assert!(is_known_agent("gemini", &no_config()));
         assert!(!is_known_agent("sh", &no_config()));
         assert!(!is_known_agent("/usr/bin/claudette", &no_config()));
+    }
+
+    #[test]
+    fn idle_delivery_preserves_explicit_agent_configuration() {
+        let prompt = "context".to_string();
+        assert_eq!(
+            launch_args(
+                "/not-installed/codex",
+                &["exec".into()],
+                prompt.clone(),
+                false,
+                &no_config()
+            )
+            .unwrap(),
+            vec!["context"]
+        );
+        assert!(!idle_codex("codex", &["exec".into()], false, &no_config()));
+        assert!(!idle_codex(
+            "codex",
+            &["resume".into()],
+            false,
+            &no_config()
+        ));
+        assert!(!idle_codex(
+            "codex",
+            &["--help".into()],
+            false,
+            &no_config()
+        ));
+        assert!(idle_codex(
+            "codex",
+            &["-p".into(), "exec".into(), "--no-alt-screen".into()],
+            false,
+            &no_config()
+        ));
+        assert_eq!(
+            launch_args("codex", &[], prompt.clone(), true, &no_config()).unwrap(),
+            vec!["context"]
+        );
+        assert_eq!(
+            launch_args("claude", &[], prompt.clone(), false, &no_config()).unwrap(),
+            vec!["context"]
+        );
+        assert_eq!(
+            launch_args(
+                "codex",
+                &[],
+                prompt,
+                false,
+                &config(&[("codex", "--message")])
+            )
+            .unwrap(),
+            vec!["--message", "context"]
+        );
     }
 
     #[test]

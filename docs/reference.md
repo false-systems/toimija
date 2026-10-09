@@ -123,6 +123,17 @@ launches the agent command, stops watching when the agent exits, and returns the
 agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
 143).
 
+For the built-in Codex adapter, omitting `--task` (or giving a blank task)
+delivers the packet and optional `--briefing` as per-session
+`developer_instructions`, without a positional message. The TUI waits for
+the first user task without requesting a model acknowledgement. Codex's local
+`debug prompt-input` renderer resolves the existing developer block with the
+same launch options; Toimija preserves it before appending the packet and
+briefing. A renderer failure aborts launch rather than dropping instructions.
+Explicit tasks keep positional delivery, and an `agents.codex` configuration keeps its
+declared prompt style. Subcommands such as `codex exec` and `codex resume`
+retain prompt delivery rather than being inspected as interactive launches.
+
 **Wrapped means used** (proposal 0006). `run` refuses to launch without
 `--intent`; `--intent unknown` remains the explicit escape hatch for
 exploratory sessions. For known agents (`claude`, `codex`, `gemini`
