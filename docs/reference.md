@@ -213,6 +213,16 @@ expected source edits do not require a full re-read. Before commit or handoff,
 `toimija verify` is the freshness boundary. `toimija snippet preflight` carries
 the same rule.
 
+Codex receives the same generated values as individual
+`-c shell_environment_policy.set.<name>=<value>` arguments, so tool commands
+in its persistent daemon receive this run's identity rather than depending on
+the daemon's startup environment. Values are quoted as TOML-compatible strings;
+unrepresentable non-UTF-8 values fail before launching. No global Codex config,
+inheritance policy or sandbox setting is changed. Other agents retain the
+ordinary environment handshake. Outside repositories, `TOIMIJA_STATE_DIR` is
+also set to the resolved session-state location, so `intent` finds the marker
+even when the daemon started with a different state directory.
+
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
 agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
 auto-closes on exit. The marker is what `toimija sessions` reads (below) and the

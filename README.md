@@ -131,6 +131,13 @@ harness without patching toimija. Other commands receive the session paths
 through environment variables and are reported honestly as environment-only
 delivery.
 
+For Codex, `run` also carries its generated handshake through per-session
+`shell_environment_policy.set` overrides. Tool commands may execute in an
+already-running Codex daemon, which cannot inherit the terminal wrapper's
+environment. This passes only this run's Toimija identity and paths; it does not
+change global configuration, environment filtering, or sandbox permissions.
+Restart an existing Codex session through the updated wrapper to receive it.
+
 While the harness owns the terminal, toimija seals its own stdout and stderr
 onto `.toimija/sessions/<id>/diagnostics.log` at the file-descriptor level
 and hands the saved terminal to the wrapped command: watcher output, refresh

@@ -770,6 +770,68 @@ fn run_hands_the_child_a_per_session_handshake() {
     assert_eq!(lines.next(), captured.lines().nth(1));
 }
 
+#[cfg(unix)]
+#[test]
+fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
+    use std::os::unix::fs::PermissionsExt;
+    for in_repo in [false, true] {
+        let folder = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        if in_repo {
+            init_git_repo(folder.path());
+        }
+        let stub = folder.path().join("codex");
+        fs::write(
+            &stub,
+            "#!/bin/sh\nprintf '%s\\n' \"$TOIMIJA_SESSION\" \"$TOIMIJA_LIVE\" \"$@\" > captured-handshake\n",
+        )
+        .unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(folder.path())
+            .env("TOIMIJA_STATE_DIR", state.path())
+            .env("GIT_CEILING_DIRECTORIES", folder.path().parent().unwrap())
+            .args(["run", "--intent", "handshake", "--"])
+            .arg(&stub)
+            .args(["exec", "--model", "example"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = fs::read_to_string(folder.path().join("captured-handshake")).unwrap();
+        let lines: Vec<_> = stdout.lines().collect();
+        for (key, expected) in [("TOIMIJA_SESSION", lines[0]), ("TOIMIJA_LIVE", lines[1])] {
+            let prefix = format!("shell_environment_policy.set.{key}=");
+            let encoded = lines
+                .iter()
+                .find_map(|line| line.strip_prefix(&prefix))
+                .unwrap();
+            assert_eq!(serde_json::from_str::<String>(encoded).unwrap(), expected);
+        }
+        assert!(
+            lines
+                .windows(3)
+                .any(|w| w == ["exec", "--model", "example"])
+        );
+        if !in_repo {
+            let encoded = lines
+                .iter()
+                .find_map(|line| {
+                    line.strip_prefix("shell_environment_policy.set.TOIMIJA_STATE_DIR=")
+                })
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<String>(encoded).unwrap(),
+                state.path().display().to_string()
+            );
+        }
+    }
+}
+
 /// The facts a wrapped command can read about where it stands: the session's
 /// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
 /// point inside the sealed session packet (`session.execution.repository`),

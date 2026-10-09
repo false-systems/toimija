@@ -1105,7 +1105,17 @@ fn run_run(args: RunArgs) -> Result<i32> {
     }
     // The prompt travels where the agent reads it: last positional argument,
     // or after the flag its `agents:` entry names.
-    let mut child_args = rest.to_vec();
+    let handshake = session.env(&repo_root);
+    let mut child_args = match crate::adapters::agents::shell_env_args(program, &handshake) {
+        Ok(args) => args,
+        Err(error) => {
+            stop.store(true, Ordering::Relaxed);
+            let _ = watcher.join();
+            close_session_after_startup_failure(&repo_root, &mut session);
+            return Err(error);
+        }
+    };
+    child_args.extend_from_slice(rest);
     if let Some(prompt) = composed {
         match crate::adapters::agents::prompt_style(program, &repo_config.agents)
             .unwrap_or(crate::adapters::agents::PromptStyle::Positional)
@@ -1125,7 +1135,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
     child
         .args(&child_args)
         .current_dir(&repo_root)
-        .envs(session.env(&repo_root));
+        .envs(handshake);
     for retired in session::RETIRED_ENV {
         child.env_remove(retired);
     }
@@ -1576,7 +1586,16 @@ fn run_outside_repo(
             }
         }
     }
-    let mut child_args = rest.to_vec();
+    let handshake = session.env_outside();
+    let mut child_args = match crate::adapters::agents::shell_env_args(program, &handshake) {
+        Ok(args) => args,
+        Err(error) => {
+            stop_heartbeat();
+            close_session_after_startup_failure(&state_root, &mut session);
+            return Err(error);
+        }
+    };
+    child_args.extend_from_slice(rest);
     if let Some(prompt) = composed {
         match crate::adapters::agents::prompt_style(program, &agents)
             .unwrap_or(crate::adapters::agents::PromptStyle::Positional)
@@ -1593,10 +1612,7 @@ fn run_outside_repo(
         session.id
     );
     let mut child = std::process::Command::new(program);
-    child
-        .args(&child_args)
-        .current_dir(folder)
-        .envs(session.env_outside());
+    child.args(&child_args).current_dir(folder).envs(handshake);
     for cleared in session::RETIRED_ENV.iter().chain(session::REPO_ONLY_ENV) {
         child.env_remove(cleared);
     }
