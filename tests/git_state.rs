@@ -690,3 +690,53 @@ fn ahead_and_behind_are_unknown_with_nothing_to_compare_against() {
         "{markdown}"
     );
 }
+
+#[test]
+fn init_ignores_the_packet_so_the_first_refresh_leaves_the_tree_clean() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".toimija/.gitignore"));
+    // What init writes is committed with the repo; what refresh writes is not.
+    run_git(temp.path(), &["add", ".toimija"]);
+    run_git(temp.path(), &["commit", "-m", "adopt toimija"]);
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("refresh")
+        .assert()
+        .success();
+
+    let status = common::git_at(temp.path())
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "");
+    let packet: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(packet["git"]["dirty"], false, "{}", packet["git"]);
+
+    // A second init keeps the file as it is.
+    let first = fs::read_to_string(temp.path().join(".toimija/.gitignore")).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".toimija/.gitignore")).unwrap(),
+        first
+    );
+}

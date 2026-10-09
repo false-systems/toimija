@@ -23,6 +23,12 @@ fn init_repo(path: &Path) {
         "repo:\n  name: demo\n  role: fixture\nboundaries:\n  - stay inside fixture\n",
     )
     .unwrap();
+    // Git ignores what a refresh writes, as `toimija init` arranges.
+    fs::write(
+        path.join(".toimija/.gitignore"),
+        "/current.md\n/current.json\n/sessions/\n/history.jsonl\n/history.lock\n",
+    )
+    .unwrap();
     run_git(path, &["add", "."]);
     run_git(path, &["commit", "-m", "init"]);
 }

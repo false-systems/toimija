@@ -19,7 +19,7 @@ while the agent works, and exits with the wrapped command's status.
 ```bash
 cargo install --path .          # or grab the release artifact
 cd /path/to/repo
-toimija init                    # once per repo: seed .toimija/repo.yaml
+toimija init                    # once per repo: seed .toimija/repo.yaml and .gitignore
 toimija run --intent "<why>" -- claude   # every time: wrap the agent
 ```
 
@@ -631,7 +631,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`; `--json` for tools. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
-| `init` | Create `.toimija/repo.yaml` if missing. |
+| `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` (which keeps Git away from the packet, sessions, history and temp files) if missing. |
 | `snippet preflight\|script` | Print suggested preflight text / entry script; writes no files. |
 
 `--for-diff` and `--budget` tune the packet; `--json` switches the print commands
@@ -797,6 +797,8 @@ drift guard — no AI, no semantic comparison. It checks:
 - `.toimija/repo.yaml` exists and parses
 - `repo.name`, `repo.role`, and `boundaries` are non-empty
 - a validation plan exists (configured or inferable from the repo kind)
+- Git ignores what a refresh or a session writes (`.toimija/current.*`,
+  `sessions/`, `history.*`), by whatever ignore rules it reads (`git check-ignore`)
 - every `context.important_docs` path exists on disk
 - an agent doc still routes work through the `toimija enter` preflight
 - each boundary sentence still appears in the agent docs

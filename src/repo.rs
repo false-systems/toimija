@@ -388,6 +388,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             "validation unknown"
         },
     ));
+    checks.push(packet_ignored_check(runner, &repo_root));
     checks.push(file_check(&repo_root, "AGENTS.md", "AGENTS.md"));
     let claude = repo_root.join("CLAUDE.md");
     if claude.exists() {
@@ -598,6 +599,56 @@ fn join_paths(paths: &[&PathBuf]) -> String {
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// What a refresh or a session writes, as `(path Git is asked about, label)`.
+/// A path inside `sessions/` stands for the directory: Git answers for it by
+/// its parent's rule.
+const PACKET_PATHS: [(&str, &str); 5] = [
+    (".toimija/current.md", ".toimija/current.md"),
+    (".toimija/current.json", ".toimija/current.json"),
+    (".toimija/sessions/0-0/current.json", ".toimija/sessions/"),
+    (".toimija/history.jsonl", ".toimija/history.jsonl"),
+    (".toimija/history.lock", ".toimija/history.lock"),
+];
+
+/// Whether Git ignores what Toimija generates, by whatever rules it reads (the
+/// repo's `.gitignore` files, `info/exclude`, the global excludes). A packet
+/// Git can see makes the first refresh report its own files as dirty work —
+/// and a tracked one changes on every refresh.
+fn packet_ignored_check(runner: &impl CommandRunner, repo_root: &Path) -> DoctorCheck {
+    let mut unignored = Vec::new();
+    for (probe, label) in PACKET_PATHS {
+        match runner.run(repo_root, "git", &["check-ignore", "-q", probe]) {
+            Ok(output) if output.status == 0 => {}
+            Ok(output) if output.status == 1 => unignored.push(label),
+            _ => {
+                return check(
+                    "packet ignored",
+                    DoctorStatus::Warning,
+                    "could not ask Git whether it ignores the packet (`git check-ignore` failed)",
+                );
+            }
+        }
+    }
+    if unignored.is_empty() {
+        check(
+            "packet ignored",
+            DoctorStatus::Ok,
+            "Git ignores the packet, sessions and history",
+        )
+    } else {
+        check(
+            "packet ignored",
+            DoctorStatus::Warning,
+            &format!(
+                "Git does not ignore {}; a refresh shows them as untracked work — \
+                 `toimija init` writes {} (or add them to your ignore rules)",
+                unignored.join(", "),
+                crate::config::IGNORE_PATH
+            ),
+        )
+    }
 }
 
 fn file_check(repo_root: &Path, name: &str, path: &str) -> DoctorCheck {
