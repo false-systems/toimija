@@ -263,9 +263,9 @@ pub enum Command {
     /// The verify-before-read gate: checks the packet's consistency fingerprint
     /// against the working tree. Inside `run`, it selects that session's packet;
     /// otherwise it selects `.toimija/current.json`. `--packet` overrides the
-    /// selection. Use this before every packet read; it exits non-zero (with
-    /// reasons) when the packet is stale, so a caller refreshes before trusting
-    /// it. Read-only; no network.
+    /// selection. Use this before every packet read; it exits non-zero (naming
+    /// the reason) when the packet is stale or briefs a session that has ended,
+    /// so a caller refreshes before trusting it. Read-only; no network.
     #[command(
         after_help = "Examples:\n  toimija verify --json || toimija refresh   # verify the ambient packet\n  \
         toimija verify --packet .toimija/current.json --json  # select explicitly"
@@ -458,7 +458,11 @@ pub struct AuditPlanArgs {
 
 #[derive(Debug, Args)]
 pub struct VerifyArgs {
-    /// Emit the verdict as JSON (`{ "consistent": bool, "reasons": [...] }`).
+    /// Emit the verdict as JSON: `{ "status": "verified", "packet_path", "token",
+    /// "artifact_digest", ... }`, or on failure a non-`verified` status
+    /// (`stale_packet`, `session_not_live`, `missing_packet`, `invalid_packet`,
+    /// `sauma_digest_mismatch`, `unsafe_git_operation`, ...) with its details.
+    /// The exit code is 0 only for `verified`.
     #[arg(long)]
     pub json: bool,
     /// Packet to verify instead of the ambient session or repo-level packet.
