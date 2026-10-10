@@ -59,7 +59,7 @@ fn write_strict_ready_rust_repo(path: &Path) {
     // Git ignores what a refresh writes, as `toimija init` arranges.
     fs::write(
         path.join(".toimija/.gitignore"),
-        "/current.md\n/current.json\n/sessions/\n/history.jsonl\n/history.lock\n",
+        "/current.md\n/current.json\n/sessions/\n/history.jsonl\n/history.lock\n/runs/\n/snapshots/\n",
     )
     .unwrap();
 }
@@ -415,6 +415,33 @@ fn doctor_warns_when_git_would_list_the_packet() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "ok: packet ignored - Git ignores the packet, sessions and history",
+            "ok: packet ignored - Git ignores the packet, sessions, history, runs and snapshots",
+        ));
+}
+
+#[test]
+fn doctor_checks_every_directory_init_ignores() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    write_ready_rust_repo(temp.path());
+    // The exact-name rules most repos carry: no `runs/`, no `snapshots/`.
+    // `snapshot --lease` and harness transcripts would then show up as
+    // untracked work, which a pre-commit hook refuses.
+    fs::write(
+        temp.path().join(".gitignore"),
+        ".toimija/current.md\n.toimija/current.json\n.toimija/sessions/\n.toimija/history.jsonl\n.toimija/history.lock\n",
+    )
+    .unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "warn: packet ignored - Git does not ignore .toimija/runs/, .toimija/snapshots/;",
         ));
 }

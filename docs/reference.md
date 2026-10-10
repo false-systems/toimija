@@ -797,8 +797,9 @@ drift guard — no AI, no semantic comparison. It checks:
 - `.toimija/repo.yaml` exists and parses
 - `repo.name`, `repo.role`, and `boundaries` are non-empty
 - a validation plan exists (configured or inferable from the repo kind)
-- Git ignores what a refresh or a session writes (`.toimija/current.*`,
-  `sessions/`, `history.*`), by whatever ignore rules it reads (`git check-ignore`)
+- Git ignores every path `init`'s `.toimija/.gitignore` names (`current.*`,
+  `sessions/`, `history.*`, `runs/`, `snapshots/`), by whatever ignore rules it
+  reads (`git check-ignore`)
 - every `context.important_docs` path exists on disk
 - an agent doc still routes work through the `toimija enter` preflight
 - each boundary sentence still appears in the agent docs

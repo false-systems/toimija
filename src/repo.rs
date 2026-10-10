@@ -601,16 +601,26 @@ fn join_paths(paths: &[&PathBuf]) -> String {
         .join(", ")
 }
 
-/// What a refresh or a session writes, as `(path Git is asked about, label)`.
-/// A path inside `sessions/` stands for the directory: Git answers for it by
-/// its parent's rule.
-const PACKET_PATHS: [(&str, &str); 5] = [
-    (".toimija/current.md", ".toimija/current.md"),
-    (".toimija/current.json", ".toimija/current.json"),
-    (".toimija/sessions/0-0/current.json", ".toimija/sessions/"),
-    (".toimija/history.jsonl", ".toimija/history.jsonl"),
-    (".toimija/history.lock", ".toimija/history.lock"),
-];
+/// Everything `init` ignores, as `(path Git is asked about, label)`: one probe
+/// per rule in [`crate::config::IGNORE_RULES`], so the check and the rules
+/// cannot drift. A directory rule is probed with a file inside it, which Git
+/// answers for by the directory's rule. `tmp/` is left out: it ignores itself.
+fn packet_paths() -> Vec<(String, String)> {
+    crate::config::IGNORE_RULES
+        .lines()
+        .filter_map(|line| line.strip_prefix('/'))
+        .filter(|rule| *rule != "tmp/")
+        .map(|rule| {
+            let label = format!(".toimija/{rule}");
+            let probe = if rule.ends_with('/') {
+                format!("{label}0")
+            } else {
+                label.clone()
+            };
+            (probe, label)
+        })
+        .collect()
+}
 
 /// Whether Git ignores what Toimija generates, by whatever rules it reads (the
 /// repo's `.gitignore` files, `info/exclude`, the global excludes). A packet
@@ -618,8 +628,8 @@ const PACKET_PATHS: [(&str, &str); 5] = [
 /// and a tracked one changes on every refresh.
 fn packet_ignored_check(runner: &impl CommandRunner, repo_root: &Path) -> DoctorCheck {
     let mut unignored = Vec::new();
-    for (probe, label) in PACKET_PATHS {
-        match runner.run(repo_root, "git", &["check-ignore", "-q", probe]) {
+    for (probe, label) in packet_paths() {
+        match runner.run(repo_root, "git", &["check-ignore", "-q", &probe]) {
             Ok(output) if output.status == 0 => {}
             Ok(output) if output.status == 1 => unignored.push(label),
             _ => {
@@ -635,7 +645,7 @@ fn packet_ignored_check(runner: &impl CommandRunner, repo_root: &Path) -> Doctor
         check(
             "packet ignored",
             DoctorStatus::Ok,
-            "Git ignores the packet, sessions and history",
+            "Git ignores the packet, sessions, history, runs and snapshots",
         )
     } else {
         check(

@@ -26,7 +26,7 @@ fn init_repo(path: &Path) {
     // Git ignores what a refresh writes, as `toimija init` arranges.
     fs::write(
         path.join(".toimija/.gitignore"),
-        "/current.md\n/current.json\n/sessions/\n/history.jsonl\n/history.lock\n",
+        "/current.md\n/current.json\n/sessions/\n/history.jsonl\n/history.lock\n/runs/\n/snapshots/\n",
     )
     .unwrap();
     run_git(path, &["add", "."]);

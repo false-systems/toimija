@@ -143,24 +143,47 @@ fn replace_staged(
         staging_dir(repo_root).with_context(|| format!("failed to write {}", path.display()))?;
     crate::atomic_write::replace_before_rename(path, &staging, contents, before_rename)
         .map_err(anyhow::Error::from)
-        .with_context(|| format!("failed to write {}", path.display()))
+        .with_context(|| {
+            format!(
+                "failed to write {} (staged in {})",
+                path.display(),
+                staging.display()
+            )
+        })
 }
 
 /// The staging directory, made a real directory and given its `.gitignore`
-/// before any temp file is created in it — so there is no moment at which Git
-/// could list one. An existing `.gitignore` is left as it is; one that is a
-/// symlink is never followed (`O_EXCL` refuses to create through it).
+/// before any temp file is created in it — so Git never lists one. An
+/// existing `.gitignore` that says anything but `*` (emptied by a crash
+/// between create and write, or by hand) is rewritten in place. A symlink
+/// there is refused, never followed.
 fn staging_dir(repo_root: &Path) -> Result<PathBuf> {
-    use std::io::Write as _;
+    use std::io::{Read as _, Write as _};
     let staging = repo_root.join(STAGING_DIR);
     ensure_dir(repo_root, &staging)?;
     let ignore = staging.join(".gitignore");
-    match open_nofollow(&ignore, OpenOptions::new().write(true).create_new(true)) {
-        Ok(mut file) => file
-            .write_all(STAGING_IGNORE)
-            .with_context(|| format!("failed to write {}", ignore.display()))?,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(refusal_or(repo_root, &ignore, error, "create")),
+    let write = |options: &mut OpenOptions| -> Result<()> {
+        let mut file = open_nofollow(&ignore, options)
+            .map_err(|error| refusal_or(repo_root, &ignore, error, "write"))?;
+        file.write_all(STAGING_IGNORE)
+            .with_context(|| format!("failed to write {}", ignore.display()))
+    };
+    match write(OpenOptions::new().write(true).create_new(true)) {
+        Ok(()) => {}
+        Err(error)
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|io| io.kind() == io::ErrorKind::AlreadyExists) =>
+        {
+            let mut current = Vec::new();
+            open_nofollow(&ignore, OpenOptions::new().read(true))
+                .and_then(|mut file| file.read_to_end(&mut current))
+                .map_err(|error| refusal_or(repo_root, &ignore, error, "read"))?;
+            if current != STAGING_IGNORE {
+                write(OpenOptions::new().write(true).truncate(true))?;
+            }
+        }
+        Err(error) => return Err(error),
     }
     Ok(staging)
 }
@@ -402,6 +425,38 @@ mod staging_tests {
             fs::read(repo.join(STAGING_DIR).join(".gitignore")).unwrap(),
             STAGING_IGNORE
         );
+    }
+
+    #[test]
+    fn an_emptied_staging_ignore_file_is_repaired_before_the_next_write() {
+        // A crash or a full disk between creating the file and writing it, or
+        // a hand edit, leaves it empty: Git would list temp files again.
+        let runner = ProcessCommandRunner;
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        if runner
+            .run(repo, "git", &["init", "-q"])
+            .map_or(true, |output| output.status != 0)
+        {
+            return;
+        }
+        ensure_dir(repo, &repo.join(STAGING_DIR)).unwrap();
+        let ignore = repo.join(STAGING_DIR).join(".gitignore");
+        fs::write(&ignore, b"").unwrap();
+
+        let mut listed = String::new();
+        replace_staged(repo, &repo.join(".toimija/current.md"), b"x", |_| {
+            listed = runner
+                .run(repo, "git", &["ls-files", "--others", "--exclude-standard"])
+                .unwrap()
+                .stdout_lossy()
+                .into_owned();
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(fs::read(&ignore).unwrap(), STAGING_IGNORE);
+        assert!(!listed.contains(".toimija/tmp"), "{listed:?}");
     }
 
     #[test]
