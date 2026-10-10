@@ -123,13 +123,35 @@ marker lives in the machine-local state directory (`$TOIMIJA_STATE_DIR`, else
 a sibling, so the agent should declare its scope. A cycle leg, `--for-diff`,
 and `--budget` need a repository and are refused there.
 
-Known agents such as `codex`, `claude`, and `gemini` receive the packet in their
+**Idle Codex startup.** Without `--task` (or with a blank task), the built-in
+Codex adapter supplies the packet and optional `--briefing` through the
+per-session `developer_instructions` configuration instead of a positional
+prompt. Codex opens and waits for your first message: no acknowledgement turn
+is requested. Codex adds that setting to its own developer instructions
+(skills, permissions, collaboration mode), so the slot carries only the packet
+and the briefing; a `developer_instructions` set in your own Codex config is
+replaced for that session. The first task still has the full context. Explicit `agents.codex` prompt
+configuration retains its configured delivery. Subcommands such as `codex exec`
+and `codex resume` retain prompt delivery; only interactive launches wait.
+
+Known agents such as `codex`, `claude`, and `gemini` otherwise receive the packet in their
 launch prompt. An `agents:` entry in `.toimija/repo.yaml` teaches `run` how
 any other CLI accepts it — `prompt: positional`, or a flag such as
 `prompt: --message` — so the packet (and `--task`) can be inlined for any
 harness without patching toimija. Other commands receive the session paths
 through environment variables and are reported honestly as environment-only
 delivery.
+
+For Codex, `run` also carries its generated handshake through per-session
+`shell_environment_policy.set` overrides. Tool commands may execute in an
+already-running Codex daemon, which cannot inherit the terminal wrapper's
+environment. This passes only this run's Toimija identity and paths; it does not
+change global configuration, environment filtering, or sandbox permissions.
+Variables `run` removes from the agent's environment (the retired ones, and
+outside a repository the repository paths) are set empty for Codex tools, since
+`set` cannot remove a variable the daemon already has; toimija reads an empty
+handshake value as unset.
+Restart an existing Codex session through the updated wrapper to receive it.
 
 While the harness owns the terminal, toimija seals its own stdout and stderr
 onto `.toimija/sessions/<id>/diagnostics.log` at the file-descriptor level
@@ -163,6 +185,13 @@ available at `$FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the sealed session
 packet carries it as `session.execution.repository`.
 
 ## The live packet
+
+The delivered packet replaces repository discovery: use its Git facts, read
+order and validation plan directly, then read the named files for unresolved
+task details. Refresh when those facts become stale or contradictory. A session
+outside a repository with no concrete task waits for work; it does not spend
+model calls on startup-only discovery or bookkeeping. Scope is still declared
+before repository work, and verification before commit or handoff still applies.
 
 Toimija writes human-readable Markdown and complete machine-readable JSON:
 

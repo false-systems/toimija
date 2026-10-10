@@ -770,6 +770,178 @@ fn run_hands_the_child_a_per_session_handshake() {
     assert_eq!(lines.next(), captured.lines().nth(1));
 }
 
+#[cfg(unix)]
+#[test]
+fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
+    use std::os::unix::fs::PermissionsExt;
+    for in_repo in [false, true] {
+        let folder = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        if in_repo {
+            init_git_repo(folder.path());
+        }
+        let stub = folder.path().join("codex");
+        fs::write(
+            &stub,
+            "#!/bin/sh\nprintf '%s\\n' \"$TOIMIJA_SESSION\" \"$TOIMIJA_LIVE\" \"$@\" > captured-handshake\n",
+        )
+        .unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(folder.path())
+            .env("TOIMIJA_STATE_DIR", state.path())
+            .env("GIT_CEILING_DIRECTORIES", folder.path().parent().unwrap())
+            .args([
+                "run",
+                "--intent",
+                "handshake",
+                "--task",
+                "check handshake",
+                "--",
+            ])
+            .arg(&stub)
+            .args(["exec", "--model", "example"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = fs::read_to_string(folder.path().join("captured-handshake")).unwrap();
+        let lines: Vec<_> = stdout.lines().collect();
+        for (key, expected) in [("TOIMIJA_SESSION", lines[0]), ("TOIMIJA_LIVE", lines[1])] {
+            let prefix = format!("shell_environment_policy.set.{key}=");
+            let encoded = lines
+                .iter()
+                .find_map(|line| line.strip_prefix(&prefix))
+                .unwrap();
+            assert_eq!(serde_json::from_str::<String>(encoded).unwrap(), expected);
+        }
+        assert!(
+            lines
+                .windows(3)
+                .any(|w| w == ["exec", "--model", "example"])
+        );
+        if !in_repo {
+            let encoded = lines
+                .iter()
+                .find_map(|line| {
+                    line.strip_prefix("shell_environment_policy.set.TOIMIJA_STATE_DIR=")
+                })
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<String>(encoded).unwrap(),
+                state.path().display().to_string()
+            );
+        }
+        // Codex tools may run in a daemon an earlier session started, whose
+        // environment still holds that session's handshake. `set` can only add
+        // variables, so what the child loses is set empty for the tools too.
+        let mut cleared = vec!["FALSE_SYSTEMS_RESULT_PATH", "FALSE_SYSTEMS_CONTEXT_PATH"];
+        if !in_repo {
+            cleared.extend([
+                "TOIMIJA_LIVE_JSON",
+                "TOIMIJA_CURRENT_JSON",
+                "TOIMIJA_REPO_ROOT",
+                "TOIMIJA_REPO_LIVE",
+                "FALSE_SYSTEMS_REPOSITORY_POINT_PATH",
+            ]);
+        }
+        for key in cleared {
+            let line = format!("shell_environment_policy.set.{key}=\"\"");
+            assert!(lines.contains(&line.as_str()), "{key}: {stdout}");
+        }
+        let repo_roots: Vec<String> = lines
+            .iter()
+            .filter_map(|line| line.strip_prefix("shell_environment_policy.set.TOIMIJA_REPO_ROOT="))
+            .map(|encoded| serde_json::from_str::<String>(encoded).unwrap())
+            .collect();
+        assert_eq!(repo_roots.len(), 1, "{stdout}");
+        assert_eq!(repo_roots[0].is_empty(), !in_repo, "{stdout}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn idle_codex_gets_context_without_a_startup_message() {
+    use std::os::unix::fs::PermissionsExt;
+    for in_repo in [false, true] {
+        for task in [None, Some(""), Some("fix the parser")] {
+            let folder = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            if in_repo {
+                init_git_repo(folder.path());
+            }
+            // The stub records every invocation. Codex keeps its own
+            // instructions when `developer_instructions` is set (the slot is
+            // additive), so toimija has nothing to render first: the agent is
+            // the only Codex process it starts.
+            let stub = folder.path().join("codex");
+            fs::write(
+                &stub,
+                "#!/bin/sh\n{ printf '%s\\n' '--- call'; printf '%s\\n' \"$@\"; } >> captured-args\n",
+            )
+            .unwrap();
+            fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut command = Command::cargo_bin("toimija").unwrap();
+            command
+                .current_dir(folder.path())
+                .env("TOIMIJA_STATE_DIR", state.path())
+                .env("GIT_CEILING_DIRECTORIES", folder.path().parent().unwrap())
+                .args([
+                    "run",
+                    "--intent",
+                    "test idle startup",
+                    "--briefing",
+                    "Keep all rules.\nQuotes: \"x\" and \\ paths.",
+                ]);
+            if let Some(task) = task {
+                command.args(["--task", task]);
+            }
+            command.arg("--").arg(&stub).assert().success();
+            let captured = fs::read_to_string(folder.path().join("captured-args")).unwrap();
+            assert_eq!(captured.matches("--- call").count(), 1, "{captured}");
+            assert!(!captured.contains("prompt-input"), "{captured}");
+            let lines: Vec<_> = captured.lines().skip(1).collect();
+            let has_task = task.is_some_and(|task| !task.is_empty());
+            let prompt = if has_task {
+                assert!(!captured.contains("developer_instructions="));
+                assert!(captured.contains("Task: fix the parser"));
+                captured.clone()
+            } else {
+                assert!(
+                    lines
+                        .chunks(2)
+                        .all(|pair| pair.len() == 2 && pair[0] == "-c")
+                );
+                let encoded = lines
+                    .iter()
+                    .find_map(|line| line.strip_prefix("developer_instructions="))
+                    .unwrap();
+                let instructions = serde_json::from_str::<String>(encoded).unwrap();
+                // Only toimija's own text: the contract or the outside-repo
+                // note first, the briefing last.
+                let opening = if in_repo {
+                    "Your toimija session packet is below."
+                } else {
+                    "You are in a toimija session outside any Git repository"
+                };
+                assert!(instructions.starts_with(opening), "{instructions}");
+                assert!(
+                    instructions.ends_with("Keep all rules.\nQuotes: \"x\" and \\ paths.\n"),
+                    "{instructions}"
+                );
+                instructions
+            };
+            assert!(prompt.contains("Keep all rules.\nQuotes: \"x\" and \\ paths."));
+            assert_eq!(prompt.contains("# Toimija Context"), in_repo);
+            assert_eq!(prompt.contains("outside any Git repository"), !in_repo);
+        }
+    }
+}
+
 /// The facts a wrapped command can read about where it stands: the session's
 /// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
 /// point inside the sealed session packet (`session.execution.repository`),
@@ -1095,4 +1267,55 @@ fn run_records_a_commit_made_inside_the_session_as_an_observed_effect() {
         .path();
     let marker = fs::read_to_string(session_dir.join("session.json")).unwrap();
     assert!(!marker.contains("effects_observed"), "{marker}");
+}
+
+/// The instructions an idle Codex stub was launched with.
+#[cfg(unix)]
+fn idle_codex_instructions(briefing: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = tempfile::tempdir().unwrap();
+    init_git_repo(folder.path());
+    let stub = folder.path().join("codex");
+    fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' \"$@\" > captured-args\n").unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(folder.path())
+        .args([
+            "run",
+            "--intent",
+            "briefing shapes",
+            "--briefing",
+            briefing,
+            "--",
+        ])
+        .arg(&stub)
+        .assert()
+        .success();
+    let captured = fs::read_to_string(folder.path().join("captured-args")).unwrap();
+    let encoded = captured
+        .lines()
+        .find_map(|line| line.strip_prefix("developer_instructions="))
+        .unwrap();
+    serde_json::from_str::<String>(encoded).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_briefing_may_start_with_a_hyphen_and_a_blank_one_is_dropped() {
+    if !git_available() {
+        return;
+    }
+    // Launchers write briefings as Markdown, where a list starts with `- `.
+    let listed = idle_codex_instructions("- check the receipt first");
+    assert!(
+        listed.ends_with("\n- check the receipt first\n"),
+        "{listed}"
+    );
+
+    // A blank briefing is no briefing, like a blank task.
+    let blank = idle_codex_instructions("  \n ");
+    assert!(!blank.ends_with("\n  \n \n"), "{blank:?}");
+    assert!(blank.ends_with("\n"));
+    assert!(!blank.trim_end_matches('\n').ends_with(' '), "{blank:?}");
 }

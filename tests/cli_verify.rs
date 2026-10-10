@@ -560,3 +560,37 @@ fn assert_stale(path: &Path) {
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
     assert_eq!(value["status"], "stale_packet");
 }
+
+#[test]
+fn an_empty_live_json_handshake_reads_as_unset() {
+    // Codex can only add variables to its tools' environment, so `run` clears
+    // a handshake variable there by setting it empty; an empty value must
+    // mean "not set", not a packet path.
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    let id = "100-1";
+    let session = active_session(temp.path(), id);
+    toimija(temp.path())
+        .args(["current", "--write"])
+        .assert()
+        .success();
+    fs::copy(
+        temp.path().join(".toimija/current.json"),
+        session.join("current.json"),
+    )
+    .unwrap();
+    let session_packet = fs::canonicalize(session.join("current.json")).unwrap();
+
+    let assert = toimija(temp.path())
+        .args(["verify", "--json"])
+        .env("TOIMIJA_SESSION", id)
+        .env("TOIMIJA_LIVE_JSON", "")
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "verified");
+    assert_eq!(value["packet_path"], session_packet.display().to_string());
+}

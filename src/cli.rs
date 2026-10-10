@@ -365,9 +365,17 @@ pub struct RunArgs {
     /// The task for the agent, delivered inside the composed launch prompt of a
     /// known agent (`claude`, `codex`, `gemini`) or one configured under
     /// `agents:` in `.toimija/repo.yaml`. Pass the task here, not as the agent's
-    /// own positional argument.
-    #[arg(long)]
+    /// own positional argument. May start with `-`; a blank task is none.
+    #[arg(long, allow_hyphen_values = true)]
     pub task: Option<String>,
+    /// Background instructions, separate from an assigned task: appended after
+    /// the packet (and the task) in a known or configured agent's launch
+    /// prompt. An idle Codex launch receives them with its packet as session
+    /// instructions, without starting a model turn. An agent toimija does not
+    /// recognise cannot receive them. May start with `-`; a blank briefing is
+    /// none.
+    #[arg(long, allow_hyphen_values = true)]
+    pub briefing: Option<String>,
     /// Sealed cycle digest for this worker leg; requires --cycle-leg and --cycle-attempt.
     #[arg(long, requires_all = ["cycle_leg", "cycle_attempt"])]
     pub cycle: Option<String>,
@@ -882,9 +890,12 @@ fn print_agent_entry(refreshed: &refresh::Refreshed, repo_root: &std::path::Path
     println!("{}", refreshed.markdown);
 }
 
-fn run_run(args: RunArgs) -> Result<i32> {
+fn run_run(mut args: RunArgs) -> Result<i32> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    args.task = args.task.filter(|task| !task.trim().is_empty());
+    args.briefing = args.briefing.filter(|briefing| !briefing.trim().is_empty());
 
     // Armed before a session can exist, not after. Arming once the marker is
     // on disk leaves a window — `Session::open` returning, `record_cycle_action`
@@ -1082,14 +1093,29 @@ fn run_run(args: RunArgs) -> Result<i32> {
     let repo_config = RepoConfig::load_optional(&repo_root)?
         .unwrap_or_else(|| RepoConfig::default_for(&repo_root));
     let live_packet = session.dir.join("current.md");
-    let composed = crate::adapters::agents::compose_launch_prompt(
+    let mut composed = crate::adapters::agents::compose_launch_prompt(
         program,
         &entry.markdown,
         &live_packet,
         args.task.as_deref(),
         &repo_config.agents,
     );
+    if let (Some(prompt), Some(briefing)) = (&mut composed, &args.briefing) {
+        prompt.push_str(&format!("\n{briefing}\n"));
+    }
     match &composed {
+        Some(_)
+            if crate::adapters::agents::idle_codex(
+                program,
+                rest,
+                args.task.is_some(),
+                &repo_config.agents,
+            ) =>
+        {
+            eprintln!(
+                "toimija run: delivery: Codex session instructions; waiting for your first task"
+            );
+        }
         Some(_) => eprintln!(
             "toimija run: delivery: launch prompt with the packet inlined for `{program}`"
         ),
@@ -1105,18 +1131,30 @@ fn run_run(args: RunArgs) -> Result<i32> {
     }
     // The prompt travels where the agent reads it: last positional argument,
     // or after the flag its `agents:` entry names.
-    let mut child_args = rest.to_vec();
-    if let Some(prompt) = composed {
-        match crate::adapters::agents::prompt_style(program, &repo_config.agents)
-            .unwrap_or(crate::adapters::agents::PromptStyle::Positional)
-        {
-            crate::adapters::agents::PromptStyle::Positional => child_args.push(prompt),
-            crate::adapters::agents::PromptStyle::Flag(flag) => {
-                child_args.push(flag);
-                child_args.push(prompt);
+    let handshake = session.env(&repo_root);
+    let child_args =
+        match crate::adapters::agents::shell_env_args(program, &handshake, session::RETIRED_ENV)
+            .and_then(|mut child_args| {
+                child_args.extend_from_slice(rest);
+                if let Some(prompt) = composed {
+                    child_args.extend(crate::adapters::agents::launch_args(
+                        program,
+                        rest,
+                        prompt,
+                        args.task.is_some(),
+                        &repo_config.agents,
+                    )?);
+                }
+                Ok(child_args)
+            }) {
+            Ok(args) => args,
+            Err(error) => {
+                stop.store(true, Ordering::Relaxed);
+                let _ = watcher.join();
+                close_session_after_startup_failure(&repo_root, &mut session);
+                return Err(error);
             }
-        }
-    }
+        };
     eprintln!(
         "toimija run: launching `{program}` (session {}, watching for changes)",
         session.id
@@ -1125,7 +1163,7 @@ fn run_run(args: RunArgs) -> Result<i32> {
     child
         .args(&child_args)
         .current_dir(&repo_root)
-        .envs(session.env(&repo_root));
+        .envs(handshake);
     for retired in session::RETIRED_ENV {
         child.env_remove(retired);
     }
@@ -1558,13 +1596,23 @@ fn run_outside_repo(
         .expect("clap `required = true` guarantees at least one argument");
     // No repo, so no repo.yaml `agents:` table: only the built-in agents.
     let agents = std::collections::BTreeMap::new();
-    let composed = crate::adapters::agents::compose_outside_prompt(
+    let mut composed = crate::adapters::agents::compose_outside_prompt(
         program,
         folder,
         args.task.as_deref(),
         &agents,
     );
+    if let (Some(prompt), Some(briefing)) = (&mut composed, &args.briefing) {
+        prompt.push_str(&format!("\n{briefing}\n"));
+    }
     match &composed {
+        Some(_)
+            if crate::adapters::agents::idle_codex(program, rest, args.task.is_some(), &agents) =>
+        {
+            eprintln!(
+                "toimija run: delivery: Codex session instructions; waiting for your first task"
+            );
+        }
         Some(_) => eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`"),
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
@@ -1576,29 +1624,41 @@ fn run_outside_repo(
             }
         }
     }
-    let mut child_args = rest.to_vec();
-    if let Some(prompt) = composed {
-        match crate::adapters::agents::prompt_style(program, &agents)
-            .unwrap_or(crate::adapters::agents::PromptStyle::Positional)
-        {
-            crate::adapters::agents::PromptStyle::Positional => child_args.push(prompt),
-            crate::adapters::agents::PromptStyle::Flag(flag) => {
-                child_args.push(flag);
-                child_args.push(prompt);
+    let handshake = session.env_outside();
+    let cleared: Vec<&str> = session::RETIRED_ENV
+        .iter()
+        .chain(session::REPO_ONLY_ENV)
+        .copied()
+        .collect();
+    let child_args = match crate::adapters::agents::shell_env_args(program, &handshake, &cleared)
+        .and_then(|mut child_args| {
+            child_args.extend_from_slice(rest);
+            if let Some(prompt) = composed {
+                child_args.extend(crate::adapters::agents::launch_args(
+                    program,
+                    rest,
+                    prompt,
+                    args.task.is_some(),
+                    &agents,
+                )?);
             }
+            Ok(child_args)
+        }) {
+        Ok(args) => args,
+        Err(error) => {
+            stop_heartbeat();
+            close_session_after_startup_failure(&state_root, &mut session);
+            return Err(error);
         }
-    }
+    };
     eprintln!(
         "toimija run: launching `{program}` (session {}, outside any repository)",
         session.id
     );
     let mut child = std::process::Command::new(program);
-    child
-        .args(&child_args)
-        .current_dir(folder)
-        .envs(session.env_outside());
-    for cleared in session::RETIRED_ENV.iter().chain(session::REPO_ONLY_ENV) {
-        child.env_remove(cleared);
+    child.args(&child_args).current_dir(folder).envs(handshake);
+    for key in &cleared {
+        child.env_remove(key);
     }
     let diagnostics_path = session.dir.join("diagnostics.log");
     let capture = match crate::diagnostics::Capture::borrow(&diagnostics_path) {
@@ -2209,7 +2269,8 @@ fn select_verify_packet(
     if let Some((_id, session_dir)) = session::ambient_session(repo_root) {
         let expected = normalize_absolute(&session_dir.join("current.json"))
             .ok_or_else(|| "invalid ambient session packet path".to_string())?;
-        if let Some(path) = std::env::var_os("TOIMIJA_LIVE_JSON") {
+        // Empty reads as unset: `run` clears it that way for Codex tools.
+        if let Some(path) = std::env::var_os("TOIMIJA_LIVE_JSON").filter(|path| !path.is_empty()) {
             let selected = validate_packet_path(repo_root, cwd, std::path::Path::new(&path))?;
             if selected != expected {
                 return Err(format!(

@@ -123,6 +123,19 @@ launches the agent command, stops watching when the agent exits, and returns the
 agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
 143).
 
+For the built-in Codex adapter, omitting `--task` (or giving a blank task)
+delivers the packet and optional `--briefing` as per-session
+`developer_instructions`, without a positional message. The TUI waits for
+the first user task without requesting a model acknowledgement. Codex adds
+the setting to its own developer instructions (skills, permissions,
+collaboration mode), so the slot carries only the packet and the briefing;
+`codex debug prompt-input` with the same options shows the result offline. A
+`developer_instructions` set in your own Codex config is replaced for that
+session.
+Explicit tasks keep positional delivery, and an `agents.codex` configuration keeps its
+declared prompt style. Subcommands such as `codex exec` and `codex resume`
+retain prompt delivery rather than being inspected as interactive launches.
+
 **Wrapped means used** (proposal 0006). `run` refuses to launch without
 `--intent`; `--intent unknown` remains the explicit escape hatch for
 exploratory sessions. For known agents (`claude`, `codex`, `gemini`
@@ -136,6 +149,19 @@ the entry packet inlined at the session budget, the live packet path, and your
 as the agent's own positional argument. Unknown agents keep the env-var
 handshake behind an honest banner — `delivery: env-var only — not guaranteed` —
 never a silent degradation.
+
+`--briefing` carries background instructions apart from the task. A known or
+configured agent gets them at the end of its launch prompt, after the packet
+and the task (for `claude`, in the same positional prompt); an idle Codex launch
+gets them after the packet in its session instructions. An agent toimija does
+not recognise has no launch prompt, so it cannot receive them. A blank
+`--briefing`, like a blank `--task`, is none, and both may start with `-`.
+
+Launch prompts tell agents to use delivered facts instead of repeating
+discovery. Missing, stale or contradictory facts justify a refresh; unresolved
+task details justify reading the named files. Outside a repository, an unassigned
+session waits for work before invoking discovery or bookkeeping tools. This
+does not waive scope declarations or pre-commit/handoff verification.
 
 ```mermaid
 sequenceDiagram
@@ -212,6 +238,23 @@ index, or unfamiliar worktree changes instead of re-running `enter`; its own
 expected source edits do not require a full re-read. Before commit or handoff,
 `toimija verify` is the freshness boundary. `toimija snippet preflight` carries
 the same rule.
+
+Codex receives the same generated values as individual
+`-c shell_environment_policy.set.<name>=<value>` arguments, so tool commands
+in its persistent daemon receive this run's identity rather than depending on
+the daemon's startup environment. Values are quoted as TOML-compatible strings;
+unrepresentable non-UTF-8 values fail before launching. No global Codex config,
+inheritance policy or sandbox setting is changed. Other agents retain the
+ordinary environment handshake. Outside repositories, `TOIMIJA_STATE_DIR` is
+also set to the resolved session-state location, so `intent` finds the marker
+even when the daemon started with a different state directory. Each variable
+`run` removes from the agent's environment (`FALSE_SYSTEMS_RESULT_PATH`,
+`FALSE_SYSTEMS_CONTEXT_PATH`, and outside repositories `TOIMIJA_LIVE_JSON`,
+`TOIMIJA_CURRENT_JSON`, `TOIMIJA_REPO_ROOT`, `TOIMIJA_REPO_LIVE`,
+`FALSE_SYSTEMS_REPOSITORY_POINT_PATH`) is set to `""` for Codex tools, because
+`set` can only add variables and a daemon started by an earlier session may
+still hold its values. Toimija reads an empty handshake value as unset; other
+readers should too.
 
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
 agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`

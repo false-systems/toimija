@@ -1,10 +1,12 @@
 //! Agent launch adapters (proposal 0006 Part C): argv composition for known
 //! agent CLIs. The composed launch prompt is the one delivery channel with a
 //! guarantee — the agent cannot not-see its own argv — so under `toimija run`
-//! the packet is in context by construction, not by instruction. Pure string
-//! work: no protocol, no IPC, no SDK.
+//! the packet is in context by construction. Idle Codex launches carry it in
+//! Codex's `developer_instructions` setting instead, which Codex adds to its
+//! own instructions; no model request, protocol, IPC, or SDK is needed.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::Path;
 
 use crate::config::AgentPromptConfig;
@@ -76,6 +78,126 @@ fn basename(program: &str) -> &str {
         .unwrap_or(program)
 }
 
+/// An idle Codex TUI needs context, not a user message that starts a model turn.
+/// Other agents retain their configured prompt delivery.
+pub fn idle_codex(
+    program: &str,
+    rest: &[String],
+    has_task: bool,
+    configured: &BTreeMap<String, AgentPromptConfig>,
+) -> bool {
+    if basename(program) != "codex" || has_task || configured.contains_key("codex") {
+        return false;
+    }
+    // Only interactive launches wait idle. A subcommand such as `codex exec`
+    // or `codex resume` keeps its positional prompt.
+    let mut args = rest.iter().peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--" | "-h" | "--help" | "-V" | "--version" => return false,
+            // `-i/--image` takes one or more files, as Codex's parser does: every
+            // value up to the next flag is an image, not a subcommand.
+            "-i" | "--image" => {
+                if args.next().is_none() {
+                    return false;
+                }
+                while args.next_if(|value| !value.starts_with('-')).is_some() {}
+            }
+            "-c"
+            | "--config"
+            | "-m"
+            | "--model"
+            | "-p"
+            | "--profile"
+            | "--local-provider"
+            | "-s"
+            | "--sandbox"
+            | "-C"
+            | "--cd"
+            | "--add-dir"
+            | "--enable"
+            | "--disable"
+            | "-a"
+            | "--ask-for-approval"
+            | "--remote"
+            | "--remote-auth-token-env" => {
+                if args.next().is_none() {
+                    return false;
+                }
+            }
+            value if value.starts_with('-') => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+pub fn launch_args(
+    program: &str,
+    rest: &[String],
+    prompt: String,
+    has_task: bool,
+    configured: &BTreeMap<String, AgentPromptConfig>,
+) -> anyhow::Result<Vec<String>> {
+    if idle_codex(program, rest, has_task, configured) {
+        // Codex adds `developer_instructions` to its own developer message
+        // (skills, permissions, collaboration mode), checked against the
+        // offline `codex debug prompt-input` of 0.161.0: the slot carries only
+        // toimija's packet and briefing. It does replace a `developer_instructions`
+        // set in the user's Codex config for this session.
+        return Ok(vec![
+            "-c".into(),
+            format!("developer_instructions={}", toml_string(&prompt)?),
+        ]);
+    }
+    Ok(
+        match prompt_style(program, configured).unwrap_or(PromptStyle::Positional) {
+            PromptStyle::Positional => vec![prompt],
+            PromptStyle::Flag(flag) => vec![flag, prompt],
+        },
+    )
+}
+
+/// Codex may execute tools in a pre-existing daemon rather than a descendant
+/// of the wrapped CLI. Carry this run's handshake in thread configuration too.
+/// Dotted keys preserve unrelated shell settings; no inheritance policy changes.
+///
+/// `set` can only add variables, and that daemon's environment may still hold
+/// an earlier session's handshake. So each variable `run` removes from the
+/// child (`cleared`) is set empty for the tools; toimija reads an empty
+/// handshake value as unset.
+pub fn shell_env_args(
+    program: &str,
+    env: &[(&str, OsString)],
+    cleared: &[&str],
+) -> anyhow::Result<Vec<String>> {
+    let mut args = Vec::new();
+    if basename(program) == "codex" {
+        for (key, value) in env {
+            let value = value.to_str().ok_or_else(|| {
+                anyhow::anyhow!("{key} is not UTF-8; cannot deliver the Codex session handshake")
+            })?;
+            args.push("-c".into());
+            args.push(format!(
+                "shell_environment_policy.set.{key}={}",
+                toml_string(value)?
+            ));
+        }
+        for key in cleared {
+            args.push("-c".into());
+            args.push(format!("shell_environment_policy.set.{key}=\"\""));
+        }
+    }
+    Ok(args)
+}
+
+/// A `-c` value as a TOML basic string. JSON's string escapes are TOML's,
+/// except that JSON leaves U+007F raw and TOML forbids it; Codex would then
+/// take the whole value as a literal, quotes and escapes included.
+fn toml_string(value: &str) -> serde_json::Result<String> {
+    Ok(serde_json::to_string(value)?.replace('\u{7f}', "\\u007f"))
+}
+
 /// Compose the launch prompt for a known or configured agent: contract
 /// framing, the entry packet inlined (already rendered at the session
 /// budget), the live packet path for re-reads, then the human's task. `None`
@@ -92,7 +214,9 @@ pub fn compose_launch_prompt(
     prompt.push_str(
         "Your toimija session packet is below. It is your workset contract: work from it, \
          and declare any expansion (`toimija intent \"<why>\" --scope <path>`) before \
-         reading outside it.\n",
+         reading outside it. Use its Git facts, read order and validation plan directly; \
+         do not repeat discovery unless a fact is missing, stale or contradicted. \
+         Read the named files to answer the task's remaining questions.\n",
     );
     prompt.push_str(&format!(
         "Live packet (re-read after HEAD, branch, index, or unfamiliar worktree changes; \
@@ -121,10 +245,11 @@ pub fn compose_outside_prompt(
     let mut prompt = format!(
         "You are in a toimija session outside any Git repository ({}). There is no \
          session packet: toimija compiles Git context, and this folder has none. \
-         Sessions in the repositories you touch do not count you as a sibling, so \
-         declare why you are here and what you will touch \
+         When work is assigned, declare why you are here and what you will touch \
          (`toimija intent \"<why>\" --scope <path>`); `toimija sessions --outside-repos` \
-         lists you.\n",
+         lists you. With no concrete task, acknowledge and wait instead of running \
+         discovery or bookkeeping tools. Once a repository is selected, read its \
+         Toimija context once and use that workset instead of scanning the workspace.\n",
         folder.display()
     );
     if let Some(task) = task {
@@ -163,6 +288,141 @@ mod tests {
         assert!(is_known_agent("gemini", &no_config()));
         assert!(!is_known_agent("sh", &no_config()));
         assert!(!is_known_agent("/usr/bin/claudette", &no_config()));
+    }
+
+    #[test]
+    fn idle_delivery_preserves_explicit_agent_configuration() {
+        let prompt = "context".to_string();
+        assert_eq!(
+            launch_args(
+                "/not-installed/codex",
+                &["exec".into()],
+                prompt.clone(),
+                false,
+                &no_config()
+            )
+            .unwrap(),
+            vec!["context"]
+        );
+        assert!(!idle_codex("codex", &["exec".into()], false, &no_config()));
+        assert!(!idle_codex(
+            "codex",
+            &["resume".into()],
+            false,
+            &no_config()
+        ));
+        assert!(!idle_codex(
+            "codex",
+            &["--help".into()],
+            false,
+            &no_config()
+        ));
+        assert!(idle_codex(
+            "codex",
+            &["-p".into(), "exec".into(), "--no-alt-screen".into()],
+            false,
+            &no_config()
+        ));
+        assert_eq!(
+            launch_args("codex", &[], prompt.clone(), true, &no_config()).unwrap(),
+            vec!["context"]
+        );
+        assert_eq!(
+            launch_args("claude", &[], prompt.clone(), false, &no_config()).unwrap(),
+            vec!["context"]
+        );
+        assert_eq!(
+            launch_args(
+                "codex",
+                &[],
+                prompt,
+                false,
+                &config(&[("codex", "--message")])
+            )
+            .unwrap(),
+            vec!["--message", "context"]
+        );
+    }
+
+    #[test]
+    fn idle_codex_gets_only_the_prompt_and_starts_no_renderer() {
+        // A program that does not exist proves nothing is spawned to build
+        // the arguments: the slot is filled from the prompt alone.
+        assert_eq!(
+            launch_args(
+                "/not-installed/codex",
+                &[],
+                "packet\nbriefing".into(),
+                false,
+                &no_config()
+            )
+            .unwrap(),
+            vec!["-c", "developer_instructions=\"packet\\nbriefing\""]
+        );
+    }
+
+    #[test]
+    fn values_are_toml_strings_even_with_a_delete_character() {
+        // TOML forbids a raw U+007F in a basic string, and Codex takes a `-c`
+        // value that fails to parse as a literal: the agent would get the
+        // quotes and escapes verbatim. JSON leaves U+007F raw.
+        let value = "a\u{7f}b \"q\" \\ \n";
+        let args = launch_args("codex", &[], value.into(), false, &no_config()).unwrap();
+        let encoded = args[1].strip_prefix("developer_instructions=").unwrap();
+        assert!(!encoded.contains('\u{7f}'), "{encoded:?}");
+        assert!(encoded.contains("\\u007f"), "{encoded:?}");
+        assert_eq!(serde_json::from_str::<String>(encoded).unwrap(), value);
+        let env = [("TOIMIJA_LIVE", OsString::from(value))];
+        let set = shell_env_args("codex", &env, &[]).unwrap();
+        assert!(!set[1].contains('\u{7f}'), "{:?}", set[1]);
+    }
+
+    #[test]
+    fn images_take_every_value_up_to_the_next_flag() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        assert!(idle_codex(
+            "codex",
+            &args(&["-i", "a.png", "b.png", "--no-alt-screen"]),
+            false,
+            &no_config()
+        ));
+        assert!(idle_codex(
+            "codex",
+            &args(&["--image", "a.png", "-m", "o3"]),
+            false,
+            &no_config()
+        ));
+        assert!(!idle_codex("codex", &args(&["-i"]), false, &no_config()));
+        assert!(!idle_codex(
+            "codex",
+            &args(&["-m", "o3", "exec"]),
+            false,
+            &no_config()
+        ));
+    }
+
+    #[test]
+    fn codex_carries_dynamic_handshake_without_changing_environment_policy() {
+        let value = "/tmp/session with \"quotes\"/back\\slash\nand-newline";
+        let env = [("TOIMIJA_LIVE", OsString::from(value))];
+        let args = shell_env_args("/tools/codex", &env, &[]).unwrap();
+        assert_eq!(args[0], "-c");
+        let encoded = args[1]
+            .strip_prefix("shell_environment_policy.set.TOIMIJA_LIVE=")
+            .unwrap();
+        assert_eq!(serde_json::from_str::<String>(encoded).unwrap(), value);
+        assert!(shell_env_args("claude", &env, &["X"]).unwrap().is_empty());
+        assert!(
+            shell_env_args("codex-wrapper", &env, &["X"])
+                .unwrap()
+                .is_empty()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let invalid = [("TOIMIJA_LIVE", OsString::from_vec(vec![0xff]))];
+            assert!(shell_env_args("codex", &invalid, &[]).is_err());
+        }
     }
 
     #[test]
@@ -218,6 +478,11 @@ mod tests {
         .unwrap();
         assert!(prompt.starts_with("Your toimija session packet is below."));
         assert!(prompt.contains("workset contract"));
+        assert!(
+            prompt.contains(
+                "do not repeat discovery unless a fact is missing, stale or contradicted"
+            )
+        );
         assert!(prompt.contains("your own expected source edits do not require a full re-read"));
         assert!(prompt.contains("run `toimija verify` before commit or handoff"));
         assert!(prompt.contains(".toimija/sessions/1-1/current.md"));
@@ -235,5 +500,15 @@ mod tests {
         // differs (resolved in workers::prepare, not here).
         let configured = config(&[("aider", "--message")]);
         assert!(compose_launch_prompt("aider", "packet", &live, None, &configured).is_some());
+    }
+
+    #[test]
+    fn outside_prompt_defers_discovery_until_there_is_work() {
+        let prompt =
+            compose_outside_prompt("codex", Path::new("/projects"), None, &no_config()).unwrap();
+        assert!(prompt.contains("With no concrete task, acknowledge and wait"));
+        assert!(prompt.contains("toimija intent"));
+        assert!(prompt.contains("Once a repository is selected"));
+        assert!(!prompt.contains("Task:"));
     }
 }
