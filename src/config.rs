@@ -76,10 +76,38 @@ pub struct ContextSection {
 #[serde(default)]
 pub struct ValidationSection {
     pub replace_inferred: bool,
+    /// The repository's declared gate (`sykli.json`). `replace_inferred`
+    /// drops inferred commands, never the gate; only this setting changes it.
+    #[serde(skip_serializing_if = "GateSetting::is_default")]
+    pub gate: GateSetting,
     pub fast: Vec<String>,
     pub strict: Vec<String>,
     pub full: Vec<String>,
     pub privileged: Vec<String>,
+}
+
+/// `validation.gate` in `.toimija/repo.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum GateSetting {
+    /// `true` (the default) names the gate of a repository with a
+    /// `sykli.json`; `false` names none.
+    Enabled(bool),
+    /// The command to name for that gate instead of the standard one, for a
+    /// repository that runs sykli another way (`mise exec -- sykli …`).
+    Command(String),
+}
+
+impl Default for GateSetting {
+    fn default() -> Self {
+        Self::Enabled(true)
+    }
+}
+
+impl GateSetting {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

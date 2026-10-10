@@ -279,3 +279,89 @@ fn context_packet_carries_the_sykli_gate_without_an_inferred_warning() {
         .stdout(predicate::str::contains(SYKLI_GATE))
         .stdout(predicate::str::contains("### Fast").not());
 }
+
+fn plan_json(path: &Path) -> serde_json::Value {
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(path)
+        .args(["context", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let packet: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    packet["validation_plan"].clone()
+}
+
+fn rust_repo_with_contract(path: &Path, repo_yaml: &str) {
+    init_repo(path);
+    fs::write(
+        path.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    write_sykli_contract(path);
+    fs::create_dir_all(path.join(".toimija")).unwrap();
+    fs::write(path.join(".toimija/repo.yaml"), repo_yaml).unwrap();
+}
+
+#[test]
+fn replace_inferred_drops_guesses_but_keeps_the_declared_gate() {
+    if !git_available() {
+        return;
+    }
+    // perusta, selko, taso, ote, kide and ruuma set replace_inferred to drop
+    // toimija's cargo-shape guesses, before any gate existed. A declared gate
+    // is not a guess.
+    let temp = tempfile::tempdir().unwrap();
+    rust_repo_with_contract(
+        temp.path(),
+        "validation:\n  replace_inferred: true\n  fast:\n    - cargo test -q\n",
+    );
+
+    let plan = plan_json(temp.path());
+    assert_eq!(plan["source"], "sykli_and_repo_config");
+    assert_eq!(plan["gate"]["command"], SYKLI_GATE);
+    assert_eq!(plan["fast"], serde_json::json!(["cargo test -q"]));
+    assert_eq!(plan["strict"], serde_json::json!([]));
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["validate", "--plan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("### Gate (sykli.json)"))
+        .stdout(predicate::str::contains("cargo test -q"))
+        .stdout(predicate::str::contains("cargo clippy").not());
+}
+
+#[test]
+fn repo_config_can_name_its_own_gate_command_or_opt_out() {
+    if !git_available() {
+        return;
+    }
+    // ote runs its gate through mise; the override is named as written.
+    let mise = "mkdir -p .sykli && mise exec -- sykli run sykli.json --json > .sykli/receipt.json && mise exec -- sykli verify .sykli/receipt.json --contract sykli.json";
+    let temp = tempfile::tempdir().unwrap();
+    rust_repo_with_contract(
+        temp.path(),
+        &format!(
+            "validation:\n  replace_inferred: true\n  gate: \"{mise}\"\n  fast:\n    - make test\n"
+        ),
+    );
+    let plan = plan_json(temp.path());
+    assert_eq!(plan["gate"]["command"], mise);
+    assert_eq!(plan["gate"]["tasks"], serde_json::json!(["fmt", "test"]));
+    assert!(
+        plan["notes"].to_string().contains("validation.gate"),
+        "{}",
+        plan["notes"]
+    );
+
+    // An explicit opt-out names no gate.
+    let temp = tempfile::tempdir().unwrap();
+    rust_repo_with_contract(temp.path(), "validation:\n  gate: false\n");
+    let plan = plan_json(temp.path());
+    assert!(plan["gate"].is_null(), "{plan}");
+    assert_eq!(plan["source"], "inferred");
+}

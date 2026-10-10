@@ -212,7 +212,7 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
         write_h3(&mut output, &format!("Gate ({})", gate.contract));
         writeln!(&mut output, "- {}", gate.command).unwrap();
         if gate.tasks.is_empty() {
-            writeln!(&mut output, "- tasks: unknown").unwrap();
+            writeln!(&mut output, "- tasks: none named (see Notes)").unwrap();
         } else {
             writeln!(&mut output, "- tasks: {}", gate.tasks.join(", ")).unwrap();
         }

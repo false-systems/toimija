@@ -3,7 +3,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::config::RepoConfig;
+use crate::config::{GateSetting, RepoConfig};
 use crate::repo::RepoKind;
 
 /// The contract file a repository declares its gate in.
@@ -67,38 +67,72 @@ pub enum ValidationSource {
 }
 
 pub fn validation_plan(repo_root: &Path, config: &RepoConfig, kind: RepoKind) -> ValidationPlan {
-    if config.has_validation() && config.validation.replace_inferred {
-        return configured_plan(config, true);
-    }
-    let mut plan = match sykli_plan(repo_root) {
-        Some(plan) => plan,
-        None if config.has_validation() && kind == RepoKind::Generic => {
-            return configured_plan(config, false);
-        }
-        None => inferred_plan(repo_root, kind),
+    let (gate, gate_notes) = declared_gate(repo_root, &config.validation.gate);
+    let replaces = config.has_validation() && config.validation.replace_inferred;
+    let mut plan = if replaces {
+        // Replaces what toimija would infer — never the repository's own gate.
+        configured_plan(config, true)
+    } else if gate.is_some() {
+        gate_only_plan()
+    } else if config.has_validation() && kind == RepoKind::Generic {
+        configured_plan(config, false)
+    } else {
+        inferred_plan(repo_root, kind)
     };
-    if !config.has_validation() {
-        return plan;
+    if !replaces && config.has_validation() && plan.source != ValidationSource::RepoConfig {
+        extend_unique(&mut plan.fast, &config.validation.fast);
+        extend_unique(&mut plan.strict, &config.validation.strict);
+        extend_unique(&mut plan.full, &config.validation.full);
+        extend_unique(&mut plan.privileged, &config.validation.privileged);
+        plan.source = ValidationSource::InferredAndRepoConfig;
     }
-    extend_unique(&mut plan.fast, &config.validation.fast);
-    extend_unique(&mut plan.strict, &config.validation.strict);
-    extend_unique(&mut plan.full, &config.validation.full);
-    extend_unique(&mut plan.privileged, &config.validation.privileged);
-    plan.source = match plan.source {
-        ValidationSource::Sykli => ValidationSource::SykliAndRepoConfig,
-        _ => ValidationSource::InferredAndRepoConfig,
-    };
+    if gate.is_some() {
+        plan.source = if config.has_validation() {
+            ValidationSource::SykliAndRepoConfig
+        } else {
+            ValidationSource::Sykli
+        };
+    }
+    plan.gate = gate;
+    plan.notes.splice(0..0, gate_notes);
     plan
 }
 
-/// The plan for a repository that declares its gate in `sykli.json`: that
-/// gate, exactly, and nothing inferred. `None` without the file. The contract
-/// is only read for its task names — no Sykli code, no execution.
-fn sykli_plan(repo_root: &Path) -> Option<ValidationPlan> {
-    let contract = repo_root.join(SYKLI_CONTRACT);
-    if !contract.is_file() {
-        return None;
+fn gate_only_plan() -> ValidationPlan {
+    ValidationPlan {
+        source: ValidationSource::Sykli,
+        gate: None,
+        focused: Vec::new(),
+        fast: Vec::new(),
+        strict: Vec::new(),
+        full: Vec::new(),
+        privileged: Vec::new(),
+        notes: Vec::new(),
     }
+}
+
+/// The gate a repository declares in `sykli.json`, with the notes that go
+/// with it: that gate, exactly, as `validation.gate` allows. `None` without the
+/// file or with `gate: false`. The contract is only read for its task names —
+/// no Sykli code, no execution.
+fn declared_gate(repo_root: &Path, setting: &GateSetting) -> (Option<DeclaredGate>, Vec<String>) {
+    let contract = repo_root.join(SYKLI_CONTRACT);
+    let present = contract.is_file();
+    let command = match setting {
+        GateSetting::Enabled(false) => return (None, Vec::new()),
+        GateSetting::Command(_) if !present => {
+            return (
+                None,
+                vec![format!(
+                    "validation.gate in .toimija/repo.yaml names a gate command, but there is no \
+                     {SYKLI_CONTRACT}; no gate is named."
+                )],
+            );
+        }
+        _ if !present => return (None, Vec::new()),
+        GateSetting::Enabled(true) => SYKLI_GATE.to_string(),
+        GateSetting::Command(command) => command.clone(),
+    };
     info!(
         event = "toimija.validation.sykli_gate",
         contract = SYKLI_CONTRACT
@@ -107,8 +141,18 @@ fn sykli_plan(repo_root: &Path) -> Option<ValidationPlan> {
         "The repository declares its gate in {SYKLI_CONTRACT}; run it as written. It writes \
          .sykli/receipt.json and checks it against the contract."
     )];
+    if matches!(setting, GateSetting::Command(_)) {
+        notes.push(
+            "The gate command is the one validation.gate names in .toimija/repo.yaml.".to_string(),
+        );
+    }
     let tasks = match sykli_task_names(&contract) {
-        Ok(tasks) => tasks,
+        Ok(tasks) => {
+            if tasks.is_empty() {
+                notes.push(format!("{SYKLI_CONTRACT} declares no tasks."));
+            }
+            tasks
+        }
         Err(reason) => {
             notes.push(format!(
                 "Task names unavailable: {SYKLI_CONTRACT} could not be read ({reason})."
@@ -116,20 +160,14 @@ fn sykli_plan(repo_root: &Path) -> Option<ValidationPlan> {
             Vec::new()
         }
     };
-    Some(ValidationPlan {
-        source: ValidationSource::Sykli,
-        gate: Some(DeclaredGate {
+    (
+        Some(DeclaredGate {
             contract: SYKLI_CONTRACT.to_string(),
-            command: SYKLI_GATE.to_string(),
+            command,
             tasks,
         }),
-        focused: Vec::new(),
-        fast: Vec::new(),
-        strict: Vec::new(),
-        full: Vec::new(),
-        privileged: Vec::new(),
         notes,
-    })
+    )
 }
 
 /// The task names a Sykli contract declares, in file order. Reads only the
@@ -330,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_config_adds_to_a_declared_gate_unless_it_replaces_everything() {
+    fn repo_config_adds_to_a_declared_gate_and_only_gate_false_removes_it() {
         let temp = with_contract(r#"{"tasks":[{"name":"test"}]}"#);
         let mut config = RepoConfig::default();
         config.validation.privileged = vec!["just integration".to_string()];
@@ -341,10 +379,17 @@ mod tests {
         assert_eq!(plan.privileged, vec!["just integration"]);
         assert!(plan.fast.is_empty());
 
+        // replace_inferred drops guesses, not the declared gate.
         config.validation.replace_inferred = true;
         let replaced = validation_plan(temp.path(), &config, RepoKind::Rust);
-        assert_eq!(replaced.source, ValidationSource::RepoConfig);
-        assert!(replaced.gate.is_none());
+        assert_eq!(replaced.source, ValidationSource::SykliAndRepoConfig);
+        assert!(replaced.gate.is_some());
+        assert!(replaced.strict.is_empty());
+
+        config.validation.gate = crate::config::GateSetting::Enabled(false);
+        let opted_out = validation_plan(temp.path(), &config, RepoKind::Rust);
+        assert_eq!(opted_out.source, ValidationSource::RepoConfig);
+        assert!(opted_out.gate.is_none());
     }
 
     #[test]
