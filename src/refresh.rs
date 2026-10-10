@@ -299,9 +299,12 @@ fn compute(
         }
         None => None,
     };
-    let session_closed = marker
-        .as_ref()
-        .is_some_and(|marker| marker.status == session::SessionStatus::Closed);
+    // A session whose `run` was killed before closing its marker has ended
+    // too: its brief stays in its own packet, never in the repo mirror.
+    let session_closed = marker.as_ref().is_some_and(|marker| {
+        marker.status == session::SessionStatus::Closed
+            || crate::sessions::process_gone(repo_root, marker)
+    });
     if let Some(marker) = marker {
         packet.session = Some(context::SessionBlock {
             id: marker.id,

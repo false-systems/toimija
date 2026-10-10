@@ -420,7 +420,8 @@ impl Session {
 /// resolves to `None` (writes must not target a session whose state is
 /// unknown), but it is warned about, because the wrapped agent keeps reading
 /// the per-session packet that will now silently stop refreshing. Only a
-/// missing marker and a closed session stay quiet.
+/// missing marker and a closed session stay quiet. A marker still active
+/// whose process is provably gone resolves to `None` too, like a closed one.
 pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
     let id = std::env::var("TOIMIJA_SESSION").ok()?;
     if !is_valid_session_id(&id) {
@@ -459,7 +460,21 @@ pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
         );
         return None;
     }
-    (marker.status == SessionStatus::Active).then_some((id, dir))
+    if marker.status != SessionStatus::Active {
+        return None;
+    }
+    // A `run` killed before it could close its marker (SIGKILL, OOM) leaves
+    // the agent running with the handshake. That session is over: treat it
+    // like a closed one, so a refresh writes a packet without its brief.
+    if crate::sessions::process_gone(repo_root, &marker) {
+        warn!(
+            event = "toimija.session.process_gone",
+            session = %id,
+            pid = marker.pid
+        );
+        return None;
+    }
+    Some((id, dir))
 }
 
 /// Read the marker in a session directory. Used by the per-session refresh

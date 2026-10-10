@@ -687,3 +687,49 @@ fn verify_refuses_a_repo_packet_left_by_a_killed_session() {
         .assert()
         .success();
 }
+
+#[test]
+fn an_agent_whose_run_was_killed_can_refresh_its_way_out() {
+    // `toimija run` was SIGKILLed or OOM-killed; the agent lives on with the
+    // handshake and the marker still says active. Its pid is provably gone,
+    // so the session is over: `refresh` must not write the dead brief back,
+    // and the remedy `verify` names has to work.
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    let id = "100-1";
+    let dir = active_session(temp.path(), id);
+    let mut marker: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("session.json")).unwrap()).unwrap();
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let dead_pid = gone.id();
+    gone.wait().unwrap();
+    marker["pid"] = dead_pid.into();
+    marker["intent"] = "dead brief".into();
+    fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&marker).unwrap(),
+    )
+    .unwrap();
+
+    toimija(temp.path())
+        .env("TOIMIJA_SESSION", id)
+        .arg("refresh")
+        .assert()
+        .success();
+    let packet: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(packet["session"].is_null(), "{}", packet["session"]);
+    let md = fs::read_to_string(temp.path().join(".toimija/current.md")).unwrap();
+    assert!(!md.contains("dead brief"), "{md}");
+
+    toimija(temp.path())
+        .env("TOIMIJA_SESSION", id)
+        .arg("verify")
+        .assert()
+        .success();
+}

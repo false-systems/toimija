@@ -440,6 +440,15 @@ pub fn named_session(runner: &dyn CommandRunner, repo_root: &Path, id: &str) -> 
     }
 }
 
+/// Whether the session marker's process is provably gone: a `run` killed
+/// before it could close its marker. This process's own marker is never
+/// probed. Only `Dead` counts; an unanswered probe proves nothing.
+pub fn process_gone(cwd: &Path, marker: &SessionMarker) -> bool {
+    marker.status == SessionStatus::Active
+        && marker.pid != std::process::id()
+        && check_pid(&crate::command::ProcessCommandRunner, cwd, marker.pid) == PidCheck::Dead
+}
+
 /// Best-effort process liveness via `kill -0 <pid>`. Routed through the runner
 /// so it is mockable in tests. `LC_ALL=C` pins the probe's diagnostics to the
 /// untranslated strerror text so classification does not depend on the host
