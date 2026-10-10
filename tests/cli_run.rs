@@ -1447,3 +1447,182 @@ fn an_unknown_agent_without_task_or_briefing_still_hears_its_packet_was_not_deli
         serde_json::json!(["packet"])
     );
 }
+
+/// A stub agent named `name` in `dir` that writes its last argument (the
+/// composed prompt) to `launch-arg`.
+#[cfg(unix)]
+fn prompt_capturing_stub(dir: &Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let stub = dir.join(name);
+    fs::write(
+        &stub,
+        "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > launch-arg\n",
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    stub
+}
+
+const ALERT_HEADING: &str = "## Before anything else (from the launcher)";
+
+#[cfg(unix)]
+#[test]
+fn alerts_open_the_prompt_above_the_packet_and_the_briefing_stays_last() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let stub = prompt_capturing_stub(temp.path(), "claude");
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "alerts",
+            "--alert",
+            "FLAGGED: main is red since 4f1c2a0",
+            "--alert",
+            "- WARNING: the last session left a dirty tree",
+            "--alert",
+            "   ",
+            "--briefing",
+            "Knowledge: long background text.",
+            "--task",
+            "fix it",
+            "--",
+        ])
+        .arg(&stub)
+        .assert()
+        .success();
+
+    let prompt = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    assert!(prompt.starts_with(ALERT_HEADING), "{prompt}");
+    let alerts = prompt.find("FLAGGED: main is red since 4f1c2a0").unwrap();
+    let warning = prompt
+        .find("- WARNING: the last session left a dirty tree")
+        .unwrap();
+    let contract = prompt
+        .find("Your toimija session packet is below.")
+        .unwrap();
+    let packet = prompt.find("# Toimija Context").unwrap();
+    let task = prompt.find("Task: fix it").unwrap();
+    let briefing = prompt.find("Knowledge: long background text.").unwrap();
+    assert!(alerts < warning && warning < contract, "{prompt}");
+    assert!(
+        contract < packet && packet < task && task < briefing,
+        "{prompt}"
+    );
+    // Each alert keeps its own text, one after the other; a blank one is none.
+    let block: Vec<&str> = prompt[..contract]
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(
+        block,
+        [
+            "FLAGGED: main is red since 4f1c2a0",
+            "- WARNING: the last session left a dirty tree"
+        ],
+        "{prompt}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn alerts_reach_idle_codex_and_sessions_outside_a_repository() {
+    if !git_available() {
+        return;
+    }
+    // Idle Codex: the alerts open its session instructions.
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let stub = temp.path().join("codex");
+    fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' \"$@\" > captured-args\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["run", "--intent", "idle", "--alert", "FLAGGED: x", "--"])
+        .arg(&stub)
+        .assert()
+        .success();
+    let captured = fs::read_to_string(temp.path().join("captured-args")).unwrap();
+    let encoded = captured
+        .lines()
+        .find_map(|line| line.strip_prefix("developer_instructions="))
+        .unwrap();
+    let instructions = serde_json::from_str::<String>(encoded).unwrap();
+    assert!(instructions.starts_with(ALERT_HEADING), "{instructions}");
+    assert!(instructions.contains("FLAGGED: x"), "{instructions}");
+
+    // Outside any repository: the alerts open the no-packet prompt.
+    let folder = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let stub = prompt_capturing_stub(folder.path(), "claude");
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(folder.path())
+        .env_remove("TOIMIJA_SESSION")
+        .env("TOIMIJA_STATE_DIR", state.path())
+        .env("GIT_CEILING_DIRECTORIES", folder.path().parent().unwrap())
+        .args(["run", "--intent", "outside", "--alert", "FLAGGED: y", "--"])
+        .arg(&stub)
+        .assert()
+        .success();
+    let prompt = fs::read_to_string(folder.path().join("launch-arg")).unwrap();
+    assert!(prompt.starts_with(ALERT_HEADING), "{prompt}");
+    assert!(prompt.contains("outside any Git repository"), "{prompt}");
+}
+
+#[cfg(unix)]
+#[test]
+fn alerts_are_capped_near_a_kilobyte_and_an_unknown_agent_is_told_it_missed_them() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let stub = prompt_capturing_stub(temp.path(), "claude");
+    let long = "é".repeat(400); // 800 bytes, two-byte characters
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run", "--intent", "cap", "--alert", &long, "--alert", &long, "--",
+        ])
+        .arg(&stub)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("alerts exceed 1024 bytes"));
+    let prompt = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    let block = &prompt[..prompt
+        .find("Your toimija session packet is below.")
+        .unwrap()];
+    assert!(block.matches('é').count() * 2 <= 1024, "{block}");
+    assert!(block.contains("truncated"), "{block}");
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "unknown",
+            "--alert",
+            "FLAGGED: z",
+            "--",
+            "sh",
+            "-c",
+            "true",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("not delivered: alert, packet"));
+}
