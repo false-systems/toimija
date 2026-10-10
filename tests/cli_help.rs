@@ -151,3 +151,14 @@ fn verify_json_help_describes_the_shape_verify_emits() {
         .stdout(predicate::str::contains("\"verified\""))
         .stdout(predicate::str::contains("session_not_live"));
 }
+
+#[test]
+fn run_help_offers_alerts_for_launchers_to_detect() {
+    // ohjaa detects `--alert` support by reading `toimija run --help`.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .args(["run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--alert <TEXT>"));
+}

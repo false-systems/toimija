@@ -159,6 +159,15 @@ gets them after the packet in its session instructions. An agent toimija does
 not recognise has no launch prompt, so it cannot receive them. A blank
 `--briefing`, like a blank `--task`, is none, and both may start with `-`.
 
+`--alert <TEXT>` (repeatable) is for the few lines the agent must read first,
+such as a launcher's FLAGGED or WARNING lines. They open the launch prompt
+(and an idle Codex launch's session instructions) under `## Before anything
+else (from the launcher)`, above the contract and the packet, each with its own
+text. They are capped at 1024 bytes in total: the rest is cut at a character
+boundary, the block says so, and `run` warns on stderr. A blank alert is none.
+An unrecognised agent gets the same `not delivered: alert, …` warning as for
+the packet. Launchers can detect support with `toimija run --help`.
+
 Launch prompts tell agents to use delivered facts instead of repeating
 discovery. Missing, stale or contradictory facts justify a refresh; unresolved
 task details justify reading the named files. Outside a repository, an unassigned

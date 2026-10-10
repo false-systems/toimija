@@ -198,6 +198,60 @@ fn toml_string(value: &str) -> serde_json::Result<String> {
     Ok(serde_json::to_string(value)?.replace('\u{7f}', "\\u007f"))
 }
 
+/// The heading of the launcher's alerts, the first block of a launch prompt.
+pub const ALERT_HEADING: &str = "## Before anything else (from the launcher)";
+
+/// Alerts are a few urgent lines, so they stay above the packet without
+/// pushing it down; long background belongs in `--briefing`.
+pub const ALERT_CAP_BYTES: usize = 1024;
+
+/// The alerts that fit in [`ALERT_CAP_BYTES`] in total, the last one cut at a
+/// character boundary, and how many bytes did not fit.
+pub fn cap_alerts(alerts: &[String]) -> (Vec<String>, usize) {
+    let mut room = ALERT_CAP_BYTES;
+    let mut kept = Vec::new();
+    let mut cut = 0;
+    for alert in alerts {
+        if alert.len() <= room {
+            room -= alert.len();
+            kept.push(alert.clone());
+            continue;
+        }
+        let mut end = room;
+        while !alert.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end > 0 {
+            kept.push(alert[..end].to_string());
+        }
+        cut += alert.len() - end;
+        room -= end;
+    }
+    (kept, cut)
+}
+
+/// Put the alerts in front of a composed prompt, each with its own text, so
+/// the agent reads them before the contract, the packet, the task and the
+/// briefing. A prompt with no alerts is left as it is.
+pub fn prepend_alerts(prompt: &mut String, alerts: &[String], cut: usize) {
+    if alerts.is_empty() && cut == 0 {
+        return;
+    }
+    let mut block = format!("{ALERT_HEADING}\n");
+    for alert in alerts {
+        block.push_str(alert.trim_end());
+        block.push('\n');
+    }
+    if cut > 0 {
+        block.push_str(&format!(
+            "(toimija truncated the alerts: {cut} bytes over the {ALERT_CAP_BYTES}-byte cap \
+             are not shown)\n"
+        ));
+    }
+    block.push('\n');
+    prompt.insert_str(0, &block);
+}
+
 /// Compose the launch prompt for a known or configured agent: contract
 /// framing, the entry packet inlined (already rendered at the session
 /// budget), the live packet path for re-reads, then the human's task. `None`

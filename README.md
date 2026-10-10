@@ -123,6 +123,11 @@ marker lives in the machine-local state directory (`$TOIMIJA_STATE_DIR`, else
 a sibling, so the agent should declare its scope. A cycle leg, `--for-diff`,
 and `--budget` need a repository and are refused there.
 
+**Alerts.** `--alert <TEXT>` (repeatable, 1024 bytes in total) puts a
+launcher's urgent lines first in the launch prompt, above the packet, under
+`## Before anything else (from the launcher)`. Long background still goes in
+`--briefing`, at the end.
+
 **Idle Codex startup.** Without `--task` (or with a blank task), the built-in
 Codex adapter supplies the packet and optional `--briefing` through the
 per-session `developer_instructions` configuration instead of a positional

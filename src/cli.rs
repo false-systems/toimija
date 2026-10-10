@@ -376,6 +376,13 @@ pub struct RunArgs {
     /// none.
     #[arg(long, allow_hyphen_values = true)]
     pub briefing: Option<String>,
+    /// An urgent line for the agent, the first thing in its launch prompt,
+    /// above the contract and the packet (repeatable). For a launcher's flags
+    /// and warnings: at most 1024 bytes in total, the rest is cut. Long
+    /// background goes in `--briefing`. May start with `-`; a blank alert is
+    /// none.
+    #[arg(long = "alert", value_name = "TEXT", allow_hyphen_values = true)]
+    pub alert: Vec<String>,
     /// Sealed cycle digest for this worker leg; requires --cycle-leg and --cycle-attempt.
     #[arg(long, requires_all = ["cycle_leg", "cycle_attempt"])]
     pub cycle: Option<String>,
@@ -900,6 +907,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
 
     args.task = args.task.filter(|task| !task.trim().is_empty());
     args.briefing = args.briefing.filter(|briefing| !briefing.trim().is_empty());
+    args.alert.retain(|alert| !alert.trim().is_empty());
 
     // Armed before a session can exist, not after. Arming once the marker is
     // on disk leaves a window — `Session::open` returning, `record_cycle_action`
@@ -1104,9 +1112,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         args.task.as_deref(),
         &repo_config.agents,
     );
-    if let (Some(prompt), Some(briefing)) = (&mut composed, &args.briefing) {
-        prompt.push_str(&format!("\n{briefing}\n"));
-    }
+    finish_prompt(&mut composed, &args);
     match &composed {
         Some(_)
             if crate::adapters::agents::idle_codex(
@@ -1608,9 +1614,7 @@ fn run_outside_repo(
         args.task.as_deref(),
         &agents,
     );
-    if let (Some(prompt), Some(briefing)) = (&mut composed, &args.briefing) {
-        prompt.push_str(&format!("\n{briefing}\n"));
-    }
+    finish_prompt(&mut composed, &args);
     match &composed {
         Some(_)
             if crate::adapters::agents::idle_codex(program, rest, args.task.is_some(), &agents) =>
@@ -1718,11 +1722,32 @@ fn run_outside_repo(
     Ok(wrapped_exit_code(status))
 }
 
+/// Finish a composed launch prompt: the briefing at the end, after the packet
+/// and the task; the alerts in front of everything, capped, saying so on
+/// stderr when they were cut.
+fn finish_prompt(composed: &mut Option<String>, args: &RunArgs) {
+    let Some(prompt) = composed else {
+        return;
+    };
+    if let Some(briefing) = &args.briefing {
+        prompt.push_str(&format!("\n{briefing}\n"));
+    }
+    let (alerts, cut) = crate::adapters::agents::cap_alerts(&args.alert);
+    if cut > 0 {
+        eprintln!(
+            "toimija run: warning: alerts exceed {} bytes; {cut} bytes were cut",
+            crate::adapters::agents::ALERT_CAP_BYTES
+        );
+    }
+    crate::adapters::agents::prepend_alerts(prompt, &alerts, cut);
+}
+
 /// What `run` had for an agent it cannot deliver to, in the order a launch
-/// prompt carries it: the packet (inside a repository), the task, the
-/// caller's briefing.
+/// prompt carries it: the alerts, the packet (inside a repository), the
+/// task, the caller's briefing.
 fn undelivered(packet: bool, args: &RunArgs) -> Vec<String> {
     [
+        (!args.alert.is_empty(), "alert"),
         (packet, "packet"),
         (args.task.is_some(), "task"),
         (args.briefing.is_some(), "briefing"),
