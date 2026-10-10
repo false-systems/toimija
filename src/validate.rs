@@ -10,9 +10,10 @@ use crate::repo::RepoKind;
 pub const SYKLI_CONTRACT: &str = "sykli.json";
 
 /// The gate exactly as the workflow runs it: run every declared task, keep the
-/// receipt, then check the receipt against the contract. Named, never run —
+/// receipt, then check the receipt against the contract. `.sykli/` is
+/// untracked, so a fresh worktree lacks it and the redirect would fail first. Named, never run —
 /// running checks and keeping receipts is Sykli's.
-pub const SYKLI_GATE: &str = "sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json";
+pub const SYKLI_GATE: &str = "mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json";
 
 /// A contract larger than this is not read for its task names; the gate is
 /// still named.
@@ -317,7 +318,7 @@ mod tests {
         assert_eq!(gate.contract, "sykli.json");
         assert_eq!(
             gate.command,
-            "sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json"
+            "mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json"
         );
         assert_eq!(gate.tasks, vec!["fmt", "test"]);
         assert!(plan.fast.is_empty() && plan.strict.is_empty() && plan.full.is_empty());

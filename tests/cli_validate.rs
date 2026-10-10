@@ -188,7 +188,7 @@ fn validate_plan_outside_git_repo_fails() {
         .stderr(predicate::str::contains("not a Git repository"));
 }
 
-const SYKLI_GATE: &str = "sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json";
+const SYKLI_GATE: &str = "mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json";
 
 fn write_sykli_contract(path: &Path) {
     fs::write(
