@@ -193,7 +193,11 @@ pub fn build_context_packet(
     // Enrich the plan with a focused tier now that the changed surface is known.
     // The base plan (config- or kind-derived) is whole-repo; this adds advisory
     // commands scoped to what actually changed, rendered above the Fast tier.
-    validation_plan.focused = adapter.focused_validation(&git.repo_root, &changed_surface);
+    // A declared gate stands alone: it is what to run, and nothing guessed is
+    // put beside it.
+    if validation_plan.gate.is_none() {
+        validation_plan.focused = adapter.focused_validation(&git.repo_root, &changed_surface);
+    }
     // Files this branch added (status A in the merge-base..HEAD diff): the
     // youngest possible surface, which base-history mining cannot see.
     let branch_added: Vec<PathBuf> = git
@@ -507,6 +511,9 @@ mod tests {
             branch: Some("feature".to_string()),
             head_oid: Some("abc".to_string()),
             upstream: None,
+            ahead: None,
+            behind: None,
+            ahead_behind_ref: None,
             base: None,
             merge_base: None,
             detached: false,
@@ -541,6 +548,9 @@ mod tests {
             branch: Some("main".to_string()),
             head_oid: Some("abc".to_string()),
             upstream: None,
+            ahead: None,
+            behind: None,
+            ahead_behind_ref: None,
             base: None,
             merge_base: None,
             detached: false,
@@ -598,6 +608,9 @@ mod tests {
             branch: Some("main".to_string()),
             head_oid: Some("abc".to_string()),
             upstream: None,
+            ahead: None,
+            behind: None,
+            ahead_behind_ref: None,
             base: None,
             merge_base: None,
             detached: false,
@@ -656,6 +669,9 @@ mod tests {
             branch: Some("main".to_string()),
             head_oid: Some("abc".to_string()),
             upstream: None,
+            ahead: None,
+            behind: None,
+            ahead_behind_ref: None,
             base: None,
             merge_base: None,
             detached: false,
@@ -880,6 +896,9 @@ mod tests {
             branch: Some("main".to_string()),
             head_oid: Some("abc".to_string()),
             upstream: None,
+            ahead: None,
+            behind: None,
+            ahead_behind_ref: None,
             base: None,
             merge_base: None,
             detached: false,

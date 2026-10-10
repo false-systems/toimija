@@ -203,11 +203,16 @@ Toimija writes human-readable Markdown and complete machine-readable JSON:
 ```
 
 The per-session packet is authoritative for a wrapped harness. The repo-level
-pair is a last-writer-wins summary for sessionless readers.
+pair is a last-writer-wins summary for sessionless readers. It carries a
+session's block (id, intent, scope) only while that session runs: when `run`
+exits, the repo-level pair is rewritten without it, and `toimija verify` fails
+(`session_not_live`) on any packet that briefs a session that has closed or
+whose process is gone.
 
 A packet combines:
 
-- branch, HEAD, upstream, merge-base, and recent commits;
+- branch, HEAD, upstream, ahead/behind (against the upstream, else
+  `origin/<default>`, from local refs only), merge-base, and recent commits;
 - staged, unstaged, untracked, renamed, and conflicted paths;
 - unsafe Git operation state;
 - the committed branch surface;
@@ -430,6 +435,15 @@ hints, and companion-test discovery. Other repositories work through explicit
 Adapters contribute planning hints; they do not parse source code. `toimija
 validate --plan` prints commands and provenance but never executes them.
 Running checks and keeping their receipts is Evidence, and Evidence is Sykli's.
+
+A repository with a `sykli.json` at its root has declared its gate, so the plan
+is that gate, exactly — `mkdir -p .sykli && sykli run sykli.json --json >
+.sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json` —
+with the task names the contract declares (`source: sykli.json`). Nothing is
+inferred beside it. Commands in `.toimija/repo.yaml` add to it, and
+`replace_inferred: true` drops inferred commands but keeps the gate. Only
+`validation.gate` changes the gate: `gate: false` names none, and a string
+names that command instead (for example `mise exec -- sykli …`).
 
 ## Boundaries
 

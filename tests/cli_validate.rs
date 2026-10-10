@@ -187,3 +187,181 @@ fn validate_plan_outside_git_repo_fails() {
         .failure()
         .stderr(predicate::str::contains("not a Git repository"));
 }
+
+const SYKLI_GATE: &str = "mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json";
+
+fn write_sykli_contract(path: &Path) {
+    fs::write(
+        path.join("sykli.json"),
+        r#"{
+  "schema": "sykli-contract.v1",
+  "tasks": [
+    { "name": "fmt", "run": "cargo fmt --check", "inputs": ["Cargo.toml"] },
+    { "name": "test", "run": "cargo test", "inputs": ["Cargo.toml"] }
+  ]
+}
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn validate_plan_names_the_sykli_gate_when_the_repo_declares_one() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    write_sykli_contract(temp.path());
+
+    // The repo's declared gate is the plan — not commands guessed from the
+    // repo's shape — and nothing says it is "not proven by Sykli".
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["validate", "--plan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source: sykli.json"))
+        .stdout(predicate::str::contains(SYKLI_GATE))
+        .stdout(predicate::str::contains("tasks: fmt, test"))
+        .stdout(predicate::str::contains("not proven by Sykli").not())
+        .stdout(predicate::str::contains("cargo test --workspace").not());
+}
+
+#[test]
+fn context_packet_carries_the_sykli_gate_without_an_inferred_warning() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(temp.path().join("src")).unwrap();
+    fs::write(temp.path().join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+    write_sykli_contract(temp.path());
+
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let packet: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let plan = &packet["validation_plan"];
+    assert_eq!(plan["source"], "sykli");
+    assert_eq!(plan["gate"]["contract"], "sykli.json");
+    assert_eq!(plan["gate"]["command"], SYKLI_GATE);
+    assert_eq!(plan["gate"]["tasks"], serde_json::json!(["fmt", "test"]));
+    // A declared gate replaces the guessed tiers, the focused tier included.
+    assert_eq!(plan["focused"], serde_json::json!([]));
+    assert_eq!(plan["fast"], serde_json::json!([]));
+    let warnings = packet["warnings"].to_string();
+    assert!(!warnings.contains("inferred"), "{warnings}");
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("### Gate (sykli.json)"))
+        .stdout(predicate::str::contains(SYKLI_GATE))
+        .stdout(predicate::str::contains("### Fast").not());
+}
+
+fn plan_json(path: &Path) -> serde_json::Value {
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(path)
+        .args(["context", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let packet: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    packet["validation_plan"].clone()
+}
+
+fn rust_repo_with_contract(path: &Path, repo_yaml: &str) {
+    init_repo(path);
+    fs::write(
+        path.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    write_sykli_contract(path);
+    fs::create_dir_all(path.join(".toimija")).unwrap();
+    fs::write(path.join(".toimija/repo.yaml"), repo_yaml).unwrap();
+}
+
+#[test]
+fn replace_inferred_drops_guesses_but_keeps_the_declared_gate() {
+    if !git_available() {
+        return;
+    }
+    // perusta, selko, taso, ote, kide and ruuma set replace_inferred to drop
+    // toimija's cargo-shape guesses, before any gate existed. A declared gate
+    // is not a guess.
+    let temp = tempfile::tempdir().unwrap();
+    rust_repo_with_contract(
+        temp.path(),
+        "validation:\n  replace_inferred: true\n  fast:\n    - cargo test -q\n",
+    );
+
+    let plan = plan_json(temp.path());
+    assert_eq!(plan["source"], "sykli_and_repo_config");
+    assert_eq!(plan["gate"]["command"], SYKLI_GATE);
+    assert_eq!(plan["fast"], serde_json::json!(["cargo test -q"]));
+    assert_eq!(plan["strict"], serde_json::json!([]));
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["validate", "--plan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("### Gate (sykli.json)"))
+        .stdout(predicate::str::contains("cargo test -q"))
+        .stdout(predicate::str::contains("cargo clippy").not());
+}
+
+#[test]
+fn repo_config_can_name_its_own_gate_command_or_opt_out() {
+    if !git_available() {
+        return;
+    }
+    // ote runs its gate through mise; the override is named as written.
+    let mise = "mkdir -p .sykli && mise exec -- sykli run sykli.json --json > .sykli/receipt.json && mise exec -- sykli verify .sykli/receipt.json --contract sykli.json";
+    let temp = tempfile::tempdir().unwrap();
+    rust_repo_with_contract(
+        temp.path(),
+        &format!(
+            "validation:\n  replace_inferred: true\n  gate: \"{mise}\"\n  fast:\n    - make test\n"
+        ),
+    );
+    let plan = plan_json(temp.path());
+    assert_eq!(plan["gate"]["command"], mise);
+    assert_eq!(plan["gate"]["tasks"], serde_json::json!(["fmt", "test"]));
+    assert!(
+        plan["notes"].to_string().contains("validation.gate"),
+        "{}",
+        plan["notes"]
+    );
+
+    // An explicit opt-out names no gate.
+    let temp = tempfile::tempdir().unwrap();
+    rust_repo_with_contract(temp.path(), "validation:\n  gate: false\n");
+    let plan = plan_json(temp.path());
+    assert!(plan["gate"].is_null(), "{plan}");
+    assert_eq!(plan["source"], "inferred");
+}

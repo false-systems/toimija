@@ -15,6 +15,25 @@ pub const DEFAULT_BUDGET: usize = 8000;
 pub const CONFIG_PATH: &str = ".toimija/repo.yaml";
 pub const DAY_SECS: u64 = 24 * 60 * 60;
 
+/// Where `init` keeps Git away from what Toimija generates.
+pub const IGNORE_PATH: &str = ".toimija/.gitignore";
+
+/// What `init` writes to [`IGNORE_PATH`]: everything a refresh, a session,
+/// `clean` or `snapshot` writes, so none of it shows up as untracked work —
+/// least of all in the packet that reports the working tree. Patterns are
+/// relative to `.toimija/`; `repo.yaml` and this file stay tracked.
+pub const IGNORE_RULES: &str = "\
+# Written by `toimija init`. Commit this file and repo.yaml; Toimija regenerates the rest.
+/current.md
+/current.json
+/sessions/
+/history.jsonl
+/history.lock
+/runs/
+/snapshots/
+/tmp/
+";
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct RepoConfig {
@@ -57,10 +76,38 @@ pub struct ContextSection {
 #[serde(default)]
 pub struct ValidationSection {
     pub replace_inferred: bool,
+    /// The repository's declared gate (`sykli.json`). `replace_inferred`
+    /// drops inferred commands, never the gate; only this setting changes it.
+    #[serde(skip_serializing_if = "GateSetting::is_default")]
+    pub gate: GateSetting,
     pub fast: Vec<String>,
     pub strict: Vec<String>,
     pub full: Vec<String>,
     pub privileged: Vec<String>,
+}
+
+/// `validation.gate` in `.toimija/repo.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum GateSetting {
+    /// `true` (the default) names the gate of a repository with a
+    /// `sykli.json`; `false` names none.
+    Enabled(bool),
+    /// The command to name for that gate instead of the standard one, for a
+    /// repository that runs sykli another way (`mise exec -- sykli …`).
+    Command(String),
+}
+
+impl Default for GateSetting {
+    fn default() -> Self {
+        Self::Enabled(true)
+    }
+}
+
+impl GateSetting {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -203,8 +250,8 @@ impl RepoConfig {
     }
 }
 
-/// Seed `.toimija/repo.yaml`, never overwriting one and never writing
-/// through a symlink.
+/// Seed `.toimija/repo.yaml` and `.toimija/.gitignore`, never overwriting
+/// either and never writing through a symlink.
 pub fn init_repo(repo_root: &Path) -> anyhow::Result<InitReport> {
     use anyhow::Context as _;
     let mut report = InitReport {
@@ -250,6 +297,24 @@ pub fn init_repo(repo_root: &Path) -> anyhow::Result<InitReport> {
             "Run `toimija snippet preflight` and paste it into your AGENTS.md/CLAUDE.md so agents run `toimija enter` first."
                 .to_string(),
         );
+    }
+
+    // Keep Git away from what Toimija generates, inside the directory Toimija
+    // owns — so the first refresh does not report its own packet as dirty.
+    // An existing file, or a symlink in its place, is left alone.
+    let ignore_path = repo_root.join(IGNORE_PATH);
+    if fs::symlink_metadata(&ignore_path).is_ok() {
+        report.existing.push(ignore_path);
+    } else {
+        use std::io::Write as _;
+        crate::owned::open(
+            repo_root,
+            &ignore_path,
+            fs::OpenOptions::new().write(true).create_new(true),
+        )
+        .and_then(|mut file| Ok(file.write_all(IGNORE_RULES.as_bytes())?))
+        .context("failed to initialize")?;
+        report.created.push(ignore_path);
     }
 
     Ok(report)

@@ -180,7 +180,9 @@ impl HandoffRecord {
         let staged_paths: Vec<PathBuf> = packet.git.staged_files.iter().map(changed_path).collect();
         let unstaged_paths: Vec<PathBuf> =
             packet.git.unstaged_files.iter().map(changed_path).collect();
-        let suggested = if packet.validation_plan.focused.is_empty() {
+        let suggested = if let Some(gate) = &packet.validation_plan.gate {
+            vec![gate.command.clone()]
+        } else if packet.validation_plan.focused.is_empty() {
             packet.validation_plan.fast.clone()
         } else {
             packet.validation_plan.focused.clone()
@@ -360,6 +362,7 @@ mod tests {
             entry_open_prs: None,
             effects_observed: Vec::new(),
             effects_coverage: Default::default(),
+            undelivered: Vec::new(),
         }
     }
 
@@ -386,6 +389,9 @@ mod tests {
                 branch: Some("feat/x".to_string()),
                 head_oid: Some("head".to_string()),
                 upstream: None,
+                ahead: None,
+                behind: None,
+                ahead_behind_ref: None,
                 base: Some("origin/main".to_string()),
                 merge_base: Some("base".to_string()),
                 detached: false,
@@ -415,6 +421,7 @@ mod tests {
             safe_to_ignore: Vec::new(),
             validation_plan: ValidationPlan {
                 source: ValidationSource::Inferred,
+                gate: None,
                 focused: (0..30).map(|i| format!("cargo test {i}")).collect(),
                 fast: vec!["cargo test".to_string()],
                 strict: Vec::new(),

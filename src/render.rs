@@ -208,6 +208,15 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
     let mut output = String::new();
     write_h2(&mut output, "Validation plan");
     writeln!(&mut output, "- source: {}", source_label(&plan.source)).unwrap();
+    if let Some(gate) = &plan.gate {
+        write_h3(&mut output, &format!("Gate ({})", gate.contract));
+        writeln!(&mut output, "- {}", gate.command).unwrap();
+        if gate.tasks.is_empty() {
+            writeln!(&mut output, "- tasks: none named (see Notes)").unwrap();
+        } else {
+            writeln!(&mut output, "- tasks: {}", gate.tasks.join(", ")).unwrap();
+        }
+    }
     if !plan.focused.is_empty() {
         write_h3(&mut output, "Focused (from changed surface)");
         writeln!(
@@ -217,14 +226,20 @@ pub fn render_validation_plan(plan: &ValidationPlan) -> String {
         .unwrap();
         write_str_list(&mut output, &plan.focused, "none");
     }
-    write_h3(&mut output, "Fast");
-    write_str_list(&mut output, &plan.fast, "none");
-    write_h3(&mut output, "Strict");
-    write_str_list(&mut output, &plan.strict, "none");
-    write_h3(&mut output, "Full");
-    write_str_list(&mut output, &plan.full, "none");
-    write_h3(&mut output, "Privileged");
-    write_str_list(&mut output, &plan.privileged, "none");
+    // Beside a declared gate only the tiers the repo config adds are shown;
+    // without one every tier renders, an empty one as `none`.
+    for (title, commands) in [
+        ("Fast", &plan.fast),
+        ("Strict", &plan.strict),
+        ("Full", &plan.full),
+        ("Privileged", &plan.privileged),
+    ] {
+        if plan.gate.is_some() && commands.is_empty() {
+            continue;
+        }
+        write_h3(&mut output, title);
+        write_str_list(&mut output, commands, "none");
+    }
     write_h3(&mut output, "Notes");
     write_str_list(&mut output, &plan.notes, "none");
     output
@@ -355,6 +370,12 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         &mut output,
         "- upstream: {}",
         packet.git.upstream.as_deref().unwrap_or("unavailable")
+    )
+    .unwrap();
+    writeln!(
+        &mut output,
+        "- ahead/behind: {}",
+        ahead_behind_label(&packet.git)
     )
     .unwrap();
     writeln!(&mut output, "- merge-base: {}", merge_base_label(packet)).unwrap();
@@ -660,6 +681,21 @@ fn write_risk(output: &mut String, packet: &ContextPacket) {
     }
 }
 
+/// `<n> ahead, <m> behind <ref> (<what the ref is>)`, or why it is unknown.
+fn ahead_behind_label(git: &crate::git::GitState) -> String {
+    match (git.ahead, git.behind, git.ahead_behind_ref.as_deref()) {
+        (Some(ahead), Some(behind), Some(against)) => {
+            let kind = match git.upstream.as_deref() {
+                Some(upstream) if upstream == against => "upstream",
+                Some(_) => "upstream gone",
+                None => "no upstream",
+            };
+            format!("{ahead} ahead, {behind} behind {against} ({kind})")
+        }
+        _ => "unknown — no upstream and no remote default branch".to_string(),
+    }
+}
+
 /// Render the merge-base as `<base> @ <oid>` when both are known, the bare oid
 /// when only the oid is known, or `unavailable`.
 fn merge_base_label(packet: &ContextPacket) -> String {
@@ -959,6 +995,8 @@ fn source_label(source: &ValidationSource) -> &'static str {
         ValidationSource::RepoConfig => "repo config",
         ValidationSource::Inferred => "inferred",
         ValidationSource::InferredAndRepoConfig => "inferred and repo config",
+        ValidationSource::Sykli => "sykli.json",
+        ValidationSource::SykliAndRepoConfig => "sykli.json and repo config",
         ValidationSource::Unknown => "unknown",
     }
 }
@@ -994,6 +1032,9 @@ mod tests {
                 branch: Some("main".to_string()),
                 head_oid: Some("abc".to_string()),
                 upstream: None,
+                ahead: None,
+                behind: None,
+                ahead_behind_ref: None,
                 base: None,
                 merge_base: None,
                 detached: false,
@@ -1026,6 +1067,9 @@ mod tests {
                 branch: Some("main".to_string()),
                 head_oid: Some("abc".to_string()),
                 upstream: None,
+                ahead: None,
+                behind: None,
+                ahead_behind_ref: None,
                 base: None,
                 merge_base: None,
                 detached: false,
@@ -1474,6 +1518,7 @@ visible output). Expansion is never forbidden; invisible expansion is.
 - HEAD: abc
 - detached: false
 - upstream: unavailable
+- ahead/behind: unknown — no upstream and no remote default branch
 - merge-base: unavailable
 - dirty: false
 - staged: 0
@@ -1550,6 +1595,9 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     "branch": "main",
     "head_oid": "abc",
     "upstream": null,
+    "ahead": null,
+    "behind": null,
+    "ahead_behind_ref": null,
     "base": null,
     "merge_base": null,
     "detached": false,

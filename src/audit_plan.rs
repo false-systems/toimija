@@ -337,6 +337,7 @@ mod tests {
             findings_root: None,
             validation_plan: ValidationPlan {
                 source: crate::validate::ValidationSource::Unknown,
+                gate: None,
                 focused: Vec::new(),
                 fast: Vec::new(),
                 strict: Vec::new(),

@@ -134,3 +134,20 @@ fn context_help_describes_every_flag() {
         .stdout(predicate::str::contains("Add a diff-focused section"))
         .stdout(predicate::str::contains("Approximate output cap"));
 }
+
+#[test]
+fn verify_json_help_describes_the_shape_verify_emits() {
+    // `verify --json` emits `{ "status": ..., "packet_path": ... }`; the help
+    // once promised `{ "consistent": bool, "reasons": [...] }`, a shape no
+    // command has ever emitted.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .args(["verify", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"consistent\"").not())
+        .stdout(predicate::str::contains("\"reasons\"").not())
+        .stdout(predicate::str::contains("\"status\""))
+        .stdout(predicate::str::contains("\"verified\""))
+        .stdout(predicate::str::contains("session_not_live"));
+}

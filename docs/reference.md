@@ -19,7 +19,7 @@ while the agent works, and exits with the wrapped command's status.
 ```bash
 cargo install --path .          # or grab the release artifact
 cd /path/to/repo
-toimija init                    # once per repo: seed .toimija/repo.yaml
+toimija init                    # once per repo: seed .toimija/repo.yaml and .gitignore
 toimija run --intent "<why>" -- claude   # every time: wrap the agent
 ```
 
@@ -79,7 +79,7 @@ What you get:
 | **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, explicit handoff records, and bounded stewardship. Visibility, never orchestration. |
 | **Staged audit breadth** | `toimija audit-plan` partitions the repo into bounded, deterministic audit surfaces; committed findings are the cross-run cache — no more one enormous session re-deriving everything. |
 | **Chain of custody** | Every packet and handoff carries a sauma envelope — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
-| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS. It never runs commands. |
+| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS. A repo with `sykli.json` gets its declared gate instead (`mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json`, `source: sykli.json`). It never runs commands. |
 | **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
 
 ## What Toimija is
@@ -148,7 +148,9 @@ the entry packet inlined at the session budget, the live packet path, and your
 `--task`. The agent cannot not-see it. Pass the agent's task via `--task`, not
 as the agent's own positional argument. Unknown agents keep the env-var
 handshake behind an honest banner — `delivery: env-var only — not guaranteed` —
-never a silent degradation.
+never a silent degradation. A warning names what the agent was not handed
+(`not delivered: packet, task, briefing`), and the session marker records it
+as `undelivered`, so `sessions --json` shows it after the fact.
 
 `--briefing` carries background instructions apart from the task. A known or
 configured agent gets them at the end of its launch prompt, after the packet
@@ -206,7 +208,9 @@ failure is written, and logged, once per distinct error rather than on every
 retry. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
-last-writer-wins "latest" summary for sessionless readers.
+last-writer-wins "latest" summary for sessionless readers. It mirrors the
+session block only while the session runs; the exit refresh, which runs after
+the marker closes, writes the repo-level pair without it.
 While a wrapped command runs, `run` re-points its own stdout and stderr at
 `.toimija/sessions/<id>/diagnostics.log` (descriptor-level `dup2`) and hands
 the saved terminal to the child, so nothing this process prints — watcher
@@ -531,8 +535,14 @@ The packet includes:
 
 - an **artifact ID** shared by the Markdown/JSON pair; each file is atomically
   replaced, and JSON is authoritative if an interrupted refresh leaves IDs that
-  do not match
+  do not match. The bytes are staged in `.toimija/tmp/`, whose own
+  `.gitignore` (`*`) hides it from Git, so a reader that lists untracked files
+  and then stats them (`git add --all`, as `sykli run` does) never meets a temp
+  file the rename is about to take away
 - branch / HEAD / dirty state
+- ahead / behind: commits HEAD has that its upstream lacks and the reverse, counted
+  from local refs (no fetch); without an upstream, against `origin/<default>`;
+  `git.ahead_behind_ref` names which
 - staged / unstaged / untracked files
 - rename/copy origin paths and similarity when Git reports them, plus conflict
   index stages (mode and object ID)
@@ -613,7 +623,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `current --verify --json` | Joskus-facing structured verification command. |
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
 | `context` | Print the context packet without wrapping an agent. |
-| `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified. `--json` includes the selected path, digest, and token. |
+| `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified — including `session_not_live` when the packet briefs a session that has closed or whose process is gone. `--json` includes the selected path, digest, and token. |
 | `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; a lease id is 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`, and anything else is refused before anything is touched; `--json` emits the snapshot record. Refuses in an unsafe git state. |
 | `audit-plan` | Derive deterministic, bounded audit surfaces from the committed Git tree; `--surface K` prints one contract-framed workset, and prior findings are read-only pointers to the latest committed `docs/audit/<date>/` directory. No plan or findings are written. |
 | `adopt` | Install the same marker-delimited Toimija preamble in every known entry file already present, creating `AGENTS.md` only when none exists; `--hooks` adds best-effort Git refresh hooks and creates/merges the repo-local `.claude/settings.json` SessionStart hook. |
@@ -621,7 +631,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`; `--json` for tools. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
-| `init` | Create `.toimija/repo.yaml` if missing. |
+| `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` (which keeps Git away from the packet, sessions, history and temp files) if missing. |
 | `snippet preflight\|script` | Print suggested preflight text / entry script; writes no files. |
 
 `--for-diff` and `--budget` tune the packet; `--json` switches the print commands
@@ -787,6 +797,9 @@ drift guard — no AI, no semantic comparison. It checks:
 - `.toimija/repo.yaml` exists and parses
 - `repo.name`, `repo.role`, and `boundaries` are non-empty
 - a validation plan exists (configured or inferable from the repo kind)
+- Git ignores every path `init`'s `.toimija/.gitignore` names (`current.*`,
+  `sessions/`, `history.*`, `runs/`, `snapshots/`), by whatever ignore rules it
+  reads (`git check-ignore`)
 - every `context.important_docs` path exists on disk
 - an agent doc still routes work through the `toimija enter` preflight
 - each boundary sentence still appears in the agent docs
@@ -898,6 +911,7 @@ visible output). Expansion is never forbidden; invisible expansion is.
 - HEAD: abc123
 - detached: false
 - upstream: unavailable
+- ahead/behind: unknown — no upstream and no remote default branch
 - merge-base: origin/main @ def456
 - dirty: true
 - staged: 0
@@ -1023,7 +1037,7 @@ boundaries:
 
 `context.read_first` adds repo-specific files to the Read first section when they exist.
 `context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
-Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible.
+Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible. It never removes the gate a `sykli.json` declares: `validation.gate: false` does, and `validation.gate: "<command>"` names that command for the gate instead (a repository that runs sykli through `mise exec`, say).
 Stewardship values are optional and default to the values above. Retention and
 history limits must be greater than zero; invalid values are refused and
 reported by `doctor` instead of being silently clamped. `auto_sweep: false`

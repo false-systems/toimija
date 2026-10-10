@@ -140,6 +140,11 @@ pub struct SessionMarker {
     /// `partial` when one could not, so an absent effect proves nothing.
     #[serde(default)]
     pub effects_coverage: crate::effects::EffectsCoverage,
+    /// What `run` had for the agent but could not put in its context, because
+    /// it has no delivery for that agent: `packet`, `task`, `briefing`. Empty
+    /// when everything was delivered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undelivered: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +250,7 @@ impl Session {
             entry_open_prs: None,
             effects_observed: Vec::new(),
             effects_coverage: crate::effects::EffectsCoverage::default(),
+            undelivered: Vec::new(),
         };
         let session = Session {
             id,
@@ -269,6 +275,12 @@ impl Session {
 
     pub fn record_cycle_action(&mut self, action: CycleAction) -> Result<()> {
         self.marker.cycle_action = Some(action);
+        self.write_marker()
+    }
+
+    /// Record what the agent was not handed (see [`SessionMarker::undelivered`]).
+    pub fn record_undelivered(&mut self, items: Vec<String>) -> Result<()> {
+        self.marker.undelivered = items;
         self.write_marker()
     }
 
@@ -408,7 +420,8 @@ impl Session {
 /// resolves to `None` (writes must not target a session whose state is
 /// unknown), but it is warned about, because the wrapped agent keeps reading
 /// the per-session packet that will now silently stop refreshing. Only a
-/// missing marker and a closed session stay quiet.
+/// missing marker and a closed session stay quiet. A marker still active
+/// whose process is provably gone resolves to `None` too, like a closed one.
 pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
     let id = std::env::var("TOIMIJA_SESSION").ok()?;
     if !is_valid_session_id(&id) {
@@ -447,7 +460,21 @@ pub fn ambient_session(repo_root: &Path) -> Option<(String, PathBuf)> {
         );
         return None;
     }
-    (marker.status == SessionStatus::Active).then_some((id, dir))
+    if marker.status != SessionStatus::Active {
+        return None;
+    }
+    // A `run` killed before it could close its marker (SIGKILL, OOM) leaves
+    // the agent running with the handshake. That session is over: treat it
+    // like a closed one, so a refresh writes a packet without its brief.
+    if crate::sessions::process_gone(repo_root, &marker) {
+        warn!(
+            event = "toimija.session.process_gone",
+            session = %id,
+            pid = marker.pid
+        );
+        return None;
+    }
+    Some((id, dir))
 }
 
 /// Read the marker in a session directory. Used by the per-session refresh

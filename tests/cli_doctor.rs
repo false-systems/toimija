@@ -56,6 +56,12 @@ fn write_strict_ready_rust_repo(path: &Path) {
         "repo:\n  name: demo\n  role: test fixture\ncontext:\n  important_docs:\n    - README.md\nvalidation:\n  fast:\n    - cargo test --workspace\nboundaries:\n  - Stay inside fixture.\n",
     )
     .unwrap();
+    // Git ignores what a refresh writes, as `toimija init` arranges.
+    fs::write(
+        path.join(".toimija/.gitignore"),
+        "/current.md\n/current.json\n/sessions/\n/history.jsonl\n/history.lock\n/runs/\n/snapshots/\n",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -373,5 +379,69 @@ fn doctor_claude_without_agents_reference_is_advisory() {
         .success()
         .stdout(predicate::str::contains(
             "warn: CLAUDE.md - CLAUDE.md exists but does not reference AGENTS.md",
+        ));
+}
+
+#[test]
+fn doctor_warns_when_git_would_list_the_packet() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    write_ready_rust_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "warn: packet ignored - Git does not ignore .toimija/current.md, .toimija/current.json, .toimija/sessions/",
+        ))
+        .stdout(predicate::str::contains("toimija init"));
+
+    // The rules may live anywhere Git reads them; here, the repo's own.
+    fs::write(
+        temp.path().join(".gitignore"),
+        ".toimija/*\n!.toimija/repo.yaml\n",
+    )
+    .unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ok: packet ignored - Git ignores the packet, sessions, history, runs and snapshots",
+        ));
+}
+
+#[test]
+fn doctor_checks_every_directory_init_ignores() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    write_ready_rust_repo(temp.path());
+    // The exact-name rules most repos carry: no `runs/`, no `snapshots/`.
+    // `snapshot --lease` and harness transcripts would then show up as
+    // untracked work, which a pre-commit hook refuses.
+    fs::write(
+        temp.path().join(".gitignore"),
+        ".toimija/current.md\n.toimija/current.json\n.toimija/sessions/\n.toimija/history.jsonl\n.toimija/history.lock\n",
+    )
+    .unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "warn: packet ignored - Git does not ignore .toimija/runs/, .toimija/snapshots/;",
         ));
 }

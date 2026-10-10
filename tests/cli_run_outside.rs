@@ -190,3 +190,38 @@ fn sessions_outside_a_repo_lists_the_state_directory_and_says_so() {
         "listing sessions must not create the state directory"
     );
 }
+
+#[test]
+fn an_unknown_agent_outside_a_repo_is_told_its_briefing_was_not_delivered() {
+    if !git_available() {
+        return;
+    }
+    let folder = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+
+    toimija_outside(folder.path(), state.path())
+        .args([
+            "run",
+            "--intent",
+            "outside",
+            "--briefing",
+            "knowledge",
+            "--",
+            "sh",
+            "-c",
+            "true",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "toimija run: warning: `sh` is not a known agent; not delivered: briefing",
+        ));
+
+    let listed = outside_sessions(folder.path(), state.path());
+    let session = &listed["sessions"][0];
+    assert_eq!(
+        session["undelivered"],
+        serde_json::json!(["briefing"]),
+        "{listed}"
+    );
+}

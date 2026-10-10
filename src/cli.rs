@@ -263,9 +263,9 @@ pub enum Command {
     /// The verify-before-read gate: checks the packet's consistency fingerprint
     /// against the working tree. Inside `run`, it selects that session's packet;
     /// otherwise it selects `.toimija/current.json`. `--packet` overrides the
-    /// selection. Use this before every packet read; it exits non-zero (with
-    /// reasons) when the packet is stale, so a caller refreshes before trusting
-    /// it. Read-only; no network.
+    /// selection. Use this before every packet read; it exits non-zero (naming
+    /// the reason) when the packet is stale or briefs a session that has ended,
+    /// so a caller refreshes before trusting it. Read-only; no network.
     #[command(
         after_help = "Examples:\n  toimija verify --json || toimija refresh   # verify the ambient packet\n  \
         toimija verify --packet .toimija/current.json --json  # select explicitly"
@@ -458,7 +458,11 @@ pub struct AuditPlanArgs {
 
 #[derive(Debug, Args)]
 pub struct VerifyArgs {
-    /// Emit the verdict as JSON (`{ "consistent": bool, "reasons": [...] }`).
+    /// Emit the verdict as JSON: `{ "status": "verified", "packet_path", "token",
+    /// "artifact_digest", ... }`, or on failure a non-`verified` status
+    /// (`stale_packet`, `session_not_live`, `missing_packet`, `invalid_packet`,
+    /// `sauma_digest_mismatch`, `unsafe_git_operation`, ...) with its details.
+    /// The exit code is 0 only for `verified`.
     #[arg(long)]
     pub json: bool,
     /// Packet to verify instead of the ambient session or repo-level packet.
@@ -1121,12 +1125,14 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         ),
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
-            if args.task.is_some() {
-                eprintln!(
-                    "toimija run: --task travels in the composed launch prompt and `{program}` \
-                     is not a known or configured agent; give it its task yourself"
-                );
-            }
+            let items = undelivered(true, &args);
+            warn_undelivered(
+                program,
+                "is not a known or configured agent",
+                &items,
+                "or teach toimija its prompt under `agents:` in .toimija/repo.yaml",
+            );
+            record_undelivered(&mut session, items);
         }
     }
     // The prompt travels where the agent reads it: last positional argument,
@@ -1616,12 +1622,16 @@ fn run_outside_repo(
         Some(_) => eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`"),
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
-            if args.task.is_some() {
-                eprintln!(
-                    "toimija run: --task travels in the composed launch prompt and `{program}` \
-                     is not a known agent; give it its task yourself"
-                );
-            }
+            // No packet outside a repository, so only what the caller passed
+            // can be lost here.
+            let items = undelivered(false, &args);
+            warn_undelivered(
+                program,
+                "is not a known agent",
+                &items,
+                "or run a known agent",
+            );
+            record_undelivered(&mut session, items);
         }
     }
     let handshake = session.env_outside();
@@ -1706,6 +1716,61 @@ fn run_outside_repo(
     }
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     Ok(wrapped_exit_code(status))
+}
+
+/// What `run` had for an agent it cannot deliver to, in the order a launch
+/// prompt carries it: the packet (inside a repository), the task, the
+/// caller's briefing.
+fn undelivered(packet: bool, args: &RunArgs) -> Vec<String> {
+    [
+        (packet, "packet"),
+        (args.task.is_some(), "task"),
+        (args.briefing.is_some(), "briefing"),
+    ]
+    .into_iter()
+    .filter(|(lost, _)| *lost)
+    .map(|(_, item)| item.to_string())
+    .collect()
+}
+
+/// Say, before the launch and while the terminal is still ours, what the
+/// agent will not have in its context. Nothing lost, nothing said.
+fn warn_undelivered(program: &str, why: &str, items: &[String], remedy: &str) {
+    if items.is_empty() {
+        return;
+    }
+    eprintln!(
+        "toimija run: warning: `{program}` {why}; not delivered: {}",
+        items.join(", ")
+    );
+    let handed: Vec<&str> = items
+        .iter()
+        .map(String::as_str)
+        .filter(|item| *item != "packet")
+        .collect();
+    let packet = items.iter().any(|item| item == "packet");
+    let mut steps = Vec::new();
+    if packet {
+        steps.push("point it at its packet ($TOIMIJA_LIVE)".to_string());
+    }
+    if !handed.is_empty() {
+        steps.push(format!("give it its {} yourself", handed.join(" and ")));
+    }
+    eprintln!("toimija run: {}, {remedy}", steps.join(" and "));
+}
+
+/// Keep the loss on the session marker, where `sessions --json` shows it.
+/// Best-effort: a marker write failing here is reported but does not stop the
+/// launch.
+fn record_undelivered(session: &mut session::Session, items: Vec<String>) {
+    if items.is_empty() {
+        return;
+    }
+    if let Err(error) = session.record_undelivered(items) {
+        eprintln!(
+            "toimija run: could not record the undelivered briefing on the session: {error:#}"
+        );
+    }
 }
 
 fn close_session_after_startup_failure(
@@ -2166,14 +2231,18 @@ fn compute_verify_status(
         }
     };
     context::normalize_git_state(&mut live);
-    let status = verify_status(&packet_path, &live);
+    let status = verify_status(runner, &packet_path, &live);
     VerifyReport {
         packet_path: Some(packet_path),
         status,
     }
 }
 
-fn verify_status(packet_path: &std::path::Path, live: &git::GitState) -> VerifyStatus {
+fn verify_status(
+    runner: &ProcessCommandRunner,
+    packet_path: &std::path::Path,
+    live: &git::GitState,
+) -> VerifyStatus {
     match load_stored_packet(packet_path) {
         StoredPacket::Ready { packet, raw } => {
             if packet.consistency.algorithm != CONSISTENCY_ALGORITHM {
@@ -2211,6 +2280,7 @@ fn verify_status(packet_path: &std::path::Path, live: &git::GitState) -> VerifyS
             }
             let artifact_digest = packet.sauma.as_ref().map(|sauma| sauma.digest.clone());
             let packet_refresh_token = packet.refresh_token.clone();
+            let named_session = packet.session.as_ref().map(|session| session.id.clone());
             let stored = packet.consistency;
             match stored.verify(live) {
                 Verdict::Consistent => {
@@ -2220,6 +2290,18 @@ fn verify_status(packet_path: &std::path::Path, live: &git::GitState) -> VerifyS
                             return VerifyStatus::StalePacket {
                                 packet_token,
                                 current_token,
+                            };
+                        }
+                    }
+                    // A packet that briefs a session is only current while
+                    // that session is: a closed or killed session's id, intent
+                    // and scope would otherwise read as the next agent's own.
+                    if let Some(session) = named_session {
+                        let state = sessions::named_session(runner, &live.repo_root, &session);
+                        if state != sessions::NamedSession::Live {
+                            return VerifyStatus::SessionNotLive {
+                                session,
+                                state: state.as_str(),
                             };
                         }
                     }
@@ -2439,6 +2521,10 @@ enum VerifyStatus {
         expected: String,
         actual: String,
     },
+    SessionNotLive {
+        session: String,
+        state: &'static str,
+    },
     UnsafeGitOperation {
         operation: GitOperationState,
         message: String,
@@ -2478,6 +2564,15 @@ impl VerifyStatus {
                         ),
                     );
                 }
+                VerifyStatus::SessionNotLive { .. } => {
+                    map.insert(
+                        "message".to_string(),
+                        serde_json::Value::String(
+                            "The selected packet briefs a session that is no longer running."
+                                .to_string(),
+                        ),
+                    );
+                }
                 _ => {}
             }
         }
@@ -2506,6 +2601,10 @@ impl VerifyStatus {
             VerifyStatus::SaumaDigestMismatch { .. } => {
                 "sauma_digest_mismatch: selected packet was tampered with".to_string()
             }
+            VerifyStatus::SessionNotLive { session, state } => format!(
+                "session_not_live: the packet briefs session {session}, which is {state}; \
+                 run `toimija refresh` for a packet without it"
+            ),
             VerifyStatus::UnsafeGitOperation { message, .. } => {
                 format!("unsafe_git_operation: {message}")
             }
@@ -2937,6 +3036,9 @@ mod tests {
             branch: Some(branch.to_string()),
             head_oid: Some(head.to_string()),
             upstream: None,
+            ahead: None,
+            behind: None,
+            ahead_behind_ref: None,
             base: None,
             merge_base: None,
             detached: false,

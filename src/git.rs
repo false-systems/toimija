@@ -18,6 +18,17 @@ pub struct GitState {
     pub branch: Option<String>,
     pub head_oid: Option<String>,
     pub upstream: Option<String>,
+    /// Commits on HEAD that `ahead_behind_ref` lacks, and the reverse. Counted
+    /// from local refs only, never fetched, so they are as fresh as the last
+    /// fetch. `None` when there is nothing to count against.
+    #[serde(default)]
+    pub ahead: Option<u32>,
+    #[serde(default)]
+    pub behind: Option<u32>,
+    /// What `ahead` and `behind` are counted against: the upstream, or, with
+    /// none (or one that is gone), the remote default branch (`origin/<default>`).
+    #[serde(default)]
+    pub ahead_behind_ref: Option<String>,
     pub base: Option<String>,
     pub merge_base: Option<String>,
     pub detached: bool,
@@ -97,6 +108,8 @@ pub struct RecentCommit {
 pub struct ParsedStatus {
     pub branch: Option<String>,
     pub upstream: Option<String>,
+    /// `# branch.ab +<ahead> -<behind>`: present only when the upstream exists.
+    pub ahead_behind: Option<(u32, u32)>,
     pub detached: bool,
     pub staged_files: Vec<ChangedFile>,
     pub unstaged_files: Vec<ChangedFile>,
@@ -222,8 +235,28 @@ pub fn collect_git_state(
     let recent_commits = run_git_ok(runner, &repo_root, &["log", "-n", "10", "--oneline"])
         .map(|text| parse_recent_commits(&text))
         .unwrap_or_default();
+    // Ahead/behind come from Git's own `branch.ab` line when the upstream
+    // exists. Without one (or with one that is gone), they are counted against
+    // the remote default branch — never against a local branch, and never
+    // after a fetch: toimija makes no network calls.
+    let (ahead_behind, ahead_behind_ref) = match (parsed.ahead_behind, &parsed.upstream) {
+        (Some(counts), Some(upstream)) => (Some(counts), Some(upstream.clone())),
+        _ => match (
+            head_oid.as_deref(),
+            base.as_deref().filter(|base| base.starts_with("origin/")),
+        ) {
+            (Some(_), Some(base)) => match count_ahead_behind(runner, &repo_root, base) {
+                Some(counts) => (Some(counts), Some(base.to_string())),
+                None => (None, None),
+            },
+            _ => (None, None),
+        },
+    };
     if parsed.upstream.is_none() {
-        warnings.push("No upstream detected. Branch divergence is unavailable.".to_string());
+        warnings.push(match &ahead_behind_ref {
+            Some(base) => format!("No upstream detected. Ahead/behind are counted against {base}."),
+            None => "No upstream detected. Branch divergence is unavailable.".to_string(),
+        });
     }
     if run_git_ok(
         runner,
@@ -267,6 +300,9 @@ pub fn collect_git_state(
             branch: parsed.branch.or(branch),
             head_oid,
             upstream: parsed.upstream,
+            ahead: ahead_behind.map(|(ahead, _)| ahead),
+            behind: ahead_behind.map(|(_, behind)| behind),
+            ahead_behind_ref,
             base,
             merge_base,
             detached,
@@ -281,6 +317,34 @@ pub fn collect_git_state(
             recent_commits,
         },
         warnings,
+    ))
+}
+
+/// `(ahead, behind)` of HEAD against `other`, from local refs only.
+fn count_ahead_behind(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    other: &str,
+) -> Option<(u32, u32)> {
+    let range = format!("HEAD...{other}");
+    let text = run_git_ok(
+        runner,
+        repo_root,
+        &["rev-list", "--left-right", "--count", &range, "--"],
+    )?;
+    let mut counts = text.split_whitespace().map(str::parse::<u32>);
+    match (counts.next(), counts.next(), counts.next()) {
+        (Some(Ok(ahead)), Some(Ok(behind)), None) => Some((ahead, behind)),
+        _ => None,
+    }
+}
+
+/// Parse the payload of porcelain v2's `# branch.ab +<ahead> -<behind>`.
+fn parse_ahead_behind(text: &str) -> Option<(u32, u32)> {
+    let (ahead, behind) = text.trim().split_once(' ')?;
+    Some((
+        ahead.strip_prefix('+')?.parse().ok()?,
+        behind.strip_prefix('-')?.parse().ok()?,
     ))
 }
 
@@ -381,6 +445,10 @@ pub(crate) fn parse_porcelain_v2_bytes(bytes: &[u8]) -> ParsedStatus {
         }
         if let Some(rest) = record.strip_prefix(b"# branch.upstream ") {
             parsed.upstream = Some(String::from_utf8_lossy(rest).into_owned());
+            continue;
+        }
+        if let Some(rest) = record.strip_prefix(b"# branch.ab ") {
+            parsed.ahead_behind = parse_ahead_behind(&String::from_utf8_lossy(rest));
             continue;
         }
         if let Some(rest) = record.strip_prefix(b"? ") {
@@ -631,6 +699,22 @@ mod tests {
         assert_eq!(parsed.unstaged_files[0].path, PathBuf::from("README.md"));
         assert_eq!(parsed.unstaged_files[0].index_entry, None);
         assert_eq!(parsed.untracked_files[0], PathBuf::from("notes.txt"));
+    }
+
+    #[test]
+    fn parses_ahead_and_behind_the_upstream() {
+        let text = "\
+# branch.oid abc
+# branch.head feature
+# branch.upstream origin/feature
+# branch.ab +2 -3
+";
+        let parsed = parse_porcelain_v2(text);
+        assert_eq!(parsed.ahead_behind, Some((2, 3)));
+
+        // An upstream that is configured but gone has no `branch.ab` line.
+        let gone = parse_porcelain_v2("# branch.head feature\n# branch.upstream origin/gone\n");
+        assert_eq!(gone.ahead_behind, None);
     }
 
     #[test]

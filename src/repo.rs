@@ -388,6 +388,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             "validation unknown"
         },
     ));
+    checks.push(packet_ignored_check(runner, &repo_root));
     checks.push(file_check(&repo_root, "AGENTS.md", "AGENTS.md"));
     let claude = repo_root.join("CLAUDE.md");
     if claude.exists() {
@@ -598,6 +599,66 @@ fn join_paths(paths: &[&PathBuf]) -> String {
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Everything `init` ignores, as `(path Git is asked about, label)`: one probe
+/// per rule in [`crate::config::IGNORE_RULES`], so the check and the rules
+/// cannot drift. A directory rule is probed with a file inside it, which Git
+/// answers for by the directory's rule. `tmp/` is left out: it ignores itself.
+fn packet_paths() -> Vec<(String, String)> {
+    crate::config::IGNORE_RULES
+        .lines()
+        .filter_map(|line| line.strip_prefix('/'))
+        .filter(|rule| *rule != "tmp/")
+        .map(|rule| {
+            let label = format!(".toimija/{rule}");
+            let probe = if rule.ends_with('/') {
+                format!("{label}0")
+            } else {
+                label.clone()
+            };
+            (probe, label)
+        })
+        .collect()
+}
+
+/// Whether Git ignores what Toimija generates, by whatever rules it reads (the
+/// repo's `.gitignore` files, `info/exclude`, the global excludes). A packet
+/// Git can see makes the first refresh report its own files as dirty work —
+/// and a tracked one changes on every refresh.
+fn packet_ignored_check(runner: &impl CommandRunner, repo_root: &Path) -> DoctorCheck {
+    let mut unignored = Vec::new();
+    for (probe, label) in packet_paths() {
+        match runner.run(repo_root, "git", &["check-ignore", "-q", &probe]) {
+            Ok(output) if output.status == 0 => {}
+            Ok(output) if output.status == 1 => unignored.push(label),
+            _ => {
+                return check(
+                    "packet ignored",
+                    DoctorStatus::Warning,
+                    "could not ask Git whether it ignores the packet (`git check-ignore` failed)",
+                );
+            }
+        }
+    }
+    if unignored.is_empty() {
+        check(
+            "packet ignored",
+            DoctorStatus::Ok,
+            "Git ignores the packet, sessions, history, runs and snapshots",
+        )
+    } else {
+        check(
+            "packet ignored",
+            DoctorStatus::Warning,
+            &format!(
+                "Git does not ignore {}; a refresh shows them as untracked work — \
+                 `toimija init` writes {} (or add them to your ignore rules)",
+                unignored.join(", "),
+                crate::config::IGNORE_PATH
+            ),
+        )
+    }
 }
 
 fn file_check(repo_root: &Path, name: &str, path: &str) -> DoctorCheck {
