@@ -173,6 +173,7 @@ pub fn refresh_session(
         markdown,
         json,
         session_closed,
+        point,
     } = compute(
         runner,
         repo_root,
@@ -184,19 +185,18 @@ pub fn refresh_session(
     let json_path = session_dir.join("current.json");
     // The session packet is authoritative for the agent — its failure is fatal.
     write_packet(repo_root, &md_path, &json_path, &markdown, &json)?;
-    let execution = packet
-        .session
-        .as_ref()
-        .and_then(|session| session.execution.as_ref());
-    let point = match execution {
-        Some(execution) => execution.repository.clone(),
-        None => crate::semantic::repository_point(runner, &packet)?,
-    };
-    crate::semantic::write_json(
-        repo_root,
-        &session_dir.join(crate::semantic::POINT_FILE),
-        &crate::semantic::point_envelope(point),
-    )?;
+    let point_file = session_dir.join(crate::semantic::POINT_FILE);
+    match point {
+        Some(point) => crate::semantic::write_json(
+            repo_root,
+            &point_file,
+            &crate::semantic::point_envelope(point),
+        )?,
+        // An ended session: nothing may read an earlier point as current.
+        None => {
+            let _ = crate::owned::remove_file(repo_root, &point_file);
+        }
+    }
     // The repo-level summary is demoted (last-writer-wins) and best-effort: a
     // failure mirroring it must not abort the already-written session packet, or
     // a transient summary write error would freeze the agent's live context.
@@ -229,12 +229,14 @@ pub fn refresh_session(
 }
 
 /// A built packet and its two renderings, plus whether the session it was
-/// built for has already closed.
+/// built for has already closed, and — for a refresh of a live session — the
+/// session's repository point, read from the same state as the packet.
 struct Computed {
     packet: ContextPacket,
     markdown: String,
     json: String,
     session_closed: bool,
+    point: Option<false_agent_protocol::RepositoryPoint>,
 }
 
 /// The same packet with no session block, sealed and rendered afresh: what the
@@ -268,7 +270,26 @@ fn render_pair(
 /// #161): only `NotFound` is quiet; a marker that exists and cannot be read
 /// is warned about, because the packet it feeds silently loses its session
 /// identity.
+///
+/// A session refresh pairs the packet with a repository point. If the
+/// worktree moves while the point's tree is written, the whole packet is built
+/// again from a fresh read, a bounded number of times
+/// ([`crate::semantic::retry_moved`]), and then the refresh fails — a move the
+/// token observes never leaves the packet with a tree from after it beside a
+/// token from before it.
 fn compute(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    for_diff: bool,
+    budget_override: Option<usize>,
+    session_dir: Option<&Path>,
+) -> Result<Computed> {
+    crate::semantic::retry_moved(|| {
+        compute_once(runner, repo_root, for_diff, budget_override, session_dir)
+    })
+}
+
+fn compute_once(
     runner: &impl CommandRunner,
     repo_root: &Path,
     for_diff: bool,
@@ -305,6 +326,7 @@ fn compute(
         marker.status == session::SessionStatus::Closed
             || crate::sessions::process_gone(repo_root, marker)
     });
+    let mut point = None;
     if let Some(marker) = marker {
         packet.session = Some(context::SessionBlock {
             id: marker.id,
@@ -314,12 +336,21 @@ fn compute(
             entry_branch: marker.branch,
             entry_head: marker.head,
         });
-        let execution = crate::semantic::execution_context(runner, &packet, generation)?;
-        packet
-            .session
-            .as_mut()
-            .expect("session was just installed")
-            .execution = Some(execution);
+        // A session that has ended stands at no repository point (`run`
+        // removes its point file as it exits), so none is computed for it: no
+        // tree is written only to be deleted.
+        if !session_closed {
+            let execution = crate::semantic::execution_context(runner, &packet, generation)?;
+            point = Some(execution.repository.clone());
+            packet
+                .session
+                .as_mut()
+                .expect("session was just installed")
+                .execution = Some(execution);
+        }
+    } else if session_dir.is_some() {
+        // A session directory without a readable marker still gets its point.
+        point = Some(crate::semantic::repository_point(runner, &packet)?);
     }
     let run = packet.session.as_ref().map(|session| session.id.clone());
     packet.attach_sauma(run)?;
@@ -329,6 +360,7 @@ fn compute(
         markdown,
         json,
         session_closed,
+        point,
     })
 }
 

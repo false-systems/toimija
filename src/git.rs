@@ -106,6 +106,8 @@ pub struct RecentCommit {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ParsedStatus {
+    /// `# branch.oid`: the commit HEAD names, `None` for `(initial)` (unborn).
+    pub head_oid: Option<String>,
     pub branch: Option<String>,
     pub upstream: Option<String>,
     /// `# branch.ab +<ahead> -<behind>`: present only when the upstream exists.
@@ -133,28 +135,18 @@ pub fn discover_repo_root(
     )))
 }
 
-pub fn collect_git_state(
+/// One `git status` in porcelain v2 with branch headers: every file a token
+/// fingerprints, and HEAD and the branch in `# branch.oid` / `# branch.head`.
+fn read_status(
     runner: &impl CommandRunner,
-    cwd: &Path,
-) -> Result<(GitState, Vec<String>), ToimijaError> {
-    let mut warnings = Vec::new();
-    let repo_root = discover_repo_root(runner, cwd)?;
-    let git_dir = run_git_ok_bytes(runner, &repo_root, &["rev-parse", "--git-dir"])
-        .map(|bytes| crate::path_codec::from_git_bytes(trim_ascii_end(&bytes)));
-    let head_oid =
-        run_git_ok(runner, &repo_root, &["rev-parse", "HEAD"]).map(|text| text.trim().to_string());
-    let branch = run_git_ok(
-        runner,
-        &repo_root,
-        &["symbolic-ref", "--quiet", "--short", "HEAD"],
-    )
-    .map(|text| text.trim().to_string());
+    repo_root: &Path,
+) -> Result<(ParsedStatus, u128), ToimijaError> {
     let status_started = Instant::now();
     // Native watchers see Git's optional index-refresh lock. Disable it for
     // this read-only status so refreshing a packet cannot trigger itself.
     let status_output = run_git_required_bytes(
         runner,
-        &repo_root,
+        repo_root,
         &[
             "--no-optional-locks",
             "status",
@@ -165,10 +157,126 @@ pub fn collect_git_state(
         ],
     )?;
     let status_duration_ms = status_started.elapsed().as_millis();
-    let mut parsed = parse_porcelain_v2_bytes(&status_output);
+    Ok((parse_porcelain_v2_bytes(&status_output), status_duration_ms))
+}
+
+/// What [`collect_git_state`] reads for a token: the git dir, HEAD, the branch
+/// and one `status`.
+struct TokenReads {
+    git_dir: Option<PathBuf>,
+    head_oid: Option<String>,
+    /// `symbolic-ref HEAD`, read before `status` fills in a missing branch.
+    symbolic_branch: Option<String>,
+    parsed: ParsedStatus,
+    detached: bool,
+    status_duration_ms: u128,
+}
+
+fn read_token_inputs(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+) -> Result<TokenReads, ToimijaError> {
+    let git_dir = read_git_dir(runner, repo_root);
+    let head_oid =
+        run_git_ok(runner, repo_root, &["rev-parse", "HEAD"]).map(|text| text.trim().to_string());
+    let symbolic_branch = run_git_ok(
+        runner,
+        repo_root,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    )
+    .map(|text| text.trim().to_string());
+    let (mut parsed, status_duration_ms) = read_status(runner, repo_root)?;
     if parsed.branch.is_none() {
-        parsed.branch = branch.clone();
+        parsed.branch = symbolic_branch.clone();
     }
+    let detached = parsed.detached || (symbolic_branch.is_none() && head_oid.is_some());
+    Ok(TokenReads {
+        git_dir,
+        head_oid,
+        symbolic_branch,
+        parsed,
+        detached,
+        status_duration_ms,
+    })
+}
+
+fn read_git_dir(runner: &impl CommandRunner, repo_root: &Path) -> Option<PathBuf> {
+    run_git_ok_bytes(runner, repo_root, &["rev-parse", "--git-dir"])
+        .map(|bytes| crate::path_codec::from_git_bytes(trim_ascii_end(&bytes)))
+}
+
+fn is_dirty(parsed: &ParsedStatus) -> bool {
+    !parsed.staged_files.is_empty()
+        || !parsed.unstaged_files.is_empty()
+        || !parsed.untracked_files.is_empty()
+        || !parsed.conflicted_files.is_empty()
+}
+
+/// The Git state a consistency token fingerprints, and nothing more, for the
+/// repository already found at `repo_root`: two git processes (`rev-parse
+/// --git-dir`, then [`token_state_at`]'s `status`), where
+/// [`collect_git_state`] also spends a dozen on the base, history and branch
+/// diff that a token never reads. The fields a token does not read are empty.
+pub fn collect_token_state(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+) -> Result<GitState, ToimijaError> {
+    token_state_at(runner, repo_root, read_git_dir(runner, repo_root))
+}
+
+/// The Git state a consistency token fingerprints, read with one git process
+/// for a repository whose root and git dir are already known: a worktree's
+/// git dir does not move, and `status` itself names HEAD (`# branch.oid`) and
+/// the branch (`# branch.head`). Reading the token again around a tree write
+/// uses this. [`collect_git_state`] reads HEAD and the branch with processes of
+/// their own; the two agree in every HEAD state (tested), so a token from
+/// either is the same token.
+pub fn token_state_at(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    git_dir: Option<PathBuf>,
+) -> Result<GitState, ToimijaError> {
+    let (parsed, _duration) = read_status(runner, repo_root)?;
+    let dirty = is_dirty(&parsed);
+    let detached = parsed.detached || (parsed.branch.is_none() && parsed.head_oid.is_some());
+    Ok(GitState {
+        repo_root: repo_root.to_path_buf(),
+        git_dir,
+        branch: parsed.branch,
+        head_oid: parsed.head_oid,
+        upstream: parsed.upstream,
+        ahead: None,
+        behind: None,
+        ahead_behind_ref: None,
+        base: None,
+        merge_base: None,
+        detached,
+        dirty,
+        staged_files: parsed.staged_files,
+        unstaged_files: parsed.unstaged_files,
+        untracked_files: parsed.untracked_files,
+        conflicted_files: parsed.conflicted_files,
+        conflict_entries: parsed.conflict_entries,
+        branch_files: Vec::new(),
+        branch_diff_coverage: Coverage::unrecorded(),
+        recent_commits: Vec::new(),
+    })
+}
+
+pub fn collect_git_state(
+    runner: &impl CommandRunner,
+    cwd: &Path,
+) -> Result<(GitState, Vec<String>), ToimijaError> {
+    let mut warnings = Vec::new();
+    let repo_root = discover_repo_root(runner, cwd)?;
+    let TokenReads {
+        git_dir,
+        head_oid,
+        symbolic_branch: branch,
+        parsed,
+        detached,
+        status_duration_ms,
+    } = read_token_inputs(runner, &repo_root)?;
     if head_oid.is_none() {
         if parsed.branch.is_some() || branch.is_some() {
             warnings.push("HEAD unavailable; branch has no commits yet.".to_string());
@@ -176,7 +284,6 @@ pub fn collect_git_state(
             warnings.push("HEAD unavailable.".to_string());
         }
     }
-    let detached = parsed.detached || (branch.is_none() && head_oid.is_some());
     let base = discover_base(runner, &repo_root);
     let merge_base = if head_oid.is_some() {
         base.as_deref().and_then(|base| {
@@ -281,10 +388,7 @@ pub fn collect_git_state(
         warnings
             .push("Untracked files exist. They will not be committed unless added.".to_string());
     }
-    let dirty = !parsed.staged_files.is_empty()
-        || !parsed.unstaged_files.is_empty()
-        || !parsed.untracked_files.is_empty()
-        || !parsed.conflicted_files.is_empty();
+    let dirty = is_dirty(&parsed);
     debug!(
         event = "toimija.git.state.collected",
         repo_root = %repo_root.display(),
@@ -434,6 +538,13 @@ pub(crate) fn parse_porcelain_v2_bytes(bytes: &[u8]) -> ParsedStatus {
         .split(|byte| *byte == 0)
         .filter(|record| !record.is_empty());
     while let Some(record) = records.next() {
+        if let Some(rest) = record.strip_prefix(b"# branch.oid ") {
+            let rest = String::from_utf8_lossy(rest);
+            if rest != "(initial)" {
+                parsed.head_oid = Some(rest.into_owned());
+            }
+            continue;
+        }
         if let Some(rest) = record.strip_prefix(b"# branch.head ") {
             let rest = String::from_utf8_lossy(rest);
             if rest == "(detached)" {
@@ -1011,5 +1122,107 @@ R094\tsrc/old.rs\tsrc/renamed.rs
             .with(&["rev-parse", "--verify", "main"], 0, "abc\n");
         let base = discover_base(&runner, Path::new("."));
         assert_eq!(base.as_deref(), Some("main"));
+    }
+}
+
+#[cfg(test)]
+mod token_state_tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::{collect_git_state, collect_token_state, token_state_at};
+    use crate::command::ProcessCommandRunner;
+    use crate::consistency::Consistency;
+    use crate::context::normalize_git_state;
+
+    /// `git` pinned to `dir`, with the variables that would point it at
+    /// another repository removed and an identity of its own.
+    fn git(dir: &Path, args: &[&str]) {
+        let mut command = Command::new("git");
+        command.current_dir(dir).args(args);
+        for var in [
+            "GIT_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+        ] {
+            command.env_remove(var);
+        }
+        let output = command
+            .env("GIT_AUTHOR_NAME", "Toimija Test")
+            .env("GIT_AUTHOR_EMAIL", "toimija@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Toimija Test")
+            .env("GIT_COMMITTER_EMAIL", "toimija@example.invalid")
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// The token from the full collector, and from each lean one: the
+    /// two-process read a snapshot starts from, and the one-process re-read
+    /// that follows a tree write. Their HEAD fields must agree too.
+    fn tokens(root: &Path) -> (String, String) {
+        let runner = ProcessCommandRunner;
+        let (mut full, _warnings) = collect_git_state(&runner, root).unwrap();
+        normalize_git_state(&mut full);
+        let mut lean = collect_token_state(&runner, &full.repo_root).unwrap();
+        normalize_git_state(&mut lean);
+        let mut reread = token_state_at(&runner, &full.repo_root, full.git_dir.clone()).unwrap();
+        normalize_git_state(&mut reread);
+        for state in [&lean, &reread] {
+            assert_eq!(state.branch, full.branch);
+            assert_eq!(state.head_oid, full.head_oid);
+            assert_eq!(state.detached, full.detached);
+            assert_eq!(state.dirty, full.dirty);
+            assert_eq!(state.git_dir, full.git_dir);
+        }
+        assert_eq!(
+            Consistency::fingerprint(&lean).token,
+            Consistency::fingerprint(&reread).token
+        );
+        (
+            Consistency::fingerprint(&full).token,
+            Consistency::fingerprint(&reread).token,
+        )
+    }
+
+    /// The re-read around a tree write uses a lean collector, and the token
+    /// it compares against came from the full one. They must agree in every
+    /// state a worktree can be in, or a quiet repository would never settle.
+    #[test]
+    fn the_lean_token_read_agrees_with_the_full_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "-q", "-b", "main"]);
+
+        // Unborn HEAD, one untracked file.
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        let (full, lean) = tokens(root);
+        assert_eq!(full, lean, "unborn");
+
+        git(root, &["add", "a.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        git(root, &["add", "b.txt"]);
+        git(root, &["commit", "-q", "-m", "second"]);
+
+        // Staged, unstaged, untracked and deleted at once, on a branch.
+        std::fs::write(root.join("a.txt"), "staged\n").unwrap();
+        git(root, &["add", "a.txt"]);
+        std::fs::write(root.join("a.txt"), "staged then edited\n").unwrap();
+        std::fs::remove_file(root.join("b.txt")).unwrap();
+        std::fs::write(root.join("c.txt"), "untracked\n").unwrap();
+        let (full, lean) = tokens(root);
+        assert_eq!(full, lean, "dirty on a branch");
+
+        // Detached.
+        git(root, &["stash", "-q", "-u"]);
+        git(root, &["checkout", "-q", "--detach", "HEAD~1"]);
+        let (full, lean) = tokens(root);
+        assert_eq!(full, lean, "detached");
     }
 }

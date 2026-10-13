@@ -18,6 +18,69 @@ use crate::context::ContextPacket;
 /// A wrapped command finds it through `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`.
 pub const POINT_FILE: &str = "semantic-point.json";
 
+/// The extension naming the algorithm behind an envelope's `tree_oid`. The
+/// protocol's `RepositoryPoint` has no field for it, and its envelopes accept
+/// additive extensions. An envelope without it was written before Toimija named
+/// its tree algorithm, and its tree is the legacy one
+/// ([`crate::snapshot::LEGACY_TREE_ALGORITHM`]).
+pub const TREE_ALGORITHM_EXTENSION: &str = "tree_algorithm";
+
+/// How many times a point is attempted, each from a fresh read of the
+/// repository, while the worktree keeps moving under the tree write. Then it is
+/// refused rather than paired across a move the token observed.
+pub const POINT_ATTEMPTS: usize = 3;
+
+/// The pause before each retry: the worktree was moving a moment ago, so give
+/// it a moment to settle. Short and growing; 150 ms in all at most.
+pub const POINT_BACKOFF: [std::time::Duration; POINT_ATTEMPTS - 1] = [
+    std::time::Duration::from_millis(50),
+    std::time::Duration::from_millis(100),
+];
+
+/// Run `attempt` again while it fails only because the worktree moved under
+/// the tree write ([`crate::snapshot::WorktreeMoved`]), up to
+/// [`POINT_ATTEMPTS`] times in all, pausing [`POINT_BACKOFF`] before each
+/// retry. Each attempt must read the repository afresh: retrying with the
+/// token it already holds would only fail again. Any other error, and the last
+/// move, is returned as it is.
+pub fn retry_moved<T>(attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    retry_moved_with(std::thread::sleep, attempt)
+}
+
+/// [`retry_moved`], with the pause given (tests observe it instead of waiting).
+fn retry_moved_with<T>(
+    mut pause: impl FnMut(std::time::Duration),
+    mut attempt: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let mut attempts = 1;
+    loop {
+        match attempt() {
+            Err(error)
+                if attempts < POINT_ATTEMPTS && crate::snapshot::is_worktree_moved(&error) =>
+            {
+                pause(POINT_BACKOFF[attempts - 1]);
+                attempts += 1;
+            }
+            Err(error) if crate::snapshot::is_worktree_moved(&error) => {
+                return Err(error.context(format!(
+                    "the worktree kept moving across {POINT_ATTEMPTS} attempts; no repository \
+                     point was written"
+                )));
+            }
+            other => return other,
+        }
+    }
+}
+
+fn tree_extensions() -> Extensions {
+    let mut extensions = Extensions::new();
+    extensions.insert(
+        TREE_ALGORITHM_EXTENSION.to_string(),
+        serde_json::Value::String(crate::snapshot::TREE_ALGORITHM.id().to_string()),
+    );
+    extensions
+}
+
 pub fn execution_context(
     runner: &impl CommandRunner,
     context: &ContextPacket,
@@ -43,7 +106,7 @@ pub fn execution_context(
         work: None,
         workflow_status: None,
         context_digest: String::new(),
-        extensions: Extensions::new(),
+        extensions: tree_extensions(),
     };
     envelope.seal().map_err(anyhow::Error::from)?;
     info!(
@@ -56,11 +119,17 @@ pub fn execution_context(
     Ok(envelope)
 }
 
+/// The repository point of the state `context` was compiled from: its token,
+/// and the tree-identity.v1 tree written from the worktree. The token is read
+/// again after the tree is written, so the two describe one state within what
+/// the token observes; if the worktree moved in between, this fails with
+/// [`crate::snapshot::WorktreeMoved`] and the caller rebuilds `context` and
+/// tries again ([`retry_moved`]).
 pub fn repository_point(
     runner: &impl CommandRunner,
     context: &ContextPacket,
 ) -> Result<RepositoryPoint> {
-    let tree = crate::snapshot::materialize(runner, &context.git.repo_root)
+    let tree = crate::snapshot::tree_at_token(runner, &context.git, &context.consistency.token)
         .context("failed to materialize the authoritative repository point")?;
     let repository = repository_ref(&context.git.repo_root)?;
     let id = point_ref(&repository, &context.consistency.token)?;
@@ -75,11 +144,12 @@ pub fn repository_point(
     })
 }
 
+/// Wrap a point from [`repository_point`], naming the algorithm of its tree.
 pub fn point_envelope(point: RepositoryPoint) -> RepositoryPointEnvelope {
     RepositoryPointEnvelope {
         protocol: ProtocolVersion::V1,
         repository: point,
-        extensions: Extensions::new(),
+        extensions: tree_extensions(),
     }
 }
 
@@ -118,6 +188,80 @@ fn now_timestamp() -> Timestamp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::snapshot::WorktreeMoved;
+
+    #[test]
+    fn a_moving_worktree_is_retried_a_bounded_number_of_times_then_refused() {
+        // Moves once, then holds still: the second attempt's point stands.
+        let mut calls = 0;
+        let settled = retry_moved(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(anyhow::Error::from(WorktreeMoved).context("materializing"))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(settled.unwrap(), 2);
+
+        // Never holds still: refused after the last attempt, saying so.
+        let mut calls = 0;
+        let refused: Result<()> = retry_moved(|| {
+            calls += 1;
+            Err(WorktreeMoved.into())
+        });
+        assert_eq!(calls, POINT_ATTEMPTS);
+        let refused = refused.unwrap_err();
+        assert!(crate::snapshot::is_worktree_moved(&refused));
+        assert!(
+            format!("{refused:#}").contains("kept moving"),
+            "{refused:#}"
+        );
+
+        // Any other failure is not a reason to try again.
+        let mut calls = 0;
+        let failed: Result<()> = retry_moved(|| {
+            calls += 1;
+            Err(anyhow::anyhow!("git is broken"))
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(failed.unwrap_err().to_string(), "git is broken");
+    }
+
+    /// Between attempts the worktree gets a moment to settle: a short pause
+    /// that grows, bounded in count and in total, and none when there is
+    /// nothing to retry.
+    #[test]
+    fn a_retry_waits_a_short_bounded_while_before_reading_again() {
+        let mut pauses = Vec::new();
+        let _: Result<()> =
+            retry_moved_with(|pause| pauses.push(pause), || Err(WorktreeMoved.into()));
+        assert_eq!(pauses, POINT_BACKOFF.to_vec());
+        assert_eq!(pauses.len(), POINT_ATTEMPTS - 1);
+        assert!(
+            pauses.windows(2).all(|pair| pair[0] < pair[1]),
+            "{pauses:?}"
+        );
+        let total: std::time::Duration = pauses.iter().sum();
+        assert!(total <= std::time::Duration::from_millis(250), "{total:?}");
+
+        let mut pauses = Vec::new();
+        let _ = retry_moved_with(|pause| pauses.push(pause), || Ok(()));
+        let _: Result<()> = retry_moved_with(
+            |pause| pauses.push(pause),
+            || Err(anyhow::anyhow!("git is broken")),
+        );
+        assert!(pauses.is_empty(), "{pauses:?}");
+    }
+
+    #[test]
+    fn a_point_envelope_names_its_tree_algorithm() {
+        let extensions = tree_extensions();
+        assert_eq!(
+            extensions[TREE_ALGORITHM_EXTENSION],
+            serde_json::Value::String("tree-identity.v1".to_string())
+        );
+    }
 
     #[test]
     fn repository_and_point_refs_are_typed_and_deterministic() {
