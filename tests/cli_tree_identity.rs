@@ -558,3 +558,51 @@ fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
             .any(|argv| head(&argv) || branch(&argv))
     );
 }
+
+/// A session that has ended stands at no repository point: `run` removes the
+/// point file as it exits. So the refresh it makes on the way out computes no
+/// point at all — no tree is written only to be deleted, and the session's
+/// final packet carries no execution context — while the packet the agent
+/// read during the session did.
+#[test]
+fn the_refresh_at_exit_computes_no_point_for_the_ended_session() {
+    if !git_available() {
+        return;
+    }
+    let temp = fixture(IGNORE_RULES[1]);
+    let root = temp.path();
+    let out = tempfile::tempdir().unwrap();
+    toimija(root)
+        .env("OUT", out.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "printf '%s' \"$TOIMIJA_SESSION\" > \"$OUT/id\" && \
+             cp \"$TOIMIJA_LIVE_JSON\" \"$OUT/packet.json\"",
+        ])
+        .assert()
+        .success();
+    let id = fs::read_to_string(out.path().join("id")).unwrap();
+    let session = root.join(".toimija/sessions").join(&id);
+
+    let during: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.path().join("packet.json")).unwrap()).unwrap();
+    assert!(
+        during["session"]["execution"]["repository"]["tree_oid"].is_string(),
+        "the live session's packet has its point: {during}"
+    );
+
+    let last: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(session.join("current.json")).unwrap()).unwrap();
+    assert_eq!(last["session"]["id"], id.as_str(), "{last}");
+    assert!(
+        last["session"]["execution"].is_null(),
+        "the ended session's last packet still computed a point: {}",
+        last["session"]["execution"]
+    );
+    assert!(!session.join("semantic-point.json").exists());
+}
