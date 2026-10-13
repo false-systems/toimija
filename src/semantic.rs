@@ -25,6 +25,13 @@ pub const POINT_FILE: &str = "semantic-point.json";
 /// ([`crate::snapshot::LEGACY_TREE_ALGORITHM`]).
 pub const TREE_ALGORITHM_EXTENSION: &str = "tree_algorithm";
 
+/// How every point id Toimija writes begins. The id is derived from the tree
+/// as well as the token ([`point_ref`]), and this marker says so. An id that
+/// is `rpoint_` and 64 hex digits, without it, was derived from the repository
+/// and the token alone, before KATANA D9: it keeps that meaning, and is never
+/// compared with one of these.
+pub const POINT_ID_PREFIX: &str = "rpoint_v3_";
+
 /// How many times a point is attempted, each from a fresh read of the
 /// repository, while the worktree keeps moving under the tree write. Then it is
 /// refused rather than paired across a move the token observed.
@@ -120,9 +127,11 @@ pub fn execution_context(
 }
 
 /// The repository point of the state `context` was compiled from: its token,
-/// and the tree-identity.v1 tree written from the worktree. The token is read
-/// again after the tree is written, so the two describe one state within what
-/// the token observes; if the worktree moved in between, this fails with
+/// and the tree-identity.v1 tree written from the worktree. Its id is derived
+/// from both ([`point_ref`]), so two points with one id hold one tree, whatever
+/// the token does not observe. The token is read again after the tree is
+/// written, so the two describe one state within what the token observes; if
+/// the worktree moved in between, this fails with
 /// [`crate::snapshot::WorktreeMoved`] and the caller rebuilds `context` and
 /// tries again ([`retry_moved`]).
 pub fn repository_point(
@@ -132,7 +141,13 @@ pub fn repository_point(
     let tree = crate::snapshot::tree_at_token(runner, &context.git, &context.consistency.token)
         .context("failed to materialize the authoritative repository point")?;
     let repository = repository_ref(&context.git.repo_root)?;
-    let id = point_ref(&repository, &context.consistency.token)?;
+    let id = point_ref(
+        &repository,
+        &context.consistency.algorithm,
+        &context.consistency.token,
+        crate::snapshot::TREE_ALGORITHM.id(),
+        &tree,
+    )?;
     Ok(RepositoryPoint {
         id,
         repository,
@@ -169,12 +184,32 @@ fn repository_ref(root: &Path) -> Result<RepositoryRef> {
     .map_err(anyhow::Error::from)
 }
 
-fn point_ref(repository: &RepositoryRef, consistency_token: &str) -> Result<RepositoryPointRef> {
-    RepositoryPointRef::parse(format!(
-        "rpoint_{:x}",
-        Sha256::digest(format!("{repository}\0{consistency_token}"))
-    ))
-    .map_err(anyhow::Error::from)
+/// A point's id: [`POINT_ID_PREFIX`], then a SHA-256 over everything that
+/// makes it this point — the repository, the consistency token and its
+/// algorithm, the tree and its algorithm — each field ended by a NUL, which
+/// none of them can contain. Equal ids therefore mean equal trees by
+/// construction, and ids of trees under different algorithms never meet.
+fn point_ref(
+    repository: &RepositoryRef,
+    consistency_algorithm: &str,
+    consistency_token: &str,
+    tree_algorithm: &str,
+    tree: &str,
+) -> Result<RepositoryPointRef> {
+    let mut digest = Sha256::new();
+    for field in [
+        POINT_ID_PREFIX,
+        repository.as_str(),
+        consistency_algorithm,
+        consistency_token,
+        tree_algorithm,
+        tree,
+    ] {
+        digest.update(field.as_bytes());
+        digest.update([0]);
+    }
+    RepositoryPointRef::parse(format!("{POINT_ID_PREFIX}{:x}", digest.finalize()))
+        .map_err(anyhow::Error::from)
 }
 
 fn now_timestamp() -> Timestamp {
@@ -267,13 +302,43 @@ mod tests {
     fn repository_and_point_refs_are_typed_and_deterministic() {
         let repository = repository_ref(Path::new(".")).unwrap();
         assert!(repository.as_str().starts_with("repo_"));
-        assert_eq!(
-            point_ref(&repository, "token").unwrap(),
-            point_ref(&repository, "token").unwrap()
-        );
+        let id = |token: &str, tree: &str| {
+            point_ref(&repository, "consistency", token, "tree-identity.v1", tree).unwrap()
+        };
+        assert_eq!(id("token", "tree"), id("token", "tree"));
+        assert_ne!(id("token", "tree"), id("other", "tree"));
+        assert!(id("token", "tree").as_str().starts_with(POINT_ID_PREFIX));
+    }
+
+    /// The id is a function of the tree: one token with two trees — every
+    /// case in issue #239 — is two points, and so is one tree under two
+    /// algorithms, or one token under two token algorithms.
+    #[test]
+    fn a_point_id_covers_its_tree_and_both_algorithms() {
+        let repository = repository_ref(Path::new(".")).unwrap();
+        let base = point_ref(&repository, "c", "token", "tree-identity.v1", "aaaa").unwrap();
+        for other in [
+            point_ref(&repository, "c", "token", "tree-identity.v1", "bbbb"),
+            point_ref(&repository, "c", "token", "toimija-legacy", "aaaa"),
+            point_ref(&repository, "c2", "token", "tree-identity.v1", "aaaa"),
+            point_ref(
+                &RepositoryRef::parse("repo_other").unwrap(),
+                "c",
+                "token",
+                "tree-identity.v1",
+                "aaaa",
+            ),
+        ] {
+            assert_ne!(base, other.unwrap());
+        }
+        // Fields are delimited: moving a byte across a boundary is another id.
         assert_ne!(
-            point_ref(&repository, "token").unwrap(),
-            point_ref(&repository, "other").unwrap()
+            point_ref(&repository, "c", "token", "tree-identity.v1a", "aaa").unwrap(),
+            base
         );
+        // 64 hex digits after the marker, inside the protocol's id limits.
+        let hex = base.as_str().strip_prefix(POINT_ID_PREFIX).unwrap();
+        assert_eq!(hex.len(), 64);
+        assert!(hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 }
