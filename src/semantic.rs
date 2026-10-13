@@ -30,18 +30,35 @@ pub const TREE_ALGORITHM_EXTENSION: &str = "tree_algorithm";
 /// refused: a point is a tree and a token of one state, or nothing.
 pub const POINT_ATTEMPTS: usize = 3;
 
+/// The pause before each retry: the worktree was moving a moment ago, so give
+/// it a moment to settle. Short and growing; 150 ms in all at most.
+pub const POINT_BACKOFF: [std::time::Duration; POINT_ATTEMPTS - 1] = [
+    std::time::Duration::from_millis(50),
+    std::time::Duration::from_millis(100),
+];
+
 /// Run `attempt` again while it fails only because the worktree moved under
 /// the tree write ([`crate::snapshot::WorktreeMoved`]), up to
-/// [`POINT_ATTEMPTS`] times in all. Each attempt must read the repository
-/// afresh: retrying with the token it already holds would only fail again.
-/// Any other error, and the last move, is returned as it is.
-pub fn retry_moved<T>(mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+/// [`POINT_ATTEMPTS`] times in all, pausing [`POINT_BACKOFF`] before each
+/// retry. Each attempt must read the repository afresh: retrying with the
+/// token it already holds would only fail again. Any other error, and the last
+/// move, is returned as it is.
+pub fn retry_moved<T>(attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    retry_moved_with(std::thread::sleep, attempt)
+}
+
+/// [`retry_moved`], with the pause given (tests observe it instead of waiting).
+fn retry_moved_with<T>(
+    mut pause: impl FnMut(std::time::Duration),
+    mut attempt: impl FnMut() -> Result<T>,
+) -> Result<T> {
     let mut attempts = 1;
     loop {
         match attempt() {
             Err(error)
                 if attempts < POINT_ATTEMPTS && crate::snapshot::is_worktree_moved(&error) =>
             {
+                pause(POINT_BACKOFF[attempts - 1]);
                 attempts += 1;
             }
             Err(error) if crate::snapshot::is_worktree_moved(&error) => {
@@ -210,6 +227,32 @@ mod tests {
         });
         assert_eq!(calls, 1);
         assert_eq!(failed.unwrap_err().to_string(), "git is broken");
+    }
+
+    /// Between attempts the worktree gets a moment to settle: a short pause
+    /// that grows, bounded in count and in total, and none when there is
+    /// nothing to retry.
+    #[test]
+    fn a_retry_waits_a_short_bounded_while_before_reading_again() {
+        let mut pauses = Vec::new();
+        let _: Result<()> =
+            retry_moved_with(|pause| pauses.push(pause), || Err(WorktreeMoved.into()));
+        assert_eq!(pauses, POINT_BACKOFF.to_vec());
+        assert_eq!(pauses.len(), POINT_ATTEMPTS - 1);
+        assert!(
+            pauses.windows(2).all(|pair| pair[0] < pair[1]),
+            "{pauses:?}"
+        );
+        let total: std::time::Duration = pauses.iter().sum();
+        assert!(total <= std::time::Duration::from_millis(250), "{total:?}");
+
+        let mut pauses = Vec::new();
+        let _ = retry_moved_with(|pause| pauses.push(pause), || Ok(()));
+        let _: Result<()> = retry_moved_with(
+            |pause| pauses.push(pause),
+            || Err(anyhow::anyhow!("git is broken")),
+        );
+        assert!(pauses.is_empty(), "{pauses:?}");
     }
 
     #[test]
