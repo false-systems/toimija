@@ -417,3 +417,77 @@ fn a_change_undone_during_the_write_gets_its_own_point() {
         "one point id named the tree of B and the tree of A"
     );
 }
+
+/// sykli writes receipts into a `.sykli/` that git can see, at every step of
+/// the tree write (the #238 review's `sykli-churn.sh`). tree-identity.v1
+/// leaves `.sykli/` out, so the tree holds still — and since the token now
+/// leaves out exactly what the tree leaves out, the token holds still too.
+/// Before, the token saw every receipt, and the point was refused after three
+/// attempts: "the tree and the token would describe different states".
+#[test]
+fn sykli_writing_receipts_never_makes_a_point_refuse() {
+    if !git_available() {
+        return;
+    }
+    let temp = repo();
+    let root = temp.path();
+    write(root, "a", "a\n");
+    commit(root, "init");
+    write(root, ".sykli/receipt.json", "{\"outcome\":\"passed\"}\n");
+    let quiet = point(root);
+    let shim = Shim::new(root, "echo r > .sykli/receipt-$n.json", 99, ":");
+
+    let assert = toimija(root)
+        .env("PATH", shim.path())
+        .args(["repository-point", "--json"])
+        .assert()
+        .success();
+    let envelope: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert!(shim.fired("add") >= 1, "control: sykli wrote nothing");
+    assert!(root.join(".sykli/receipt-0.json").exists());
+    let churned = &envelope["repository"];
+    assert_eq!(churned["tree_oid"], quiet.tree, "a receipt moved the tree");
+    assert_eq!(
+        churned["consistency_token"], quiet.token,
+        "a receipt moved the token"
+    );
+    assert_eq!(churned["id"], quiet.id);
+
+    // A snapshot has no retry: one receipt during its write used to refuse it.
+    let shim = Shim::new(root, "echo r > .sykli/snap-$n.json", 99, ":");
+    let assert = toimija(root)
+        .env("PATH", shim.path())
+        .args(["snapshot", "--json"])
+        .assert()
+        .success();
+    let snapshot: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert!(shim.fired("add") >= 1, "control: sykli wrote nothing");
+    assert_eq!(snapshot["tree"], quiet.tree);
+    assert_eq!(snapshot["token"], quiet.token);
+}
+
+/// The gate a repository declares writes `.sykli/receipt.json`, and then the
+/// agent runs `toimija verify` before committing. A receipt is generated
+/// state, so the packet stays fresh; work content does not.
+#[test]
+fn a_sykli_receipt_does_not_make_the_packet_stale() {
+    if !git_available() {
+        return;
+    }
+    let temp = repo();
+    let root = temp.path();
+    write(root, "a", "a\n");
+    commit(root, "init");
+    toimija(root).arg("refresh").assert().success();
+
+    write(root, ".sykli/receipt.json", "{\"outcome\":\"passed\"}\n");
+    write(root, ".sykli/runs/r1/journal", "started\n");
+    let verified = json(root, &["verify", "--json"]);
+    assert_eq!(verified["status"], "verified", "{verified}");
+
+    // Control: the same check does see work content.
+    write(root, "b", "b\n");
+    let assert = toimija(root).args(["verify", "--json"]).assert().failure();
+    let stale: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(stale["status"], "stale_packet", "{stale}");
+}

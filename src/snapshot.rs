@@ -50,12 +50,14 @@ fn legacy_tree_algorithm() -> String {
 }
 
 /// The worktree moved while its tree was being written: the token read before
-/// the write and the one read after it differ, so the tree and the first token
-/// would describe different states.
+/// the write and the one read after it differ. The tree may hold either state,
+/// or one in between, so it is paired with neither token. (The tree itself may
+/// not have moved at all: an index-only change moves the token and not the
+/// tree. What this knows is that the token moved, and it says only that.)
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "the worktree changed while the tree was being written, so the tree and the token would \
-     describe different states"
+    "the worktree changed while the tree was being written: the consistency token read after \
+     the write differs from the one read before, so which state the tree holds is unknown"
 )]
 pub struct WorktreeMoved;
 
