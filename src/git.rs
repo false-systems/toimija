@@ -106,6 +106,8 @@ pub struct RecentCommit {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ParsedStatus {
+    /// `# branch.oid`: the commit HEAD names, `None` for `(initial)` (unborn).
+    pub head_oid: Option<String>,
     pub branch: Option<String>,
     pub upstream: Option<String>,
     /// `# branch.ab +<ahead> -<behind>`: present only when the upstream exists.
@@ -133,33 +135,12 @@ pub fn discover_repo_root(
     )))
 }
 
-/// The reads a consistency token is made from: the git dir, HEAD, the branch
-/// and one `status`. Both collectors start from exactly these, so a token from
-/// either is the same token.
-struct TokenReads {
-    git_dir: Option<PathBuf>,
-    head_oid: Option<String>,
-    /// `symbolic-ref HEAD`, read before `status` fills in a missing branch.
-    symbolic_branch: Option<String>,
-    parsed: ParsedStatus,
-    detached: bool,
-    status_duration_ms: u128,
-}
-
-fn read_token_inputs(
+/// One `git status` in porcelain v2 with branch headers: every file a token
+/// fingerprints, and HEAD and the branch in `# branch.oid` / `# branch.head`.
+fn read_status(
     runner: &impl CommandRunner,
     repo_root: &Path,
-) -> Result<TokenReads, ToimijaError> {
-    let git_dir = run_git_ok_bytes(runner, repo_root, &["rev-parse", "--git-dir"])
-        .map(|bytes| crate::path_codec::from_git_bytes(trim_ascii_end(&bytes)));
-    let head_oid =
-        run_git_ok(runner, repo_root, &["rev-parse", "HEAD"]).map(|text| text.trim().to_string());
-    let symbolic_branch = run_git_ok(
-        runner,
-        repo_root,
-        &["symbolic-ref", "--quiet", "--short", "HEAD"],
-    )
-    .map(|text| text.trim().to_string());
+) -> Result<(ParsedStatus, u128), ToimijaError> {
     let status_started = Instant::now();
     // Native watchers see Git's optional index-refresh lock. Disable it for
     // this read-only status so refreshing a packet cannot trigger itself.
@@ -176,7 +157,35 @@ fn read_token_inputs(
         ],
     )?;
     let status_duration_ms = status_started.elapsed().as_millis();
-    let mut parsed = parse_porcelain_v2_bytes(&status_output);
+    Ok((parse_porcelain_v2_bytes(&status_output), status_duration_ms))
+}
+
+/// What [`collect_git_state`] reads for a token: the git dir, HEAD, the branch
+/// and one `status`.
+struct TokenReads {
+    git_dir: Option<PathBuf>,
+    head_oid: Option<String>,
+    /// `symbolic-ref HEAD`, read before `status` fills in a missing branch.
+    symbolic_branch: Option<String>,
+    parsed: ParsedStatus,
+    detached: bool,
+    status_duration_ms: u128,
+}
+
+fn read_token_inputs(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+) -> Result<TokenReads, ToimijaError> {
+    let git_dir = read_git_dir(runner, repo_root);
+    let head_oid =
+        run_git_ok(runner, repo_root, &["rev-parse", "HEAD"]).map(|text| text.trim().to_string());
+    let symbolic_branch = run_git_ok(
+        runner,
+        repo_root,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    )
+    .map(|text| text.trim().to_string());
+    let (mut parsed, status_duration_ms) = read_status(runner, repo_root)?;
     if parsed.branch.is_none() {
         parsed.branch = symbolic_branch.clone();
     }
@@ -191,6 +200,11 @@ fn read_token_inputs(
     })
 }
 
+fn read_git_dir(runner: &impl CommandRunner, repo_root: &Path) -> Option<PathBuf> {
+    run_git_ok_bytes(runner, repo_root, &["rev-parse", "--git-dir"])
+        .map(|bytes| crate::path_codec::from_git_bytes(trim_ascii_end(&bytes)))
+}
+
 fn is_dirty(parsed: &ParsedStatus) -> bool {
     !parsed.staged_files.is_empty()
         || !parsed.unstaged_files.is_empty()
@@ -199,28 +213,37 @@ fn is_dirty(parsed: &ParsedStatus) -> bool {
 }
 
 /// The Git state a consistency token fingerprints, and nothing more, for the
-/// repository already found at `repo_root`: four git processes, where
+/// repository already found at `repo_root`: two git processes (`rev-parse
+/// --git-dir`, then [`token_state_at`]'s `status`), where
 /// [`collect_git_state`] also spends a dozen on the base, history and branch
-/// diff that a token never reads. Re-reading a token around a tree write uses
-/// this; the fields a token does not read are left empty.
+/// diff that a token never reads. The fields a token does not read are empty.
 pub fn collect_token_state(
     runner: &impl CommandRunner,
     repo_root: &Path,
 ) -> Result<GitState, ToimijaError> {
-    let TokenReads {
-        git_dir,
-        head_oid,
-        symbolic_branch,
-        parsed,
-        detached,
-        status_duration_ms: _,
-    } = read_token_inputs(runner, repo_root)?;
+    token_state_at(runner, repo_root, read_git_dir(runner, repo_root))
+}
+
+/// The Git state a consistency token fingerprints, read with one git process
+/// for a repository whose root and git dir are already known: a worktree's
+/// git dir does not move, and `status` itself names HEAD (`# branch.oid`) and
+/// the branch (`# branch.head`). Reading the token again around a tree write
+/// uses this. [`collect_git_state`] reads HEAD and the branch with processes of
+/// their own; the two agree in every HEAD state (tested), so a token from
+/// either is the same token.
+pub fn token_state_at(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    git_dir: Option<PathBuf>,
+) -> Result<GitState, ToimijaError> {
+    let (parsed, _duration) = read_status(runner, repo_root)?;
     let dirty = is_dirty(&parsed);
+    let detached = parsed.detached || (parsed.branch.is_none() && parsed.head_oid.is_some());
     Ok(GitState {
         repo_root: repo_root.to_path_buf(),
         git_dir,
-        branch: parsed.branch.or(symbolic_branch),
-        head_oid,
+        branch: parsed.branch,
+        head_oid: parsed.head_oid,
         upstream: parsed.upstream,
         ahead: None,
         behind: None,
@@ -515,6 +538,13 @@ pub(crate) fn parse_porcelain_v2_bytes(bytes: &[u8]) -> ParsedStatus {
         .split(|byte| *byte == 0)
         .filter(|record| !record.is_empty());
     while let Some(record) = records.next() {
+        if let Some(rest) = record.strip_prefix(b"# branch.oid ") {
+            let rest = String::from_utf8_lossy(rest);
+            if rest != "(initial)" {
+                parsed.head_oid = Some(rest.into_owned());
+            }
+            continue;
+        }
         if let Some(rest) = record.strip_prefix(b"# branch.head ") {
             let rest = String::from_utf8_lossy(rest);
             if rest == "(detached)" {
@@ -1100,7 +1130,7 @@ mod token_state_tests {
     use std::path::Path;
     use std::process::Command;
 
-    use super::{collect_git_state, collect_token_state};
+    use super::{collect_git_state, collect_token_state, token_state_at};
     use crate::command::ProcessCommandRunner;
     use crate::consistency::Consistency;
     use crate::context::normalize_git_state;
@@ -1132,23 +1162,35 @@ mod token_state_tests {
         );
     }
 
+    /// The token from the full collector, and from each lean one: the
+    /// two-process read a snapshot starts from, and the one-process re-read
+    /// that follows a tree write. Their HEAD fields must agree too.
     fn tokens(root: &Path) -> (String, String) {
         let runner = ProcessCommandRunner;
         let (mut full, _warnings) = collect_git_state(&runner, root).unwrap();
         normalize_git_state(&mut full);
         let mut lean = collect_token_state(&runner, &full.repo_root).unwrap();
         normalize_git_state(&mut lean);
-        assert_eq!(lean.branch, full.branch);
-        assert_eq!(lean.head_oid, full.head_oid);
-        assert_eq!(lean.detached, full.detached);
-        assert_eq!(lean.dirty, full.dirty);
+        let mut reread = token_state_at(&runner, &full.repo_root, full.git_dir.clone()).unwrap();
+        normalize_git_state(&mut reread);
+        for state in [&lean, &reread] {
+            assert_eq!(state.branch, full.branch);
+            assert_eq!(state.head_oid, full.head_oid);
+            assert_eq!(state.detached, full.detached);
+            assert_eq!(state.dirty, full.dirty);
+            assert_eq!(state.git_dir, full.git_dir);
+        }
+        assert_eq!(
+            Consistency::fingerprint(&lean).token,
+            Consistency::fingerprint(&reread).token
+        );
         (
             Consistency::fingerprint(&full).token,
-            Consistency::fingerprint(&lean).token,
+            Consistency::fingerprint(&reread).token,
         )
     }
 
-    /// The re-read around a tree write uses the lean collector, and the token
+    /// The re-read around a tree write uses a lean collector, and the token
     /// it compares against came from the full one. They must agree in every
     /// state a worktree can be in, or a quiet repository would never settle.
     #[test]

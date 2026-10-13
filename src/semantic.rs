@@ -129,9 +129,8 @@ pub fn repository_point(
     runner: &impl CommandRunner,
     context: &ContextPacket,
 ) -> Result<RepositoryPoint> {
-    let tree =
-        crate::snapshot::tree_at_token(runner, &context.git.repo_root, &context.consistency.token)
-            .context("failed to materialize the authoritative repository point")?;
+    let tree = crate::snapshot::tree_at_token(runner, &context.git, &context.consistency.token)
+        .context("failed to materialize the authoritative repository point")?;
     let repository = repository_ref(&context.git.repo_root)?;
     let id = point_ref(&repository, &context.consistency.token)?;
     Ok(RepositoryPoint {

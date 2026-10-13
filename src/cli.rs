@@ -2070,8 +2070,9 @@ fn run_landed(args: LandedArgs) -> Result<()> {
 /// immutable. Against an internally inconsistent pair that check passes and the
 /// consumer serves bytes from a state its token never attested.
 ///
-/// Both reads are of the token's inputs only (`git::collect_token_state`):
-/// a snapshot needs nothing else from the repository.
+/// Both reads are of the token's inputs only: `git::collect_token_state`
+/// before the write, one `status` (`git::token_state_at`) after it. A snapshot
+/// needs nothing else from the repository.
 fn snapshot_tree_and_token(
     runner: &impl CommandRunner,
     repo_root: &Path,
@@ -2112,7 +2113,7 @@ fn snapshot_tree_and_token(
     // `tree_at_token` re-reads the token once the tree is written and requires
     // it to be what it was. A caller that wants resilience retries; a caller
     // that wants truth gets it.
-    let tree = snapshot::tree_at_token(runner, repo_root, &consistency.token).map_err(|error| {
+    let tree = snapshot::tree_at_token(runner, &live, &consistency.token).map_err(|error| {
         if snapshot::is_worktree_moved(&error) {
             anyhow::anyhow!("refusing to snapshot: {error}; retry")
         } else {

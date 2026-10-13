@@ -466,3 +466,95 @@ fn a_session_packet_never_pairs_a_tree_with_another_moments_token() {
     assert_eq!(repository["tree_oid"], settled["tree"]);
     assert_eq!(repository["consistency_token"], settled["token"]);
 }
+
+/// Every git process one toimija call starts, in order, as git's own
+/// `GIT_TRACE2_EVENT` records them: each argv without the program.
+fn git_processes(root: &Path, args: &[&str]) -> Vec<Vec<String>> {
+    let trace_dir = tempfile::tempdir().unwrap();
+    let trace = trace_dir.path().join("trace2.json");
+    toimija(root)
+        .env("GIT_TRACE2_EVENT", &trace)
+        .args(args)
+        .assert()
+        .success();
+    fs::read_to_string(&trace)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == "start")
+        .map(|event| {
+            event["argv"].as_array().unwrap()[1..]
+                .iter()
+                .map(|arg| arg.as_str().unwrap().to_string())
+                .collect()
+        })
+        .collect()
+}
+
+/// The git subcommand of an argv, past global options such as
+/// `--no-optional-locks`.
+fn verb(argv: &[String]) -> &str {
+    argv.iter()
+        .map(String::as_str)
+        .find(|arg| !arg.starts_with('-'))
+        .unwrap_or("")
+}
+
+/// The budget: once the tree is written, the token is read again with one git
+/// process — `status`, whose `# branch.oid` and `# branch.head` lines carry HEAD
+/// and the branch — and nothing else.
+#[test]
+fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
+    if !git_available() {
+        return;
+    }
+    for args in [&["repository-point", "--json"][..], &["snapshot", "--json"]] {
+        let temp = fixture(IGNORE_RULES[1]);
+        let calls = git_processes(temp.path(), args);
+        let verbs: Vec<&str> = calls.iter().map(|argv| verb(argv)).collect();
+        let write = verbs
+            .iter()
+            .rposition(|verb| *verb == "write-tree")
+            .unwrap_or_else(|| panic!("{args:?} wrote no tree: {verbs:?}"));
+
+        // Positive controls: the trace sees Toimija's own git calls — the
+        // whole v1 plan, in order, ending in the write...
+        assert_eq!(
+            verbs[write - 4..=write],
+            ["read-tree", "add", "rm", "add", "write-tree"],
+            "{args:?}: {verbs:?}"
+        );
+        // ...and the token's first read before it, so a re-read made of
+        // `status` and more would be seen here too.
+        assert!(
+            verbs[..write - 4].contains(&"status"),
+            "{args:?}: {verbs:?}"
+        );
+
+        let after: Vec<&str> = verbs[write + 1..].to_vec();
+        assert_eq!(
+            after,
+            ["status"],
+            "{args:?}: after the tree write: {calls:?}"
+        );
+    }
+
+    // The control that matters most: the reads a four-process re-read made,
+    // HEAD and the branch, are visible to this trace. repository-point still
+    // makes them, once, while compiling its packet before the tree.
+    let temp = fixture(IGNORE_RULES[1]);
+    let calls = git_processes(temp.path(), &["repository-point", "--json"]);
+    let write = calls
+        .iter()
+        .rposition(|argv| verb(argv) == "write-tree")
+        .unwrap();
+    let head = |argv: &&Vec<String>| argv.as_slice() == ["rev-parse", "HEAD"];
+    let branch = |argv: &&Vec<String>| verb(argv) == "symbolic-ref";
+    assert_eq!(calls[..write].iter().filter(head).count(), 1, "{calls:?}");
+    assert!(calls[..write].iter().any(|argv| branch(&argv)), "{calls:?}");
+    assert!(
+        !calls[write..]
+            .iter()
+            .any(|argv| head(&argv) || branch(&argv))
+    );
+}

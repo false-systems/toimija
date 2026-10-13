@@ -64,18 +64,23 @@ pub fn is_worktree_moved(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<WorktreeMoved>())
 }
 
-/// Write the tree of `repo_root` and return it, but only as the tree of the
-/// state whose consistency token is `token`: the token is read again once the
-/// tree is written, and a different one is a [`WorktreeMoved`] error. Every
-/// caller that pairs a tree with a token (snapshots, repository points,
-/// session packets) goes through here.
+/// Write the tree of the repository `read` was read from and return it, but
+/// only as the tree of the state whose consistency token is `token`: the token
+/// is read again once the tree is written, and a different one is a
+/// [`WorktreeMoved`] error. Every caller that pairs a tree with a token
+/// (snapshots, repository points, session packets) goes through here.
 ///
-/// The re-read costs four git processes ([`crate::git::collect_token_state`]).
-/// It cannot see a change that is undone before it reads (A → B → A), and it
-/// sees only what the token fingerprints.
-pub fn tree_at_token(runner: &impl CommandRunner, repo_root: &Path, token: &str) -> Result<String> {
-    let tree = materialize(runner, repo_root)?;
-    let mut settled = crate::git::collect_token_state(runner, repo_root)?;
+/// The re-read is one git process ([`crate::git::token_state_at`]), reusing
+/// `read`'s root and git dir. It sees only what the token fingerprints, and
+/// not a change undone before it reads (A → B → A); see the README,
+/// "Repository points", for what the token does not observe.
+pub fn tree_at_token(
+    runner: &impl CommandRunner,
+    read: &crate::git::GitState,
+    token: &str,
+) -> Result<String> {
+    let tree = materialize(runner, &read.repo_root)?;
+    let mut settled = crate::git::token_state_at(runner, &read.repo_root, read.git_dir.clone())?;
     crate::context::normalize_git_state(&mut settled);
     if Consistency::fingerprint(&settled).token != token {
         return Err(WorktreeMoved.into());
