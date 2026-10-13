@@ -35,6 +35,9 @@ fn fixture(gitignore: &str) -> TempDir {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path();
     run_git(path, &["init", "-q"]);
+    // Named here, not left to the machine's `init.defaultBranch`: base
+    // discovery probes `main` before `master`, so the budget depends on it.
+    run_git(path, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     run_git(path, &["config", "user.email", "toimija@example.invalid"]);
     run_git(path, &["config", "user.name", "Toimija Test"]);
     write(path, ".gitignore", gitignore);
