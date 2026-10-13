@@ -244,7 +244,7 @@ injects into the child:
 | `TOIMIJA_REPO_ROOT` | Absolute path of the repo root the session runs in. |
 | `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
 | `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
-| `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | Absolute path to this session's current repository point, a false-agent-protocol `RepositoryPointEnvelope` (`.toimija/sessions/<id>/semantic-point.json`), rewritten on every refresh. |
+| `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | Absolute path to this session's current repository point, a false-agent-protocol `RepositoryPointEnvelope` (`.toimija/sessions/<id>/semantic-point.json`), rewritten on every refresh. Its tree is tree-identity.v1, named in `extensions.tree_algorithm`. |
 
 An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after HEAD, branch,
 index, or unfamiliar worktree changes instead of re-running `enter`; its own
@@ -468,7 +468,14 @@ flowchart LR
    materializes the working tree (untracked included) as an immutable,
    content-addressed git tree object. Files are then readable *at that version*
    via `git cat-file`, and `--lease` pins the snapshot against `git gc` until
-   released.
+   released. The tree is faija's tree-identity.v1 (`.toimija/`, `.teko/` and
+   `.sykli/` left out, `.toimija/repo.yaml` forced in), computed by the
+   canonical procedure in the vendored `faija-terms`; snapshots, leases,
+   repository points and session packets all carry that one tree and name it
+   (`tree_algorithm`). The token is read again once the tree is written, and a
+   tree whose worktree moved meanwhile is never paired with the earlier token.
+   A lease marker written before Toimija named its tree algorithm lists as
+   `toimija-legacy`: its tree keeps the meaning it was written with.
 
 The token is a transaction version, not a timestamp: verify tells you whether
 the world changed, snapshot gives you a world that cannot change. Either way,
@@ -570,7 +577,9 @@ The packet includes:
   `toimija intent` reach wrapped harnesses), the entry branch and HEAD, and an
   `execution` context carrying the session's repository point and changed
   surface (Kelpo reads `session.execution.repository` to bind evidence to a
-  session)
+  session); the point's tree is tree-identity.v1, named in
+  `session.execution.extensions.tree_algorithm`, and a packet without that
+  name predates it
 - a **consistency** block — a versioned `toimija-consistency-v2` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
   conflict state, and unsafe Git operation state
@@ -633,11 +642,11 @@ toimija init               # create .toimija/repo.yaml if missing
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
 | `context` | Print the context packet without wrapping an agent. |
 | `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified — including `session_not_live` when the packet briefs a session that has closed or whose process is gone. `--json` includes the selected path, digest, and token. |
-| `snapshot` | Materialize the working tree as an immutable git tree object (content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; a lease id is 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`, and anything else is refused before anything is touched; `--json` emits the snapshot record. Refuses in an unsafe git state. |
+| `snapshot` | Materialize the working tree as an immutable git tree object (its tree-identity.v1 tree, content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; a lease id is 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`, and anything else is refused before anything is touched; `--json` emits the snapshot record, with `tree_algorithm` beside the tree (`algorithm` stays the token's). Refuses in an unsafe git state, and when the worktree moves while the tree is written. |
 | `audit-plan` | Derive deterministic, bounded audit surfaces from the committed Git tree; `--surface K` prints one contract-framed workset, and prior findings are read-only pointers to the latest committed `docs/audit/<date>/` directory. No plan or findings are written. |
 | `adopt` | Install the same marker-delimited Toimija preamble in every known entry file already present, creating `AGENTS.md` only when none exists; `--hooks` adds best-effort Git refresh hooks and creates/merges the repo-local `.claude/settings.json` SessionStart hook. |
 | `validate --plan` | Print the validation plan; never runs validation. |
-| `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`; `--json` for tools. |
+| `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`, its tree's algorithm in `extensions.tree_algorithm`; `--json` for tools. The token is re-read after the tree is written; a worktree that moved is read afresh up to three times, then refused. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
 | `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` (which keeps Git away from the packet, sessions, history and temp files) if missing. |

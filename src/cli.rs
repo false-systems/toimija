@@ -774,9 +774,14 @@ fn run_context(args: ContextArgs) -> Result<()> {
 fn run_repository_point(args: SemanticArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let packet = context::build_context_packet(&runner, &cwd, false)?;
-    let point =
-        crate::semantic::point_envelope(crate::semantic::repository_point(&runner, &packet)?);
+    // Each attempt reads the repository afresh: a point whose worktree moved
+    // under the tree write is retried, and refused once it keeps moving, never
+    // printed with a tree from one moment and a token from another.
+    let point = crate::semantic::retry_moved(|| {
+        let packet = context::build_context_packet(&runner, &cwd, false)?;
+        crate::semantic::repository_point(&runner, &packet)
+    })?;
+    let point = crate::semantic::point_envelope(point);
     point.validate().map_err(anyhow::Error::from)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&point)?);
@@ -936,8 +941,10 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     // only a leg pays for materializing that point before the session opens.
     let cycle_action = match (&args.cycle, &args.cycle_leg, args.cycle_attempt) {
         (Some(cycle), Some(leg), Some(attempt)) => {
-            let preflight = context::build_context_packet(&runner, &repo_root, false)?;
-            let point = crate::semantic::repository_point(&runner, &preflight)?;
+            let point = crate::semantic::retry_moved(|| {
+                let preflight = context::build_context_packet(&runner, &repo_root, false)?;
+                crate::semantic::repository_point(&runner, &preflight)
+            })?;
             let action = session::CycleAction {
                 cycle: cycle.clone(),
                 leg: leg.clone(),
@@ -2062,14 +2069,16 @@ fn run_landed(args: LandedArgs) -> Result<()> {
 /// without re-checking — correct reasoning, since git tree objects are
 /// immutable. Against an internally inconsistent pair that check passes and the
 /// consumer serves bytes from a state its token never attested.
+///
+/// Both reads are of the token's inputs only (`git::collect_token_state`):
+/// a snapshot needs nothing else from the repository.
 fn snapshot_tree_and_token(
     runner: &impl CommandRunner,
-    cwd: &Path,
     repo_root: &Path,
 ) -> Result<(String, Consistency)> {
     // Materialize only a *safe* state: `write-tree` should never freeze a
     // half-finished merge/rebase or a conflicted tree. Same gate as verify.
-    let (mut live, _warnings) = git::collect_git_state(runner, cwd)?;
+    let mut live = git::collect_token_state(runner, repo_root)?;
     context::normalize_git_state(&mut live);
     let consistency = Consistency::fingerprint(&live);
     if consistency.git_operation != GitOperationState::None {
@@ -2100,16 +2109,16 @@ fn snapshot_tree_and_token(
             mixed.join(", ")
         );
     }
-    let tree = snapshot::materialize(runner, repo_root)?;
-    // Re-read, and require the token to be what it was. A caller that wants
-    // resilience retries; a caller that wants truth gets it.
-    let (mut settled, _warnings) = git::collect_git_state(runner, cwd)?;
-    context::normalize_git_state(&mut settled);
-    if Consistency::fingerprint(&settled).token != consistency.token {
-        anyhow::bail!(
-            "refusing to snapshot: the worktree changed while the tree was being written, so the tree and the token would describe different states; retry"
-        );
-    }
+    // `tree_at_token` re-reads the token once the tree is written and requires
+    // it to be what it was. A caller that wants resilience retries; a caller
+    // that wants truth gets it.
+    let tree = snapshot::tree_at_token(runner, repo_root, &consistency.token).map_err(|error| {
+        if snapshot::is_worktree_moved(&error) {
+            anyhow::anyhow!("refusing to snapshot: {error}; retry")
+        } else {
+            error
+        }
+    })?;
 
     Ok((tree, consistency))
 }
@@ -2129,9 +2138,10 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         } else {
             for lease in &leases {
                 println!(
-                    "{}  tree {}  {}  pid {}",
+                    "{}  tree {} ({})  {}  pid {}",
                     lease.id,
                     short_oid(&lease.tree),
+                    lease.tree_algorithm,
                     lease.token,
                     lease.pid
                 );
@@ -2147,7 +2157,8 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (tree, consistency) = snapshot_tree_and_token(&runner, &cwd, &repo_root)?;
+    let (tree, consistency) = snapshot_tree_and_token(&runner, &repo_root)?;
+    let tree_algorithm = snapshot::TREE_ALGORITHM.id();
 
     if args.lease {
         // Tie the lease to the session when wrapped by `toimija run`; otherwise
@@ -2167,22 +2178,25 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&lease)?);
         } else {
             println!("leased snapshot {}", lease.id);
-            println!("  tree:  {}", lease.tree);
+            println!("  tree:  {} ({})", lease.tree, lease.tree_algorithm);
             println!("  token: {}", lease.token);
             println!("  ref:   {}", snapshot::lease_ref(&lease.id));
         }
     } else if args.json {
+        // `algorithm` is the token's (kept as it was); `tree_algorithm` is
+        // the tree's.
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "tree": tree,
+                "tree_algorithm": tree_algorithm,
                 "token": consistency.token,
                 "algorithm": consistency.algorithm,
                 "head": consistency.head,
             }))?
         );
     } else {
-        println!("snapshot tree: {tree}");
+        println!("snapshot tree: {tree} ({tree_algorithm})");
         println!("token: {}", consistency.token);
     }
     Ok(())
@@ -3024,7 +3038,7 @@ mod tests {
         // pair is publishable.
         let still = MovingRunner::new(false);
         let (tree, consistency) =
-            snapshot_tree_and_token(&still, &repo, &repo).expect("a quiet repository still leases");
+            snapshot_tree_and_token(&still, &repo).expect("a quiet repository still leases");
         assert_eq!(tree, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert!(!consistency.token.is_empty());
 
@@ -3032,7 +3046,7 @@ mod tests {
         // token would attest the state before it, so the pair is refused
         // rather than published.
         let moving = MovingRunner::new(true);
-        let error = snapshot_tree_and_token(&moving, &repo, &repo)
+        let error = snapshot_tree_and_token(&moving, &repo)
             .expect_err("a worktree that moved mid-materialize must not publish a pair");
         let message = error.to_string();
         assert!(

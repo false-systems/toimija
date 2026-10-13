@@ -189,6 +189,20 @@ token, branch, and dirty flag. Inside a `run` session the same point is
 available at `$FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the sealed session
 packet carries it as `session.execution.repository`.
 
+The tree is faija's **tree-identity.v1**, the identity of a working State:
+every tracked and untracked non-ignored path, without the generated namespaces
+`.toimija/`, `.teko/` and `.sykli/`, with `.toimija/repo.yaml` forced in even
+when ignored. Toimija runs faija's canonical procedure from a vendored copy of
+`faija-terms` (`vendor/faija-terms.contract`) and keeps no tree algorithm of its
+own. Every envelope names it in `extensions.tree_algorithm`; an envelope or
+snapshot lease without that name was written before, and its tree is the
+legacy one (`toimija-legacy`), never reinterpreted.
+
+The tree and the token are one state's. The token is read again after the tree
+is written; if the worktree moved in between, the point is read afresh up to
+three times and then refused, never printed with a tree from one moment and a
+token from another. Token equality implies tree equality, never the reverse.
+
 ## The live packet
 
 The delivered packet replaces repository discovery: use its Git facts, read

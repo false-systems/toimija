@@ -4,6 +4,12 @@
 //! time-of-use gap: the bytes a reader sees cannot change under it, because it
 //! reads frozen git objects, not the mutable worktree.
 //!
+//! The tree is faija's **tree-identity.v1**: the identity of a working State,
+//! computed by the canonical procedure in the vendored `faija-terms` crate.
+//! Toimija keeps no tree algorithm of its own. Every tree it writes from now on
+//! — snapshots, leases, repository points, session packets — is that one, and
+//! every record that carries a tree names the algorithm beside it.
+//!
 //! The tree oid is the **content address** of the snapshot; the consistency
 //! token is its **version**. Git's object database is the store — free dedup
 //! (unchanged subtrees share oids), free GC (`git gc` reclaims unreferenced
@@ -19,14 +25,69 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use faija_terms::{Step, TreeIdentityAlgorithm};
 use serde::{Deserialize, Serialize};
 
 use crate::command::CommandRunner;
+use crate::consistency::Consistency;
 
-/// Materialize the full working tree (tracked + staged + unstaged + untracked,
-/// honoring `.gitignore`) as a git tree object; return its oid. Uses a throwaway
-/// index, so the real index is untouched. Toimija's generated output is excluded
-/// so the tree matches what the consistency token fingerprints.
+/// The tree-identity algorithm Toimija computes. Named here, not taken from
+/// `TreeIdentityAlgorithm::CURRENT`, so that moving to a later version is a
+/// decision made in this file and never a side effect of re-vendoring
+/// faija-terms.
+pub const TREE_ALGORITHM: TreeIdentityAlgorithm = TreeIdentityAlgorithm::V1;
+
+/// What a stored tree that names no algorithm was computed with: Toimija's own
+/// procedure from before it adopted tree-identity.v1. That procedure changed
+/// over time (its last form left out `.toimija` and `.teko` but kept `.sykli`),
+/// and nothing recorded which form wrote a given tree. Such a tree keeps
+/// exactly the meaning it had when written: it is read as this, never
+/// recomputed or relabelled as tree-identity.v1.
+pub const LEGACY_TREE_ALGORITHM: &str = "toimija-legacy";
+
+fn legacy_tree_algorithm() -> String {
+    LEGACY_TREE_ALGORITHM.to_string()
+}
+
+/// The worktree moved while its tree was being written: the token read before
+/// the write and the one read after it differ, so the tree and the first token
+/// would describe different states.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the worktree changed while the tree was being written, so the tree and the token would \
+     describe different states"
+)]
+pub struct WorktreeMoved;
+
+/// Whether `error` is, anywhere in its chain, a [`WorktreeMoved`].
+pub fn is_worktree_moved(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<WorktreeMoved>())
+}
+
+/// Write the tree of `repo_root` and return it, but only as the tree of the
+/// state whose consistency token is `token`: the token is read again once the
+/// tree is written, and a different one is a [`WorktreeMoved`] error. Every
+/// caller that pairs a tree with a token (snapshots, repository points,
+/// session packets) goes through here.
+///
+/// The re-read costs four git processes ([`crate::git::collect_token_state`]).
+/// It cannot see a change that is undone before it reads (A → B → A), and it
+/// sees only what the token fingerprints.
+pub fn tree_at_token(runner: &impl CommandRunner, repo_root: &Path, token: &str) -> Result<String> {
+    let tree = materialize(runner, repo_root)?;
+    let mut settled = crate::git::collect_token_state(runner, repo_root)?;
+    crate::context::normalize_git_state(&mut settled);
+    if Consistency::fingerprint(&settled).token != token {
+        return Err(WorktreeMoved.into());
+    }
+    Ok(tree)
+}
+
+/// Materialize the working tree as its tree-identity.v1 git tree object and
+/// return the oid: every tracked and untracked non-ignored path, without the
+/// generated namespaces `.toimija`, `.teko` and `.sykli`, with
+/// `.toimija/repo.yaml` forced in even when ignored. Uses a throwaway index, so
+/// the real index is untouched.
 pub fn materialize(runner: &impl CommandRunner, repo_root: &Path) -> Result<String> {
     // A *unique* throwaway index per run: concurrent `toimija snapshot`
     // invocations in one repo must not clobber or delete each other's index.
@@ -45,51 +106,46 @@ pub fn materialize(runner: &impl CommandRunner, repo_root: &Path) -> Result<Stri
     tree
 }
 
+/// Run faija's canonical procedure, step by step as faija-terms returns it,
+/// against the scratch `index`. The steps are faija's; only the running is
+/// Toimija's: its process runner, its error handling. A step this build does
+/// not know fails to compile here, so a re-vendored plan cannot be run
+/// half-understood.
 fn materialize_into(runner: &impl CommandRunner, repo_root: &Path, index: &Path) -> Result<String> {
-    // Seed the scratch index from HEAD first, so *tracked* files are present even
-    // when they match `.gitignore` — then overlay the worktree with `add -A`.
-    // Into an empty index, `add -A` treats every path as untracked and applies
-    // `.gitignore`, which would drop committed-but-ignored content from the tree.
-    // `read-tree` errors harmlessly on an unborn HEAD (no tracked files yet).
-    let _ = run_git(runner, repo_root, index, &["read-tree", "HEAD"]);
-    // Exclude generated namespaces before Git can stat a disappearing atomic
-    // write. `[.]` avoids treating an ignored directory as an explicit path.
-    run_git(
-        runner,
-        repo_root,
-        index,
-        &[
-            "add",
-            "-A",
-            "--",
-            ":(exclude,top,glob)[.]toimija/**",
-            ":(exclude,top,glob)[.]teko/**",
-        ],
-    )?;
-    let _ = run_git(
-        runner,
-        repo_root,
-        index,
-        &[
-            "rm",
-            "--cached",
-            "-r",
-            "--ignore-unmatch",
-            ".toimija",
-            ".teko",
-        ],
-    );
-    if repo_root.join(".toimija/repo.yaml").is_file() {
-        run_git(
-            runner,
-            repo_root,
-            index,
-            &["add", "-f", "--", ".toimija/repo.yaml"],
-        )?;
+    let mut tree = None;
+    for step in TREE_ALGORITHM.plan() {
+        match step {
+            // Tolerated: an unborn HEAD has no tracked files yet.
+            Step::SeedFromHead => {
+                let _ = run_git(runner, repo_root, index, &["read-tree", "HEAD"]);
+            }
+            Step::OverlayWorktree { excludes } => {
+                let mut args = vec!["add", "-A", "--"];
+                args.extend(excludes.iter().map(String::as_str));
+                run_git(runner, repo_root, index, &args)?;
+            }
+            // A failure here would leave generated state in the tree, so it is
+            // an error, never ignored.
+            Step::DropNamespaces { paths } => {
+                let mut args = vec!["rm", "--cached", "-r", "-q", "--ignore-unmatch"];
+                args.extend(paths.iter().map(String::as_str));
+                run_git(runner, repo_root, index, &args)?;
+            }
+            Step::ForceAddConfig { path } => {
+                if repo_root.join(&path).is_file() {
+                    run_git(runner, repo_root, index, &["add", "-f", "--", &path])?;
+                }
+            }
+            Step::WriteTree => {
+                tree = Some(
+                    run_git(runner, repo_root, index, &["write-tree"])?
+                        .trim()
+                        .to_string(),
+                );
+            }
+        }
     }
-    Ok(run_git(runner, repo_root, index, &["write-tree"])?
-        .trim()
-        .to_string())
+    tree.with_context(|| format!("{} wrote no tree", TREE_ALGORITHM.id()))
 }
 
 /// Directory, relative to the repo root, holding snapshot-lease markers.
@@ -102,6 +158,10 @@ pub const SNAPSHOTS_SUBDIR: &str = ".toimija/snapshots";
 pub struct SnapshotLease {
     pub id: String,
     pub tree: String,
+    /// The algorithm `tree` was computed with. A marker written before Toimija
+    /// recorded one reads as [`LEGACY_TREE_ALGORITHM`].
+    #[serde(default = "legacy_tree_algorithm")]
+    pub tree_algorithm: String,
     pub token: String,
     pub pid: u32,
     pub created_at: u64,
@@ -155,6 +215,7 @@ pub fn acquire_lease(
     let lease = SnapshotLease {
         id: id.to_string(),
         tree: tree.to_string(),
+        tree_algorithm: TREE_ALGORITHM.id().to_string(),
         token: token.to_string(),
         pid: std::process::id(),
         created_at: now_secs(),
@@ -257,6 +318,117 @@ fn plain_git(runner: &impl CommandRunner, repo_root: &Path, args: &[&str]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::CommandOutput;
+    use std::cell::RefCell;
+
+    /// Records every git call; answers `write-tree` with a tree oid and
+    /// everything else with an empty success.
+    #[derive(Default)]
+    struct RecordingRunner {
+        calls: RefCell<Vec<Vec<String>>>,
+    }
+
+    impl CommandRunner for RecordingRunner {
+        fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
+            self.run_with_env(cwd, program, args, &[])
+        }
+
+        fn run_with_env(
+            &self,
+            _cwd: &Path,
+            program: &str,
+            args: &[&str],
+            _env: &[(&str, &std::ffi::OsStr)],
+        ) -> std::io::Result<CommandOutput> {
+            assert_eq!(program, "git");
+            self.calls
+                .borrow_mut()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            let stdout = if args == ["write-tree"] {
+                "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n"
+            } else {
+                ""
+            };
+            Ok(CommandOutput {
+                status: 0,
+                stdout: stdout.as_bytes().to_vec(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    /// tree-identity.v1 as faija freezes it, written out literally: these are
+    /// the git operations, in this order, that Toimija must run — and the
+    /// `.sykli` namespace the old procedure missed is in both lists.
+    #[test]
+    fn materialize_runs_faija_tree_identity_v1_step_for_step() {
+        let repo = tempfile::tempdir().unwrap();
+        let expected = |force_add: bool| {
+            let mut calls: Vec<Vec<&str>> = vec![
+                vec!["rev-parse", "--absolute-git-dir"],
+                vec!["read-tree", "HEAD"],
+                vec![
+                    "add",
+                    "-A",
+                    "--",
+                    ":(exclude,top,glob)[.]toimija/**",
+                    ":(exclude,top,glob)[.]teko/**",
+                    ":(exclude,top,glob)[.]sykli/**",
+                ],
+                vec![
+                    "rm",
+                    "--cached",
+                    "-r",
+                    "-q",
+                    "--ignore-unmatch",
+                    ".toimija",
+                    ".teko",
+                    ".sykli",
+                ],
+            ];
+            if force_add {
+                calls.push(vec!["add", "-f", "--", ".toimija/repo.yaml"]);
+            }
+            calls.push(vec!["write-tree"]);
+            calls
+        };
+
+        // No repo.yaml: nothing to force in.
+        let runner = RecordingRunner::default();
+        let tree = materialize(&runner, repo.path()).unwrap();
+        assert_eq!(tree, "4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+        assert_eq!(*runner.calls.borrow(), expected(false));
+
+        // With one, it is forced in after the namespaces are dropped.
+        std::fs::create_dir_all(repo.path().join(".toimija")).unwrap();
+        std::fs::write(repo.path().join(".toimija/repo.yaml"), "repo: {}\n").unwrap();
+        let runner = RecordingRunner::default();
+        materialize(&runner, repo.path()).unwrap();
+        assert_eq!(*runner.calls.borrow(), expected(true));
+    }
+
+    /// A lease marker written before Toimija named its tree algorithm keeps the
+    /// tree it recorded and reads as the legacy procedure's; a new one names
+    /// tree-identity.v1, and both survive a round trip unchanged.
+    #[test]
+    fn a_lease_marker_without_an_algorithm_reads_as_legacy() {
+        let old = r#"{"id":"1782951227-52574","tree":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "token":"sha256:abc","pid":52574,"created_at":1782951227}"#;
+        let lease: SnapshotLease = serde_json::from_str(old).unwrap();
+        assert_eq!(lease.tree, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(lease.tree_algorithm, LEGACY_TREE_ALGORITHM);
+        let again: SnapshotLease =
+            serde_json::from_str(&serde_json::to_string(&lease).unwrap()).unwrap();
+        assert_eq!(again, lease);
+
+        let new = SnapshotLease {
+            tree_algorithm: TREE_ALGORITHM.id().to_string(),
+            ..lease
+        };
+        let json = serde_json::to_value(&new).unwrap();
+        assert_eq!(json["tree_algorithm"], "tree-identity.v1");
+        assert_eq!(serde_json::from_value::<SnapshotLease>(json).unwrap(), new);
+    }
 
     #[test]
     fn lease_ids_are_names_never_paths() {
