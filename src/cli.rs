@@ -2072,7 +2072,7 @@ fn run_landed(args: LandedArgs) -> Result<()> {
     Ok(())
 }
 
-/// Both halves of a snapshot — the tree, and the token that attests it — read
+/// Both halves of a snapshot — the tree, and the token read beside it — read
 /// from one worktree, behind the gates that let a tree represent the state at
 /// all.
 ///
@@ -2080,14 +2080,14 @@ fn run_landed(args: LandedArgs) -> Result<()> {
 /// The two halves are necessarily read at different instants: `materialize`
 /// runs `read-tree`, `add -A`, `rm --cached` and `write-tree` as separate
 /// subprocesses, and a worktree that moves across that window would publish a
-/// token attesting state A beside a tree holding state B.
+/// token read in state A beside a tree holding state B.
 ///
-/// That pair has to be refused here, because no consumer can detect it. A
-/// lease's whole promise is that the tree *is* the state the token attests, so
-/// a consumer checks `token == expected` and then reads content from the tree
-/// without re-checking — correct reasoning, since git tree objects are
-/// immutable. Against an internally inconsistent pair that check passes and the
-/// consumer serves bytes from a state its token never attested.
+/// A move the token observes is refused here. That is the most the token can
+/// give: it is a freshness check over what `git status` lists, and some changes
+/// to the tree never reach that list (README, "Repository points", "Known
+/// gaps"). So equal tokens never prove equal trees; a consumer that needs one
+/// exact State compares the tree oid (or a repository point's id, which is
+/// derived from the tree), and reads content from that immutable tree.
 ///
 /// Both reads are of the token's inputs only: `git::collect_token_state`
 /// before the write, one `status` (`git::token_state_at`) after it. A snapshot

@@ -10,8 +10,10 @@
 //! — snapshots, leases, repository points, session packets — is that one, and
 //! every record that carries a tree names the algorithm beside it.
 //!
-//! The tree oid is the **content address** of the snapshot; the consistency
-//! token is its **version**. Git's object database is the store — free dedup
+//! The tree oid is the **content address** of the snapshot, and its identity;
+//! the consistency token read beside it is a **freshness check**, which does
+//! not see every change to the tree (README, "Repository points"). Git's
+//! object database is the store — free dedup
 //! (unchanged subtrees share oids), free GC (`git gc` reclaims unreferenced
 //! objects), free diff/distribution.
 //!
