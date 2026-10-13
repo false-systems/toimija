@@ -472,10 +472,21 @@ flowchart LR
    `.sykli/` left out, `.toimija/repo.yaml` forced in), computed by the
    canonical procedure in the vendored `faija-terms`; snapshots, leases,
    repository points and session packets all carry that one tree and name it
-   (`tree_algorithm`). The token is read again once the tree is written, and a
-   tree whose worktree moved meanwhile is never paired with the earlier token.
-   A lease marker written before Toimija named its tree algorithm lists as
-   `toimija-legacy`: its tree keeps the meaning it was written with.
+   (`tree_algorithm`). The token is read again once the tree is written, so a
+   move the token observes is never paired with the earlier token. The pairing
+   holds only **within what the token observes**. It does not see:
+   - an ignored, untracked `.toimija/repo.yaml`, which the tree forces in;
+   - commits inside a submodule or a nested repository;
+   - `assume-unchanged` and `skip-worktree` files;
+   - edits the stat cache misses (`core.checkStat=minimal`,
+     `core.trustctime=false`);
+   - namespace content a sparse checkout keeps out of the cone;
+   - a change undone before the re-read (A → B → A).
+
+   A clean token (`dirty: false`) does not mean `tree == HEAD^{tree}`. A lease
+   marker written before Toimija named its tree algorithm lists as
+   `toimija-legacy`: its tree keeps the meaning it was written with. README,
+   "Repository points", has the details and the coming change (KATANA D9).
 
 The token is a transaction version, not a timestamp: verify tells you whether
 the world changed, snapshot gives you a world that cannot change. Either way,
@@ -646,7 +657,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `audit-plan` | Derive deterministic, bounded audit surfaces from the committed Git tree; `--surface K` prints one contract-framed workset, and prior findings are read-only pointers to the latest committed `docs/audit/<date>/` directory. No plan or findings are written. |
 | `adopt` | Install the same marker-delimited Toimija preamble in every known entry file already present, creating `AGENTS.md` only when none exists; `--hooks` adds best-effort Git refresh hooks and creates/merges the repo-local `.claude/settings.json` SessionStart hook. |
 | `validate --plan` | Print the validation plan; never runs validation. |
-| `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`, its tree's algorithm in `extensions.tree_algorithm`; `--json` for tools. The token is re-read after the tree is written; a worktree that moved is read afresh up to three times, then refused. |
+| `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`, its tree's algorithm in `extensions.tree_algorithm`; `--json` for tools. The token is re-read after the tree is written (one `git status`); a worktree that moved is read afresh after a short pause, up to three times in all, then refused. Tree and token are paired only within what the token observes (README, "Repository points"), `dirty: false` does not mean `tree == HEAD^{tree}`, and point ids compare only within one `tree_algorithm`. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
 | `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` (which keeps Git away from the packet, sessions, history and temp files) if missing. |

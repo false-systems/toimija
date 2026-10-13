@@ -775,8 +775,9 @@ fn run_repository_point(args: SemanticArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     // Each attempt reads the repository afresh: a point whose worktree moved
-    // under the tree write is retried, and refused once it keeps moving, never
-    // printed with a tree from one moment and a token from another.
+    // under the tree write is retried, and refused once it keeps moving: a move
+    // the token observes is never printed as a tree from after it beside a token
+    // from before it.
     let point = crate::semantic::retry_moved(|| {
         let packet = context::build_context_packet(&runner, &cwd, false)?;
         crate::semantic::repository_point(&runner, &packet)

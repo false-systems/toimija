@@ -27,7 +27,7 @@ pub const TREE_ALGORITHM_EXTENSION: &str = "tree_algorithm";
 
 /// How many times a point is attempted, each from a fresh read of the
 /// repository, while the worktree keeps moving under the tree write. Then it is
-/// refused: a point is a tree and a token of one state, or nothing.
+/// refused rather than paired across a move the token observed.
 pub const POINT_ATTEMPTS: usize = 3;
 
 /// The pause before each retry: the worktree was moving a moment ago, so give
@@ -121,8 +121,8 @@ pub fn execution_context(
 
 /// The repository point of the state `context` was compiled from: its token,
 /// and the tree-identity.v1 tree written from the worktree. The token is read
-/// again after the tree is written, so the two describe one state; if the
-/// worktree moved in between, this fails with
+/// again after the tree is written, so the two describe one state within what
+/// the token observes; if the worktree moved in between, this fails with
 /// [`crate::snapshot::WorktreeMoved`] and the caller rebuilds `context` and
 /// tries again ([`retry_moved`]).
 pub fn repository_point(

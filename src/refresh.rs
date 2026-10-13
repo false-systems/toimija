@@ -274,8 +274,9 @@ fn render_pair(
 /// A session refresh pairs the packet with a repository point. If the
 /// worktree moves while the point's tree is written, the whole packet is built
 /// again from a fresh read, a bounded number of times
-/// ([`crate::semantic::retry_moved`]), and then the refresh fails — the packet
-/// never carries a tree from one moment beside a token from another.
+/// ([`crate::semantic::retry_moved`]), and then the refresh fails — a move the
+/// token observes never leaves the packet with a tree from after it beside a
+/// token from before it.
 fn compute(
     runner: &impl CommandRunner,
     repo_root: &Path,

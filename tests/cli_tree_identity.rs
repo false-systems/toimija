@@ -7,9 +7,10 @@
 //! the vendored crate and with real git, and hold Toimija's commands to it.
 //!
 //! They also hold the pairing: a repository point is a tree *and* the token of
-//! the state it was written from. A worktree that moves while the tree is being
-//! written must never come out as a tree from one moment beside a token from
-//! another.
+//! the state it was written from. A worktree that moves, in a way the token
+//! observes, while the tree is being written must never come out as a tree from
+//! after the move beside a token from before it. (What the token does not
+//! observe is listed in the README, "Repository points".)
 
 use std::ffi::OsString;
 use std::fs;

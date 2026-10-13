@@ -198,10 +198,42 @@ own. Every envelope names it in `extensions.tree_algorithm`; an envelope or
 snapshot lease without that name was written before, and its tree is the
 legacy one (`toimija-legacy`), never reinterpreted.
 
-The tree and the token are one state's. The token is read again after the tree
-is written; if the worktree moved in between, the point is read afresh up to
-three times and then refused, never printed with a tree from one moment and a
-token from another. Token equality implies tree equality, never the reverse.
+The tree and the token are paired **within what the token observes**. The
+token is read again after the tree is written (one `git status`). If it moved,
+the point is read afresh, after a short pause, up to three times in all, and
+then refused. A change the token observes is therefore never printed as a
+tree from after it beside a token from before it.
+
+The token does not observe everything the tree contains. Within what it does
+observe, equal tokens mean equal trees. Outside it, two points with one token,
+and so one point id, can hold different trees:
+
+- an ignored, untracked `.toimija/repo.yaml`: the tree forces it in, and
+  `git status` never lists it;
+- new commits inside a submodule, because the token sees a gitlink as a
+  directory, never its commit; and commits inside a nested repository;
+- files marked `assume-unchanged` or `skip-worktree`;
+- an edit the stat cache misses, for example a same-size edit with the mtime
+  restored under `core.checkStat=minimal` and `core.trustctime=false`;
+- a sparse checkout, which keeps namespace content outside the cone in the
+  tree, so a sparse and a full checkout of one commit can differ;
+- a change undone before the token is read again (A → B → A).
+
+`dirty: false` means `git status` reported nothing. It does not mean the tree
+equals `HEAD^{tree}`: several of the cases above print `dirty: false` with a
+tree that differs from HEAD's.
+
+Point ids compare only within one `tree_algorithm`. The id is derived from the
+repository and the token alone, so across the move to tree-identity.v1 one
+token named a legacy tree and then a v1 tree.
+
+The token also watches `.sykli/` where git can see it, though the tree leaves
+it out. A gate writing receipts into a visible `.sykli/` can therefore make a
+point refuse while the tree holds still.
+
+A follow-up (KATANA D9) changes both: the point id will be derived from the
+repository, the token, the tree algorithm and the tree, so that equal points
+mean equal trees by construction, and the token will stop watching `.sykli/`.
 
 ## The live packet
 
