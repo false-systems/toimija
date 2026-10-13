@@ -22,6 +22,11 @@ use crate::git::{ChangeStatus, ChangedFile, GitState};
 /// versions never coincide.
 pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v3";
 
+/// Token versions earlier toimijas wrote. A stored token of one of these
+/// keeps the meaning it was written with: it is never recomputed or compared
+/// as if it were [`CONSISTENCY_ALGORITHM`] ([`Verdict::NotComparable`]).
+pub const EARLIER_ALGORITHMS: &[&str] = &["toimija-consistency-v1", "toimija-consistency-v2"];
+
 /// The tree algorithm whose generated namespaces the token leaves out. Pinned
 /// to v1, never `TreeIdentityAlgorithm::CURRENT`: what a v3 token observes is
 /// fixed with v3, and a later tree algorithm is a later token version.
@@ -74,8 +79,28 @@ pub enum Verdict {
         packet_token: String,
         current_token: String,
     },
+    /// The stored token is of an earlier version this toimija once wrote
+    /// ([`EARLIER_ALGORITHMS`]). It keeps that version's meaning, and is never
+    /// recomputed or read as the current one, so it is neither equal to nor
+    /// different from the live token: the two are not comparable.
+    NotComparable(String),
+    /// The stored token names an algorithm no toimija this build knows wrote.
     UnsupportedConsistencyAlgorithm(String),
     UnsafeGitOperation(GitOperationState),
+}
+
+/// Whether a stored token's algorithm can be compared with the token computed
+/// now, and if not, why not.
+pub fn comparability(algorithm: &str) -> Option<Verdict> {
+    if algorithm == CONSISTENCY_ALGORITHM {
+        None
+    } else if EARLIER_ALGORITHMS.contains(&algorithm) {
+        Some(Verdict::NotComparable(algorithm.to_string()))
+    } else {
+        Some(Verdict::UnsupportedConsistencyAlgorithm(
+            algorithm.to_string(),
+        ))
+    }
 }
 
 impl Consistency {
@@ -112,8 +137,8 @@ impl Consistency {
     }
 
     pub fn verify(&self, live: &GitState) -> Verdict {
-        if self.algorithm != CONSISTENCY_ALGORITHM {
-            return Verdict::UnsupportedConsistencyAlgorithm(self.algorithm.clone());
+        if let Some(refusal) = comparability(&self.algorithm) {
+            return refusal;
         }
         let fresh = Consistency::fingerprint(live);
         if fresh.git_operation != GitOperationState::None || fresh.conflict_state.has_conflicts {

@@ -954,15 +954,29 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
             };
             let live_sessions =
                 sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
-            let duplicate = live_sessions.sessions.iter().find(|session| {
-                session.liveness != sessions::Liveness::Closed
-                    && session.marker.cycle_action.as_ref() == Some(&action)
-            });
-            if let Some(session) = duplicate {
-                anyhow::bail!(
-                    "cycle action {cycle}/{leg}/{attempt} is already live in session {}",
-                    session.marker.id
-                );
+            for session in &live_sessions.sessions {
+                let Some(live) = session.marker.cycle_action.as_ref() else {
+                    continue;
+                };
+                if session.liveness == sessions::Liveness::Closed {
+                    continue;
+                }
+                match live.compare(&action) {
+                    crate::semantic::Comparison::Different => {}
+                    crate::semantic::Comparison::Equal => anyhow::bail!(
+                        "cycle action {cycle}/{leg}/{attempt} is already live in session {}",
+                        session.marker.id
+                    ),
+                    crate::semantic::Comparison::NotComparable => anyhow::bail!(
+                        "cycle action {cycle}/{leg}/{attempt} is live in session {} at \
+                         repository point {}, whose id is of another version than this \
+                         toimija's {}; point ids of different versions are not comparable, so \
+                         whether this is the same action is unknown",
+                        session.marker.id,
+                        live.repository_point,
+                        action.repository_point
+                    ),
+                }
             }
             Some(action)
         }
@@ -1507,6 +1521,10 @@ fn verify_run_entry(
             }
             Verdict::Stale { .. } => anyhow::bail!(
                 "refusing to launch: the `run` entry packet changed again after one refresh"
+            ),
+            Verdict::NotComparable(algorithm) => anyhow::bail!(
+                "refusing to launch: the entry packet's token is `{algorithm}`, not comparable \
+                 with this toimija's `{CONSISTENCY_ALGORITHM}`"
             ),
             Verdict::UnsupportedConsistencyAlgorithm(algorithm) => anyhow::bail!(
                 "refusing to launch: unsupported entry consistency algorithm `{algorithm}`"
@@ -2140,11 +2158,15 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         } else {
             for lease in &leases {
                 println!(
-                    "{}  tree {} ({})  {}  pid {}",
+                    "{}  tree {} ({})  {} ({})  pid {}",
                     lease.id,
                     short_oid(&lease.tree),
                     lease.tree_algorithm,
                     lease.token,
+                    lease
+                        .token_algorithm
+                        .as_deref()
+                        .unwrap_or("token version unrecorded"),
                     lease.pid
                 );
             }
@@ -2181,7 +2203,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         } else {
             println!("leased snapshot {}", lease.id);
             println!("  tree:  {} ({})", lease.tree, lease.tree_algorithm);
-            println!("  token: {}", lease.token);
+            println!("  token: {} ({})", lease.token, consistency.algorithm);
             println!("  ref:   {}", snapshot::lease_ref(&lease.id));
         }
     } else if args.json {
@@ -2199,7 +2221,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         );
     } else {
         println!("snapshot tree: {tree} ({tree_algorithm})");
-        println!("token: {}", consistency.token);
+        println!("token: {} ({})", consistency.token, consistency.algorithm);
     }
     Ok(())
 }
@@ -2286,10 +2308,19 @@ fn verify_status(
 ) -> VerifyStatus {
     match load_stored_packet(packet_path) {
         StoredPacket::Ready { packet, raw } => {
-            if packet.consistency.algorithm != CONSISTENCY_ALGORITHM {
-                return VerifyStatus::UnsupportedConsistencyAlgorithm {
-                    algorithm: packet.consistency.algorithm,
-                };
+            match crate::consistency::comparability(&packet.consistency.algorithm) {
+                None => {}
+                Some(Verdict::NotComparable(algorithm)) => {
+                    return VerifyStatus::NotComparable {
+                        packet_algorithm: algorithm,
+                        algorithm: CONSISTENCY_ALGORITHM.to_string(),
+                    };
+                }
+                Some(_) => {
+                    return VerifyStatus::UnsupportedConsistencyAlgorithm {
+                        algorithm: packet.consistency.algorithm,
+                    };
+                }
             }
             if packet.sauma.is_none() {
                 return VerifyStatus::InvalidPacket {
@@ -2359,6 +2390,10 @@ fn verify_status(
                 } => VerifyStatus::StalePacket {
                     packet_token,
                     current_token,
+                },
+                Verdict::NotComparable(algorithm) => VerifyStatus::NotComparable {
+                    packet_algorithm: algorithm,
+                    algorithm: CONSISTENCY_ALGORITHM.to_string(),
                 },
                 Verdict::UnsupportedConsistencyAlgorithm(algorithm) => {
                     VerifyStatus::UnsupportedConsistencyAlgorithm { algorithm }
@@ -2551,6 +2586,12 @@ enum VerifyStatus {
         message: String,
     },
     MissingConsistency,
+    /// The packet's token is of an earlier version (`packet_algorithm`) than
+    /// the one computed now (`algorithm`): neither fresh nor stale.
+    NotComparable {
+        packet_algorithm: String,
+        algorithm: String,
+    },
     UnsupportedConsistencyAlgorithm {
         algorithm: String,
     },
@@ -2605,6 +2646,17 @@ impl VerifyStatus {
                         ),
                     );
                 }
+                VerifyStatus::NotComparable { .. } => {
+                    map.insert(
+                        "message".to_string(),
+                        serde_json::Value::String(
+                            "The selected packet's token is of an earlier version than the live \
+                             token; tokens of different versions are not comparable, so the \
+                             packet is neither fresh nor stale. Refresh it."
+                                .to_string(),
+                        ),
+                    );
+                }
                 VerifyStatus::SessionNotLive { .. } => {
                     map.insert(
                         "message".to_string(),
@@ -2632,6 +2684,14 @@ impl VerifyStatus {
             VerifyStatus::MissingConsistency => {
                 "missing_consistency: run `toimija current --write`".to_string()
             }
+            VerifyStatus::NotComparable {
+                packet_algorithm,
+                algorithm,
+            } => format!(
+                "not_comparable: the packet's token is {packet_algorithm} and the live one \
+                 {algorithm}; tokens of different versions are not comparable, so the packet is \
+                 neither fresh nor stale; run `toimija refresh`"
+            ),
             VerifyStatus::UnsupportedConsistencyAlgorithm { algorithm } => {
                 format!("unsupported_consistency_algorithm: {algorithm}")
             }
@@ -2902,7 +2962,14 @@ fn print_handoff_records(id: &str, records: &[handoff::HandoffRecord]) -> Result
             latest.suggested_validation.join("; ")
         );
     }
-    println!("  consistency_token: {}", latest.consistency_token);
+    println!(
+        "  consistency_token: {} ({})",
+        latest.consistency_token,
+        latest
+            .consistency_algorithm
+            .as_deref()
+            .unwrap_or("token version unrecorded")
+    );
     Ok(())
 }
 

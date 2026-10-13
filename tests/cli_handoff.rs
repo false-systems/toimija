@@ -64,6 +64,8 @@ fn handoff_writes_then_show_round_trips_via_env_handshake() {
     assert_eq!(record["sauma"]["schema"], "handoff-record.v1");
     assert_eq!(record["sauma"]["producer"]["run"], "100-1");
     assert_eq!(record["sauma"]["anchored_at"], record["consistency_token"]);
+    // The token names its version beside it (KATANA D9).
+    assert_eq!(record["consistency_algorithm"], "toimija-consistency-v3");
 }
 
 #[test]

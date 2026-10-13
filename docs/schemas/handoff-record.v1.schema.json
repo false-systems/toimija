@@ -185,7 +185,11 @@
       "minimum": 0
     },
     "consistency_token": {
-      "description": "The context packet consistency token a successor can compare against the live repo.",
+      "description": "The context packet consistency token a successor can compare against the live repo. A freshness check, not an identity: equal tokens do not imply equal trees.",
+      "type": "string"
+    },
+    "consistency_algorithm": {
+      "description": "The version of consistency_token, e.g. toimija-consistency-v3. Absent on records written before Toimija recorded it; their token is of an earlier version and is not comparable with one of another version.",
       "type": "string"
     },
     "next_step": {

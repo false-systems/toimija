@@ -170,6 +170,11 @@ pub struct SnapshotLease {
     #[serde(default = "legacy_tree_algorithm")]
     pub tree_algorithm: String,
     pub token: String,
+    /// The version of `token`. A marker written before Toimija recorded one
+    /// has none, and none is claimed for it: its token is of an earlier
+    /// version, whichever that toimija computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_algorithm: Option<String>,
     pub pid: u32,
     pub created_at: u64,
 }
@@ -224,6 +229,7 @@ pub fn acquire_lease(
         tree: tree.to_string(),
         tree_algorithm: TREE_ALGORITHM.id().to_string(),
         token: token.to_string(),
+        token_algorithm: Some(crate::consistency::CONSISTENCY_ALGORITHM.to_string()),
         pid: std::process::id(),
         created_at: now_secs(),
     };
@@ -424,16 +430,25 @@ mod tests {
         let lease: SnapshotLease = serde_json::from_str(old).unwrap();
         assert_eq!(lease.tree, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert_eq!(lease.tree_algorithm, LEGACY_TREE_ALGORITHM);
+        assert_eq!(lease.token, "sha256:abc");
+        assert_eq!(lease.token_algorithm, None, "no version is claimed for it");
         let again: SnapshotLease =
             serde_json::from_str(&serde_json::to_string(&lease).unwrap()).unwrap();
         assert_eq!(again, lease);
+        assert!(
+            !serde_json::to_string(&lease)
+                .unwrap()
+                .contains("token_algorithm")
+        );
 
         let new = SnapshotLease {
             tree_algorithm: TREE_ALGORITHM.id().to_string(),
+            token_algorithm: Some(crate::consistency::CONSISTENCY_ALGORITHM.to_string()),
             ..lease
         };
         let json = serde_json::to_value(&new).unwrap();
         assert_eq!(json["tree_algorithm"], "tree-identity.v1");
+        assert_eq!(json["token_algorithm"], "toimija-consistency-v3");
         assert_eq!(serde_json::from_value::<SnapshotLease>(json).unwrap(), new);
     }
 

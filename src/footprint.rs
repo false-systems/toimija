@@ -1026,6 +1026,7 @@ mod tests {
                 risk: Vec::new(),
                 risk_total: 0,
                 consistency_token: String::new(),
+                consistency_algorithm: None,
                 next_step: (![0, 7].contains(&index)).then(|| format!("note {index}")),
                 sauma: None,
             })

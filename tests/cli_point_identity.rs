@@ -491,3 +491,259 @@ fn a_sykli_receipt_does_not_make_the_packet_stale() {
     let stale: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
     assert_eq!(stale["status"], "stale_packet", "{stale}");
 }
+
+const TOKEN_VERSION: &str = "toimija-consistency-v3";
+
+/// Every record that carries a token or a point names its version: the point
+/// envelope and the session packet's execution context in `extensions`, beside
+/// the tree's algorithm; snapshots and leases beside the token. The token
+/// itself stays `sha256:<hex>`, the shape sauma's envelope schema requires of
+/// the anchor; its hash covers the version name.
+#[test]
+fn points_and_tokens_name_their_version() {
+    if !git_available() {
+        return;
+    }
+    let temp = repo();
+    let root = temp.path();
+    write(root, "a", "a\n");
+    commit(root, "init");
+
+    let envelope = json(root, &["repository-point", "--json"]);
+    assert_eq!(
+        envelope["extensions"]["consistency_algorithm"],
+        TOKEN_VERSION
+    );
+    assert_eq!(envelope["extensions"]["tree_algorithm"], "tree-identity.v1");
+    let id = envelope["repository"]["id"].as_str().unwrap();
+    assert!(id.starts_with("rpoint_v3_"), "{id}");
+    let token = envelope["repository"]["consistency_token"]
+        .as_str()
+        .unwrap();
+    assert!(token.starts_with("sha256:") && token.len() == 71, "{token}");
+
+    assert_eq!(
+        json(root, &["snapshot", "--json"])["algorithm"],
+        TOKEN_VERSION
+    );
+    let lease = json(root, &["snapshot", "--lease", "--json"]);
+    assert_eq!(lease["token_algorithm"], TOKEN_VERSION);
+
+    let out = tempfile::tempdir().unwrap();
+    toimija(root)
+        .env("OUT", out.path())
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "cp \"$TOIMIJA_LIVE_JSON\" \"$OUT/packet.json\" && \
+             cp \"$FALSE_SYSTEMS_REPOSITORY_POINT_PATH\" \"$OUT/point.json\"",
+        ])
+        .assert()
+        .success();
+    let read = |name: &str| -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(out.path().join(name)).unwrap()).unwrap()
+    };
+    let execution = &read("packet.json")["session"]["execution"];
+    assert_eq!(
+        execution["extensions"]["consistency_algorithm"],
+        TOKEN_VERSION
+    );
+    assert_eq!(
+        read("point.json")["extensions"]["consistency_algorithm"],
+        TOKEN_VERSION
+    );
+    assert!(
+        execution["repository"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("rpoint_v3_")
+    );
+}
+
+/// A packet written by an earlier toimija carries an earlier token version.
+/// Its token keeps the meaning it was written with and is never recomputed
+/// under v3 — so `verify` can say neither "fresh" nor "stale" about it, only
+/// "not comparable", and a refresh replaces it.
+#[test]
+fn a_packet_from_an_earlier_token_version_is_not_comparable() {
+    if !git_available() {
+        return;
+    }
+    let temp = repo();
+    let root = temp.path();
+    write(root, "a", "a\n");
+    commit(root, "init");
+    toimija(root).arg("refresh").assert().success();
+    let path = root.join(".toimija/current.json");
+    let fresh = fs::read_to_string(&path).unwrap();
+
+    for earlier in ["toimija-consistency-v2", "toimija-consistency-v1"] {
+        let mut packet: serde_json::Value = serde_json::from_str(&fresh).unwrap();
+        packet["consistency"]["algorithm"] = serde_json::json!(earlier);
+        fs::write(&path, serde_json::to_string_pretty(&packet).unwrap()).unwrap();
+
+        let assert = toimija(root).args(["verify", "--json"]).assert().failure();
+        let report: serde_json::Value =
+            serde_json::from_slice(&assert.get_output().stdout).unwrap();
+        assert_eq!(report["status"], "not_comparable", "{report}");
+        assert_eq!(report["packet_algorithm"], earlier);
+        assert_eq!(report["algorithm"], TOKEN_VERSION);
+        assert!(
+            report["message"]
+                .as_str()
+                .unwrap()
+                .contains("not comparable"),
+            "{report}"
+        );
+
+        let assert = toimija(root).arg("verify").assert().failure();
+        let text = String::from_utf8_lossy(&assert.get_output().stderr).into_owned()
+            + &String::from_utf8_lossy(&assert.get_output().stdout);
+        assert!(text.contains("not_comparable"), "{text}");
+    }
+
+    // An algorithm no toimija wrote is still refused as unsupported.
+    let mut packet: serde_json::Value = serde_json::from_str(&fresh).unwrap();
+    packet["consistency"]["algorithm"] = serde_json::json!("toimija-consistency-v9");
+    fs::write(&path, serde_json::to_string_pretty(&packet).unwrap()).unwrap();
+    let assert = toimija(root).args(["verify", "--json"]).assert().failure();
+    let report: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(report["status"], "unsupported_consistency_algorithm");
+
+    toimija(root).arg("refresh").assert().success();
+    assert_eq!(json(root, &["verify", "--json"])["status"], "verified");
+}
+
+/// A lease taken by an earlier toimija recorded its token with no version.
+/// It still lists, with its token exactly as written and no version claimed
+/// for it, and still releases.
+#[test]
+fn a_lease_from_an_earlier_toimija_lists_its_token_unversioned_and_releases() {
+    if !git_available() {
+        return;
+    }
+    let temp = repo();
+    let root = temp.path();
+    write(root, ".gitignore", ".toimija/\n");
+    write(root, "a", "a\n");
+    commit(root, "init");
+    let tree = String::from_utf8(
+        git_at(root)
+            .args(["rev-parse", "HEAD^{tree}"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let tree = tree.trim();
+    let old_token = format!("sha256:{}", "ab".repeat(32));
+    run_git(root, &["update-ref", "refs/toimija/snapshots/old", tree]);
+    write(
+        root,
+        ".toimija/snapshots/old.json",
+        &serde_json::json!({
+            "id": "old", "tree": tree, "token": old_token, "pid": 1, "created_at": 1
+        })
+        .to_string(),
+    );
+
+    let leases = json(root, &["snapshot", "--list", "--json"]);
+    let old = &leases.as_array().unwrap()[0];
+    assert_eq!(old["token"], old_token.as_str(), "the token was rewritten");
+    assert!(old.get("token_algorithm").is_none(), "{old}");
+    assert_eq!(old["tree_algorithm"], "toimija-legacy");
+
+    let listing = toimija(root)
+        .args(["snapshot", "--list"])
+        .assert()
+        .success();
+    let listing = String::from_utf8_lossy(&listing.get_output().stdout).into_owned();
+    assert!(listing.contains("token version unrecorded"), "{listing}");
+
+    toimija(root)
+        .args(["snapshot", "--release", "old"])
+        .assert()
+        .success();
+    assert!(!root.join(".toimija/snapshots/old.json").exists());
+}
+
+/// A live session whose marker records a cycle action, written as an
+/// earlier toimija or as this one would write it.
+fn live_cycle_session(root: &Path, id_suffix: u32, repository_point: &str) {
+    let id = format!("1-{id_suffix}");
+    write(
+        root,
+        &format!(".toimija/sessions/{id}/session.json"),
+        &serde_json::to_string_pretty(&serde_json::json!({
+            "id": id,
+            "pid": std::process::id(),
+            "agent": ["sh"],
+            "worktree": root.display().to_string(),
+            "branch": "main",
+            "head": null,
+            "intent": "cycle leg",
+            "scope": [],
+            "cycle_action": {
+                "cycle": "cycle-1",
+                "leg": "code",
+                "attempt": 0,
+                "repository_point": repository_point
+            },
+            "started_at": 1,
+            "last_seen_at": 4_102_444_800u64,
+            "status": "active",
+            "closed_at": null,
+            "exit_status": null
+        }))
+        .unwrap(),
+    );
+}
+
+fn launch_leg(root: &Path) -> assert_cmd::assert::Assert {
+    toimija(root)
+        .args([
+            "run",
+            "--intent",
+            "again",
+            "--cycle",
+            "cycle-1",
+            "--cycle-leg",
+            "code",
+            "--cycle-attempt",
+            "0",
+            "--",
+            "true",
+        ])
+        .assert()
+}
+
+/// A cycle leg is one action per repository point. When the live leg's point
+/// id is from an earlier toimija, the two points are not comparable: the leg
+/// may or may not be the same action, so it is refused, saying exactly that —
+/// never launched as "different", never reported as a duplicate.
+#[test]
+fn a_cycle_leg_live_at_an_earlier_point_version_is_not_comparable() {
+    if !git_available() {
+        return;
+    }
+    let temp = repo();
+    let root = temp.path();
+    write(root, ".gitignore", ".toimija/\n");
+    write(root, "a", "a\n");
+    commit(root, "init");
+
+    live_cycle_session(root, 1, &format!("rpoint_{}", "0".repeat(64)));
+    let assert = launch_leg(root).failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("not comparable"), "{stderr}");
+    assert!(!stderr.contains("already live"), "{stderr}");
+
+    // Control: the same leg live at another v3 point is a different action.
+    fs::remove_dir_all(root.join(".toimija/sessions/1-1")).unwrap();
+    live_cycle_session(root, 2, &format!("rpoint_v3_{}", "0".repeat(64)));
+    launch_leg(root).success();
+}

@@ -83,6 +83,7 @@ fn handoff_schema_matches_emitted_record_fields() {
         risk: Vec::new(),
         risk_total: 0,
         consistency_token: "token".to_string(),
+        consistency_algorithm: Some("toimija-consistency-v3".to_string()),
         next_step: None,
         sauma: Some(toimija::sauma::legacy_envelope_from_canonical(
             "handoff-record.v1",
@@ -107,12 +108,16 @@ fn handoff_schema_matches_emitted_record_fields() {
         .map(|value| value.as_str().unwrap().to_string())
         .collect();
 
+    // Additive within v1: emitted when known, absent from older records.
+    let additive = ["sauma", "consistency_algorithm"];
     let mut required_with_additive = required.clone();
-    required_with_additive.insert("sauma".to_string());
+    required_with_additive.extend(additive.map(str::to_string));
 
     assert_eq!(emitted_keys, property_keys);
     assert_eq!(emitted_keys, required_with_additive);
-    assert!(!required.contains("sauma"));
+    for field in additive {
+        assert!(!required.contains(field), "{field}");
+    }
 }
 
 /// The handoff schema and the handoff reader must agree on forward-compatibility:

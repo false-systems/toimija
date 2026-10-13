@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 use tracing::info;
 
 use crate::command::CommandRunner;
+use crate::consistency::CONSISTENCY_ALGORITHM;
 use crate::context::ContextPacket;
 
 /// The session's current repository point, as a `RepositoryPointEnvelope`.
@@ -24,6 +25,13 @@ pub const POINT_FILE: &str = "semantic-point.json";
 /// its tree algorithm, and its tree is the legacy one
 /// ([`crate::snapshot::LEGACY_TREE_ALGORITHM`]).
 pub const TREE_ALGORITHM_EXTENSION: &str = "tree_algorithm";
+
+/// The extension naming the version of an envelope's consistency token, which
+/// the protocol carries as a bare string. The token itself stays
+/// `sha256:<hex>`, the shape sauma's envelope schema requires of an anchor; its
+/// hash covers the version name. An envelope without this extension was
+/// written by an earlier toimija, and its token is of an earlier version.
+pub const CONSISTENCY_ALGORITHM_EXTENSION: &str = "consistency_algorithm";
 
 /// How every point id Toimija writes begins. The id is derived from the tree
 /// as well as the token ([`point_ref`]), and this marker says so. An id that
@@ -79,13 +87,69 @@ fn retry_moved_with<T>(
     }
 }
 
-fn tree_extensions() -> Extensions {
+/// What an envelope carrying a point names beside it: the algorithm of its
+/// tree and the version of its token.
+fn point_extensions() -> Extensions {
     let mut extensions = Extensions::new();
     extensions.insert(
         TREE_ALGORITHM_EXTENSION.to_string(),
         serde_json::Value::String(crate::snapshot::TREE_ALGORITHM.id().to_string()),
     );
+    extensions.insert(
+        CONSISTENCY_ALGORITHM_EXTENSION.to_string(),
+        serde_json::Value::String(CONSISTENCY_ALGORITHM.to_string()),
+    );
     extensions
+}
+
+/// How two recorded identities compare. Within one version they are equal or
+/// different; across versions there is no answer, and none is invented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Comparison {
+    Equal,
+    Different,
+    NotComparable,
+}
+
+/// The version of a point id: [`POINT_ID_PREFIX`]'s, or the one before it
+/// (`rpoint_` and 64 hex digits, from the repository and the token alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointIdVersion {
+    Repository,
+    Tree,
+}
+
+fn point_id_version(id: &str) -> Option<PointIdVersion> {
+    let is_hex = |body: &str| {
+        body.len() == 64
+            && body
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    if let Some(body) = id.strip_prefix(POINT_ID_PREFIX) {
+        is_hex(body).then_some(PointIdVersion::Tree)
+    } else {
+        id.strip_prefix("rpoint_")
+            .filter(|body| is_hex(body))
+            .map(|_| PointIdVersion::Repository)
+    }
+}
+
+/// Compare two point ids. Ids of one version compare under that version's
+/// meaning; ids of two versions, or an id of no version this build knows, are
+/// [`Comparison::NotComparable`] — an old id is never read as if it were
+/// derived from a tree, and never declared different from a new one.
+pub fn compare_points(left: &str, right: &str) -> Comparison {
+    match (point_id_version(left), point_id_version(right)) {
+        (Some(a), Some(b)) if a == b => {
+            if left == right {
+                Comparison::Equal
+            } else {
+                Comparison::Different
+            }
+        }
+        _ => Comparison::NotComparable,
+    }
 }
 
 pub fn execution_context(
@@ -113,7 +177,7 @@ pub fn execution_context(
         work: None,
         workflow_status: None,
         context_digest: String::new(),
-        extensions: tree_extensions(),
+        extensions: point_extensions(),
     };
     envelope.seal().map_err(anyhow::Error::from)?;
     info!(
@@ -164,7 +228,7 @@ pub fn point_envelope(point: RepositoryPoint) -> RepositoryPointEnvelope {
     RepositoryPointEnvelope {
         protocol: ProtocolVersion::V1,
         repository: point,
-        extensions: tree_extensions(),
+        extensions: point_extensions(),
     }
 }
 
@@ -290,12 +354,45 @@ mod tests {
     }
 
     #[test]
-    fn a_point_envelope_names_its_tree_algorithm() {
-        let extensions = tree_extensions();
+    fn a_point_envelope_names_its_tree_algorithm_and_token_version() {
+        let extensions = point_extensions();
         assert_eq!(
             extensions[TREE_ALGORITHM_EXTENSION],
             serde_json::Value::String("tree-identity.v1".to_string())
         );
+        assert_eq!(
+            extensions[CONSISTENCY_ALGORITHM_EXTENSION],
+            serde_json::Value::String("toimija-consistency-v3".to_string())
+        );
+    }
+
+    /// Old ids keep their meaning among themselves; new ids among
+    /// themselves; across the two, and for anything unrecognised, there is no
+    /// answer.
+    #[test]
+    fn point_ids_compare_only_within_their_version() {
+        let old = |digit: &str| format!("rpoint_{}", digit.repeat(64));
+        let new = |digit: &str| format!("{POINT_ID_PREFIX}{}", digit.repeat(64));
+        assert_eq!(compare_points(&new("a"), &new("a")), Comparison::Equal);
+        assert_eq!(compare_points(&new("a"), &new("b")), Comparison::Different);
+        assert_eq!(compare_points(&old("a"), &old("a")), Comparison::Equal);
+        assert_eq!(compare_points(&old("a"), &old("b")), Comparison::Different);
+        // The same digest under two versions is still not "equal".
+        assert_eq!(
+            compare_points(&old("a"), &new("a")),
+            Comparison::NotComparable
+        );
+        assert_eq!(
+            compare_points(&new("b"), &old("a")),
+            Comparison::NotComparable
+        );
+        for unknown in ["rpoint_01", "rpoint_v4_aa", "rpoint_v3_XYZ", ""] {
+            assert_eq!(
+                compare_points(unknown, unknown),
+                Comparison::NotComparable,
+                "{unknown}"
+            );
+        }
     }
 
     #[test]

@@ -155,6 +155,20 @@ pub struct CycleAction {
     pub repository_point: String,
 }
 
+impl CycleAction {
+    /// Whether `other` is the same action: the same cycle, leg and attempt at
+    /// the same repository point. A different cycle, leg or attempt is a
+    /// different action; at those, two points of different id versions are
+    /// [`Comparison::NotComparable`](crate::semantic::Comparison), never
+    /// "different".
+    pub fn compare(&self, other: &CycleAction) -> crate::semantic::Comparison {
+        if (&self.cycle, &self.leg, self.attempt) != (&other.cycle, &other.leg, other.attempt) {
+            return crate::semantic::Comparison::Different;
+        }
+        crate::semantic::compare_points(&self.repository_point, &other.repository_point)
+    }
+}
+
 /// Compose a session id as `<unix-secs>-<pid>` (decision D1). Roughly sortable by
 /// start time; the pid disambiguates sessions opened in the same second. Pure, so
 /// tests are deterministic.
