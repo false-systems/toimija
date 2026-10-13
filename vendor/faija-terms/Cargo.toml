@@ -1,0 +1,10 @@
+[package]
+name = "faija-terms"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+description = "Shared vocabulary for the False Systems workflow stack: terms two or more tools must mean identically."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,18 @@
+# The faija-terms crate Toimija carries.
+#
+# faija owns tree-identity.v1: which namespaces a working State's identity
+# leaves out, which configuration it forces in, and the git steps in their
+# order. Toimija runs that procedure from this copy (src/snapshot.rs) rather
+# than keeping a tree algorithm of its own.
+#
+# `vendor/faija-terms/` is byte-identical to `crates/faija-terms/` at
+# `faija-revision`, and `tests/vendored_faija_terms.rs` recomputes
+# `tree-digest` on every run, so an edit here fails the build. Not a security
+# boundary: it makes drift visible as a diff touching `vendor/`.
+#
+# Refresh with `scripts/vendor-faija-terms.sh <faija-checkout> <revision>`,
+# never by editing the crate in place.
+faija-tag = untagged
+faija-revision = 0540cf73c12fe205c841f010b33d198e2c2e9f16
+tree-digest = sha256:4ebc2d6796e46b0b50c0946d8e89317fd64f41557b71774eb706fba443fa9be0
+files = 7

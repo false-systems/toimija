@@ -22,6 +22,10 @@ serde_yaml = "0.9"
 # dependency would cost every build a credential. Pinned by
 # `vendor/sauma-canonical.contract`; refresh with the script beside it.
 sauma-canonical = { path = "vendor/sauma-canonical" }
+# Vendored for the same reason: faija owns tree-identity.v1, the identity of a
+# working State, and Toimija runs its procedure instead of keeping its own.
+# Pinned by `vendor/faija-terms.contract`; refresh with the script beside it.
+faija-terms = { path = "vendor/faija-terms" }
 # Toimija hashes for things that are not artifact envelopes — consistency
 # tokens, environment digests, repository points. Those stay here; only the
 # envelope digest moved to sauma-canonical.
