@@ -747,3 +747,40 @@ fn a_cycle_leg_live_at_an_earlier_point_version_is_not_comparable() {
     live_cycle_session(root, 2, &format!("rpoint_v3_{}", "0".repeat(64)));
     launch_leg(root).success();
 }
+
+/// The id is exactly the documented digest (README, "Repository points"),
+/// recomputed here from the envelope's own fields: `rpoint_v3_` and the
+/// SHA-256 of the marker, the repository, the token's version, the token, the
+/// tree's algorithm and the tree, each ended by a NUL. A reader holding an
+/// envelope can check its id without toimija.
+#[test]
+fn the_point_id_is_the_documented_digest_of_the_envelope() {
+    use sha2::{Digest, Sha256};
+    if !git_available() {
+        return;
+    }
+    let temp = repo();
+    let root = temp.path();
+    write(root, "a", "a\n");
+    commit(root, "init");
+    let envelope = json(root, &["repository-point", "--json"]);
+    let point = &envelope["repository"];
+    let field = |value: &serde_json::Value| value.as_str().unwrap().to_string();
+
+    let mut digest = Sha256::new();
+    for part in [
+        "rpoint_v3_".to_string(),
+        field(&point["repository"]),
+        field(&envelope["extensions"]["consistency_algorithm"]),
+        field(&point["consistency_token"]),
+        field(&envelope["extensions"]["tree_algorithm"]),
+        field(&point["tree_oid"]),
+    ] {
+        digest.update(part.as_bytes());
+        digest.update([0]);
+    }
+    assert_eq!(
+        field(&point["id"]),
+        format!("rpoint_v3_{:x}", digest.finalize())
+    );
+}
