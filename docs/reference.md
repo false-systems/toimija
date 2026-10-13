@@ -244,7 +244,7 @@ injects into the child:
 | `TOIMIJA_REPO_ROOT` | Absolute path of the repo root the session runs in. |
 | `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
 | `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
-| `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | Absolute path to this session's current repository point, a false-agent-protocol `RepositoryPointEnvelope` (`.toimija/sessions/<id>/semantic-point.json`), rewritten on every refresh. Its tree is tree-identity.v1, named in `extensions.tree_algorithm`. |
+| `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | Absolute path to this session's current repository point, a false-agent-protocol `RepositoryPointEnvelope` (`.toimija/sessions/<id>/semantic-point.json`), rewritten on every refresh. Its tree is tree-identity.v1, named in `extensions.tree_algorithm`, and its token's version is in `extensions.consistency_algorithm`. |
 
 An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after HEAD, branch,
 index, or unfamiliar worktree changes instead of re-running `enter`; its own
@@ -446,19 +446,26 @@ flowchart LR
     V -- "stale" --> F["refresh"] --> V
 ```
 
-1. **Fingerprint.** Every packet embeds a `toimija-consistency-v2` token — a
-   deterministic, content-based fingerprint of the repo's work state (HEAD,
+1. **Fingerprint.** Every packet embeds a `toimija-consistency-v3` token — a
+   deterministic, content-based fingerprint of what `git status` lists (HEAD,
    index, unstaged tracked content, untracked content, conflicts, in-flight Git
    operations). No clocks, no mtimes, no file sizes: same content, same token.
-   Generated state under `.toimija/` and `.teko/` is excluded so refreshes,
-   sessions, snapshots, and harness runs never invalidate the packet (`.teko/`
-   stays a generated-state namespace in faija's tree-identity.v1); `.toimija/repo.yaml` is the exception and always counts.
+   It leaves out exactly what faija's tree-identity.v1 leaves out — generated
+   state under `.toimija/`, `.teko/` and `.sykli/`, but not
+   `.toimija/repo.yaml`, which always counts — so refreshes, sessions,
+   snapshots, harness runs and a gate's receipts never invalidate the packet.
+   The token is a freshness check, not an identity: what `git status` does not
+   list, it does not see (README, "Repository points", "Known gaps"). (v2,
+   before KATANA D9, also watched `.sykli/`.)
 2. **Gate.** `toimija verify` (or `toimija current --verify --json` for
    machines) verifies the ambient session packet when wrapped by `run`, and the
    repo-level packet otherwise. `--packet <path>` selects one explicitly. It
    recomputes the fingerprint against the live repo and exits
    non-zero, with reasons, when the packet is stale, missing, unsupported,
-   unsafe, or unverifiable. A harness calls this before *every* packet read:
+   unsafe, or unverifiable. A packet whose token is of an earlier version
+   (`toimija-consistency-v2` or `-v1`) is `not_comparable`: its token keeps the
+   meaning it was written with, so it is neither fresh nor stale, and a refresh
+   replaces it. A harness calls this before *every* packet read:
    pass → trust the packet; fail → refresh first. `run` performs the same check
    on its own entry packet before launching the agent. It retries one startup
    race, then refuses to launch if the packet is still stale, unverifiable, or
@@ -472,24 +479,29 @@ flowchart LR
    `.sykli/` left out, `.toimija/repo.yaml` forced in), computed by the
    canonical procedure in the vendored `faija-terms`; snapshots, leases,
    repository points and session packets all carry that one tree and name it
-   (`tree_algorithm`). The token is read again once the tree is written, so a
-   move the token observes is never paired with the earlier token. The pairing
-   holds only **within what the token observes**. It does not see:
-   - an ignored, untracked `.toimija/repo.yaml`, which the tree forces in;
-   - commits inside a submodule or a nested repository;
-   - `assume-unchanged` and `skip-worktree` files;
-   - edits the stat cache misses (`core.checkStat=minimal`,
-     `core.trustctime=false`);
-   - namespace content a sparse checkout keeps out of the cone;
-   - a change undone before the re-read (A → B → A).
+   (`tree_algorithm`), with the token's version beside the token. The token is
+   read again once the tree is written, so a move the token observes is never
+   paired with the earlier token.
+
+   A tree is identified by its oid, and a repository point by its id, which is
+   derived from the tree: equal point ids mean equal trees, by construction.
+   Equal tokens do not. A token can stay put while the tree changes: an
+   ignored, untracked `.toimija/repo.yaml`; commits inside a submodule or a
+   nested repository; `assume-unchanged` and `skip-worktree` files; edits the
+   stat cache misses (`core.checkStat=minimal`, `core.trustctime=false`);
+   namespace content a sparse checkout keeps out of the cone; and a change
+   undone before the re-read (A → B → A). Each of those gives two point ids,
+   and each stays a blind spot for freshness. A reader that needs one exact
+   State compares tree oids or point ids, never tokens.
 
    A clean token (`dirty: false`) does not mean `tree == HEAD^{tree}`. A lease
    marker written before Toimija named its tree algorithm lists as
-   `toimija-legacy`: its tree keeps the meaning it was written with. README,
-   "Repository points", has the details and the coming change (KATANA D9).
+   `toimija-legacy`, and one written before it named its token's version lists
+   as `token version unrecorded`: each keeps the meaning it was written with.
 
-The token is a transaction version, not a timestamp: verify tells you whether
-the world changed, snapshot gives you a world that cannot change. Either way,
+The token is a freshness check, not a timestamp and not an identity: verify
+tells you whether what `git status` lists has changed; a snapshot gives you a
+tree that cannot change, and a point gives that tree an id. Either way,
 nothing reads repo state on faith.
 
 ## Chain of custody — the sauma envelope
@@ -585,15 +597,19 @@ The packet includes:
 - warnings
 - on per-session packets, a **session** block — the session's id, declared
   intent and scope, freshly read at each refresh (so `run --intent` and
-  `toimija intent` reach wrapped harnesses), the entry branch and HEAD, and an
-  `execution` context carrying the session's repository point and changed
-  surface (Kelpo reads `session.execution.repository` to bind evidence to a
-  session); the point's tree is tree-identity.v1, named in
-  `session.execution.extensions.tree_algorithm`, and a packet without that
-  name predates it
-- a **consistency** block — a versioned `toimija-consistency-v2` freshness token
+  `toimija intent` reach wrapped harnesses), the entry branch and HEAD, and,
+  while the session runs, an `execution` context carrying the session's
+  repository point and changed surface (Kelpo reads
+  `session.execution.repository` to bind evidence to a session). An ended
+  session stands at no point: the last packet `run` writes for it, as it exits,
+  has a session block and no `execution`. The point's tree is tree-identity.v1,
+  named in `session.execution.extensions.tree_algorithm`, and its token's
+  version in `session.execution.extensions.consistency_algorithm`; a packet
+  without those names predates them
+- a **consistency** block — a versioned `toimija-consistency-v3` freshness token
   over HEAD, staged/index state, unstaged tracked state, untracked state,
-  conflict state, and unsafe Git operation state
+  conflict state, and unsafe Git operation state, leaving out what
+  tree-identity.v1 leaves out
 - a **refresh token** over the collected Git state — repository state only,
   never anything read from the observer's environment, so the same repo yields
   the same token from any process — used by `watch` and `verify`
@@ -652,12 +668,12 @@ toimija init               # create .toimija/repo.yaml if missing
 | `current --verify --json` | Joskus-facing structured verification command. |
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
 | `context` | Print the context packet without wrapping an agent. |
-| `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified — including `session_not_live` when the packet briefs a session that has closed or whose process is gone. `--json` includes the selected path, digest, and token. |
-| `snapshot` | Materialize the working tree as an immutable git tree object (its tree-identity.v1 tree, content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; a lease id is 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`, and anything else is refused before anything is touched; `--json` emits the snapshot record, with `tree_algorithm` beside the tree (`algorithm` stays the token's). Refuses in an unsafe git state, and when the worktree moves while the tree is written. |
+| `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified — including `session_not_live` when the packet briefs a session that has closed or whose process is gone. A packet whose token is of an earlier version is `not_comparable`: neither fresh nor stale; refresh it. `--json` includes the selected path, digest, and token. |
+| `snapshot` | Materialize the working tree as an immutable git tree object (its tree-identity.v1 tree, content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; a lease id is 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`, and anything else is refused before anything is touched; `--json` emits the snapshot record, with `tree_algorithm` beside the tree (`algorithm` stays the token's version); a lease records `token_algorithm`, and one taken by an earlier toimija lists as `token version unrecorded`. Refuses in an unsafe git state, and when the worktree moves while the tree is written. |
 | `audit-plan` | Derive deterministic, bounded audit surfaces from the committed Git tree; `--surface K` prints one contract-framed workset, and prior findings are read-only pointers to the latest committed `docs/audit/<date>/` directory. No plan or findings are written. |
 | `adopt` | Install the same marker-delimited Toimija preamble in every known entry file already present, creating `AGENTS.md` only when none exists; `--hooks` adds best-effort Git refresh hooks and creates/merges the repo-local `.claude/settings.json` SessionStart hook. |
 | `validate --plan` | Print the validation plan; never runs validation. |
-| `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`, its tree's algorithm in `extensions.tree_algorithm`; `--json` for tools. The token is re-read after the tree is written (one `git status`); a worktree that moved is read afresh after a short pause, up to three times in all, then refused. Tree and token are paired only within what the token observes (README, "Repository points"), `dirty: false` does not mean `tree == HEAD^{tree}`, and point ids compare only within one `tree_algorithm`. |
+| `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`, its tree's algorithm in `extensions.tree_algorithm`; `--json` for tools. The token is re-read after the tree is written (one `git status`); a worktree that moved is read afresh after a short pause, up to three times in all, then refused. The point id is `rpoint_v3_` and a SHA-256 over the repository, the token and its version, and the tree and its algorithm: equal ids mean equal trees, by construction. The token, named in `extensions.consistency_algorithm`, is a freshness check and does not see every change to the tree (README, "Repository points", "Known gaps"); `dirty: false` does not mean `tree == HEAD^{tree}`; ids of different versions are not comparable. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
 | `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` (which keeps Git away from the packet, sessions, history and temp files) if missing. |

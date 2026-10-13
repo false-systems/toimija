@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 use tracing::info;
 
 use crate::command::CommandRunner;
+use crate::consistency::CONSISTENCY_ALGORITHM;
 use crate::context::ContextPacket;
 
 /// The session's current repository point, as a `RepositoryPointEnvelope`.
@@ -24,6 +25,20 @@ pub const POINT_FILE: &str = "semantic-point.json";
 /// its tree algorithm, and its tree is the legacy one
 /// ([`crate::snapshot::LEGACY_TREE_ALGORITHM`]).
 pub const TREE_ALGORITHM_EXTENSION: &str = "tree_algorithm";
+
+/// The extension naming the version of an envelope's consistency token, which
+/// the protocol carries as a bare string. The token itself stays
+/// `sha256:<hex>`, the shape sauma's envelope schema requires of an anchor; its
+/// hash covers the version name. An envelope without this extension was
+/// written by an earlier toimija, and its token is of an earlier version.
+pub const CONSISTENCY_ALGORITHM_EXTENSION: &str = "consistency_algorithm";
+
+/// How every point id Toimija writes begins. The id is derived from the tree
+/// as well as the token ([`point_ref`]), and this marker says so. An id that
+/// is `rpoint_` and 64 hex digits, without it, was derived from the repository
+/// and the token alone, before KATANA D9: it keeps that meaning, and is never
+/// compared with one of these.
+pub const POINT_ID_PREFIX: &str = "rpoint_v3_";
 
 /// How many times a point is attempted, each from a fresh read of the
 /// repository, while the worktree keeps moving under the tree write. Then it is
@@ -72,13 +87,69 @@ fn retry_moved_with<T>(
     }
 }
 
-fn tree_extensions() -> Extensions {
+/// What an envelope carrying a point names beside it: the algorithm of its
+/// tree and the version of its token.
+fn point_extensions() -> Extensions {
     let mut extensions = Extensions::new();
     extensions.insert(
         TREE_ALGORITHM_EXTENSION.to_string(),
         serde_json::Value::String(crate::snapshot::TREE_ALGORITHM.id().to_string()),
     );
+    extensions.insert(
+        CONSISTENCY_ALGORITHM_EXTENSION.to_string(),
+        serde_json::Value::String(CONSISTENCY_ALGORITHM.to_string()),
+    );
     extensions
+}
+
+/// How two recorded identities compare. Within one version they are equal or
+/// different; across versions there is no answer, and none is invented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Comparison {
+    Equal,
+    Different,
+    NotComparable,
+}
+
+/// The version of a point id: [`POINT_ID_PREFIX`]'s, or the one before it
+/// (`rpoint_` and 64 hex digits, from the repository and the token alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointIdVersion {
+    Repository,
+    Tree,
+}
+
+fn point_id_version(id: &str) -> Option<PointIdVersion> {
+    let is_hex = |body: &str| {
+        body.len() == 64
+            && body
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    if let Some(body) = id.strip_prefix(POINT_ID_PREFIX) {
+        is_hex(body).then_some(PointIdVersion::Tree)
+    } else {
+        id.strip_prefix("rpoint_")
+            .filter(|body| is_hex(body))
+            .map(|_| PointIdVersion::Repository)
+    }
+}
+
+/// Compare two point ids. Ids of one version compare under that version's
+/// meaning; ids of two versions, or an id of no version this build knows, are
+/// [`Comparison::NotComparable`] — an old id is never read as if it were
+/// derived from a tree, and never declared different from a new one.
+pub fn compare_points(left: &str, right: &str) -> Comparison {
+    match (point_id_version(left), point_id_version(right)) {
+        (Some(a), Some(b)) if a == b => {
+            if left == right {
+                Comparison::Equal
+            } else {
+                Comparison::Different
+            }
+        }
+        _ => Comparison::NotComparable,
+    }
 }
 
 pub fn execution_context(
@@ -106,7 +177,7 @@ pub fn execution_context(
         work: None,
         workflow_status: None,
         context_digest: String::new(),
-        extensions: tree_extensions(),
+        extensions: point_extensions(),
     };
     envelope.seal().map_err(anyhow::Error::from)?;
     info!(
@@ -120,9 +191,11 @@ pub fn execution_context(
 }
 
 /// The repository point of the state `context` was compiled from: its token,
-/// and the tree-identity.v1 tree written from the worktree. The token is read
-/// again after the tree is written, so the two describe one state within what
-/// the token observes; if the worktree moved in between, this fails with
+/// and the tree-identity.v1 tree written from the worktree. Its id is derived
+/// from both ([`point_ref`]), so two points with one id hold one tree, whatever
+/// the token does not observe. The token is read again after the tree is
+/// written, so the two describe one state within what the token observes; if
+/// the worktree moved in between, this fails with
 /// [`crate::snapshot::WorktreeMoved`] and the caller rebuilds `context` and
 /// tries again ([`retry_moved`]).
 pub fn repository_point(
@@ -132,7 +205,13 @@ pub fn repository_point(
     let tree = crate::snapshot::tree_at_token(runner, &context.git, &context.consistency.token)
         .context("failed to materialize the authoritative repository point")?;
     let repository = repository_ref(&context.git.repo_root)?;
-    let id = point_ref(&repository, &context.consistency.token)?;
+    let id = point_ref(
+        &repository,
+        &context.consistency.algorithm,
+        &context.consistency.token,
+        crate::snapshot::TREE_ALGORITHM.id(),
+        &tree,
+    )?;
     Ok(RepositoryPoint {
         id,
         repository,
@@ -149,7 +228,7 @@ pub fn point_envelope(point: RepositoryPoint) -> RepositoryPointEnvelope {
     RepositoryPointEnvelope {
         protocol: ProtocolVersion::V1,
         repository: point,
-        extensions: tree_extensions(),
+        extensions: point_extensions(),
     }
 }
 
@@ -169,12 +248,32 @@ fn repository_ref(root: &Path) -> Result<RepositoryRef> {
     .map_err(anyhow::Error::from)
 }
 
-fn point_ref(repository: &RepositoryRef, consistency_token: &str) -> Result<RepositoryPointRef> {
-    RepositoryPointRef::parse(format!(
-        "rpoint_{:x}",
-        Sha256::digest(format!("{repository}\0{consistency_token}"))
-    ))
-    .map_err(anyhow::Error::from)
+/// A point's id: [`POINT_ID_PREFIX`], then a SHA-256 over everything that
+/// makes it this point — the repository, the consistency token and its
+/// algorithm, the tree and its algorithm — each field ended by a NUL, which
+/// none of them can contain. Equal ids therefore mean equal trees by
+/// construction, and ids of trees under different algorithms never meet.
+fn point_ref(
+    repository: &RepositoryRef,
+    consistency_algorithm: &str,
+    consistency_token: &str,
+    tree_algorithm: &str,
+    tree: &str,
+) -> Result<RepositoryPointRef> {
+    let mut digest = Sha256::new();
+    for field in [
+        POINT_ID_PREFIX,
+        repository.as_str(),
+        consistency_algorithm,
+        consistency_token,
+        tree_algorithm,
+        tree,
+    ] {
+        digest.update(field.as_bytes());
+        digest.update([0]);
+    }
+    RepositoryPointRef::parse(format!("{POINT_ID_PREFIX}{:x}", digest.finalize()))
+        .map_err(anyhow::Error::from)
 }
 
 fn now_timestamp() -> Timestamp {
@@ -255,25 +354,88 @@ mod tests {
     }
 
     #[test]
-    fn a_point_envelope_names_its_tree_algorithm() {
-        let extensions = tree_extensions();
+    fn a_point_envelope_names_its_tree_algorithm_and_token_version() {
+        let extensions = point_extensions();
         assert_eq!(
             extensions[TREE_ALGORITHM_EXTENSION],
             serde_json::Value::String("tree-identity.v1".to_string())
         );
+        assert_eq!(
+            extensions[CONSISTENCY_ALGORITHM_EXTENSION],
+            serde_json::Value::String("toimija-consistency-v3".to_string())
+        );
+    }
+
+    /// Old ids keep their meaning among themselves; new ids among
+    /// themselves; across the two, and for anything unrecognised, there is no
+    /// answer.
+    #[test]
+    fn point_ids_compare_only_within_their_version() {
+        let old = |digit: &str| format!("rpoint_{}", digit.repeat(64));
+        let new = |digit: &str| format!("{POINT_ID_PREFIX}{}", digit.repeat(64));
+        assert_eq!(compare_points(&new("a"), &new("a")), Comparison::Equal);
+        assert_eq!(compare_points(&new("a"), &new("b")), Comparison::Different);
+        assert_eq!(compare_points(&old("a"), &old("a")), Comparison::Equal);
+        assert_eq!(compare_points(&old("a"), &old("b")), Comparison::Different);
+        // The same digest under two versions is still not "equal".
+        assert_eq!(
+            compare_points(&old("a"), &new("a")),
+            Comparison::NotComparable
+        );
+        assert_eq!(
+            compare_points(&new("b"), &old("a")),
+            Comparison::NotComparable
+        );
+        for unknown in ["rpoint_01", "rpoint_v4_aa", "rpoint_v3_XYZ", ""] {
+            assert_eq!(
+                compare_points(unknown, unknown),
+                Comparison::NotComparable,
+                "{unknown}"
+            );
+        }
     }
 
     #[test]
     fn repository_and_point_refs_are_typed_and_deterministic() {
         let repository = repository_ref(Path::new(".")).unwrap();
         assert!(repository.as_str().starts_with("repo_"));
-        assert_eq!(
-            point_ref(&repository, "token").unwrap(),
-            point_ref(&repository, "token").unwrap()
-        );
+        let id = |token: &str, tree: &str| {
+            point_ref(&repository, "consistency", token, "tree-identity.v1", tree).unwrap()
+        };
+        assert_eq!(id("token", "tree"), id("token", "tree"));
+        assert_ne!(id("token", "tree"), id("other", "tree"));
+        assert!(id("token", "tree").as_str().starts_with(POINT_ID_PREFIX));
+    }
+
+    /// The id is a function of the tree: one token with two trees — every
+    /// case in issue #239 — is two points, and so is one tree under two
+    /// algorithms, or one token under two token algorithms.
+    #[test]
+    fn a_point_id_covers_its_tree_and_both_algorithms() {
+        let repository = repository_ref(Path::new(".")).unwrap();
+        let base = point_ref(&repository, "c", "token", "tree-identity.v1", "aaaa").unwrap();
+        for other in [
+            point_ref(&repository, "c", "token", "tree-identity.v1", "bbbb"),
+            point_ref(&repository, "c", "token", "toimija-legacy", "aaaa"),
+            point_ref(&repository, "c2", "token", "tree-identity.v1", "aaaa"),
+            point_ref(
+                &RepositoryRef::parse("repo_other").unwrap(),
+                "c",
+                "token",
+                "tree-identity.v1",
+                "aaaa",
+            ),
+        ] {
+            assert_ne!(base, other.unwrap());
+        }
+        // Fields are delimited: moving a byte across a boundary is another id.
         assert_ne!(
-            point_ref(&repository, "token").unwrap(),
-            point_ref(&repository, "other").unwrap()
+            point_ref(&repository, "c", "token", "tree-identity.v1a", "aaa").unwrap(),
+            base
         );
+        // 64 hex digits after the marker, inside the protocol's id limits.
+        let hex = base.as_str().strip_prefix(POINT_ID_PREFIX).unwrap();
+        assert_eq!(hex.len(), 64);
+        assert!(hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 }

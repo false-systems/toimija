@@ -10,8 +10,10 @@
 //! — snapshots, leases, repository points, session packets — is that one, and
 //! every record that carries a tree names the algorithm beside it.
 //!
-//! The tree oid is the **content address** of the snapshot; the consistency
-//! token is its **version**. Git's object database is the store — free dedup
+//! The tree oid is the **content address** of the snapshot, and its identity;
+//! the consistency token read beside it is a **freshness check**, which does
+//! not see every change to the tree (README, "Repository points"). Git's
+//! object database is the store — free dedup
 //! (unchanged subtrees share oids), free GC (`git gc` reclaims unreferenced
 //! objects), free diff/distribution.
 //!
@@ -50,12 +52,14 @@ fn legacy_tree_algorithm() -> String {
 }
 
 /// The worktree moved while its tree was being written: the token read before
-/// the write and the one read after it differ, so the tree and the first token
-/// would describe different states.
+/// the write and the one read after it differ. The tree may hold either state,
+/// or one in between, so it is paired with neither token. (The tree itself may
+/// not have moved at all: an index-only change moves the token and not the
+/// tree. What this knows is that the token moved, and it says only that.)
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "the worktree changed while the tree was being written, so the tree and the token would \
-     describe different states"
+    "the worktree changed while the tree was being written: the consistency token read after \
+     the write differs from the one read before, so which state the tree holds is unknown"
 )]
 pub struct WorktreeMoved;
 
@@ -168,6 +172,11 @@ pub struct SnapshotLease {
     #[serde(default = "legacy_tree_algorithm")]
     pub tree_algorithm: String,
     pub token: String,
+    /// The version of `token`. A marker written before Toimija recorded one
+    /// has none, and none is claimed for it: its token is of an earlier
+    /// version, whichever that toimija computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_algorithm: Option<String>,
     pub pid: u32,
     pub created_at: u64,
 }
@@ -222,6 +231,7 @@ pub fn acquire_lease(
         tree: tree.to_string(),
         tree_algorithm: TREE_ALGORITHM.id().to_string(),
         token: token.to_string(),
+        token_algorithm: Some(crate::consistency::CONSISTENCY_ALGORITHM.to_string()),
         pid: std::process::id(),
         created_at: now_secs(),
     };
@@ -422,16 +432,25 @@ mod tests {
         let lease: SnapshotLease = serde_json::from_str(old).unwrap();
         assert_eq!(lease.tree, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert_eq!(lease.tree_algorithm, LEGACY_TREE_ALGORITHM);
+        assert_eq!(lease.token, "sha256:abc");
+        assert_eq!(lease.token_algorithm, None, "no version is claimed for it");
         let again: SnapshotLease =
             serde_json::from_str(&serde_json::to_string(&lease).unwrap()).unwrap();
         assert_eq!(again, lease);
+        assert!(
+            !serde_json::to_string(&lease)
+                .unwrap()
+                .contains("token_algorithm")
+        );
 
         let new = SnapshotLease {
             tree_algorithm: TREE_ALGORITHM.id().to_string(),
+            token_algorithm: Some(crate::consistency::CONSISTENCY_ALGORITHM.to_string()),
             ..lease
         };
         let json = serde_json::to_value(&new).unwrap();
         assert_eq!(json["tree_algorithm"], "tree-identity.v1");
+        assert_eq!(json["token_algorithm"], "toimija-consistency-v3");
         assert_eq!(serde_json::from_value::<SnapshotLease>(json).unwrap(), new);
     }
 

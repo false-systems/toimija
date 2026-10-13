@@ -35,6 +35,9 @@ fn fixture(gitignore: &str) -> TempDir {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path();
     run_git(path, &["init", "-q"]);
+    // Named here, not left to the machine's `init.defaultBranch`: base
+    // discovery probes `main` before `master`, so the budget depends on it.
+    run_git(path, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     run_git(path, &["config", "user.email", "toimija@example.invalid"]);
     run_git(path, &["config", "user.name", "Toimija Test"]);
     write(path, ".gitignore", gitignore);
@@ -558,6 +561,39 @@ fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
             .iter()
             .any(|argv| head(&argv) || branch(&argv))
     );
+}
+
+/// The whole budget, exactly. A point's id is derived from the tree the point
+/// writes anyway (KATANA D9), so the id costs no git process: these are the
+/// counts from before the id covered the tree, unchanged. A change to either
+/// is a change to the budget, made here on purpose.
+///
+/// Positive controls first: the trace must see every step of the tree write
+/// once, and both reads of the token (before the write and after it), so a
+/// count that held only because the trace missed processes would fail.
+#[test]
+fn a_point_id_from_the_tree_costs_no_git_process() {
+    if !git_available() {
+        return;
+    }
+    for (args, budget) in [
+        (&["repository-point", "--json"][..], 22),
+        (&["snapshot", "--json"], 10),
+    ] {
+        let temp = fixture(IGNORE_RULES[1]);
+        let calls = git_processes(temp.path(), args);
+        let count = |name: &str| calls.iter().filter(|argv| verb(argv) == name).count();
+        for (step, times) in [
+            ("read-tree", 1),
+            ("add", 2),
+            ("rm", 1),
+            ("write-tree", 1),
+            ("status", 2),
+        ] {
+            assert_eq!(count(step), times, "{args:?} `{step}`: {calls:?}");
+        }
+        assert_eq!(calls.len(), budget, "{args:?}: {calls:#?}");
+    }
 }
 
 /// A session that has ended stands at no repository point: `run` removes the

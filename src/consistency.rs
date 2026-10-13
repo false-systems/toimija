@@ -1,15 +1,36 @@
 //! Packet consistency — a versioned freshness token over the Git state a packet
 //! was compiled from.
+//!
+//! The token is a freshness check, not an identity: it fingerprints what
+//! `git status` lists, and some changes to a State's tree never reach that list
+//! (issue #239). Identity belongs to the repository point, whose id is derived
+//! from the tree itself (`crate::semantic`).
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
+use faija_terms::TreeIdentityAlgorithm;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::git::{ChangeStatus, ChangedFile, GitState};
 
-pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v2";
+/// The token Toimija computes now. v3 leaves out exactly what
+/// tree-identity.v1 leaves out ([`LEAVES_OUT_AS`]); v2 watched `.sykli/`, so
+/// a gate writing receipts there moved the token while the tree held still.
+/// The token's own hash covers this name (see `token`), so tokens of two
+/// versions never coincide.
+pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v3";
+
+/// Token versions earlier toimijas wrote. A stored token of one of these
+/// keeps the meaning it was written with: it is never recomputed or compared
+/// as if it were [`CONSISTENCY_ALGORITHM`] ([`Verdict::NotComparable`]).
+pub const EARLIER_ALGORITHMS: &[&str] = &["toimija-consistency-v1", "toimija-consistency-v2"];
+
+/// The tree algorithm whose generated namespaces the token leaves out. Pinned
+/// to v1, never `TreeIdentityAlgorithm::CURRENT`: what a v3 token observes is
+/// fixed with v3, and a later tree algorithm is a later token version.
+const LEAVES_OUT_AS: TreeIdentityAlgorithm = TreeIdentityAlgorithm::V1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Consistency {
@@ -58,8 +79,28 @@ pub enum Verdict {
         packet_token: String,
         current_token: String,
     },
+    /// The stored token is of an earlier version this toimija once wrote
+    /// ([`EARLIER_ALGORITHMS`]). It keeps that version's meaning, and is never
+    /// recomputed or read as the current one, so it is neither equal to nor
+    /// different from the live token: the two are not comparable.
+    NotComparable(String),
+    /// The stored token names an algorithm no toimija this build knows wrote.
     UnsupportedConsistencyAlgorithm(String),
     UnsafeGitOperation(GitOperationState),
+}
+
+/// Whether a stored token's algorithm can be compared with the token computed
+/// now, and if not, why not.
+pub fn comparability(algorithm: &str) -> Option<Verdict> {
+    if algorithm == CONSISTENCY_ALGORITHM {
+        None
+    } else if EARLIER_ALGORITHMS.contains(&algorithm) {
+        Some(Verdict::NotComparable(algorithm.to_string()))
+    } else {
+        Some(Verdict::UnsupportedConsistencyAlgorithm(
+            algorithm.to_string(),
+        ))
+    }
 }
 
 impl Consistency {
@@ -96,8 +137,8 @@ impl Consistency {
     }
 
     pub fn verify(&self, live: &GitState) -> Verdict {
-        if self.algorithm != CONSISTENCY_ALGORITHM {
-            return Verdict::UnsupportedConsistencyAlgorithm(self.algorithm.clone());
+        if let Some(refusal) = comparability(&self.algorithm) {
+            return refusal;
         }
         let fresh = Consistency::fingerprint(live);
         if fresh.git_operation != GitOperationState::None || fresh.conflict_state.has_conflicts {
@@ -293,16 +334,31 @@ fn status(status: &ChangeStatus) -> String {
     }
 }
 
-/// Whether a repo-relative path is generated local tool state. Toimija output
-/// and standalone Teko's `.teko/` database cannot count as product changes.
-/// The tracked `.toimija/repo.yaml` manifest remains real repository input.
+/// The namespaces whose content the token leaves out, apart from the
+/// configuration forced in: tree-identity.v1's frozen list.
+pub(crate) fn generated_namespaces() -> &'static [&'static str] {
+    LEAVES_OUT_AS.namespaces()
+}
+
+/// Whether a repo-relative path is generated tool state the token leaves out:
+/// a path under one of tree-identity.v1's frozen namespaces (`.toimija`,
+/// `.teko`, `.sykli`), unless it is configuration v1 forces in
+/// (`.toimija/repo.yaml`). Exactly what the tree leaves out, read from the
+/// vendored faija-terms rather than listed again here ([`LEAVES_OUT_AS`]), so
+/// a refresh, a session, a snapshot or a gate's receipt never moves the token
+/// while the tree holds still.
 pub(crate) fn is_generated_output(path: &Path) -> bool {
-    let mut components = path.components().map(|c| c.as_os_str().to_str());
-    match components.next() {
-        Some(Some(".teko")) => true,
-        Some(Some(".toimija")) => components.next() != Some(Some("repo.yaml")),
-        _ => false,
-    }
+    let Some(Component::Normal(first)) = path.components().next() else {
+        return false;
+    };
+    LEAVES_OUT_AS
+        .namespaces()
+        .iter()
+        .any(|namespace| first == *namespace)
+        && !LEAVES_OUT_AS
+            .config_paths()
+            .iter()
+            .any(|config| path == Path::new(config))
 }
 
 fn stable_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -475,6 +531,61 @@ mod tests {
             .push(PathBuf::from(".toimija/anything/tool-output.json"));
         live.untracked_files.push(PathBuf::from(".teko/teko.redb"));
         assert!(matches!(stored.verify(&live), Verdict::Consistent));
+    }
+
+    /// The token leaves out exactly what faija's tree-identity.v1 leaves out:
+    /// its frozen namespaces, minus the configuration it forces in. Read from
+    /// the vendored faija-terms, so there is no second list to drift; pinned
+    /// to v1, not `CURRENT`, so a later tree algorithm cannot change what a
+    /// `toimija-consistency-v3` token means.
+    #[test]
+    fn the_token_leaves_out_exactly_what_tree_identity_v1_leaves_out() {
+        let v1 = faija_terms::TreeIdentityAlgorithm::V1;
+        assert_eq!(v1.namespaces(), [".toimija", ".teko", ".sykli"]);
+        for namespace in v1.namespaces() {
+            for path in ["", "receipt.json", "runs/r1/journal"] {
+                let path = Path::new(namespace).join(path);
+                assert!(is_generated_output(&path), "{}", path.display());
+            }
+        }
+        for config in v1.config_paths() {
+            assert!(!is_generated_output(Path::new(config)), "{config}");
+        }
+        // Work content, including look-alikes the tree keeps too.
+        for work in [
+            "src/main.rs",
+            "x/.sykli/receipt.json",
+            ".sykli-notes/a",
+            "sykli/a",
+            ".SYKLI/a",
+            ".toimija-x/a",
+        ] {
+            assert!(!is_generated_output(Path::new(work)), "{work}");
+        }
+    }
+
+    /// A gate writes its receipt into `.sykli/`, which the tree leaves out:
+    /// whether git can see the receipt or not, the packet stays fresh.
+    #[test]
+    fn sykli_output_does_not_make_a_packet_stale() {
+        let stored = Consistency::fingerprint(&git_state());
+        let mut live = git_state();
+        live.untracked_files
+            .push(PathBuf::from(".sykli/receipt.json"));
+        live.untracked_files
+            .push(PathBuf::from(".sykli/runs/r1/journal"));
+        live.unstaged_files.push(ChangedFile {
+            path: PathBuf::from(".sykli/tracked.json"),
+            status: ChangeStatus::Modified,
+            index_entry: None,
+            original_path: None,
+            similarity: None,
+        });
+        assert!(matches!(stored.verify(&live), Verdict::Consistent));
+        assert_eq!(
+            crate::context::refresh_token(&live),
+            crate::context::refresh_token(&git_state())
+        );
     }
 
     #[test]

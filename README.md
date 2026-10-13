@@ -175,8 +175,8 @@ toimija run --intent unknown -- codex --help
 ## Repository points
 
 A repository point names one exact state of the repository: the worktree
-materialized as a Git tree, paired with Toimija's content-based consistency
-token.
+materialized as a Git tree, with Toimija's content-based consistency token
+beside it.
 
 ```bash
 toimija -q repository-point --json
@@ -185,55 +185,92 @@ toimija -q repository-point --json
 The output is a
 [`false-agent-protocol`](https://github.com/false-systems/false-agent-protocol)
 v1 `RepositoryPointEnvelope`: repository ref, point ref, tree OID, consistency
-token, branch, and dirty flag. Inside a `run` session the same point is
-available at `$FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the sealed session
-packet carries it as `session.execution.repository`.
+token, branch, and dirty flag. `extensions.tree_algorithm` names the tree's
+algorithm and `extensions.consistency_algorithm` the token's version. Inside a
+`run` session the same point is available at
+`$FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the sealed session packet carries it
+as `session.execution.repository`.
 
 The tree is faija's **tree-identity.v1**, the identity of a working State:
 every tracked and untracked non-ignored path, without the generated namespaces
 `.toimija/`, `.teko/` and `.sykli/`, with `.toimija/repo.yaml` forced in even
 when ignored. Toimija runs faija's canonical procedure from a vendored copy of
 `faija-terms` (`vendor/faija-terms.contract`) and keeps no tree algorithm of its
-own. Every envelope names it in `extensions.tree_algorithm`; an envelope or
-snapshot lease without that name was written before, and its tree is the
-legacy one (`toimija-legacy`), never reinterpreted.
+own. An envelope or snapshot lease that does not name the algorithm was written
+before, and its tree is the legacy one (`toimija-legacy`), never reinterpreted.
 
-The tree and the token are paired **within what the token observes**. The
-token is read again after the tree is written (one `git status`). If it moved,
-the point is read afresh, after a short pause, up to three times in all, and
-then refused. A change the token observes is therefore never printed as a
-tree from after it beside a token from before it.
+### What a point guarantees
 
-The token does not observe everything the tree contains. Within what it does
-observe, equal tokens mean equal trees. Outside it, two points with one token,
-and so one point id, can hold different trees:
+**Equal points mean equal trees, by construction.** The point id is
+`rpoint_v3_` followed by the SHA-256 of six fields, each ended by a NUL byte:
+the marker `rpoint_v3_`, the repository ref, the token's version, the token, the
+tree's algorithm, and the tree. Two points with one id hold one tree, whatever
+the token did or did not see. The reverse does not hold: two points can share a
+tree and differ in HEAD, the index or the branch. Deriving the id costs no git
+process, because the point writes its tree anyway.
 
-- an ignored, untracked `.toimija/repo.yaml`: the tree forces it in, and
-  `git status` never lists it;
-- new commits inside a submodule, because the token sees a gitlink as a
-  directory, never its commit; and commits inside a nested repository;
-- files marked `assume-unchanged` or `skip-worktree`;
-- an edit the stat cache misses, for example a same-size edit with the mtime
-  restored under `core.checkStat=minimal` and `core.trustctime=false`;
-- a sparse checkout, which keeps namespace content outside the cone in the
-  tree, so a sparse and a full checkout of one commit can differ;
-- a change undone before the token is read again (A → B → A).
+**The token is a freshness check, not an identity.** It fingerprints, by
+content, what `git status` lists: HEAD, the index, the worktree, untracked
+files, conflicts and in-progress operations. It is what `verify` compares.
+Equal tokens do not mean equal trees. The token leaves out exactly what
+tree-identity.v1 leaves out (`.toimija/`, `.teko/` and `.sykli/`, but not
+`.toimija/repo.yaml`), so a gate writing receipts into a `.sykli/` that git can
+see moves neither the tree nor the token.
+
+The token is read again after the tree is written (one `git status`). If it
+moved, the point is read afresh, after a short pause, up to three times in all,
+and then refused. A move the token observes is never paired across.
 
 `dirty: false` means `git status` reported nothing. It does not mean the tree
-equals `HEAD^{tree}`: several of the cases above print `dirty: false` with a
+equals `HEAD^{tree}`. Several of the cases below print `dirty: false` with a
 tree that differs from HEAD's.
 
-Point ids compare only within one `tree_algorithm`. The id is derived from the
-repository and the token alone, so across the move to tree-identity.v1 one
-token named a legacy tree and then a v1 tree.
+### Known gaps
 
-The token also watches `.sykli/` where git can see it, though the tree leaves
-it out. A gate writing receipts into a visible `.sykli/` can therefore make a
-point refuse while the tree holds still.
+Each of these changes the tree and not the token (issue #239;
+`tests/cli_point_identity.rs` has one test per row). For **point identity**,
+each is closed by construction: the state before and the state after get two
+point ids. For **freshness**, each remains a blind spot of the token: after the
+change, `verify` still passes the packet, and a held point still looks current.
 
-A follow-up (KATANA D9) changes both: the point id will be derived from the
-repository, the token, the tree algorithm and the tree, so that equal points
-mean equal trees by construction, and the token will stop watching `.sykli/`.
+| # | Change | Point ids | Token |
+| --- | --- | --- | --- |
+| 1 | Edit an ignored, untracked `.toimija/repo.yaml`, which the tree forces in | differ | blind |
+| 1b | Create that file | differ | blind |
+| 2 | Commit again inside a submodule that is already ahead; the token sees a gitlink as a directory | differ | blind |
+| 3 | Commit inside a nested, untracked repository | differ | blind |
+| 4 | Edit a file marked `assume-unchanged` | differ | blind |
+| 5 | Edit a file marked `skip-worktree` | differ | blind |
+| 6 | A same-size edit with the mtime put back, under `core.checkStat=minimal` and `core.trustctime=false` | differ | blind |
+| 7 | One commit in a sparse and in a full checkout; the sparse tree keeps namespace content outside the cone | differ | blind |
+| A→B→A | A change made and undone while the tree is written | the point names the tree it wrote (B), and its id is not the settled point's (A) | blind: the re-read sees A, so the B point looks current |
+
+Three edge cases belong to tree-identity.v1 itself, and are raised with faija
+(KATANA, Stage 8): an ignored `.toimija/repo.yaml` outside a sparse cone and a
+symlinked `.toimija/` both make the tree write fail, and "non-ignored" depends
+on each machine's global ignore file, so one content can have two v1 trees on
+two machines.
+
+### Versions
+
+Points and tokens carry their version. The token is `toimija-consistency-v3`
+(KATANA D9), and point ids begin `rpoint_v3_`. Earlier ids (`rpoint_` and 64
+hex digits, derived from the repository and the token alone) and earlier tokens
+(`toimija-consistency-v2` and `-v1`) keep the meaning they were written with.
+They are never recomputed or relabelled, and a comparison across versions says
+**not comparable**, never "equal" or "different":
+
+- `verify` on a packet from an earlier toimija reports `not_comparable`, and
+  `toimija refresh` replaces the packet;
+- a cycle leg that is live at a point id of an earlier version refuses a second
+  launch of the same leg, and says the two points are not comparable;
+- snapshot leases and handoff records name their token's version
+  (`token_algorithm`, `consistency_algorithm`). One written earlier names none,
+  and none is claimed for it.
+
+The token keeps its `sha256:<hex>` shape, which sauma's envelope schema
+requires of an anchor. Its hash covers the version name, so tokens of two
+versions never coincide.
 
 ## The live packet
 
@@ -273,8 +310,8 @@ A packet combines:
 - repository boundaries, exclusions, and validation plans;
 - session identity, entry baseline, declared intent, scope, and the session's
   repository point;
-- a content-based Git consistency token and a refresh token over the collected
-  Git state;
+- a content-based Git consistency token (a freshness check, versioned in
+  `consistency.algorithm`) and a refresh token over the collected Git state;
 - a Sauma provenance envelope.
 
 Every packet carries a workset contract:
@@ -295,8 +332,11 @@ toimija verify
 ```
 
 `verify` recomputes live Git state and checks the packet's content-based token.
-Same-size edits, index changes, conflicts, and unsafe Git operations cannot hide
-behind timestamps. Sauma envelopes must be v1 or v2; unknown versions are
+Among the paths `git status` lists, same-size edits, index changes, conflicts,
+and unsafe Git operations cannot hide behind timestamps; what `git status` does
+not list, the token does not see ("Repository points", "Known gaps"). A packet
+whose token is of an earlier version is `not_comparable`, never fresh or stale;
+refresh it. Sauma envelopes must be v1 or v2; unknown versions are
 rejected instead of being interpreted as legacy body-only seals, and packets
 with no envelope are refused. The envelope schema and anchor must match the
 packet schema and consistency token.

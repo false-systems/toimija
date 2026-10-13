@@ -40,7 +40,7 @@ A successful response includes the selected `packet_path`, consistency
 {
   "status": "verified",
   "packet_path": "/repo/.toimija/sessions/123-456/current.json",
-  "algorithm": "toimija-consistency-v2",
+  "algorithm": "toimija-consistency-v3",
   "token": "sha256:...",
   "artifact_digest": "sha256:..."
 }
@@ -51,6 +51,8 @@ Any non-zero result is a refusal to trust the packet. Stable status values are:
 - `missing_packet`
 - `invalid_packet`
 - `missing_consistency`
+- `not_comparable` (the packet's token is of an earlier version: neither fresh
+  nor stale; refresh it)
 - `unsupported_consistency_algorithm`
 - `stale_packet`
 - `sauma_digest_mismatch`
@@ -70,15 +72,18 @@ The packet includes:
 - changed surface, compiled workset, read order, configured boundaries, and
   validation plan;
 - collection coverage and evidence-backed relevance hints;
-- a `toimija-consistency-v2` token over the current Git work state;
+- a `toimija-consistency-v3` token over the current Git work state;
 - a sauma envelope binding the artifact to its provenance;
 - on session packets, session identity, declared intent and scope, fixed entry
   branch/HEAD, drift, and an execution context carrying the session's
   repository point (`session.execution.repository`).
 
 The consistency token is content-based. File mtimes do not affect it; same-size
-content changes do. Generated state under `.toimija/` and `.teko/` is excluded,
-except `.toimija/repo.yaml`, which is repository policy.
+content changes that `git status` lists do. Generated state under `.toimija/`,
+`.teko/` and `.sykli/` is excluded, except `.toimija/repo.yaml`, which is
+repository policy: exactly what tree-identity.v1 excludes. The token is a
+freshness check, not an identity; a repository point's id is derived from its
+tree, so equal point ids mean equal trees (README, "Repository points").
 
 Coverage values mean:
 

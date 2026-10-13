@@ -607,9 +607,11 @@ fn is_generated_output(path: &Path) -> bool {
             _ => None,
         })
         .collect();
+    // notify reports absolute paths: find where the repository-relative part
+    // could begin, then ask the token's own rule about it.
     parts
         .iter()
-        .position(|part| matches!(*part, ".toimija" | ".teko"))
+        .position(|part| consistency::generated_namespaces().contains(part))
         .is_some_and(|index| consistency::is_generated_output(&PathBuf::from_iter(&parts[index..])))
 }
 
@@ -990,6 +992,9 @@ mod tests {
         assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.md")));
         assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.json")));
         assert!(is_ignored(&PathBuf::from("/repo/.teko/teko.redb")));
+        // A gate's receipts: generated state the token no longer watches.
+        assert!(is_ignored(&PathBuf::from("/repo/.sykli/receipt.json")));
+        assert!(is_ignored(&PathBuf::from("/repo/.sykli/runs/r1/journal")));
         // repo.yaml under .toimija is NOT a live file — changes to it matter.
         assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
     }

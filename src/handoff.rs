@@ -55,6 +55,10 @@ pub struct HandoffRecord {
     pub risk: Vec<String>,
     pub risk_total: usize,
     pub consistency_token: String,
+    /// The version of `consistency_token`. A record written before Toimija
+    /// recorded one has none, and none is claimed for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consistency_algorithm: Option<String>,
     pub next_step: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sauma: Option<SaumaEnvelope>,
@@ -242,6 +246,7 @@ impl HandoffRecord {
             risk,
             risk_total,
             consistency_token: packet.consistency.token.clone(),
+            consistency_algorithm: Some(packet.consistency.algorithm.clone()),
             next_step,
             sauma: None,
         };
