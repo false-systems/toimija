@@ -1,6 +1,5 @@
 use std::fmt::Write;
 
-use crate::audit_plan::{AuditPlan, AuditSurface};
 use crate::config::InitReport;
 use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
@@ -511,77 +510,6 @@ fn append_optional_sections(
     .unwrap();
 }
 
-pub fn render_audit_plan(plan: &AuditPlan, budget: usize, surface: Option<usize>) -> String {
-    let mut output = String::new();
-    if let Some(index) = surface {
-        let selected = &plan.surfaces[index - 1];
-        writeln!(
-            &mut output,
-            "# Toimija Audit Surface {index}/{}",
-            plan.surfaces.len()
-        )
-        .unwrap();
-        writeln!(
-            &mut output,
-            "- HEAD: {}",
-            plan.head.as_deref().unwrap_or("unavailable")
-        )
-        .unwrap();
-        writeln!(&mut output, "- consistency: {}", plan.consistency).unwrap();
-        write_workset_contract(&mut output);
-        write_audit_surface(&mut output, selected);
-        write_prior_findings(&mut output, plan);
-        output.push_str(&render_validation_plan(&plan.validation_plan));
-        write_h2(&mut output, "Warnings");
-        write_str_list(&mut output, &plan.warnings, "none");
-        let mandatory_end = mandatory_surface_end(&output);
-        return truncate_to_budget(output, budget, mandatory_end);
-    }
-
-    writeln!(&mut output, "# Toimija Audit Plan").unwrap();
-    writeln!(
-        &mut output,
-        "- HEAD: {}",
-        plan.head.as_deref().unwrap_or("unavailable")
-    )
-    .unwrap();
-    writeln!(&mut output, "- consistency: {}", plan.consistency).unwrap();
-    write_h2(&mut output, "Surfaces");
-    for (index, surface) in plan.surfaces.iter().enumerate() {
-        let areas = surface
-            .areas
-            .iter()
-            .map(|area| area.label.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let findings = plan
-            .findings_root
-            .as_ref()
-            .map_or_else(|| "none".to_string(), |path| path.display().to_string());
-        writeln!(
-            &mut output,
-            "surface {}/{} — {} — ~files: {} — churn: {} — findings: {findings}",
-            index + 1,
-            plan.surfaces.len(),
-            areas,
-            surface.files,
-            surface.churn
-        )
-        .unwrap();
-    }
-    writeln!(
-        &mut output,
-        "\nRequest one workset: `toimija audit-plan --surface K`"
-    )
-    .unwrap();
-    if let Some(path) = &plan.findings_root {
-        writeln!(&mut output, "Prior findings: {}", path.display()).unwrap();
-    } else {
-        writeln!(&mut output, "Prior findings: none").unwrap();
-    }
-    truncate_to_budget(output, budget, 0)
-}
-
 fn write_workset_contract(output: &mut String) {
     write_h2(output, "Workset contract");
     writeln!(
@@ -595,48 +523,6 @@ fn write_workset_contract(output: &mut String) {
          visible output). Expansion is never forbidden; invisible expansion is."
     )
     .unwrap();
-}
-
-fn write_audit_surface(output: &mut String, surface: &AuditSurface) {
-    write_h2(output, "Surface");
-    writeln!(
-        output,
-        "- boundary: everything outside this surface belongs to another pass"
-    )
-    .unwrap();
-    writeln!(output, "- files: {}", surface.files).unwrap();
-    writeln!(
-        output,
-        "- churn: {} (last 200 non-merge commits)",
-        surface.churn
-    )
-    .unwrap();
-    for area in &surface.areas {
-        writeln!(
-            output,
-            "- {} — {} files — {} churn",
-            area.label, area.files, area.churn
-        )
-        .unwrap();
-    }
-}
-
-fn write_prior_findings(output: &mut String, plan: &AuditPlan) {
-    write_h2(output, "Prior findings");
-    if plan.prior_findings.is_empty() {
-        writeln!(output, "- none").unwrap();
-    } else {
-        writeln!(
-            output,
-            "Read these before re-deriving anything they already conclude:"
-        )
-        .unwrap();
-        write_path_list(output, &plan.prior_findings, "none");
-    }
-}
-
-fn mandatory_surface_end(output: &str) -> usize {
-    output.find("\n## Prior findings").unwrap_or(output.len())
 }
 
 /// Render the Coupling section: companions that are absent from the current
@@ -960,34 +846,6 @@ fn relevance_evidence_label(source: RelevanceSource, evidence: &HintEvidence) ->
         evidence.support,
         evidence.observations
     )
-}
-
-pub(crate) fn truncate_to_budget(
-    mut output: String,
-    budget: usize,
-    mandatory_end: usize,
-) -> String {
-    if output.len() <= budget {
-        return output;
-    }
-    let marker = "\n\nOutput truncated to fit approximate budget.\n";
-    let keep = budget.saturating_sub(marker.len());
-    // Cut on a line boundary at or before `keep`, never mid-line: a half-path
-    // fragment reads like a real file to an agent, and a cut inside a multi-byte
-    // char (—, ↔) would panic in String::truncate. '\n' is a single byte that
-    // never appears inside a multi-byte UTF-8 sequence, so scanning raw bytes is
-    // safe and the resulting index is always a char boundary.
-    // Keep the complete mandatory prefix even when the caller's budget is too
-    // small to include it. The budget is approximate by design; dropping the
-    // contract would make the packet contradict its own output guarantee.
-    let upper = keep.max(mandatory_end).min(output.len());
-    let cut = output.as_bytes()[..upper]
-        .iter()
-        .rposition(|&byte| byte == b'\n')
-        .map_or(0, |index| index + 1);
-    output.truncate(cut);
-    output.push_str(marker);
-    output
 }
 
 fn source_label(source: &ValidationSource) -> &'static str {
@@ -1316,21 +1174,6 @@ mod tests {
         assert!(rendered.contains("invisible expansion is."));
         assert!(!rendered.contains("## Budget omissions"));
         assert!(!rendered.contains("Output truncated"));
-    }
-
-    #[test]
-    fn budget_truncation_cuts_on_line_boundary_without_splitting_chars() {
-        const MARKER: &str = "\n\nOutput truncated to fit approximate budget.\n";
-        let output = "surface 1/2 — src\nsurface 2/2 — docs\n".repeat(20);
-        for budget in 0..output.len() {
-            let rendered = truncate_to_budget(output.clone(), budget, 0);
-            if let Some(kept) = rendered.strip_suffix(MARKER) {
-                assert!(
-                    kept.is_empty() || kept.ends_with('\n'),
-                    "kept content must end on a line boundary at budget {budget}"
-                );
-            }
-        }
     }
 
     #[test]

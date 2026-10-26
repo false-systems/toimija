@@ -6,7 +6,6 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing::{info, info_span, warn};
 
 use crate::adoption;
-use crate::audit_plan;
 use crate::command::{CommandRunner, ProcessCommandRunner};
 use crate::config::{self, RepoConfig};
 use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency, GitOperationState, Verdict};
@@ -219,15 +218,6 @@ pub enum Command {
         toimija sessions --outside-repos   # sessions opened outside any repository"
     )]
     Sessions(SessionsArgs),
-    /// [experimental] Partition the committed repository tree into bounded audit worksets.
-    ///
-    /// Use this for breadth-scoped audits. Read-only and deterministic: it derives surfaces from Git state and
-    /// points at committed prior findings without writing plans or findings.
-    #[command(
-        after_help = "Examples:\n  toimija audit-plan                         # list all surfaces\n  \
-        toimija audit-plan --surface 3 --budget 4000   # print one workset packet"
-    )]
-    AuditPlan(AuditPlanArgs),
     /// Print the validation plan. Does not run any commands.
     ///
     /// Use this to see what the repo considers its fast/strict/full validation
@@ -389,19 +379,6 @@ pub struct SessionsArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct AuditPlanArgs {
-    /// Number of surfaces; defaults to a Git-derived count capped at eight.
-    #[arg(long)]
-    pub surfaces: Option<usize>,
-    /// Print one 1-based surface workset instead of the summary.
-    #[arg(long, value_name = "K")]
-    pub surface: Option<usize>,
-    /// Approximate output cap in UTF-8 bytes; optional sections are omitted atomically.
-    #[arg(long)]
-    pub budget: Option<usize>,
-}
-
-#[derive(Debug, Args)]
 pub struct VerifyArgs {
     /// Emit the verdict as JSON: `{ "status": "verified", "packet_path", "token",
     /// "artifact_digest", ... }`, or on failure a non-`verified` status
@@ -515,7 +492,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Snippet(args) => run_snippet(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
-        Command::AuditPlan(args) => run_audit_plan(args).map(|()| 0),
         Command::Validate(args) => run_validate(args).map(|()| 0),
         Command::Verify(args) => run_verify(args),
         Command::RepositoryPoint(args) => run_repository_point(args).map(|()| 0),
@@ -620,7 +596,6 @@ impl Command {
             Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Sessions(_) => "sessions",
-            Command::AuditPlan(_) => "audit-plan",
             Command::Validate(_) => "validate",
             Command::Verify(_) => "verify",
             Command::RepositoryPoint(_) => "repository-point",
@@ -2627,30 +2602,6 @@ fn sweep_options(config: &RepoConfig, dry_run: bool) -> footprint::SweepOptions 
         runs_retention_secs: config.stewardship.runs_retention_days * config::DAY_SECS,
         history_max_records: config.stewardship.history_max_records,
     }
-}
-
-fn run_audit_plan(args: AuditPlanArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let plan =
-        audit_plan::build(&runner, &cwd, args.surfaces).context("failed to build audit plan")?;
-    if let Some(surface) = args.surface
-        && (surface == 0 || surface > plan.surfaces.len())
-    {
-        anyhow::bail!(
-            "surface {surface} is out of range; valid range is 1..={}",
-            plan.surfaces.len()
-        );
-    }
-    let budget = args.budget.unwrap_or(plan.default_budget);
-    info!(
-        event = "toimija.audit_plan.rendered",
-        surfaces = plan.surfaces.len(),
-        surface = args.surface.unwrap_or(0),
-        findings = plan.prior_findings.len()
-    );
-    println!("{}", render::render_audit_plan(&plan, budget, args.surface));
-    Ok(())
 }
 
 fn run_intent(args: IntentArgs) -> Result<()> {
