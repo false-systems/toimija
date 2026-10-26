@@ -19,10 +19,11 @@
 //! - **Work-tree changes** arrive as filesystem events — FSEvents on macOS,
 //!   inotify on Linux — and refresh after a debounce. Read-only access events
 //!   are dropped, so a refresh's own reads never re-trigger it. Events under a
-//!   build directory at the root (`target/`, `_build/`, `deps/`,
-//!   `node_modules/`) prompt one `git status` instead of a refresh: untracked
-//!   build output changes nothing, while a tracked file there shows as
-//!   modified. A tracked path is never ignored.
+//!   directory with a build name (`target/`, `_build/`, `deps/`,
+//!   `node_modules/`), at the root or deeper (`packages/a/node_modules/`),
+//!   prompt one `git status` instead of a refresh: untracked build output
+//!   changes nothing, while a tracked file there shows as modified. A tracked
+//!   path is never ignored.
 //! - **Git's own state** is a `Stamp`: the metadata of HEAD, the index, the
 //!   operation markers, the refs (files or reftable, the worktree's own too),
 //!   packed-refs and config, read with `stat` alone. A moved ref or config
@@ -72,9 +73,9 @@ const SAFETY_NET_INTERVAL: Duration = Duration::from_secs(60);
 /// The first retry of a failed refresh; each later one waits twice as long, up
 /// to [`SAFETY_NET_INTERVAL`].
 const RETRY_FIRST: Duration = Duration::from_millis(500);
-/// Build-output directories at the repository root. Their churn is checked with
-/// one `git status`, never refreshed on directly, and never ignored outright: a
-/// tracked file in one is still source.
+/// Build-output directory names, matched at any depth below the root. Their
+/// churn is checked with one `git status`, never refreshed on directly, and
+/// never ignored outright: a tracked file in one is still source.
 const BUILD_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
 /// The readiness probe's file name, in the repository root: see [`prove_ready`].
 const PROBE_PREFIX: &str = "toimija-watch-probe-";
@@ -378,8 +379,8 @@ enum Change {
     Ignored,
     /// Inside `.git/`: check the [`Stamp`], which decides.
     Git,
-    /// A build directory at the root: check the stamp and one `git status`,
-    /// which shows a tracked file there as modified.
+    /// Under a build-named directory, at any depth: check the stamp and one
+    /// `git status`, which shows a tracked file there as modified.
     Build,
     /// The work tree: refresh.
     Tree,
@@ -1119,7 +1120,7 @@ struct Check {
     /// The safety net is due: compare one `git status` and the changed files'
     /// contents with the packet.
     safety_net: bool,
-    /// Something moved in a build directory at the root: the same comparison,
+    /// Something moved under a build-named directory: the same comparison,
     /// which shows a tracked file there as modified.
     build: bool,
 }
@@ -1188,10 +1189,17 @@ fn is_ignored(relative: &Path) -> bool {
         || first_component(relative).is_some_and(|name| name.starts_with(PROBE_PREFIX))
 }
 
-/// Whether a path relative to the repository root lies in a build directory
-/// at the root. Only there: `lib/deps/` is source.
+/// Whether a path relative to the repository root lies under a directory with
+/// a build name, at any depth: a monorepo's `packages/a/node_modules/` churns
+/// as a root `target/` does. The name must be a whole component
+/// (`src/targeted.rs` is source). Such a path is checked, never ignored: the
+/// check's `git status` and content token show a tracked file there
+/// (`lib/deps/x.ex`, say) as modified, and refresh for it.
 fn is_build_output(relative: &Path) -> bool {
-    first_component(relative).is_some_and(|name| BUILD_DIRS.contains(&name))
+    relative.components().any(|component| match component {
+        Component::Normal(name) => name.to_str().is_some_and(|name| BUILD_DIRS.contains(&name)),
+        _ => false,
+    })
 }
 
 /// Toimija's own Git writes must not refresh the packet that caused them.
@@ -2163,23 +2171,31 @@ mod tests {
     }
 
     #[test]
-    fn build_output_at_the_root_is_checked_and_nested_build_names_are_source() {
-        // A tracked file is never ignored. Build output at the root costs one
-        // `git status`, which shows a tracked file there as modified; a
-        // directory of the same name anywhere else is ordinary source.
+    fn build_names_at_any_depth_are_checked_and_never_ignored() {
+        // A tracked file is never ignored. A directory with a build name, at
+        // the root or below it (a monorepo's `packages/a/node_modules`),
+        // costs one `git status`, which shows a tracked file there as
+        // modified and untracked build output as nothing.
         let repo = repo_at("/repo");
         for build in [
             "/repo/target/debug/foo",
             "/repo/_build/dev/app.beam",
             "/repo/deps/plug/mix.exs",
             "/repo/node_modules/x.js",
+            "/repo/packages/a/node_modules/x.js",
+            "/repo/packages/a/node_modules",
+            "/repo/apps/web/_build/dev/app.beam",
+            "/repo/crates/core/target/debug/foo",
+            "/repo/lib/deps/x.rs",
         ] {
             assert_eq!(repo.classify(Path::new(build)), Change::Build, "{build}");
         }
+        // Only a whole name is a build name.
         for source in [
-            "/repo/lib/deps/x.rs",
-            "/repo/apps/web/node_modules/x.js",
-            "/repo/src/target/mod.rs",
+            "/repo/src/targeted.rs",
+            "/repo/src/target.rs",
+            "/repo/lib/deps_helper/x.ex",
+            "/repo/packages/node_modules_shim/x.js",
         ] {
             assert_eq!(repo.classify(Path::new(source)), Change::Tree, "{source}");
         }
@@ -2542,6 +2558,52 @@ mod tests {
             .send(event(modify, root.join("deps/vendored.ex")))
             .unwrap();
         assert_eq!(run_ticks(session, &runner, 2, FAST), 1, "a tracked file");
+    }
+
+    #[test]
+    fn a_build_dir_below_the_root_costs_one_status_and_a_tracked_file_there_refreshes() {
+        // A monorepo's `packages/a/node_modules` churns as a root `target/`
+        // does: a burst there is one `git status` and no refresh, where it
+        // used to be a refresh each. A tracked file under a build name is
+        // never ignored: its edit shows in `status`, and an edit to a file
+        // already modified there shows in the content the check reads.
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        fs::create_dir_all(root.join("lib/deps")).unwrap();
+        fs::write(root.join("lib/deps/vendored.ex"), "v1\n").unwrap();
+        fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "vendor"]);
+        let runner = Traced::new(temp.path());
+        let create = notify::EventKind::Create(notify::event::CreateKind::File);
+        let modify = notify::EventKind::Modify(notify::event::ModifyKind::Any);
+
+        let (session, events) = armed(&runner, &root, false);
+        let output = root.join("packages/a/node_modules/x/index.js");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, "o\n").unwrap();
+        let events = events.unwrap();
+        events.send(event(create, output.clone())).unwrap();
+        events.send(event(modify, output)).unwrap();
+        let before = runner.starts();
+        assert_eq!(run_ticks(session, &runner, 2, FAST), 0, "build output");
+        assert_eq!(runner.starts() - before, 1, "one `git status`");
+
+        for content in ["v2\n", "v3\n"] {
+            let (session, events) = armed(&runner, &root, false);
+            fs::write(root.join("lib/deps/vendored.ex"), content).unwrap();
+            events
+                .unwrap()
+                .send(event(modify, root.join("lib/deps/vendored.ex")))
+                .unwrap();
+            assert_eq!(
+                run_ticks(session, &runner, 2, FAST),
+                1,
+                "a tracked file, {content:?}"
+            );
+        }
     }
 
     #[test]

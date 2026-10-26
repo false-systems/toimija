@@ -222,11 +222,13 @@ checked first with one `git status`, because other tools rewrite the index
 without changing anything the packet shows. This is how staging, commits,
 branch switches, a fetch that moves the upstream, and a worktree or branch
 added elsewhere reach the packet, also in a linked worktree whose git dir lies
-outside the watched tree. A tracked path is never ignored: events in a build
-directory at the repository root (`target/`, `_build/`, `deps/`,
-`node_modules/`) prompt one `git status` instead of a refresh, which shows a
-tracked file there as modified and untracked build output as nothing; a
-directory of the same name deeper in the tree is ordinary source.
+outside the watched tree. A tracked path is never ignored: events under a
+directory with a build name (`target/`, `_build/`, `deps/`, `node_modules/`),
+at the repository root or deeper (a monorepo's `packages/a/node_modules/`),
+prompt one `git status` instead of a refresh. That check shows a tracked file
+there as modified, and an already-modified one by its content, and refreshes
+for it; untracked build output shows as nothing and costs only the check. Only
+a whole name counts: `src/targeted.rs` is source.
 
 A refresh reads one `git status`. While that metadata says the refs have not
 moved since the last packet's Git state was read, and `status` finds HEAD and
