@@ -617,6 +617,5 @@ other changed file that no task declares.
 ## Documentation
 
 - [Complete command and packet reference](docs/reference.md)
-- [Cross-tool packet contract](docs/joskus-contract.md)
 - [Design proposals](docs/proposals/)
 - [Audit history](docs/audit/)

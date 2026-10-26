@@ -82,7 +82,7 @@ fn interrupted_merge_is_visible_and_verification_is_unsafe() {
     toimija(repo.path()).arg("refresh").assert().success();
     let verify = json_output(
         toimija(repo.path())
-            .args(["current", "--verify", "--json"])
+            .args(["verify", "--json"])
             .assert()
             .failure(),
     );

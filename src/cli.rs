@@ -103,17 +103,6 @@ pub enum Command {
         toimija context --json                     # machine-readable packet"
     )]
     Context(ContextArgs),
-    /// Joskus-facing current packet contract: write or verify `.toimija/current.*`.
-    ///
-    /// Use this from a harness: `--write` synchronously (re)writes the packet
-    /// files, `--verify` checks the packet's consistency token against the live
-    /// repo and exits non-zero when stale — the verify-before-read gate a
-    /// harness calls before trusting the packet.
-    #[command(
-        after_help = "Examples:\n  toimija current --write            # (re)write .toimija/current.md + current.json\n  \
-        toimija current --verify --json    # harness verifier: exit 0 fresh, 1 stale"
-    )]
-    Current(CurrentArgs),
     /// Recompute the live packet and write .toimija/current.md + current.json.
     ///
     /// Use this when you want the packet files refreshed without printing them
@@ -308,22 +297,6 @@ pub struct AdoptArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct CurrentArgs {
-    /// Synchronously write `.toimija/current.md` and `.toimija/current.json`.
-    #[arg(long, conflicts_with = "verify")]
-    pub write: bool,
-    /// Verify `.toimija/current.json` against the live repo.
-    #[arg(long)]
-    pub verify: bool,
-    /// Emit JSON. Required for stable verifier output consumed by harnesses.
-    #[arg(long)]
-    pub json: bool,
-    /// Packet to verify instead of the ambient session or repo-level packet.
-    #[arg(long, value_name = "PATH", requires = "verify")]
-    pub packet: Option<std::path::PathBuf>,
-}
-
-#[derive(Debug, Args)]
 pub struct LandedArgs {
     /// Ref the work lands in; the branch surface is compared against it.
     #[arg(long, default_value = "origin/main")]
@@ -513,7 +486,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Context(args) | Command::Enter(args) | Command::Refresh(args) if args.json => {
             "json"
         }
-        Command::Current(args) if args.json => "json",
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         Command::RepositoryPoint(args) if args.json => "json",
@@ -533,7 +505,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Adopt(args) => run_adopt(args).map(|()| 0),
         Command::Doctor(args) => run_doctor(args).map(|()| 0),
         Command::Context(args) => run_context(args).map(|()| 0),
-        Command::Current(args) => run_current(args),
         Command::Refresh(args) => run_refresh(args).map(|()| 0),
         Command::Enter(args) => run_enter(args).map(|()| 0),
         Command::Watch(args) => run_watch(args).map(|()| 0),
@@ -639,7 +610,6 @@ impl Command {
             Command::Adopt(_) => "adopt",
             Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
-            Command::Current(_) => "current",
             Command::Refresh(_) => "refresh",
             Command::Enter(_) => "enter",
             Command::Watch(_) => "watch",
@@ -770,26 +740,6 @@ fn run_repository_point(args: SemanticArgs) -> Result<()> {
         protocol_minor = point.protocol.minor
     );
     Ok(())
-}
-
-fn run_current(args: CurrentArgs) -> Result<i32> {
-    if args.write {
-        return run_refresh(ContextArgs {
-            json: args.json,
-            for_diff: false,
-            budget: None,
-        })
-        .map(|()| 0);
-    }
-    if args.verify {
-        // Delegates to `verify`, exit code included — harness verifiers gate
-        // on it (the verify-before-read contract).
-        return run_verify(VerifyArgs {
-            json: args.json,
-            packet: args.packet,
-        });
-    }
-    anyhow::bail!("use `toimija current --write` or `toimija current --verify`")
 }
 
 fn run_refresh(args: ContextArgs) -> Result<()> {

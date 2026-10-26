@@ -130,7 +130,6 @@ fn a_symlinked_toimija_dir_is_refused_by_every_writer() {
     for args in [
         &["enter"][..],
         &["refresh"],
-        &["current", "--write"],
         &["init"],
         &["clean"],
         &["snapshot", "--lease"],

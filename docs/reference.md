@@ -620,6 +620,31 @@ See **Verify before read** for what the token buys you, **Chain of custody**
 for what the envelope buys you, and **Example context output** below for a full
 rendering.
 
+### Packet compatibility
+
+The JSON packet is the machine contract; Markdown is a bounded presentation of
+the same artifact and may omit optional sections to meet its budget. The packet
+names its schema in `schema` (and again in `sauma.schema`):
+
+- New optional fields may be added without a schema-version bump.
+- Removing or changing a field bumps the schema version
+  (`toimija-context.v1` → `v2`).
+- Consumers must ignore unknown fields and tolerate unknown sauma provenance
+  edge kinds.
+- Unix paths are JSON strings when valid UTF-8 and `{ "bytes_hex": "..." }`
+  otherwise. Consumers must accept both forms.
+- Do not materialize additive defaults before verifying the sauma digest;
+  verify the raw JSON value first.
+
+`toimija verify --json` is the verify-before-read gate for machines. Exit 0
+and `"status": "verified"` carry the selected `packet_path`, the consistency
+`algorithm` and `token`, and the `artifact_digest`; any non-zero exit is a
+refusal to trust the packet, with one of these statuses: `missing_packet`,
+`invalid_packet`, `missing_consistency`, `not_comparable`,
+`unsupported_consistency_algorithm`, `stale_packet`, `session_not_live`,
+`sauma_digest_mismatch`, `unsafe_git_operation`, `unverifiable_repository`,
+`io_error`.
+
 ## Commands
 
 Ordered by workflow:
