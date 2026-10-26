@@ -17,9 +17,8 @@
 //!   stats them (`git add --all`, so Sykli) never meets a temp file that the
 //!   rename is about to take away.
 //!
-//! Human-owned files Toimija edits outside `.toimija/` (the agent entry files
-//! `adopt` maintains) may be symlinks — `CLAUDE.md -> AGENTS.md` is common —
-//! but must resolve inside the repository: [`ensure_inside_repository`].
+//! Toimija writes no file outside `.toimija/`: the human-owned files at the
+//! repository root (AGENTS.md, CLAUDE.md, hooks, settings) are never touched.
 
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -243,48 +242,6 @@ fn refusal_or(repo_root: &Path, path: &Path, error: io::Error, verb: &str) -> an
     }
 }
 
-/// Refuse unless `path` — a file Toimija is about to write outside
-/// `.toimija/` — resolves inside the repository. The file, or its nearest
-/// existing ancestor, is resolved through any symlinks first, so an in-repo
-/// link such as `CLAUDE.md -> AGENTS.md` is fine and one pointing out is not.
-pub fn ensure_inside_repository(repo_root: &Path, path: &Path) -> Result<()> {
-    let root = repo_root
-        .canonicalize()
-        .with_context(|| format!("failed to resolve {}", repo_root.display()))?;
-    let mut probe: PathBuf = path.to_path_buf();
-    let resolved = loop {
-        match probe.canonicalize() {
-            Ok(resolved) => break resolved,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                // A dangling symlink resolves nowhere yet would be written
-                // through; refuse it rather than guess.
-                if fs::symlink_metadata(&probe).is_ok() {
-                    bail!(
-                        "refusing to write {}: it is a symlink that resolves nowhere",
-                        display(repo_root, path)
-                    );
-                }
-                match probe.parent() {
-                    Some(parent) => probe = parent.to_path_buf(),
-                    None => bail!("refusing to write {}: unresolvable", path.display()),
-                }
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed to resolve {}", path.display()));
-            }
-        }
-    };
-    if resolved.starts_with(&root) {
-        Ok(())
-    } else {
-        bail!(
-            "refusing to write {}: it resolves to {} through a symlink, outside the repository",
-            display(repo_root, path),
-            resolved.display()
-        )
-    }
-}
-
 fn display(repo_root: &Path, path: &Path) -> String {
     path.strip_prefix(repo_root)
         .unwrap_or(path)
@@ -351,21 +308,6 @@ mod tests {
                 .downcast_ref::<io::Error>()
                 .is_some_and(|error| error.kind() == io::ErrorKind::NotFound)
         );
-    }
-
-    #[test]
-    fn repository_files_may_link_inside_the_repository_but_not_out() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        fs::write(repo.join("AGENTS.md"), "").unwrap();
-        std::os::unix::fs::symlink(repo.join("AGENTS.md"), repo.join("CLAUDE.md")).unwrap();
-        std::os::unix::fs::symlink(temp.path(), repo.join("escape")).unwrap();
-
-        assert!(ensure_inside_repository(&repo, &repo.join("CLAUDE.md")).is_ok());
-        assert!(ensure_inside_repository(&repo, &repo.join("new/file.md")).is_ok());
-        assert!(ensure_inside_repository(&repo, &repo.join("escape/file.md")).is_err());
-        assert!(ensure_inside_repository(&repo, &repo.join("escape")).is_err());
     }
 }
 

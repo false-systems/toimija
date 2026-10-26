@@ -5,7 +5,6 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing::{info, info_span, warn};
 
-use crate::adoption;
 use crate::command::{CommandRunner, ProcessCommandRunner};
 use crate::config::{self, RepoConfig};
 use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency, GitOperationState, Verdict};
@@ -20,7 +19,6 @@ use crate::repo;
 use crate::session;
 use crate::sessions;
 use crate::snapshot;
-use crate::snippet;
 use crate::validate;
 use crate::watch;
 
@@ -64,20 +62,11 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Create .toimija/repo.yaml. Agent docs (AGENTS.md/CLAUDE.md) stay yours;
-    /// run `toimija snippet preflight` to seed them.
+    /// tell your agents there to run `toimija enter` first.
     ///
     /// Use this once per repo to seed the config. It never overwrites an
-    /// existing file. Writes only .toimija/repo.yaml.
+    /// existing file. Writes only .toimija/repo.yaml and .toimija/.gitignore.
     Init,
-    /// [experimental] Install the canonical Toimija preamble in the repo's agent entry files.
-    ///
-    /// Use this once when adopting Toimija into an existing repository. With
-    /// `--hooks`, also install best-effort Git freshness hooks.
-    #[command(
-        after_help = "Examples:\n  toimija adopt             # adopt existing entry files\n  \
-        toimija adopt --hooks  # adopt and install refresh hooks"
-    )]
-    Adopt(AdoptArgs),
     /// Check Toimija setup: git, config, repo kind, and agent docs.
     ///
     /// Use this when setting up a repo or gating CI: it verifies git is
@@ -185,11 +174,6 @@ pub enum Command {
         toimija clean --dry-run   # list candidates without changing disk"
     )]
     Clean(CleanArgs),
-    /// Print suggested preflight text or an entry script. Writes no files.
-    ///
-    /// Use this to seed AGENTS.md/CLAUDE.md (`preflight`) or to save a
-    /// `scripts/agent-enter` stub (`script`). Output goes to stdout only.
-    Snippet(SnippetArgs),
     /// Check whether this branch's work has landed in a base ref by content.
     ///
     /// Answers "did this land?" as a content question, not an ancestry one —
@@ -276,13 +260,6 @@ pub struct SemanticArgs {
     /// Emit the versioned machine projection as JSON.
     #[arg(long)]
     pub json: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct AdoptArgs {
-    /// Install post-checkout, post-merge, and post-commit refresh hooks.
-    #[arg(long)]
-    pub hooks: bool,
 }
 
 #[derive(Debug, Args)]
@@ -409,21 +386,6 @@ pub struct SnapshotArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct SnippetArgs {
-    /// Which snippet to print.
-    #[arg(value_enum)]
-    pub kind: SnippetKind,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum SnippetKind {
-    /// Agent preflight text to paste into AGENTS.md/CLAUDE.md or a task prompt.
-    Preflight,
-    /// A `scripts/agent-enter` bash stub a human may save and run.
-    Script,
-}
-
-#[derive(Debug, Args)]
 pub struct DoctorArgs {
     /// Escalate every actionable warning to a failure (non-zero exit). Use as a
     /// CI or pre-commit gate so config/doc drift blocks the change.
@@ -478,7 +440,6 @@ pub fn run(cli: Cli) -> Result<i32> {
 
     let result = match cli.command {
         Command::Init => run_init().map(|()| 0),
-        Command::Adopt(args) => run_adopt(args).map(|()| 0),
         Command::Doctor(args) => run_doctor(args).map(|()| 0),
         Command::Context(args) => run_context(args).map(|()| 0),
         Command::Refresh(args) => run_refresh(args).map(|()| 0),
@@ -488,7 +449,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Intent(args) => run_intent(args).map(|()| 0),
         Command::History(args) => run_history(args).map(|()| 0),
         Command::Clean(args) => run_clean(args).map(|()| 0),
-        Command::Snippet(args) => run_snippet(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
         Command::Validate(args) => run_validate(args).map(|()| 0),
@@ -582,7 +542,6 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Init => "init",
-            Command::Adopt(_) => "adopt",
             Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
             Command::Refresh(_) => "refresh",
@@ -592,7 +551,6 @@ impl Command {
             Command::Intent(_) => "intent",
             Command::History(_) => "history",
             Command::Clean(_) => "clean",
-            Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Sessions(_) => "sessions",
             Command::Validate(_) => "validate",
@@ -609,32 +567,6 @@ fn run_init() -> Result<()> {
     let repo_root = git::discover_repo_root(&runner, &cwd).unwrap_or(cwd);
     let report = config::init_repo(&repo_root)?;
     println!("{}", render::render_init_report(&report));
-    Ok(())
-}
-
-fn run_adopt(args: AdoptArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let report = adoption::adopt(&repo_root, args.hooks)?;
-    for path in &report.files {
-        println!("adopted {}", rel_display(path, &repo_root));
-    }
-    if report.created_agents {
-        println!("created AGENTS.md because no known entry file existed");
-    }
-    if !report.hooks.is_empty() {
-        println!("installed Git hooks: {}", report.hooks.join(", "));
-        println!(
-            "note: hooks live in this clone's Git hooks directory and are shared by every worktree of this clone"
-        );
-        if report.settings_written {
-            println!("wrote .claude/settings.json (SessionStart: toimija context)");
-        }
-        println!(
-            "note: toimija never writes config outside this repo; ~/.claude/settings.json stays yours"
-        );
-    }
     Ok(())
 }
 
@@ -2673,16 +2605,6 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0)
-}
-
-fn run_snippet(args: SnippetArgs) -> Result<()> {
-    let snippet = match args.kind {
-        SnippetKind::Preflight => snippet::Snippet::Preflight,
-        SnippetKind::Script => snippet::Snippet::Script,
-    };
-    // The text already ends in a newline; print it verbatim so it pastes clean.
-    print!("{}", snippet.text());
-    Ok(())
 }
 
 fn run_validate(args: ValidateArgs) -> Result<()> {

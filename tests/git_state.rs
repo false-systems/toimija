@@ -51,13 +51,13 @@ fn init_creates_config_without_overwrite() {
     assert_eq!(first, second);
 
     // Toimija owns `.toimija/`, not root agent policy. init must not create
-    // AGENTS.md or CLAUDE.md — it only suggests preflight text via `snippet`.
+    // AGENTS.md or CLAUDE.md — it only says what they should carry.
     assert!(!temp.path().join("AGENTS.md").exists());
     assert!(!temp.path().join("CLAUDE.md").exists());
 }
 
 #[test]
-fn init_points_at_the_snippet_for_agent_docs() {
+fn init_says_what_the_agent_docs_should_carry() {
     if !git_available() {
         return;
     }
@@ -69,7 +69,7 @@ fn init_points_at_the_snippet_for_agent_docs() {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicate::str::contains("toimija snippet preflight"));
+        .stdout(predicate::str::contains("run `toimija enter` first"));
 }
 
 #[test]

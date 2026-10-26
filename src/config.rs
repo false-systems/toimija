@@ -289,11 +289,10 @@ pub fn init_repo(repo_root: &Path) -> anyhow::Result<InitReport> {
             "Fill role, not, and boundaries in .toimija/repo.yaml so the packet can orient an agent."
                 .to_string(),
         );
-        // Toimija owns `.toimija/`, not root agent policy. It suggests preflight
-        // text for AGENTS.md/CLAUDE.md via `toimija snippet`, but never writes
-        // those human-owned files itself.
+        // Toimija owns `.toimija/`, not root agent policy: it never writes the
+        // human-owned AGENTS.md/CLAUDE.md, so it says what they should carry.
         report.guidance.push(
-            "Run `toimija snippet preflight` and paste it into your AGENTS.md/CLAUDE.md so agents run `toimija enter` first."
+            "Tell agents in your AGENTS.md/CLAUDE.md to run `toimija enter` first, or launch them with `toimija run`."
                 .to_string(),
         );
     }

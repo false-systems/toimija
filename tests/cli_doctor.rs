@@ -31,8 +31,8 @@ fn write_ready_rust_repo(path: &Path) {
     .unwrap();
 }
 
-/// A repo whose agent docs honour the full contract and carry the adopted
-/// preamble. This is what `--strict` requires, so it is its own fixture rather
+/// A repo whose agent docs honour the full contract. This is what `--strict`
+/// requires, so it is its own fixture rather
 /// than a tweak of `write_ready_rust_repo` (whose docs are intentionally minimal).
 fn write_strict_ready_rust_repo(path: &Path) {
     fs::write(
@@ -42,14 +42,10 @@ fn write_strict_ready_rust_repo(path: &Path) {
     .unwrap();
     fs::write(
         path.join("AGENTS.md"),
-        "# Agent guide\n\n<!-- toimija:adopt:v1:begin -->\nRead `.toimija/current.md` before reading anything else in this repo; it is your workset contract. Under a toimija session your launch prompt names your live packet — that file supersedes this one.\n<!-- toimija:adopt:v1:end -->\n\nBefore editing, run `toimija context --for-diff`.\n\nStay inside fixture.\n",
+        "# Agent guide\n\nBefore editing, run `toimija context --for-diff`.\n\nStay inside fixture.\n",
     )
     .unwrap();
-    fs::write(
-        path.join("CLAUDE.md"),
-        "<!-- toimija:adopt:v1:begin -->\nRead `.toimija/current.md` before reading anything else in this repo; it is your workset contract. Under a toimija session your launch prompt names your live packet — that file supersedes this one.\n<!-- toimija:adopt:v1:end -->\n\nSee AGENTS.md.\n",
-    )
-    .unwrap();
+    fs::write(path.join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
     fs::create_dir_all(path.join(".toimija")).unwrap();
     fs::write(
         path.join(".toimija/repo.yaml"),
@@ -233,11 +229,8 @@ fn doctor_boundaries_satisfied_by_repo_yaml_reference() {
 #[test]
 fn doctor_strict_passes_on_this_repo() {
     // Dogfood: the README tells people to run `toimija doctor --strict` as the
-    // PR/CI gate, so this repo must pass its own gate — including the adoption
-    // check this PR introduces, satisfied by running `toimija adopt` on this
-    // repo in the same PR. Guards against boundary wording in
-    // .toimija/repo.yaml drifting from AGENTS.md/CLAUDE.md and against the
-    // entry files losing the adopted preamble.
+    // PR/CI gate, so this repo must pass its own gate. Guards against boundary
+    // wording in .toimija/repo.yaml drifting from AGENTS.md/CLAUDE.md.
     if !git_available() {
         return;
     }
@@ -249,9 +242,6 @@ fn doctor_strict_passes_on_this_repo() {
         .success()
         .stdout(predicate::str::contains(
             "ok: boundaries mirrored - boundaries appear in the agent docs",
-        ))
-        .stdout(predicate::str::contains(
-            "ok: adoption - agent entry files carry the current Toimija preamble",
         ));
 }
 

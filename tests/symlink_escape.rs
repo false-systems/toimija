@@ -198,24 +198,3 @@ fn a_symlinked_snapshots_dir_is_refused_by_lease_and_release() {
     fx.assert_refused(&["snapshot", "--lease"], &[]);
     fx.assert_refused(&["snapshot", "--release", "victim"], &[]);
 }
-
-#[test]
-fn adopt_never_writes_an_entry_file_that_resolves_outside() {
-    if !git_available() {
-        return;
-    }
-    let fx = fixture();
-    fx.link("AGENTS.md", "sentinel.txt");
-    fx.assert_refused(&["adopt"], &[]);
-}
-
-#[test]
-fn adopt_hooks_never_write_settings_through_a_symlinked_claude_dir() {
-    if !git_available() {
-        return;
-    }
-    let fx = fixture();
-    fs::write(fx.repo.join("AGENTS.md"), "# Agents\n").unwrap();
-    fx.link(".claude", "");
-    fx.assert_refused(&["adopt", "--hooks"], &[]);
-}

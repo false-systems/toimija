@@ -1,5 +1,4 @@
 pub mod adapters;
-pub(crate) mod adoption;
 mod atomic_write;
 pub mod cli;
 pub mod command;
@@ -28,6 +27,5 @@ pub mod semantic;
 pub mod session;
 pub mod sessions;
 pub mod snapshot;
-pub mod snippet;
 pub mod validate;
 pub mod watch;
