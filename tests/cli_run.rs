@@ -1556,6 +1556,9 @@ fn run_takes_the_flags_ohjaa_launches_with_and_sessions_reports_what_it_reads() 
 
     let prompt = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
     let task = prompt.find("Task: the assigned task").unwrap();
+    // The instruction above the packet names sections the packet has.
+    assert!(prompt.contains("Read first list"), "{prompt}");
+    assert!(prompt.contains("\n## Read first\n"), "{prompt}");
     let briefing = prompt.find("Knowledge: what ohjaa knows.").unwrap();
     assert!(task < briefing, "{prompt}");
 

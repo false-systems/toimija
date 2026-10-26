@@ -268,7 +268,7 @@ pub fn compose_launch_prompt(
     prompt.push_str(
         "Your toimija session packet is below. It is your workset contract: work from it, \
          and declare any expansion (`toimija intent \"<why>\" --scope <path>`) before \
-         reading outside it. Use its Git facts, read order and validation plan directly; \
+         reading outside it. Use its Git facts, Read first list and validation plan directly; \
          do not repeat discovery unless a fact is missing, stale or contradicted. \
          Read the named files to answer the task's remaining questions.\n",
     );
@@ -532,6 +532,8 @@ mod tests {
         .unwrap();
         assert!(prompt.starts_with("Your toimija session packet is below."));
         assert!(prompt.contains("workset contract"));
+        // It names the packet's sections as the packet names them.
+        assert!(prompt.contains("Use its Git facts, Read first list and validation plan directly"));
         assert!(
             prompt.contains(
                 "do not repeat discovery unless a fact is missing, stale or contradicted"
