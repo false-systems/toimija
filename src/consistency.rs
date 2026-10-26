@@ -334,12 +334,6 @@ fn status(status: &ChangeStatus) -> String {
     }
 }
 
-/// The namespaces whose content the token leaves out, apart from the
-/// configuration forced in: tree-identity.v1's frozen list.
-pub(crate) fn generated_namespaces() -> &'static [&'static str] {
-    LEAVES_OUT_AS.namespaces()
-}
-
 /// Whether a repo-relative path is generated tool state the token leaves out:
 /// a path under one of tree-identity.v1's frozen namespaces (`.toimija`,
 /// `.teko`, `.sykli`), unless it is configuration v1 forces in

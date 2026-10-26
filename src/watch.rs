@@ -7,6 +7,29 @@
 //! build/vendor directories and Toimija's own live output are ignored, so writing
 //! the live packet — `.toimija/current.*`, or a per-session
 //! `.toimija/sessions/<id>/current.*` under `run` — never re-triggers a refresh.
+//!
+//! # What a tick costs
+//!
+//! The repository root, git dir and common dir are found once per watch
+//! (`Repository::discover`) and passed down; nothing is discovered again per
+//! tick. When nothing changes, a tick starts no git process on the event
+//! backends and one `git status` under Linux's Git polling:
+//!
+//! - **Work-tree changes** arrive as filesystem events and refresh after a
+//!   debounce. Under Git polling, which has no events, the tick's one
+//!   `git status` sees them.
+//! - **Git's own state** is a `Stamp`: the metadata of HEAD, the index, the
+//!   operation markers, the refs, packed-refs and config, read with `stat`
+//!   alone. A moved ref or config refreshes. A moved HEAD or index is checked
+//!   first with one `git status`, because other tools rewrite the index without
+//!   changing anything a packet shows. Events inside `.git/` only prompt this
+//!   check; they never refresh by themselves.
+//! - **A safety net** runs once every `SAFETY_NET_INTERVAL` (a minute): one `git status`
+//!   compared with the packet, together with the changed files' contents — the
+//!   packet's consistency token. What no event and no stamp reported (a dropped
+//!   event, a change to a global excludes file, a second edit to an
+//!   already-modified file under Git polling) is caught there. It also retries
+//!   a refresh that failed, at that cadence rather than on every tick.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -19,7 +42,10 @@ use notify::{Config, Event, RecursiveMode, Watcher};
 use tracing::{debug, info};
 
 use crate::command::CommandRunner;
-use crate::{consistency, git, refresh};
+use crate::consistency::{self, Consistency};
+use crate::context::ContextPacket;
+use crate::git::{self, GitState};
+use crate::refresh;
 
 /// Coalesce a burst of events for this long before refreshing once.
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -30,16 +56,41 @@ const SUSPENSION_THRESHOLD: Duration = Duration::from_secs(30);
 /// How long a watcher has to report its readiness probe before fallback/failure.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Polling cadence for packet-visible Git state.
+/// How often the Git state is checked: the [`Stamp`], and under Git polling one
+/// `git status`.
 const STATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// How often the safety net compares one `git status`, and the changed files'
+/// contents, with the packet, whatever the events and stamps said.
+const SAFETY_NET_INTERVAL: Duration = Duration::from_secs(60);
 /// Directories whose churn must never trigger a refresh.
 const IGNORED_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
+/// The readiness probe's file name, in the repository root: see [`prove_ready`].
+const PROBE_PREFIX: &str = "toimija-watch-probe-";
+/// Markers of an in-progress Git operation, in the git dir. The consistency
+/// token reads them.
+const OPERATION_MARKERS: [&str; 6] = [
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "BISECT_LOG",
+    "rebase-merge",
+    "rebase-apply",
+];
 
 /// Both clocks sampled together. Wall time advances during suspension while
 /// the monotonic clock does not on macOS and Linux.
 struct ClockPair {
     wall: SystemTime,
     mono: Instant,
+}
+
+impl ClockPair {
+    fn now() -> Self {
+        Self {
+            wall: SystemTime::now(),
+            mono: Instant::now(),
+        }
+    }
 }
 
 /// Return the time spent suspended when wall time outruns monotonic time by at
@@ -49,6 +100,374 @@ fn detect_suspension(prev: &ClockPair, now: &ClockPair, threshold: Duration) -> 
     let mono_delta = now.mono.checked_duration_since(prev.mono)?;
     let slept = wall_delta.checked_sub(mono_delta)?;
     (slept >= threshold).then_some(slept)
+}
+
+/// The loop's cadences, as one value so tests can run the real loop fast.
+#[derive(Debug, Clone, Copy)]
+struct Timing {
+    tick: Duration,
+    state_poll: Duration,
+    safety_net: Duration,
+}
+
+impl Timing {
+    const LIVE: Timing = Timing {
+        tick: TICK,
+        state_poll: STATE_POLL_INTERVAL,
+        safety_net: SAFETY_NET_INTERVAL,
+    };
+}
+
+/// What a watch finds once and passes down: never discovered again per tick.
+#[derive(Debug, Clone)]
+pub struct Repository {
+    /// The work tree's root as Git names it.
+    root: PathBuf,
+    /// The same root with symlinks resolved: FSEvents reports `/private/tmp/x`
+    /// for a repository at `/tmp/x`.
+    canonical_root: PathBuf,
+    /// This worktree's own git dir: HEAD, the index, operation markers.
+    git_dir: PathBuf,
+    /// The git dir every worktree shares: refs, packed-refs, config.
+    common_dir: PathBuf,
+    /// The Git files' metadata when the repository was discovered.
+    discovered: Stamp,
+}
+
+impl Repository {
+    /// Find the git dir and the common dir of the worktree at `root`, with one
+    /// git process, and stamp the Git files. Call it before building the packet
+    /// the watch starts from: the first check compares against this stamp, so
+    /// a change made while that packet was built is not missed.
+    pub fn discover(runner: &impl CommandRunner, root: &Path) -> Result<Self> {
+        let args = ["rev-parse", "--absolute-git-dir", "--git-common-dir"];
+        let output = runner
+            .run(root, "git", &args)
+            .context("failed to run git to find the git dir")?;
+        anyhow::ensure!(
+            output.status == 0,
+            "`git {}` failed in {}: {}",
+            args.join(" "),
+            root.display(),
+            output.stderr_lossy().trim()
+        );
+        let mut lines = output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty());
+        let (Some(git_dir), Some(common_dir)) = (lines.next(), lines.next()) else {
+            anyhow::bail!("`git {}` named no git dir", args.join(" "));
+        };
+        let git_dir = crate::path_codec::from_git_bytes(git_dir);
+        // Relative to the directory git ran in; `join` keeps an absolute one.
+        let common_dir = root.join(crate::path_codec::from_git_bytes(common_dir));
+        Ok(Self::at(root, git_dir, common_dir))
+    }
+
+    fn at(root: &Path, git_dir: PathBuf, common_dir: PathBuf) -> Self {
+        let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let mut repository = Self {
+            root: root.to_path_buf(),
+            canonical_root,
+            git_dir,
+            common_dir,
+            discovered: Stamp::default(),
+        };
+        repository.discovered = repository.stamp();
+        repository
+    }
+
+    /// Stamp the files whose change can move a packet without a work-tree
+    /// event. `stat` only: no git process, no file contents.
+    fn stamp(&self) -> Stamp {
+        let git_dir = &self.git_dir;
+        let common = &self.common_dir;
+        let mut status = vec![
+            entry(git_dir.join("HEAD")),
+            entry(git_dir.join("index")),
+            entry(common.join("info").join("exclude")),
+        ];
+        status.extend(
+            OPERATION_MARKERS
+                .iter()
+                .map(|marker| entry(git_dir.join(marker))),
+        );
+        let mut refs = vec![
+            entry(common.join("packed-refs")),
+            entry(common.join("config")),
+            entry(git_dir.join("config.worktree")),
+            entry(common.join("shallow")),
+            entry(self.root.join(crate::config::CONFIG_PATH)),
+        ];
+        // `refs/toimija` is Toimija's own footprint (snapshot leases).
+        let own = common.join("refs").join("toimija");
+        walk(&common.join("refs"), &own, &mut refs);
+        walk(&common.join("reftable"), &own, &mut refs);
+        if git_dir != common {
+            // A linked worktree's own refs: bisect, worktree, rewritten.
+            walk(&git_dir.join("refs"), &own, &mut refs);
+        }
+        Stamp { status, refs }
+    }
+
+    /// `path` relative to the repository root, under either spelling of it.
+    fn relative<'a>(&self, path: &'a Path) -> Option<&'a Path> {
+        path.strip_prefix(&self.root)
+            .or_else(|_| path.strip_prefix(&self.canonical_root))
+            .ok()
+    }
+
+    /// What an event at `path` asks for. A path under neither spelling of the
+    /// root is not evidence of a work-tree change, so it only prompts a stamp
+    /// check, which starts no git process; it can never make the watch refresh
+    /// on its own output. (The readiness probe proved that the backend reports
+    /// one of the two spellings.)
+    fn classify(&self, path: &Path) -> Change {
+        let Some(relative) = self.relative(path) else {
+            debug!(event = "toimija.watch.event_outside_root", path = %path.display());
+            return Change::Git;
+        };
+        if is_ignored(relative) {
+            Change::Ignored
+        } else if first_component(relative) == Some(".git") {
+            Change::Git
+        } else {
+            Change::Tree
+        }
+    }
+
+    fn classify_event(&self, event: &Event) -> Change {
+        event
+            .paths
+            .iter()
+            .map(|path| self.classify(path))
+            .max()
+            .unwrap_or(Change::Ignored)
+    }
+
+    /// Swallow the rest of an event burst: keep receiving until the channel is
+    /// quiet for a full debounce window, so one logical change yields one
+    /// refresh. Returns the strongest change the burst carried. Backend errors
+    /// inside the burst keep their warning — rescan-required is precisely the
+    /// error that means events were lost.
+    fn drain_burst(&self, rx: &mpsc::Receiver<notify::Result<Event>>, first: Change) -> Change {
+        let mut change = first;
+        while let Ok(result) = rx.recv_timeout(DEBOUNCE) {
+            match result {
+                Ok(event) => change = change.max(self.classify_event(&event)),
+                Err(error) => self.warn_watcher_error(&error),
+            }
+        }
+        change
+    }
+
+    /// Warn about a backend error unless it is scoped entirely to ignored
+    /// directories: a build deleting files under `_build`/`target` mid-scan is
+    /// churn the watch has promised not to react to, not a packet-freshness
+    /// problem. Polling can also race children that vanish mid-walk; those
+    /// path-scoped `NotFound` errors are quiet unless the watched root itself
+    /// is gone. A pathless error says nothing about where it happened, so it
+    /// stays visible.
+    fn warn_watcher_error(&self, error: &notify::Error) {
+        if !self.error_is_ignorable(error) {
+            eprintln!("toimija: file watcher error (packet may be stale): {error}");
+        }
+    }
+
+    fn error_is_ignorable(&self, error: &notify::Error) -> bool {
+        if error.paths.is_empty() {
+            return false;
+        }
+        if matches!(
+            &error.kind,
+            notify::ErrorKind::Io(io_error)
+                if io_error.kind() == std::io::ErrorKind::NotFound
+        ) {
+            return self.root.try_exists().unwrap_or(false);
+        }
+        error
+            .paths
+            .iter()
+            .all(|path| self.relative(path).is_some_and(is_ignored))
+    }
+}
+
+/// What a filesystem event asks the watch to do, weakest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Change {
+    /// Generated output, build/vendor churn, Toimija's own Git footprint.
+    Ignored,
+    /// Inside `.git/`: check the [`Stamp`], which decides.
+    Git,
+    /// The work tree: refresh.
+    Tree,
+}
+
+/// The metadata of the Git files that can move a packet without a work-tree
+/// event, read with `stat` alone. Git replaces each of these files through a
+/// lock file renamed into place, so every write is a new inode and a new
+/// change time, never only new bytes under an old stamp.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Stamp {
+    /// What `git status` reads: HEAD, the index, the operation markers and
+    /// `info/exclude`. A change here is checked with one `git status` before
+    /// refreshing.
+    status: Vec<Entry>,
+    /// What only a refresh reads: refs, packed-refs, config, `shallow`, and the
+    /// packet's own configuration. A change here refreshes.
+    refs: Vec<Entry>,
+}
+
+type Entry = (PathBuf, Option<FileStamp>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    inode: u64,
+    changed: (i64, i64),
+}
+
+fn entry(path: PathBuf) -> Entry {
+    let stamp = fs::metadata(&path).ok().map(|meta| file_stamp(&meta));
+    (path, stamp)
+}
+
+#[cfg(unix)]
+fn file_stamp(meta: &fs::Metadata) -> FileStamp {
+    use std::os::unix::fs::MetadataExt;
+    FileStamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+        inode: meta.ino(),
+        changed: (meta.ctime(), meta.ctime_nsec()),
+    }
+}
+
+#[cfg(not(unix))]
+fn file_stamp(meta: &fs::Metadata) -> FileStamp {
+    FileStamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+        inode: 0,
+        changed: (0, 0),
+    }
+}
+
+/// Stamp `dir` and everything under it, in name order, except `skip`.
+/// Directories are stamped too: Git writes a lock file beside each ref it
+/// updates, so a ref update always changes its directory as well. Symlinks are
+/// stamped, never followed.
+fn walk(dir: &Path, skip: &Path, out: &mut Vec<Entry>) {
+    out.push(entry(dir.to_path_buf()));
+    let Ok(read) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<PathBuf> = read
+        .filter_map(|child| child.ok().map(|c| c.path()))
+        .collect();
+    children.sort();
+    for child in children {
+        if child == skip {
+            continue;
+        }
+        match fs::symlink_metadata(&child) {
+            Ok(meta) if meta.is_dir() => walk(&child, skip, out),
+            Ok(meta) => out.push((child, Some(file_stamp(&meta)))),
+            Err(_) => out.push((child, None)),
+        }
+    }
+}
+
+/// What one `git status` observed, in the form the packet is compared in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Observed {
+    status: String,
+    /// The consistency token, which also reads the changed files' contents:
+    /// computed only for a deep probe.
+    consistency: Option<String>,
+}
+
+/// What the watch believes the packet was built from: the Git files' stamp
+/// from before the last refresh read them, and the packet's status-visible
+/// state and consistency token.
+struct Known {
+    stamp: Stamp,
+    status: Option<String>,
+    consistency: Option<String>,
+    /// The last refresh failed: the safety net retries it.
+    failed: bool,
+}
+
+impl Known {
+    fn new(stamp: Stamp) -> Self {
+        Self {
+            stamp,
+            status: None,
+            consistency: None,
+            failed: false,
+        }
+    }
+
+    fn learn(&mut self, packet: &ContextPacket) {
+        self.status = Some(status_key(&packet.git));
+        self.consistency = Some(packet.consistency.token.clone());
+        self.failed = false;
+    }
+
+    /// A refresh failed. What prompted it is taken as seen, so the same
+    /// evidence does not retry it on every tick; the safety net does, on its
+    /// own cadence.
+    fn fail(&mut self, observed: Option<Observed>) {
+        self.failed = true;
+        if let Some(observed) = observed {
+            self.status = Some(observed.status);
+            if let Some(consistency) = observed.consistency {
+                self.consistency = Some(consistency);
+            }
+        }
+    }
+
+    fn differs(&self, observed: &Observed) -> bool {
+        self.status.as_ref() != Some(&observed.status)
+            || observed
+                .consistency
+                .as_ref()
+                .is_some_and(|token| self.consistency.as_ref() != Some(token))
+    }
+}
+
+/// A packet's Git state reduced to what one `git status` reads — HEAD, the
+/// branch, the upstream's name, and the staged, unstaged, untracked and
+/// conflicted files — as a token. The ref-derived fields (base, merge-base,
+/// ahead/behind, branch diff, recent commits) are left out: the [`Stamp`]
+/// watches the refs they come from. The root and git dir are left out too, so
+/// two spellings of one path never read as a change.
+fn status_key(git: &GitState) -> String {
+    let view = GitState {
+        repo_root: PathBuf::new(),
+        git_dir: None,
+        branch: git.branch.clone(),
+        head_oid: git.head_oid.clone(),
+        upstream: git.upstream.clone(),
+        ahead: None,
+        behind: None,
+        ahead_behind_ref: None,
+        base: None,
+        merge_base: None,
+        detached: git.detached,
+        dirty: false,
+        staged_files: git.staged_files.clone(),
+        unstaged_files: git.unstaged_files.clone(),
+        untracked_files: git.untracked_files.clone(),
+        conflicted_files: git.conflicted_files.clone(),
+        conflict_entries: git.conflict_entries.clone(),
+        branch_files: Vec::new(),
+        branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
+        recent_commits: Vec::new(),
+    };
+    // Drops Toimija's own generated output, as the packet's tokens do.
+    crate::context::refresh_token(&view)
 }
 
 /// A probe-proven change detector: native when available, notify polling when
@@ -72,6 +491,12 @@ impl Backend {
     }
 }
 
+/// An armed backend and, for the event backends, its event receiver.
+struct Armed {
+    backend: Backend,
+    rx: Option<mpsc::Receiver<notify::Result<Event>>>,
+}
+
 /// An active filesystem watch. The fallible OS setup is done in [`start`], so a
 /// caller can report a startup failure *before* doing other work; the blocking
 /// refresh loop is [`Session::run`]. Dropping the session stops watching.
@@ -79,13 +504,27 @@ pub struct Session {
     // Held only to keep the OS watch alive; dropping it unregisters the watch.
     backend: Backend,
     rx: Option<mpsc::Receiver<notify::Result<Event>>>,
-    baseline_token: Option<WatchToken>,
+    repo: Repository,
+    known: Known,
 }
 
-/// Begin watching `repo_root`. The fallible parts — creating the watcher and
-/// registering the path — happen here, synchronously, so a startup failure is
-/// reported to the caller rather than swallowed by a background loop.
-pub fn start(repo_root: &Path) -> Result<Session> {
+/// Begin watching the discovered repository. The fallible parts — creating the
+/// watcher and registering the path — happen here, synchronously, so a startup
+/// failure is reported to the caller rather than swallowed by a background
+/// loop.
+pub fn start(repo: Repository) -> Result<Session> {
+    let Armed { backend, rx } = arm(&repo.root)?;
+    info!(event = "toimija.watch.armed", backend = backend.label());
+    let known = Known::new(repo.discovered.clone());
+    Ok(Session {
+        backend,
+        rx,
+        repo,
+        known,
+    })
+}
+
+fn arm(repo_root: &Path) -> Result<Armed> {
     #[cfg(target_os = "linux")]
     {
         // Inotify can prove the readiness probe while still missing the first
@@ -94,7 +533,10 @@ pub fn start(repo_root: &Path) -> Result<Session> {
         // walking the whole repo through notify's polling backend.
         fs::metadata(repo_root)
             .with_context(|| format!("failed to watch {}", repo_root.display()))?;
-        armed(Backend::GitPoll, None)
+        Ok(Armed {
+            backend: Backend::GitPoll,
+            rx: None,
+        })
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -111,8 +553,8 @@ fn start_with_probe(
         Option<&notify::PollWatcher>,
         &str,
     ) -> Result<bool>,
-) -> Result<Session> {
-    let native = arm::<notify::RecommendedWatcher>(repo_root, Config::default());
+) -> Result<Armed> {
+    let native = arm_watcher::<notify::RecommendedWatcher>(repo_root, Config::default());
     start_from_native(native, repo_root, probe)
 }
 
@@ -133,11 +575,14 @@ fn start_from_native(
         Option<&notify::PollWatcher>,
         &str,
     ) -> Result<bool>,
-) -> Result<Session> {
+) -> Result<Armed> {
     match native {
         Ok((native, rx)) => {
             if probe(repo_root, &rx, None, "native")? {
-                return armed(Backend::Native(native), Some(rx));
+                return Ok(Armed {
+                    backend: Backend::Native(native),
+                    rx: Some(rx),
+                });
             }
             drop(native);
         }
@@ -151,6 +596,7 @@ fn start_from_native(
     start_poll(repo_root, probe)
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn start_poll(
     repo_root: &Path,
     mut probe: impl FnMut(
@@ -159,23 +605,18 @@ fn start_poll(
         Option<&notify::PollWatcher>,
         &str,
     ) -> Result<bool>,
-) -> Result<Session> {
-    let (poll, rx) = arm::<notify::PollWatcher>(repo_root, watcher_config())?;
+) -> Result<Armed> {
+    let (poll, rx) = arm_watcher::<notify::PollWatcher>(repo_root, watcher_config())?;
     let ready = probe(repo_root, &rx, Some(&poll), "poll")?;
     anyhow::ensure!(ready, "filesystem watcher did not report readiness");
-    armed(Backend::Poll(poll), Some(rx))
-}
-
-fn armed(backend: Backend, rx: Option<mpsc::Receiver<notify::Result<Event>>>) -> Result<Session> {
-    info!(event = "toimija.watch.armed", backend = backend.label());
-    Ok(Session {
-        backend,
-        rx,
-        baseline_token: None,
+    Ok(Armed {
+        backend: Backend::Poll(poll),
+        rx: Some(rx),
     })
 }
 
-fn arm<W: Watcher>(
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn arm_watcher<W: Watcher>(
     repo_root: &Path,
     config: Config,
 ) -> Result<(W, mpsc::Receiver<notify::Result<Event>>)> {
@@ -200,10 +641,7 @@ fn prove_ready(
     poll: Option<&notify::PollWatcher>,
     backend: &str,
 ) -> Result<bool> {
-    let probe = repo_root.join(format!(
-        "toimija-watch-probe-{}-{backend}",
-        std::process::id()
-    ));
+    let probe = repo_root.join(format!("{PROBE_PREFIX}{}-{backend}", std::process::id()));
     // Never through a symlink planted at the probe's name.
     crate::owned::open_nofollow(
         &probe,
@@ -259,6 +697,7 @@ fn wait_for_probe(
     }
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn watcher_config() -> Config {
     Config::default().with_poll_interval(Duration::from_millis(500))
 }
@@ -268,17 +707,31 @@ impl Session {
         self.backend.label()
     }
 
-    /// Refresh once after the OS watcher is registered. This closes the gap
-    /// between the caller's baseline refresh and watcher readiness.
+    /// Close the gap between `packet` — the packet the caller built before the
+    /// watcher was registered — and the watcher's readiness. One `git status`,
+    /// compared with the packet together with the changed files' contents, and
+    /// the stamp taken at discovery: a refresh only when something moved.
+    /// Returns the refreshed packet, or `None` when `packet` still stands.
     pub fn catch_up(
         &mut self,
         runner: &impl CommandRunner,
-        repo_root: &Path,
         plan: &refresh::Plan,
-    ) -> Result<()> {
-        let refreshed = plan.run(runner, repo_root)?;
-        self.baseline_token = Some(packet_refresh_token(&refreshed.packet));
-        Ok(())
+        packet: &ContextPacket,
+    ) -> Result<Option<refresh::Refreshed>> {
+        self.known.learn(packet);
+        let stamp = self.repo.stamp();
+        let moved = stamp.refs != self.known.stamp.refs || {
+            let observed = self.observe(runner, true)?;
+            self.known.differs(&observed)
+        };
+        self.known.stamp = stamp;
+        if !moved {
+            return Ok(None);
+        }
+        debug!(event = "toimija.watch.caught_up");
+        let refreshed = plan.run(runner, &self.repo.root)?;
+        self.known.learn(&refreshed.packet);
+        Ok(Some(refreshed))
     }
 
     /// Refresh the live packet on every relevant change until `stop` is set. The
@@ -287,44 +740,29 @@ impl Session {
     pub fn run(
         self,
         runner: &impl CommandRunner,
-        repo_root: &Path,
         plan: &refresh::Plan,
         stop: &AtomicBool,
         on_refresh: impl FnMut(),
     ) -> Result<()> {
-        self.run_with_clocks(runner, repo_root, plan, stop, on_refresh, || ClockPair {
-            wall: SystemTime::now(),
-            mono: Instant::now(),
-        })
+        self.run_with(runner, plan, stop, on_refresh, ClockPair::now, Timing::LIVE)
     }
 
-    fn run_with_clocks(
-        self,
+    fn run_with(
+        mut self,
         runner: &impl CommandRunner,
-        repo_root: &Path,
         plan: &refresh::Plan,
         stop: &AtomicBool,
         mut on_refresh: impl FnMut(),
         mut clocks: impl FnMut() -> ClockPair,
+        timing: Timing,
     ) -> Result<()> {
-        if matches!(&self.backend, Backend::GitPoll) {
-            return run_git_polling(
-                runner,
-                repo_root,
-                plan,
-                stop,
-                on_refresh,
-                clocks,
-                self.baseline_token,
-            );
+        let rx = self.rx.take();
+        if rx.is_none() && !matches!(self.backend, Backend::GitPoll) {
+            anyhow::bail!("filesystem watcher backend missing event receiver");
         }
-        let rx = self
-            .rx
-            .as_ref()
-            .context("filesystem watcher backend missing event receiver")?;
         let mut previous = clocks();
-        let mut previous_token = self.baseline_token;
         let mut last_poll = Instant::now();
+        let mut last_net = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             let now = clocks();
             if let Some(slept) = detect_suspension(&previous, &now, SUSPENSION_THRESHOLD) {
@@ -332,163 +770,148 @@ impl Session {
                     event = "toimija.watch.resumed",
                     slept_secs = slept.as_secs()
                 );
-                if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
-                    previous_token = Some(token);
-                }
+                let stamp = self.repo.stamp();
+                self.refresh(runner, plan, &mut on_refresh, stamp, None);
                 previous = now;
                 continue;
             }
             previous = now;
-            match rx.recv_timeout(TICK) {
-                Ok(Ok(event)) if relevant(&event) => {
-                    drain_burst(rx, repo_root);
-                    if stop.load(Ordering::Relaxed) {
+            let mut git_moved = false;
+            match &rx {
+                Some(rx) => match rx.recv_timeout(timing.tick) {
+                    Ok(Ok(event)) => match self.repo.classify_event(&event) {
+                        Change::Ignored => {}
+                        first => {
+                            let change = self.repo.drain_burst(rx, first);
+                            if stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            if change == Change::Tree {
+                                let stamp = self.repo.stamp();
+                                self.refresh(runner, plan, &mut on_refresh, stamp, None);
+                            } else {
+                                git_moved = true;
+                            }
+                        }
+                    },
+                    // A watcher-backend error (dropped or rescan-required
+                    // events): surface it, since the packet may now be stale,
+                    // then keep going. The safety net re-checks.
+                    Ok(Err(error)) => self.repo.warn_watcher_error(&error),
+                    // Woke to re-check `stop`.
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    // Watcher dropped its sender — nothing more will arrive.
+                    // Say so: under `run` the agent keeps working against a
+                    // packet that has silently stopped refreshing.
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        eprintln!(
+                            "toimija: file watcher stopped; the live packet will no longer refresh"
+                        );
                         break;
                     }
-                    if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
-                        previous_token = Some(token);
-                    }
-                }
-                // A watcher-backend error (dropped or rescan-required events):
-                // surface it, since the packet may now be stale, then keep going.
-                Ok(Err(error)) => warn_watcher_error(&error, repo_root),
-                // Irrelevant event: keep watching.
-                Ok(Ok(_)) => {}
-                // Woke to re-check `stop`.
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                // Watcher dropped its sender — nothing more will arrive. Say
-                // so: under `run` the agent keeps working against a packet
-                // that has silently stopped refreshing.
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    eprintln!(
-                        "toimija: file watcher stopped; the live packet will no longer refresh"
-                    );
-                    break;
-                }
+                },
+                None => std::thread::sleep(timing.tick),
             }
-            poll_refresh_if_changed(
-                runner,
-                repo_root,
-                plan,
-                &mut previous_token,
-                &mut last_poll,
-                &mut on_refresh,
-            );
+            let poll_due = last_poll.elapsed() >= timing.state_poll;
+            if poll_due || git_moved {
+                let net_due = poll_due && last_net.elapsed() >= timing.safety_net;
+                if poll_due {
+                    last_poll = Instant::now();
+                }
+                if net_due {
+                    last_net = Instant::now();
+                }
+                self.check_state(runner, plan, &mut on_refresh, net_due);
+            }
         }
         Ok(())
     }
-}
 
-fn run_git_polling(
-    runner: &impl CommandRunner,
-    repo_root: &Path,
-    plan: &refresh::Plan,
-    stop: &AtomicBool,
-    mut on_refresh: impl FnMut(),
-    mut clocks: impl FnMut() -> ClockPair,
-    baseline_token: Option<WatchToken>,
-) -> Result<()> {
-    let mut previous = clocks();
-    let mut previous_token = baseline_token.or_else(|| match current_token(runner, repo_root) {
-        Ok(token) => Some(token),
-        Err(error) => {
-            eprintln!("toimija: Git-state poll failed (packet may be stale): {error:#}");
-            None
+    /// Check the Git state against what the packet was built from. With
+    /// nothing moved this starts no git process on the event backends, and one
+    /// `git status` under Git polling or when the safety net is due.
+    fn check_state(
+        &mut self,
+        runner: &impl CommandRunner,
+        plan: &refresh::Plan,
+        on_refresh: &mut impl FnMut(),
+        safety_net: bool,
+    ) {
+        let stamp = self.repo.stamp();
+        if safety_net && self.known.failed {
+            debug!(event = "toimija.watch.retry_failed_refresh");
+            self.refresh(runner, plan, on_refresh, stamp, None);
+            return;
         }
-    });
-    let mut last_poll = Instant::now();
-    while !stop.load(Ordering::Relaxed) {
-        let now = clocks();
-        if let Some(slept) = detect_suspension(&previous, &now, SUSPENSION_THRESHOLD) {
-            info!(
-                event = "toimija.watch.resumed",
-                slept_secs = slept.as_secs()
-            );
-            if let Some(token) = refresh_or_warn(runner, repo_root, plan, &mut on_refresh) {
-                previous_token = Some(token);
-            }
-            previous = now;
-            continue;
+        if stamp.refs != self.known.stamp.refs {
+            debug!(event = "toimija.watch.refs_moved");
+            self.refresh(runner, plan, on_refresh, stamp, None);
+            return;
         }
-        previous = now;
-
-        poll_refresh_if_changed(
-            runner,
-            repo_root,
-            plan,
-            &mut previous_token,
-            &mut last_poll,
-            &mut on_refresh,
-        );
-
-        std::thread::sleep(TICK);
-    }
-    Ok(())
-}
-
-fn poll_refresh_if_changed(
-    runner: &impl CommandRunner,
-    repo_root: &Path,
-    plan: &refresh::Plan,
-    previous_token: &mut Option<WatchToken>,
-    last_poll: &mut Instant,
-    on_refresh: &mut impl FnMut(),
-) {
-    if last_poll.elapsed() < STATE_POLL_INTERVAL {
-        return;
-    }
-    *last_poll = Instant::now();
-    match current_token(runner, repo_root) {
-        Ok(current) if previous_token.as_ref() != Some(&current) => {
-            if previous_token.is_some() {
+        let status_moved = stamp.status != self.known.stamp.status;
+        let git_polling = matches!(self.backend, Backend::GitPoll);
+        if !(status_moved || safety_net || git_polling) {
+            return;
+        }
+        match self.observe(runner, status_moved || safety_net) {
+            Ok(observed) if self.known.differs(&observed) => {
                 debug!(event = "toimija.watch.state_poll_changed");
+                self.refresh(runner, plan, on_refresh, stamp, Some(observed));
             }
-            if let Some(token) = refresh_or_warn(runner, repo_root, plan, on_refresh) {
-                *previous_token = Some(token);
+            // Rewritten without a visible change (another tool's `git status`
+            // refreshing the index, say): nothing to refresh.
+            Ok(_) => self.known.stamp = stamp,
+            Err(error) => {
+                eprintln!("toimija: Git-state poll failed (packet may be stale): {error:#}");
             }
-        }
-        Ok(current) => *previous_token = Some(current),
-        Err(error) => {
-            eprintln!("toimija: Git-state poll failed (packet may be stale): {error:#}");
         }
     }
-}
 
-/// What the watcher compares between polls: the packet's repository refresh
-/// token (proposal 0011).
-type WatchToken = String;
+    /// One `git status`, against the git dir found at discovery. `deep` adds
+    /// the consistency token, which also reads the changed files' contents.
+    fn observe(&self, runner: &impl CommandRunner, deep: bool) -> Result<Observed> {
+        let mut live =
+            git::token_state_at(runner, &self.repo.root, Some(self.repo.git_dir.clone()))?;
+        crate::context::normalize_git_state(&mut live);
+        Ok(Observed {
+            status: status_key(&live),
+            consistency: deep.then(|| Consistency::fingerprint(&live).token),
+        })
+    }
 
-fn current_token(runner: &impl CommandRunner, repo_root: &Path) -> Result<WatchToken> {
-    let (mut git, _) = git::collect_git_state(runner, repo_root)?;
-    crate::context::normalize_git_state(&mut git);
-    Ok(crate::context::refresh_token(&git))
-}
-
-/// The packet-side counterpart of [`current_token`]. Equality with the live
-/// probe on an untouched repo is pinned by
-/// `packet_and_live_watch_tokens_agree_when_nothing_changes`.
-fn packet_refresh_token(packet: &crate::context::ContextPacket) -> WatchToken {
-    packet
-        .refresh_token
-        .clone()
-        .unwrap_or_else(|| packet.consistency.token.clone())
+    /// Refresh, having stamped the Git files *before* the refresh reads them:
+    /// a change landing while it runs moves the next stamp.
+    fn refresh(
+        &mut self,
+        runner: &impl CommandRunner,
+        plan: &refresh::Plan,
+        on_refresh: &mut impl FnMut(),
+        stamp: Stamp,
+        observed: Option<Observed>,
+    ) {
+        self.known.stamp = stamp;
+        match refresh_or_warn(runner, &self.repo.root, plan, on_refresh) {
+            Some(refreshed) => self.known.learn(&refreshed.packet),
+            None => self.known.fail(observed),
+        }
+    }
 }
 
 /// A transient refresh failure must not kill live updates: keep watching so
-/// the packet can recover on the next event or resume. But the agent reads the
-/// packet, not this process's stderr, so the failure goes into the packet
-/// itself (issue #229) — once per distinct failure, not on every retry.
+/// the packet can recover on the next event, the safety net, or resume. But
+/// the agent reads the packet, not this process's stderr, so the failure goes
+/// into the packet itself (issue #229) — once per distinct failure, not on
+/// every retry.
 fn refresh_or_warn(
     runner: &impl CommandRunner,
     repo_root: &Path,
     plan: &refresh::Plan,
     on_refresh: &mut impl FnMut(),
-) -> Option<WatchToken> {
+) -> Option<refresh::Refreshed> {
     match plan.run(runner, repo_root) {
         Ok(refreshed) => {
-            let token = packet_refresh_token(&refreshed.packet);
             on_refresh();
-            Some(token)
+            Some(refreshed)
         }
         Err(error) => {
             match plan.mark_stale(repo_root, &error) {
@@ -507,9 +930,9 @@ fn refresh_or_warn(
     }
 }
 
-/// Convenience for the standalone `watch` command: baseline refresh, then start
-/// and catch up after registration before running the loop. Startup failures
-/// propagate via `?`.
+/// Convenience for the standalone `watch` command: discover, baseline refresh,
+/// then start and catch up after registration before running the loop.
+/// Startup failures propagate via `?`.
 pub fn watch(
     runner: &impl CommandRunner,
     repo_root: &Path,
@@ -517,109 +940,59 @@ pub fn watch(
     stop: &AtomicBool,
     on_refresh: impl FnMut(),
 ) -> Result<()> {
+    let repo = Repository::discover(runner, repo_root)?;
     // Baseline so the live packet exists immediately, before any event.
-    plan.run(runner, repo_root)?;
-    let mut session = start(repo_root)?;
-    session.catch_up(runner, repo_root, plan)?;
+    let baseline = plan.run(runner, repo_root)?;
+    let mut session = start(repo)?;
+    session.catch_up(runner, plan, &baseline.packet)?;
     eprintln!("toimija watch: armed ({})", session.backend_label());
-    session.run(runner, repo_root, plan, stop, on_refresh)
+    session.run(runner, plan, stop, on_refresh)
 }
 
-/// Swallow the rest of an event burst: keep receiving until the channel is quiet
-/// for a full debounce window, so one logical change yields one refresh. Backend
-/// errors inside the burst keep their warning — rescan-required is precisely
-/// the error that means events were lost.
-fn drain_burst(rx: &mpsc::Receiver<notify::Result<Event>>, repo_root: &Path) {
-    while let Ok(result) = rx.recv_timeout(DEBOUNCE) {
-        if let Err(error) = result {
-            warn_watcher_error(&error, repo_root);
-        }
-    }
-}
-
-/// Warn about a backend error unless it is scoped entirely to ignored
-/// directories: a build deleting files under `_build`/`target` mid-scan is
-/// churn the watch has promised not to react to, not a packet-freshness
-/// problem. Polling can also race children that vanish mid-walk; those
-/// path-scoped `NotFound` errors are quiet unless the watched root itself is
-/// gone. A pathless error says nothing about where it happened, so it stays
-/// visible.
-fn warn_watcher_error(error: &notify::Error, repo_root: &Path) {
-    if !error_is_ignorable(error, repo_root) {
-        eprintln!("toimija: file watcher error (packet may be stale): {error}");
-    }
-}
-
-fn error_is_ignorable(error: &notify::Error, repo_root: &Path) -> bool {
-    if error.paths.is_empty() {
-        return false;
-    }
-    if matches!(
-        &error.kind,
-        notify::ErrorKind::Io(io_error)
-            if io_error.kind() == std::io::ErrorKind::NotFound
-    ) {
-        return repo_root.try_exists().unwrap_or(false);
-    }
-    error.paths.iter().all(|path| is_ignored(path))
-}
-
-fn relevant(event: &Event) -> bool {
-    event.paths.iter().any(|path| !is_ignored(path))
-}
-
-/// Ignore generated local tool output and anything under a build/vendor
-/// directory. Matched on path tails/components so it is robust to the absolute,
-/// possibly symlink-resolved paths notify reports.
-fn is_ignored(path: &Path) -> bool {
-    if is_generated_output(path) || is_toimija_git_footprint(path) {
-        return true;
-    }
-    path.components().any(|component| {
-        matches!(component, Component::Normal(name) if IGNORED_DIRS.iter().any(|dir| name == *dir))
-    })
+/// Whether a path relative to the repository root is generated local tool
+/// output, Toimija's own Git footprint, its readiness probe, or under a
+/// build/vendor directory. Matched relative to the root only: a repository
+/// that itself lives under a `target/` or `.sykli/` directory is not ignored.
+fn is_ignored(relative: &Path) -> bool {
+    consistency::is_generated_output(relative)
+        || is_toimija_git_footprint(relative)
+        || first_component(relative).is_some_and(|name| name.starts_with(PROBE_PREFIX))
+        || relative.components().any(|component| {
+            matches!(component, Component::Normal(name) if IGNORED_DIRS.iter().any(|dir| name == *dir))
+        })
 }
 
 /// Toimija's own Git writes must not refresh the packet that caused them.
 /// Keep HEAD, index, reflogs, and packed refs relevant: they can describe a
 /// real repository transition rather than observer bookkeeping.
-fn is_toimija_git_footprint(path: &Path) -> bool {
-    let parts: Vec<_> = path
+fn is_toimija_git_footprint(relative: &Path) -> bool {
+    let mut parts = relative
         .components()
         .filter_map(|component| match component {
             Component::Normal(name) => name.to_str(),
             _ => None,
-        })
-        .collect();
-    parts
-        .windows(2)
-        .any(|pair| pair == [".git", "objects"] || pair == ["refs", "toimija"])
-        || parts
-            .windows(2)
-            .any(|pair| pair[0] == ".git" && pair[1].starts_with("toimija-snapshot-"))
+        });
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(".git"), Some("objects"), _) => true,
+        (Some(".git"), Some("refs"), Some("toimija")) => true,
+        (Some(".git"), Some(name), _) => name.starts_with("toimija-snapshot-"),
+        _ => false,
+    }
 }
 
-fn is_generated_output(path: &Path) -> bool {
-    let parts: Vec<_> = path
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(name) => name.to_str(),
-            _ => None,
-        })
-        .collect();
-    // notify reports absolute paths: find where the repository-relative part
-    // could begin, then ask the token's own rule about it.
-    parts
-        .iter()
-        .position(|part| consistency::generated_namespaces().contains(part))
-        .is_some_and(|index| consistency::is_generated_output(&PathBuf::from_iter(&parts[index..])))
+fn first_component(relative: &Path) -> Option<&str> {
+    match relative.components().next() {
+        Some(Component::Normal(name)) => name.to_str(),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::CommandOutput;
-    use std::cell::Cell;
+    use crate::command::{CommandOutput, ProcessCommandRunner};
+    use std::cell::{Cell, RefCell};
+    use std::ffi::OsStr;
     use std::path::PathBuf;
     use std::time::UNIX_EPOCH;
 
@@ -665,60 +1038,611 @@ mod tests {
         }
     }
 
+    /// The real git, with every process it starts — its children included —
+    /// recorded by Git's own trace2 event stream, the way an operator measures
+    /// a watch: `GIT_TRACE2_EVENT=<file>`, counting `"event":"start"`.
+    struct Traced {
+        trace: PathBuf,
+        calls: RefCell<Vec<Vec<String>>>,
+    }
+
+    impl Traced {
+        fn new(dir: &Path) -> Self {
+            Self {
+                trace: dir.join("trace2.json"),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        /// Git processes started so far.
+        fn starts(&self) -> usize {
+            fs::read_to_string(&self.trace)
+                .map(|trace| {
+                    trace
+                        .lines()
+                        .filter(|line| line.contains(r#""event":"start""#))
+                        .count()
+                })
+                .unwrap_or(0)
+        }
+
+        /// Refreshes attempted so far: each begins by finding the repo root.
+        fn refreshes(&self) -> usize {
+            self.calls
+                .borrow()
+                .iter()
+                .filter(|args| args[..] == ["rev-parse", "--show-toplevel"])
+                .count()
+        }
+    }
+
+    impl CommandRunner for Traced {
+        fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
+            self.run_with_env(cwd, program, args, &[])
+        }
+
+        fn run_with_env(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            env: &[(&str, &OsStr)],
+        ) -> std::io::Result<CommandOutput> {
+            self.calls
+                .borrow_mut()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            let mut env = env.to_vec();
+            env.push(("GIT_TRACE2_EVENT", self.trace.as_os_str()));
+            ProcessCommandRunner.run_with_env(cwd, program, args, &env)
+        }
+    }
+
+    /// Fixture git, never traced. Scrub the redirecting variables:
+    /// `command::tests` sets `GIT_DIR` process-wide for a moment, and a
+    /// fixture `git` that inherits it acts on that test's repository instead.
+    fn fixture_git(dir: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_TRACE2_EVENT")
+            .output()
+            .expect("git runs")
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = fixture_git(dir, args);
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_usable() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    /// A repository with one commit on `main`, at its canonical path — the
+    /// spelling `git rev-parse --show-toplevel` gives the callers.
+    fn repo_with_commit() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap().join("repo");
+        fs::create_dir(&root).unwrap();
+        init(&root);
+        fs::write(root.join("a.txt"), "x\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "init"]);
+        (temp, root)
+    }
+
+    fn init(root: &Path) {
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.email", "toimija@example.invalid"]);
+        git(root, &["config", "user.name", "Toimija Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+    }
+
+    fn plan() -> refresh::Plan {
+        refresh::Plan {
+            for_diff: false,
+            budget: None,
+            session_dir: None,
+        }
+    }
+
+    /// A session over `repo` with no OS watcher behind it: Git polling, or an
+    /// event backend whose channel stays open and silent — what an event
+    /// backend looks like while nothing in the work tree moves.
+    fn bare_session(
+        repo: Repository,
+        git_polling: bool,
+    ) -> (Session, Option<mpsc::Sender<notify::Result<Event>>>) {
+        let known = Known::new(repo.discovered.clone());
+        if git_polling {
+            let session = Session {
+                backend: Backend::GitPoll,
+                rx: None,
+                repo,
+                known,
+            };
+            return (session, None);
+        }
+        let watcher = notify::PollWatcher::new(|_| {}, watcher_config()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let session = Session {
+            backend: Backend::Poll(watcher),
+            rx: Some(rx),
+            repo,
+            known,
+        };
+        (session, Some(tx))
+    }
+
+    /// Discover, build the baseline packet, and catch up, as `watch` and
+    /// `run` do.
+    fn armed(
+        runner: &Traced,
+        root: &Path,
+        git_polling: bool,
+    ) -> (Session, Option<mpsc::Sender<notify::Result<Event>>>) {
+        let repo = Repository::discover(runner, root).unwrap();
+        let baseline = plan().run(runner, root).unwrap();
+        let (mut session, tx) = bare_session(repo, git_polling);
+        assert!(
+            session
+                .catch_up(runner, &plan(), &baseline.packet)
+                .unwrap()
+                .is_none(),
+            "nothing moved since the baseline"
+        );
+        (session, tx)
+    }
+
+    const FAST: Timing = Timing {
+        tick: Duration::from_millis(2),
+        state_poll: Duration::ZERO,
+        safety_net: Duration::from_secs(3600),
+    };
+
+    /// Run the real loop for `ticks` ticks, each one a state check; returns
+    /// the refreshes it made.
+    fn run_ticks(
+        session: Session,
+        runner: &impl CommandRunner,
+        ticks: usize,
+        timing: Timing,
+    ) -> usize {
+        let stop = AtomicBool::new(false);
+        let mut refreshes = 0;
+        let mut clock_reads = 0;
+        session
+            .run_with(
+                runner,
+                &plan(),
+                &stop,
+                || refreshes += 1,
+                || {
+                    // The first read is the loop's baseline; each later one
+                    // starts a tick.
+                    clock_reads += 1;
+                    if clock_reads > ticks {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    ClockPair::now()
+                },
+                timing,
+            )
+            .unwrap();
+        refreshes
+    }
+
     fn idle_session() -> Session {
         let watcher = notify::PollWatcher::new(|_| {}, watcher_config()).unwrap();
         let (tx, rx) = mpsc::channel();
         // The dropped sender makes the loop exit on its first quiet tick.
         drop(tx);
+        let repo = Repository::at(
+            Path::new("/repo"),
+            PathBuf::from("/repo/.git"),
+            PathBuf::from("/repo/.git"),
+        );
         Session {
             backend: Backend::Poll(watcher),
             rx: Some(rx),
-            baseline_token: None,
+            known: Known::new(repo.discovered.clone()),
+            repo,
         }
     }
 
-    #[test]
-    fn packet_and_live_watch_tokens_agree_when_nothing_changes() {
-        // D11-5's churn guard: the packet-side token and the live probe must
-        // agree on an untouched repo, or the state poll would trigger a
-        // refresh every interval forever — invisible to the drift tests,
-        // which only assert that a refresh *happens*. Going through the real
-        // packet build pins the whole chain.
-        // Scrub the redirecting variables: `command::tests` sets `GIT_DIR`
-        // process-wide for a moment, and a fixture `git` that inherits it
-        // acts on that test's repository instead of this one.
-        let git_runs = |args: &[&str], dir: &Path| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_INDEX_FILE")
-                .env_remove("GIT_WORK_TREE")
-                .output()
-                .is_ok_and(|output| output.status.success())
-        };
-        let temp = tempfile::tempdir().unwrap();
-        if !git_runs(&["init"], temp.path()) {
-            return; // no usable git on this machine; nothing to pin
-        }
-        assert!(git_runs(
-            &["config", "user.email", "toimija@example.invalid"],
-            temp.path()
-        ));
-        assert!(git_runs(
-            &["config", "user.name", "Toimija Test"],
-            temp.path()
-        ));
-        std::fs::write(temp.path().join("a.txt"), "x\n").unwrap();
-        assert!(git_runs(&["add", "."], temp.path()));
-        assert!(git_runs(&["commit", "-m", "init"], temp.path()));
+    fn repo_at(root: &str) -> Repository {
+        Repository::at(
+            Path::new(root),
+            Path::new(root).join(".git"),
+            Path::new(root).join(".git"),
+        )
+    }
 
-        let runner = crate::command::ProcessCommandRunner;
-        let packet = crate::context::build_context_packet(&runner, temp.path(), false).unwrap();
-        assert_eq!(
-            packet_refresh_token(&packet),
-            current_token(&runner, temp.path()).unwrap()
+    fn is_ignored_at(root: &str, path: &str) -> bool {
+        repo_at(root).classify(Path::new(path)) == Change::Ignored
+    }
+
+    #[test]
+    fn an_idle_tick_starts_no_git_process_on_an_event_backend() {
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        let (session, _events) = armed(&runner, &root, false);
+        let before = runner.starts();
+
+        let refreshes = run_ticks(session, &runner, 20, FAST);
+
+        let during = runner.starts() - before;
+        assert!(
+            during <= 3,
+            "20 idle ticks started {during} git processes: {:?}",
+            runner.calls.borrow()
         );
+        assert_eq!(refreshes, 0);
+    }
+
+    #[test]
+    fn an_idle_tick_starts_one_git_process_under_git_polling() {
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        let (session, _) = armed(&runner, &root, true);
+        let before = runner.starts();
+
+        let refreshes = run_ticks(session, &runner, 20, FAST);
+
+        // Git polling has no events: the tick's one `git status` is how it
+        // sees the work tree.
+        let during = runner.starts() - before;
+        assert!(
+            during <= 20,
+            "20 idle ticks started {during} git processes: {:?}",
+            runner.calls.borrow()
+        );
+        assert_eq!(refreshes, 0);
+    }
+
+    #[test]
+    fn an_idle_watch_on_this_platforms_backend_stays_within_budget() {
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        let repo = Repository::discover(&runner, &root).unwrap();
+        let baseline = plan().run(&runner, &root).unwrap();
+        let mut session = start(repo).unwrap();
+        let before_catch_up = runner.starts();
+        assert!(
+            session
+                .catch_up(&runner, &plan(), &baseline.packet)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            runner.starts() - before_catch_up,
+            1,
+            "catching up is one `git status`"
+        );
+        let per_tick = usize::from(matches!(session.backend, Backend::GitPoll));
+        let before = runner.starts();
+
+        let refreshes = run_ticks(session, &runner, 20, FAST);
+
+        let during = runner.starts() - before;
+        assert!(
+            during <= 20 * per_tick + 3,
+            "20 idle ticks started {during} git processes: {:?}",
+            runner.calls.borrow()
+        );
+        assert_eq!(refreshes, 0, "nothing moved, not even the readiness probe");
+    }
+
+    #[test]
+    fn toimijas_own_refresh_moves_no_stamp() {
+        // The session refresh writes a tree through a scratch index in the git
+        // dir, objects, and the packet. None of it may move the stamp, or the
+        // watch would refresh on its own refreshes.
+        if !git_usable() {
+            return;
+        }
+        let (_temp, root) = repo_with_commit();
+        let runner = ProcessCommandRunner;
+        let repo = Repository::discover(&runner, &root).unwrap();
+        let before = repo.stamp();
+        let session_plan = refresh::Plan {
+            session_dir: Some(root.join(".toimija/sessions/test")),
+            ..plan()
+        };
+        session_plan.run(&runner, &root).unwrap();
+        plan().run(&runner, &root).unwrap();
+
+        assert_eq!(repo.stamp(), before);
+    }
+
+    #[test]
+    fn the_stamp_sees_each_kind_of_git_change_without_a_git_process() {
+        if !git_usable() {
+            return;
+        }
+        let (_temp, root) = repo_with_commit();
+        let repo = Repository::discover(&ProcessCommandRunner, &root).unwrap();
+        let mut last = repo.stamp();
+        let mut step = |what: &str, status: bool, refs: bool, change: &dyn Fn()| {
+            change();
+            let now = repo.stamp();
+            assert_eq!(now.refs != last.refs, refs, "{what}: refs half");
+            // A moved refs half refreshes whatever the status half did.
+            if !refs {
+                assert_eq!(now.status != last.status, status, "{what}: status half");
+            }
+            last = now;
+        };
+        step("staging", true, false, &|| {
+            fs::write(root.join("a.txt"), "y\n").unwrap();
+            git(&root, &["add", "a.txt"]);
+        });
+        step("a commit", true, true, &|| {
+            git(&root, &["commit", "-q", "-m", "second"]);
+        });
+        step("an empty commit", false, true, &|| {
+            git(&root, &["commit", "-q", "--allow-empty", "-m", "third"]);
+        });
+        step("a branch elsewhere", false, true, &|| {
+            git(&root, &["branch", "elsewhere"]);
+        });
+        step("a branch switch", true, false, &|| {
+            git(&root, &["switch", "-q", "elsewhere"]);
+        });
+        step("an upstream", false, true, &|| {
+            git(
+                &root,
+                &["config", "branch.elsewhere.merge", "refs/heads/main"],
+            );
+        });
+        step("packing refs", false, true, &|| {
+            git(&root, &["pack-refs", "--all"]);
+        });
+        step("the packet's configuration", false, true, &|| {
+            fs::create_dir_all(root.join(".toimija")).unwrap();
+            fs::write(root.join(crate::config::CONFIG_PATH), "repo:\n  name: x\n").unwrap();
+        });
+        step("a work-tree edit", false, false, &|| {
+            fs::write(root.join("a.txt"), "z\n").unwrap();
+        });
+    }
+
+    #[test]
+    fn packet_and_live_probe_agree_in_every_head_and_file_state() {
+        // The churn guard: the packet-side keys and the live probe must agree
+        // on an untouched repo, or every probe would refresh, forever —
+        // invisible to the change tests, which only assert that a refresh
+        // *happens*. Going through the real packet build pins the chain.
+        if !git_usable() {
+            return;
+        }
+        let assert_agree = |what: &str, root: &Path| {
+            let runner = ProcessCommandRunner;
+            let packet = crate::context::build_context_packet(&runner, root, false).unwrap();
+            let repo = Repository::discover(&runner, root).unwrap();
+            let (session, _events) = bare_session(repo, true);
+            let mut known = Known::new(Stamp::default());
+            known.learn(&packet);
+            let observed = session.observe(&runner, true).unwrap();
+            assert!(
+                !known.differs(&observed),
+                "{what}: packet {:?}/{:?}, live {observed:?}",
+                known.status,
+                known.consistency
+            );
+        };
+
+        let (_temp, root) = repo_with_commit();
+        assert_agree("clean", &root);
+        fs::write(root.join("staged.txt"), "s\n").unwrap();
+        git(&root, &["add", "staged.txt"]);
+        fs::write(root.join("a.txt"), "changed\n").unwrap();
+        fs::write(root.join("untracked.txt"), "u\n").unwrap();
+        assert_agree("dirty", &root);
+        git(&root, &["stash", "-q", "--include-untracked"]);
+        git(&root, &["checkout", "-q", "--detach"]);
+        assert_agree("detached", &root);
+
+        // A merge stopped on a conflict: the watch must sit still through it.
+        git(&root, &["switch", "-q", "-c", "left", "main"]);
+        fs::write(root.join("a.txt"), "left\n").unwrap();
+        git(&root, &["commit", "-q", "-am", "left"]);
+        git(&root, &["switch", "-q", "-c", "right", "main"]);
+        fs::write(root.join("a.txt"), "right\n").unwrap();
+        git(&root, &["commit", "-q", "-am", "right"]);
+        assert!(
+            !fixture_git(&root, &["merge", "-q", "left"])
+                .status
+                .success()
+        );
+        assert_agree("conflicted", &root);
+
+        let unborn = tempfile::tempdir().unwrap();
+        let unborn_root = fs::canonicalize(unborn.path()).unwrap();
+        init(&unborn_root);
+        fs::write(unborn_root.join("new.txt"), "n\n").unwrap();
+        assert_agree("unborn", &unborn_root);
+
+        // A linked worktree tracking an upstream, its git dir outside it.
+        let (temp, origin) = repo_with_commit();
+        let clone = temp.path().join("clone");
+        git(
+            temp.path(),
+            &["clone", "-q", origin.to_str().unwrap(), "clone"],
+        );
+        let linked = fs::canonicalize(temp.path()).unwrap().join("linked");
+        git(
+            &clone,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                linked.to_str().unwrap(),
+                "origin/main",
+            ],
+        );
+        git(
+            &linked,
+            &["branch", "-q", "--set-upstream-to", "origin/main"],
+        );
+        fs::write(linked.join("b.txt"), "b\n").unwrap();
+        assert_agree("linked worktree with upstream", &linked);
+    }
+
+    #[test]
+    fn catch_up_refreshes_a_change_made_before_the_watcher_armed() {
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        let repo = Repository::discover(&runner, &root).unwrap();
+        let baseline = plan().run(&runner, &root).unwrap();
+        // Between the baseline packet and the watcher's registration.
+        fs::write(root.join("late.txt"), "l\n").unwrap();
+        let (mut session, _events) = bare_session(repo, false);
+
+        let caught_up = session
+            .catch_up(&runner, &plan(), &baseline.packet)
+            .unwrap();
+
+        let packet = caught_up
+            .expect("a work-tree change before arming is caught up")
+            .packet;
+        assert!(
+            packet
+                .git
+                .untracked_files
+                .contains(&PathBuf::from("late.txt"))
+        );
+
+        // A ref moved before arming: refreshed without the probe.
+        let repo = Repository::discover(&runner, &root).unwrap();
+        let baseline = plan().run(&runner, &root).unwrap();
+        git(&root, &["branch", "moved"]);
+        let (mut session, _events) = bare_session(repo, false);
+        assert!(
+            session
+                .catch_up(&runner, &plan(), &baseline.packet)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn staging_and_a_commit_refresh_without_any_filesystem_event() {
+        // A linked worktree's git dir is outside the watched root, so staging
+        // and committing there reach no event backend: the stamp sees them.
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        fs::write(root.join("a.txt"), "edited\n").unwrap();
+        let (session, _events) = armed(&runner, &root, false);
+        git(&root, &["add", "a.txt"]);
+        assert_eq!(run_ticks(session, &runner, 1, FAST), 1, "staging refreshes");
+        let packet = fs::read_to_string(root.join(refresh::CURRENT_JSON)).unwrap();
+        assert!(packet.contains(r#""staged_files": ["#), "{packet}");
+
+        let (session, _events) = armed(&runner, &root, false);
+        git(&root, &["commit", "-q", "-m", "staged"]);
+        let refreshes = runner.refreshes();
+        assert_eq!(
+            run_ticks(session, &runner, 1, FAST),
+            1,
+            "a commit refreshes"
+        );
+        assert_eq!(runner.refreshes(), refreshes + 1);
+    }
+
+    #[test]
+    fn an_index_rewrite_that_changes_nothing_costs_one_status_and_no_refresh() {
+        // Agents and editors run `git status`, which rewrites the index to
+        // refresh its stat data. The packet does not change; one `git status`
+        // proves it.
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        let (session, _events) = armed(&runner, &root, false);
+        let stamp = session.repo.stamp();
+        // Same bytes, a later mtime: the index's stat data goes stale.
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(root.join("a.txt"), "x\n").unwrap();
+        git(&root, &["update-index", "--refresh"]);
+        assert_ne!(session.repo.stamp().status, stamp.status, "precondition");
+        let before = runner.starts();
+
+        assert_eq!(run_ticks(session, &runner, 3, FAST), 0);
+        assert_eq!(runner.starts() - before, 1);
+    }
+
+    #[test]
+    fn the_safety_net_catches_what_no_event_or_stamp_reports() {
+        // A second edit to an already-modified file: `git status` reads the
+        // same, and only the file's contents changed. Under Git polling no
+        // event reports it; the safety net's consistency check does.
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        fs::write(root.join("a.txt"), "first edit\n").unwrap();
+        let (session, _) = armed(&runner, &root, true);
+        fs::write(root.join("a.txt"), "second edit\n").unwrap();
+        assert_eq!(run_ticks(session, &runner, 3, FAST), 0, "not seen per tick");
+
+        let (session, _) = armed(&runner, &root, true);
+        fs::write(root.join("a.txt"), "third edit\n").unwrap();
+        let net = Timing {
+            safety_net: Duration::ZERO,
+            ..FAST
+        };
+        assert_eq!(run_ticks(session, &runner, 1, net), 1, "seen by the net");
+    }
+
+    #[test]
+    fn a_failing_refresh_is_not_retried_on_every_tick() {
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        let (session, _) = armed(&runner, &root, true);
+        // An unparseable configuration: every refresh fails until it is fixed.
+        fs::create_dir_all(root.join(".toimija")).unwrap();
+        fs::write(root.join(crate::config::CONFIG_PATH), "repo: [\n").unwrap();
+        let before = runner.refreshes();
+
+        assert_eq!(run_ticks(session, &runner, 10, FAST), 0);
+
+        // Once for the moved configuration, once for the status it shows.
+        let attempts = runner.refreshes() - before;
+        assert!(attempts <= 2, "{attempts} attempts in 10 ticks");
     }
 
     #[test]
@@ -787,20 +1711,48 @@ mod tests {
         assert_eq!(detect_suspension(&prev, &now, SUSPENSION_THRESHOLD), None);
     }
 
+    fn run_with_schedule(
+        session: Session,
+        runner: &impl CommandRunner,
+        root: &Path,
+        schedule: Vec<ClockPair>,
+        stop_on_refresh: bool,
+    ) -> usize {
+        let stop = AtomicBool::new(false);
+        let mut clocks = schedule.into_iter();
+        let mut heartbeats = 0;
+        let mut session = session;
+        session.repo = Repository::at(root, root.join(".git"), root.join(".git"));
+        session
+            .run_with(
+                runner,
+                &plan(),
+                &stop,
+                || {
+                    heartbeats += 1;
+                    if stop_on_refresh {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                },
+                || {
+                    clocks
+                        .next()
+                        .expect("loop ran more ticks than the fabricated schedule")
+                },
+                Timing::LIVE,
+            )
+            .unwrap();
+        heartbeats
+    }
+
     #[test]
     fn resume_triggers_exactly_one_refresh_and_heartbeat() {
         let temp = tempfile::tempdir().unwrap();
         let runner = RefreshCountingRunner {
             refreshes: Cell::new(0),
         };
-        let plan = refresh::Plan {
-            for_diff: false,
-            budget: None,
-            session_dir: None,
-        };
-        let stop = AtomicBool::new(false);
         let mono = Instant::now();
-        let mut clocks = [
+        let schedule = vec![
             ClockPair {
                 wall: UNIX_EPOCH,
                 mono,
@@ -809,27 +1761,9 @@ mod tests {
                 wall: UNIX_EPOCH + Duration::from_secs(61),
                 mono: mono + Duration::from_secs(1),
             },
-        ]
-        .into_iter();
-        let mut heartbeats = 0;
+        ];
 
-        idle_session()
-            .run_with_clocks(
-                &runner,
-                temp.path(),
-                &plan,
-                &stop,
-                || {
-                    heartbeats += 1;
-                    stop.store(true, Ordering::Relaxed);
-                },
-                || {
-                    clocks
-                        .next()
-                        .expect("loop ran more ticks than the fabricated schedule")
-                },
-            )
-            .unwrap();
+        let heartbeats = run_with_schedule(idle_session(), &runner, temp.path(), schedule, true);
 
         assert_eq!(runner.refreshes.get(), 1);
         assert_eq!(heartbeats, 1);
@@ -841,14 +1775,8 @@ mod tests {
         let runner = RefreshCountingRunner {
             refreshes: Cell::new(0),
         };
-        let plan = refresh::Plan {
-            for_diff: false,
-            budget: None,
-            session_dir: None,
-        };
-        let stop = AtomicBool::new(false);
         let mono = Instant::now();
-        let mut clocks = [
+        let schedule = vec![
             ClockPair {
                 wall: UNIX_EPOCH,
                 mono,
@@ -857,24 +1785,9 @@ mod tests {
                 wall: UNIX_EPOCH + Duration::from_secs(30),
                 mono: mono + Duration::from_secs(1),
             },
-        ]
-        .into_iter();
-        let mut heartbeats = 0;
+        ];
 
-        idle_session()
-            .run_with_clocks(
-                &runner,
-                temp.path(),
-                &plan,
-                &stop,
-                || heartbeats += 1,
-                || {
-                    clocks
-                        .next()
-                        .expect("loop ran more ticks than the fabricated schedule")
-                },
-            )
-            .unwrap();
+        let heartbeats = run_with_schedule(idle_session(), &runner, temp.path(), schedule, false);
 
         assert_eq!(runner.refreshes.get(), 0);
         assert_eq!(heartbeats, 0);
@@ -886,14 +1799,8 @@ mod tests {
         let runner = FailingRunner {
             attempts: Cell::new(0),
         };
-        let plan = refresh::Plan {
-            for_diff: false,
-            budget: None,
-            session_dir: None,
-        };
-        let stop = AtomicBool::new(false);
         let mono = Instant::now();
-        let mut clocks = [
+        let schedule = vec![
             ClockPair {
                 wall: UNIX_EPOCH,
                 mono,
@@ -906,45 +1813,25 @@ mod tests {
                 wall: UNIX_EPOCH + Duration::from_secs(61),
                 mono: mono + Duration::from_secs(1),
             },
-        ]
-        .into_iter();
-        let mut heartbeats = 0;
+        ];
 
-        idle_session()
-            .run_with_clocks(
-                &runner,
-                temp.path(),
-                &plan,
-                &stop,
-                || heartbeats += 1,
-                || {
-                    clocks
-                        .next()
-                        .expect("loop ran more ticks than the fabricated schedule")
-                },
-            )
-            .unwrap();
+        let heartbeats = run_with_schedule(idle_session(), &runner, temp.path(), schedule, false);
 
         assert_eq!(runner.attempts.get(), 1);
         assert_eq!(heartbeats, 0);
     }
 
     #[test]
-    fn failed_refresh_does_not_mint_a_poll_token() {
+    fn a_failed_refresh_learns_no_packet() {
         let temp = tempfile::tempdir().unwrap();
         let runner = FailingRunner {
             attempts: Cell::new(0),
         };
-        let plan = refresh::Plan {
-            for_diff: false,
-            budget: None,
-            session_dir: None,
-        };
         let mut heartbeats = 0;
 
-        let token = refresh_or_warn(&runner, temp.path(), &plan, &mut || heartbeats += 1);
+        let refreshed = refresh_or_warn(&runner, temp.path(), &plan(), &mut || heartbeats += 1);
 
-        assert_eq!(token, None);
+        assert!(refreshed.is_none());
         assert_eq!(heartbeats, 0);
     }
 
@@ -957,11 +1844,7 @@ mod tests {
         let runner = FailingRunner {
             attempts: Cell::new(0),
         };
-        let plan = refresh::Plan {
-            for_diff: false,
-            budget: None,
-            session_dir: None,
-        };
+        let plan = plan();
 
         refresh_or_warn(&runner, temp.path(), &plan, &mut || {});
         let marked = std::fs::read_to_string(&md).unwrap();
@@ -989,73 +1872,145 @@ mod tests {
 
     #[test]
     fn live_files_are_ignored() {
-        assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.md")));
-        assert!(is_ignored(&PathBuf::from("/repo/.toimija/current.json")));
-        assert!(is_ignored(&PathBuf::from("/repo/.teko/teko.redb")));
+        assert!(is_ignored_at("/repo", "/repo/.toimija/current.md"));
+        assert!(is_ignored_at("/repo", "/repo/.toimija/current.json"));
+        assert!(is_ignored_at("/repo", "/repo/.teko/teko.redb"));
         // A gate's receipts: generated state the token no longer watches.
-        assert!(is_ignored(&PathBuf::from("/repo/.sykli/receipt.json")));
-        assert!(is_ignored(&PathBuf::from("/repo/.sykli/runs/r1/journal")));
+        assert!(is_ignored_at("/repo", "/repo/.sykli/receipt.json"));
+        assert!(is_ignored_at("/repo", "/repo/.sykli/runs/r1/journal"));
         // repo.yaml under .toimija is NOT a live file — changes to it matter.
-        assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
+        assert!(!is_ignored_at("/repo", "/repo/.toimija/repo.yaml"));
     }
 
     #[test]
     fn per_session_output_is_ignored_but_repo_yaml_is_not() {
         // The watcher writes per-session packets; those writes must not re-trigger.
-        assert!(is_ignored(&PathBuf::from(
+        assert!(is_ignored_at(
+            "/repo",
             "/repo/.toimija/sessions/1782608449-66987/current.md"
-        )));
-        assert!(is_ignored(&PathBuf::from(
+        ));
+        assert!(is_ignored_at(
+            "/repo",
             "/repo/.toimija/sessions/1782608449-66987/session.json"
-        )));
+        ));
         // Config under .toimija still matters and must NOT be ignored.
-        assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
+        assert!(!is_ignored_at("/repo", "/repo/.toimija/repo.yaml"));
     }
 
     #[test]
     fn runs_output_is_ignored_but_repo_yaml_is_not() {
-        assert!(is_ignored(&PathBuf::from(
-            "/repo/.toimija/runs/kisko.jsonl"
-        )));
-        assert!(!is_ignored(&PathBuf::from("/repo/.toimija/repo.yaml")));
+        assert!(is_ignored_at("/repo", "/repo/.toimija/runs/kisko.jsonl"));
+        assert!(!is_ignored_at("/repo", "/repo/.toimija/repo.yaml"));
     }
 
     #[test]
     fn build_and_vendor_dirs_are_ignored() {
-        assert!(is_ignored(&PathBuf::from("/repo/target/debug/foo")));
-        assert!(is_ignored(&PathBuf::from(
-            "/repo/apps/web/node_modules/x.js"
-        )));
-        assert!(is_ignored(&PathBuf::from("/repo/_build/dev/app.beam")));
+        assert!(is_ignored_at("/repo", "/repo/target/debug/foo"));
+        assert!(is_ignored_at("/repo", "/repo/apps/web/node_modules/x.js"));
+        assert!(is_ignored_at("/repo", "/repo/_build/dev/app.beam"));
     }
 
     #[test]
-    fn source_and_git_state_are_relevant() {
-        // Source edits and Git-state changes should trigger a refresh.
-        assert!(!is_ignored(&PathBuf::from("/repo/src/main.rs")));
-        assert!(!is_ignored(&PathBuf::from("/repo/.git/HEAD")));
-        assert!(!is_ignored(&PathBuf::from("/repo/.git/index")));
-        assert!(!is_ignored(&PathBuf::from("/repo/.git/logs/HEAD")));
-        assert!(!is_ignored(&PathBuf::from("/repo/.git/packed-refs")));
+    fn a_repository_under_an_ignored_name_still_sees_its_own_events() {
+        // Matching is relative to the root: a checkout that lives under a
+        // `target/`, `deps/` or `.sykli/` directory is not ignored wholesale.
+        for root in [
+            "/work/target/repo",
+            "/home/me/deps/repo",
+            "/srv/.sykli/repo",
+            "/x/.toimija/repo",
+        ] {
+            let repo = repo_at(root);
+            let source = Path::new(root).join("src/main.rs");
+            assert_eq!(repo.classify(&source), Change::Tree, "{root}");
+            assert_eq!(
+                repo.classify(&Path::new(root).join(".git/HEAD")),
+                Change::Git,
+                "{root}"
+            );
+            assert_eq!(
+                repo.classify(&Path::new(root).join(".toimija/current.md")),
+                Change::Ignored,
+                "{root}"
+            );
+            assert_eq!(
+                repo.classify(&Path::new(root).join("target/debug/x")),
+                Change::Ignored,
+                "{root}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn events_under_the_canonical_spelling_of_the_root_are_matched() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let repo = Repository::at(&link, link.join(".git"), link.join(".git"));
+        let canonical = fs::canonicalize(&real).unwrap();
+
+        assert_eq!(repo.classify(&canonical.join("src/lib.rs")), Change::Tree);
+        assert_eq!(
+            repo.classify(&canonical.join(".toimija/current.md")),
+            Change::Ignored
+        );
+        // Neither spelling: a stamp check, never a refresh by itself.
+        assert_eq!(
+            repo.classify(Path::new("/elsewhere/src/lib.rs")),
+            Change::Git
+        );
+    }
+
+    #[test]
+    fn the_readiness_probe_is_ignored() {
+        let probe = format!("/repo/{PROBE_PREFIX}123-native");
+        assert!(is_ignored_at("/repo", &probe));
+        assert!(!is_ignored_at(
+            "/repo",
+            "/repo/src/toimija-watch-probe-1-native"
+        ));
+    }
+
+    #[test]
+    fn source_is_a_tree_change_and_git_state_a_git_change() {
+        let repo = repo_at("/repo");
+        assert_eq!(repo.classify(Path::new("/repo/src/main.rs")), Change::Tree);
+        for git_state in [
+            "/repo/.git/HEAD",
+            "/repo/.git/index",
+            "/repo/.git/logs/HEAD",
+            "/repo/.git/packed-refs",
+        ] {
+            assert_eq!(
+                repo.classify(Path::new(git_state)),
+                Change::Git,
+                "{git_state}"
+            );
+        }
     }
 
     #[test]
     fn toimija_git_footprint_is_ignored_without_hiding_git_state() {
-        assert!(is_ignored(&PathBuf::from("/repo/.git/objects/ab/cdef")));
-        assert!(is_ignored(&PathBuf::from(
+        assert!(is_ignored_at("/repo", "/repo/.git/objects/ab/cdef"));
+        assert!(is_ignored_at(
+            "/repo",
             "/repo/.git/toimija-snapshot-123.index"
-        )));
-        assert!(is_ignored(&PathBuf::from(
+        ));
+        assert!(is_ignored_at(
+            "/repo",
             "/repo/.git/refs/toimija/snapshots/demo"
-        )));
+        ));
     }
 
     #[test]
-    fn start_surfaces_a_failure_for_an_unwatchable_path() {
+    fn arming_surfaces_a_failure_for_an_unwatchable_path() {
         // A non-existent path cannot be watched; `start` must report it rather
         // than a background loop swallowing it.
-        let err = match start(&PathBuf::from("/does/not/exist/toimija-watch")) {
-            Ok(_) => panic!("start should fail for an unwatchable path"),
+        let err = match arm(&PathBuf::from("/does/not/exist/toimija-watch")) {
+            Ok(_) => panic!("arming should fail for an unwatchable path"),
             Err(error) => error,
         };
         assert!(format!("{err:#}").contains("watch"));
@@ -1064,7 +2019,7 @@ mod tests {
     #[test]
     fn native_probe_timeout_arms_the_poll_fallback_and_says_so() {
         let temp = tempfile::tempdir().unwrap();
-        let session = start_with_probe(temp.path(), |repo_root, rx, poll, backend| {
+        let armed = start_with_probe(temp.path(), |repo_root, rx, poll, backend| {
             if poll.is_none() {
                 Ok(false)
             } else {
@@ -1073,7 +2028,7 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(session.backend_label(), "poll fallback");
+        assert_eq!(armed.backend.label(), "poll fallback");
     }
 
     #[test]
@@ -1081,14 +2036,14 @@ mod tests {
         // The inotify watch limit (ENOSPC) fails the native *arm*, not the
         // probe. Startup must degrade to polling, not abort.
         let temp = tempfile::tempdir().unwrap();
-        let session = start_from_native(
+        let armed = start_from_native(
             Err(anyhow::anyhow!("injected: inotify watch limit reached")),
             temp.path(),
             prove_ready,
         )
         .unwrap();
 
-        assert_eq!(session.backend_label(), "poll fallback");
+        assert_eq!(armed.backend.label(), "poll fallback");
     }
 
     #[cfg(target_os = "linux")]
@@ -1096,9 +2051,9 @@ mod tests {
     fn linux_uses_git_state_polling_instead_of_notify_polling() {
         let temp = tempfile::tempdir().unwrap();
 
-        let session = start(temp.path()).unwrap();
+        let armed = arm(temp.path()).unwrap();
 
-        assert_eq!(session.backend_label(), "git polling");
+        assert_eq!(armed.backend.label(), "git polling");
     }
 
     #[cfg(unix)]
@@ -1114,7 +2069,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let resolved = fs::canonicalize(&real)
             .unwrap()
-            .join(format!("toimija-watch-probe-{}-native", std::process::id()));
+            .join(format!("{PROBE_PREFIX}{}-native", std::process::id()));
         let (tx, rx) = mpsc::channel();
         tx.send(Ok(Event::new(notify::EventKind::Create(
             notify::event::CreateKind::File,
@@ -1163,46 +2118,52 @@ mod tests {
 
     #[test]
     fn errors_scoped_to_ignored_dirs_stay_quiet_but_others_surface() {
-        let repo_root = Path::new("/repo");
+        let repo = repo_at("/repo");
         let build_churn = notify::Error::generic("walkdir error scanning")
             .add_path(PathBuf::from("/repo/_build/lib/vartio_core/priv"));
-        assert!(error_is_ignorable(&build_churn, repo_root));
+        assert!(repo.error_is_ignorable(&build_churn));
 
         // A pathless error says nothing about where it happened.
         let pathless = notify::Error::generic("backend failure");
-        assert!(!error_is_ignorable(&pathless, repo_root));
+        assert!(!repo.error_is_ignorable(&pathless));
 
         // One relevant path makes the whole error relevant.
         let mixed = notify::Error::generic("walkdir error scanning")
             .add_path(PathBuf::from("/repo/target/debug/x"))
             .add_path(PathBuf::from("/repo/src/main.rs"));
-        assert!(!error_is_ignorable(&mixed, repo_root));
+        assert!(!repo.error_is_ignorable(&mixed));
     }
 
     #[test]
     fn poll_scan_not_found_races_stay_quiet_but_real_io_errors_surface() {
         let temp = tempfile::tempdir().unwrap();
         let repo_root = temp.path();
+        let repo = Repository::at(repo_root, repo_root.join(".git"), repo_root.join(".git"));
         let vanished_during_scan =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
                 .add_path(repo_root.join(".git/objects/tmp_obj_abcd"));
-        assert!(error_is_ignorable(&vanished_during_scan, repo_root));
+        assert!(repo.error_is_ignorable(&vanished_during_scan));
 
         let pathless_not_found =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert!(!error_is_ignorable(&pathless_not_found, repo_root));
+        assert!(!repo.error_is_ignorable(&pathless_not_found));
 
         let permission_denied =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
                 .add_path(repo_root.join("private"));
-        assert!(!error_is_ignorable(&permission_denied, repo_root));
+        assert!(!repo.error_is_ignorable(&permission_denied));
 
         // Backends may canonicalize or otherwise alias the watched path. Root
         // presence, not lexical path equality, decides whether freshness is lost.
         let missing_repo_root = repo_root.join("missing");
+        let missing = Repository::at(
+            &missing_repo_root,
+            missing_repo_root.join(".git"),
+            missing_repo_root.join(".git"),
+        );
         let missing_root_error =
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
                 .add_path(repo_root.join("different-spelling"));
-        assert!(!error_is_ignorable(&missing_root_error, &missing_repo_root));
+        assert!(!missing.error_is_ignorable(&missing_root_error));
     }
 }

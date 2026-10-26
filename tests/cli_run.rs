@@ -283,7 +283,8 @@ fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
         .stderr(predicate::str::contains(
             "diagnostic line(s) while the wrapped command ran",
         ))
-        .stderr(predicate::str::contains("packet may be stale").not());
+        .stderr(predicate::str::contains("packet may be stale").not())
+        .stderr(predicate::str::contains("the packet now says it is stale").not());
 
     let session_dir = fs::read_dir(temp.path().join(".toimija/sessions"))
         .unwrap()
@@ -292,7 +293,13 @@ fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
         .unwrap()
         .path();
     let diagnostics = fs::read_to_string(session_dir.join("diagnostics.log")).unwrap();
-    assert!(diagnostics.contains("packet may be stale"), "{diagnostics}");
+    // A failed state poll, or a refresh that failed and marked the packet
+    // stale: which one sees the missing `.git` first depends on the backend.
+    assert!(
+        diagnostics.contains("packet may be stale")
+            || diagnostics.contains("the packet now says it is stale"),
+        "{diagnostics}"
+    );
 }
 
 #[test]
