@@ -1615,12 +1615,24 @@ fn a_flag_where_a_value_belongs_is_a_missing_value_and_nothing_launches() {
     init_git_repo(temp.path());
     let launch = ["--", "sh", "-c", "touch CHILD_RAN"];
     for (flag, given) in [
-        (&["--briefing", "--task", "fix it"][..], "--task"),
-        (&["--task", "--briefing", "background"], "--briefing"),
-        (&["--alert", "--"], "--"),
-        (&["--briefing", "--scope=src/"], "--scope=src/"),
-        (&["--task", "--for-diff"], "--for-diff"),
-        (&["--briefing", "-q"], "-q"),
+        (
+            &["--briefing", "--task", "fix it"][..],
+            "`--task`, one of `run`'s own flags,",
+        ),
+        (
+            &["--task", "--briefing", "background"],
+            "`--briefing`, one of `run`'s own flags,",
+        ),
+        (&["--alert", "--"], "the `--` before the command"),
+        (
+            &["--briefing", "--scope=src/"],
+            "`--scope=src/`, one of `run`'s own flags,",
+        ),
+        (
+            &["--task", "--for-diff"],
+            "`--for-diff`, one of `run`'s own flags,",
+        ),
+        (&["--briefing", "-q"], "`-q`, one of `run`'s own flags,"),
     ] {
         let missing = flag[0];
         Command::cargo_bin("toimija")
@@ -1632,7 +1644,7 @@ fn a_flag_where_a_value_belongs_is_a_missing_value_and_nothing_launches() {
             .assert()
             .code(2)
             .stderr(predicate::str::contains(format!(
-                "`{missing}` is missing its value: `{given}` is one of `run`'s own flags"
+                "`{missing}` is missing its value: {given} is not text"
             )));
         assert!(!temp.path().join("CHILD_RAN").exists(), "{flag:?}");
         assert!(!temp.path().join(".toimija/sessions").exists(), "{flag:?}");

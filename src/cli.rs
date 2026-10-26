@@ -365,9 +365,14 @@ impl clap::builder::TypedValueParser for RunText {
             let flag = arg
                 .and_then(clap::Arg::get_long)
                 .map_or_else(|| "the flag".to_string(), |long| format!("--{long}"));
+            let given = if text == "--" {
+                "the `--` before the command".to_string()
+            } else {
+                format!("`{text}`, one of `run`'s own flags,")
+            };
             let message = format!(
-                "`{flag}` is missing its value: `{text}` is one of `run`'s own flags, not \
-                 text. Give `{flag}` its text, or leave the flag out.\n"
+                "`{flag}` is missing its value: {given} is not text. Give `{flag}` its \
+                 text, or leave the flag out.\n"
             );
             return Err(
                 clap::Error::raw(clap::error::ErrorKind::InvalidValue, message).with_cmd(cmd),
