@@ -1063,16 +1063,35 @@ fn run_closes_the_session_when_the_last_launch_check_refuses() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_git_repo(temp.path());
-    // `run` asks `gh` about the branch's pull requests between its first and
-    // its last pre-launch check. This `gh` starts a merge while answering.
-    let bin = tempfile::tempdir().unwrap();
-    let gh = bin.path().join("gh");
-    fs::write(
-        &gh,
-        "#!/bin/sh\ngit rev-parse HEAD > \"$(git rev-parse --git-dir)/MERGE_HEAD\"\necho '[]'\n",
+    // `run` records the entry HEAD on the session marker right after its
+    // first pre-launch check passes. This `git` starts a merge on its first
+    // call after that, so the merge lands between the first check and the
+    // last one, whatever git runs in between.
+    let real_git = String::from_utf8(
+        std::process::Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
     )
     .unwrap();
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let git = bin.path().join("git");
+    fs::write(
+        &git,
+        format!(
+            "#!/bin/sh\n\
+             if [ ! -e \"$MERGE_STARTED\" ] && \
+             grep -qs '\"head\": \"' \"$REPO\"/.toimija/sessions/*/session.json; then\n\
+             \x20 : > \"$MERGE_STARTED\"\n\
+             \x20 '{real}' -C \"$REPO\" rev-parse HEAD > \"$REPO/.git/MERGE_HEAD\"\n\
+             fi\n\
+             exec '{real}' \"$@\"\n",
+            real = real_git.trim()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
         bin.path().display(),
@@ -1083,6 +1102,8 @@ fn run_closes_the_session_when_the_last_launch_check_refuses() {
         .unwrap()
         .current_dir(temp.path())
         .env("PATH", path)
+        .env("REPO", temp.path())
+        .env("MERGE_STARTED", bin.path().join("merge-started"))
         .env_remove("TOIMIJA_SESSION")
         .args([
             "run",
@@ -1107,6 +1128,9 @@ fn run_closes_the_session_when_the_last_launch_check_refuses() {
         serde_json::from_str(&fs::read_to_string(sessions[0].join("session.json")).unwrap())
             .unwrap();
     assert_eq!(marker["status"], "closed", "{marker}");
+    // The entry HEAD was recorded: the first check passed, and the last one refused.
+    assert!(marker["head"].is_string(), "{marker}");
+    assert!(bin.path().join("merge-started").exists());
     assert!(
         !sessions[0].join("semantic-point.json").exists(),
         "a closed session still publishes a repository point"
@@ -1176,77 +1200,6 @@ fn run_does_not_execute_the_validation_plan() {
     );
     // It still entered (refreshed the live packet).
     assert!(temp.path().join(".toimija/current.json").exists());
-}
-
-#[test]
-fn run_records_a_commit_made_inside_the_session_as_an_observed_effect() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-
-    let assert = Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .args([
-            "run",
-            "--intent",
-            "test",
-            "--",
-            "sh",
-            "-c",
-            "git commit -q --allow-empty -m inside",
-        ])
-        .assert()
-        .success();
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
-    assert!(stderr.contains("effects:   commit"), "{stderr}");
-
-    let session_dir = fs::read_dir(temp.path().join(".toimija/sessions"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let marker: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(session_dir.join("session.json")).unwrap())
-            .unwrap();
-    assert_eq!(marker["effects_observed"], serde_json::json!(["commit"]));
-    // No upstream and (probably) no `gh` here: the answer must say it is
-    // partial rather than pretend it looked everywhere.
-    assert!(
-        marker["effects_coverage"] == "partial" || marker["effects_coverage"] == "complete",
-        "{marker}"
-    );
-
-    // And a session that only reads records nothing, without lying about it.
-    let quiet = tempfile::tempdir().unwrap();
-    init_git_repo(quiet.path());
-    let assert = Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(quiet.path())
-        .args([
-            "run",
-            "--intent",
-            "test",
-            "--",
-            "sh",
-            "-c",
-            "git status >/dev/null",
-        ])
-        .assert()
-        .success();
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
-    assert!(stderr.contains("effects:   none observed"), "{stderr}");
-    let session_dir = fs::read_dir(quiet.path().join(".toimija/sessions"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let marker = fs::read_to_string(session_dir.join("session.json")).unwrap();
-    assert!(!marker.contains("effects_observed"), "{marker}");
 }
 
 /// The instructions an idle Codex stub was launched with.

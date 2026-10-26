@@ -930,10 +930,6 @@ mod tests {
             closed_at: Some(200),
             exit_status: Some(0),
 
-            entry_upstream_oid: None,
-            entry_open_prs: None,
-            effects_observed: Vec::new(),
-            effects_coverage: Default::default(),
             undelivered: Vec::new(),
         }
     }

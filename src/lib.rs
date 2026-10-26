@@ -9,7 +9,6 @@ pub mod consistency;
 pub mod context;
 pub mod coverage;
 mod diagnostics;
-mod effects;
 pub mod error;
 pub mod footprint;
 pub mod git;

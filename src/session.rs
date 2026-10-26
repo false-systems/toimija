@@ -121,22 +121,6 @@ pub struct SessionMarker {
     /// Wrapped command's exit code, recorded on close when known.
     #[serde(default)]
     pub exit_status: Option<i32>,
-    /// OID of the branch's upstream ref at entry, when it had one. Compared
-    /// at exit to tell a push from this session apart from nothing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entry_upstream_oid: Option<String>,
-    /// Open pull request numbers for the branch at entry, when `gh` could be
-    /// asked. A new number at exit is an `open_pr` effect.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entry_open_prs: Option<Vec<u64>>,
-    /// Effects observed between entry and exit: `commit`, `push`, `open_pr`.
-    /// Detection after the fact from Git and `gh` — never prevention.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effects_observed: Vec<String>,
-    /// `complete` when every inspection behind `effects_observed` ran;
-    /// `partial` when one could not, so an absent effect proves nothing.
-    #[serde(default)]
-    pub effects_coverage: crate::effects::EffectsCoverage,
     /// What `run` had for the agent but could not put in its context, because
     /// it has no delivery for that agent: `packet`, `task`, `briefing`. Empty
     /// when everything was delivered.
@@ -234,10 +218,6 @@ impl Session {
             status: SessionStatus::Active,
             closed_at: None,
             exit_status: None,
-            entry_upstream_oid: None,
-            entry_open_prs: None,
-            effects_observed: Vec::new(),
-            effects_coverage: crate::effects::EffectsCoverage::default(),
             undelivered: Vec::new(),
         };
         let session = Session {
@@ -265,51 +245,6 @@ impl Session {
     pub fn record_undelivered(&mut self, items: Vec<String>) -> Result<()> {
         self.marker.undelivered = items;
         self.write_marker()
-    }
-
-    /// Record what entry could see of the world outside the tree (upstream
-    /// ref, open PRs), so exit can tell what this session did to it.
-    pub fn record_entry_effects(
-        &mut self,
-        observation: &crate::effects::EntryObservation,
-    ) -> Result<()> {
-        self.marker.entry_upstream_oid = observation.upstream_oid.clone();
-        self.marker.entry_open_prs = observation.open_prs.clone();
-        if observation.upstream_unknown {
-            self.marker.effects_coverage = crate::effects::EffectsCoverage::Partial;
-        }
-        self.write_marker()
-    }
-
-    /// The entry observation as recorded, for the exit comparison.
-    pub fn entry_effects(&self) -> crate::effects::EntryObservation {
-        crate::effects::EntryObservation {
-            upstream_oid: self.marker.entry_upstream_oid.clone(),
-            open_prs: self.marker.entry_open_prs.clone(),
-            upstream_unknown: self.marker.effects_coverage
-                == crate::effects::EffectsCoverage::Partial,
-        }
-    }
-
-    pub fn entry_head(&self) -> Option<&str> {
-        self.marker.head.as_deref()
-    }
-
-    pub fn branch(&self) -> Option<&str> {
-        self.marker.branch.as_deref()
-    }
-
-    /// Set the observed effects in memory; `close` writes them with the rest.
-    pub fn set_effects(
-        &mut self,
-        observed: Vec<String>,
-        coverage: crate::effects::EffectsCoverage,
-    ) {
-        self.marker.effects_observed = observed;
-        // Partial at entry stays partial: exit cannot repair a blind entry.
-        if self.marker.effects_coverage != crate::effects::EffectsCoverage::Partial {
-            self.marker.effects_coverage = coverage;
-        }
     }
 
     /// Close the session: status -> closed, stamp `closed_at` and the wrapped

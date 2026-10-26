@@ -43,8 +43,7 @@ use crate::watch;
         Boundaries: Toimija reports facts and refuses to decide. It is local-only: \
         it writes only under .toimija/ and, for snapshots, Git objects and \
         refs/toimija/; it never executes validation or gates, starts no daemons, \
-        and makes no network calls of its own (`run` asks an installed `gh` \
-        about the branch's pull requests)."
+        and makes no network calls of its own."
 )]
 pub struct Cli {
     /// Increase log verbosity: -v for info, -vv for debug. Logs go to stderr.
@@ -947,14 +946,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         close_session_after_startup_failure(&repo_root, &mut session);
         return Err(error);
     }
-    // What the world outside the tree looks like now — upstream ref, open
-    // PRs — so exit can say what this session did to it (effects_observed).
-    let entry_effects =
-        crate::effects::observe_entry(&runner, &repo_root, entry.packet.git.branch.as_deref());
-    if let Err(error) = session.record_entry_effects(&entry_effects) {
-        close_session_after_startup_failure(&repo_root, &mut session);
-        return Err(error);
-    }
 
     // 3. Start watching synchronously, so a watcher startup failure is reported
     //    here — before launching the command — instead of being silently lost.
@@ -1185,16 +1176,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         .as_ref()
         .ok()
         .map(|status| wrapped_exit_code(*status));
-    // Effects this session had outside the tree, detected after the fact.
-    if launched.is_ok() {
-        let exit_effects = crate::effects::observe_exit(&runner, &repo_root, session.branch());
-        let (observed, coverage) = crate::effects::derive(
-            session.entry_head(),
-            &session.entry_effects(),
-            &exit_effects,
-        );
-        session.set_effects(observed, coverage);
-    }
     match session.close(exit_status) {
         Ok(()) => journal_closed_session(&repo_root, &session),
         Err(error) => eprintln!(
@@ -1456,7 +1437,7 @@ fn verify_run_entry(
 /// packet. The marker lives under the machine-local state root (never in
 /// `folder`), a heartbeat keeps it from reading stale while the agent works,
 /// and `toimija sessions --outside-repos` lists it. What needs Git — the
-/// packet and its watcher, effects, the exit summary — is not
+/// packet and its watcher, the exit summary — is not
 /// attempted, and the agent is told so in its launch prompt.
 fn run_outside_repo(
     args: RunArgs,
@@ -1773,8 +1754,6 @@ struct Consumption {
     intent: String,
     intent_source: &'static str,
     expansions: usize,
-    effects: Vec<String>,
-    effects_coverage: crate::effects::EffectsCoverage,
 }
 
 fn collect_consumption(session: &session::Session, args: &RunArgs) -> Consumption {
@@ -1789,15 +1768,10 @@ fn collect_consumption(session: &session::Session, args: &RunArgs) -> Consumptio
         .as_ref()
         .map(|m| m.scope.len().saturating_sub(args.scope.len()))
         .unwrap_or(0);
-    let (effects, effects_coverage) = marker
-        .map(|m| (m.effects_observed, m.effects_coverage))
-        .unwrap_or_else(|| (Vec::new(), crate::effects::EffectsCoverage::Partial));
     Consumption {
         intent,
         intent_source,
         expansions,
-        effects,
-        effects_coverage,
     }
 }
 
@@ -1877,18 +1851,6 @@ fn render_run_summary(
             consumption.expansions
         );
     }
-    // Effects outside the tree, detected after the fact. Partial coverage is
-    // said out loud: an effect not seen is not an effect that did not happen.
-    let effects = if consumption.effects.is_empty() {
-        "none observed".to_string()
-    } else {
-        consumption.effects.join(", ")
-    };
-    let coverage = match consumption.effects_coverage {
-        crate::effects::EffectsCoverage::Complete => "",
-        crate::effects::EffectsCoverage::Partial => " (coverage partial)",
-    };
-    let _ = writeln!(out, "  effects:   {effects}{coverage}");
     out
 }
 
@@ -2991,8 +2953,6 @@ mod tests {
             intent: "test".to_string(),
             intent_source: "declared at launch",
             expansions: 0,
-            effects: Vec::new(),
-            effects_coverage: crate::effects::EffectsCoverage::Complete,
         }
     }
 
@@ -3036,8 +2996,6 @@ mod tests {
             intent: "widened".to_string(),
             intent_source: "updated mid-session",
             expansions: 2,
-            effects: vec!["commit".to_string(), "push".to_string()],
-            effects_coverage: crate::effects::EffectsCoverage::Partial,
         };
         let out = render_run_summary(&unchanged, &unchanged, 0, &busy);
         assert!(
@@ -3048,11 +3006,6 @@ mod tests {
             out.contains("expansions: 2 scope path(s) declared while working"),
             "{out}"
         );
-        assert!(
-            out.contains("effects:   commit, push (coverage partial)"),
-            "{out}"
-        );
-        assert!(quiet.contains("effects:   none observed\n"), "{quiet}");
     }
 
     #[test]
