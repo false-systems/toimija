@@ -439,6 +439,34 @@ fn watch_sees_a_worktree_added_elsewhere() {
 }
 
 #[test]
+fn watch_sees_an_edit_to_a_tracked_file_under_a_build_directory_name() {
+    // A tracked path is never ignored: `lib/deps/` is source, and a tracked
+    // file under the root's own `deps/` shows in `git status` as modified.
+    if !git_available() {
+        return;
+    }
+    let temp = watch_tempdir();
+    let root = temp.path().canonicalize().unwrap();
+    init_main(&root);
+    std::fs::create_dir_all(root.join("lib/deps")).unwrap();
+    std::fs::create_dir_all(root.join("deps")).unwrap();
+    std::fs::write(root.join("lib/deps/x.rs"), "// one\n").unwrap();
+    std::fs::write(root.join("deps/y.ex"), "# one\n").unwrap();
+    run_git(&root, &["add", "."]);
+    run_git(&root, &["commit", "-q", "-m", "vendored"]);
+    let watch = Watching::start(&root);
+
+    std::fs::write(root.join("lib/deps/x.rs"), "// two\n").unwrap();
+    watch.wait_for("lib/deps/x.rs", |packet| {
+        lists(packet, "unstaged_files", "lib/deps/x.rs")
+    });
+    std::fs::write(root.join("deps/y.ex"), "# two\n").unwrap();
+    watch.wait_for("deps/y.ex", |packet| {
+        lists(packet, "unstaged_files", "deps/y.ex")
+    });
+}
+
+#[test]
 fn watch_sees_a_commit_in_a_plain_checkout() {
     // Here `.git/` is inside the watched root: its events only prompt the
     // stamp check, which sees the commit.
@@ -457,8 +485,8 @@ fn watch_sees_a_commit_in_a_plain_checkout() {
 }
 
 /// Git processes `toimija <args>` starts in `root`, counted from Git's own
-/// trace2 event stream.
-fn git_processes(root: &Path, home: &Path, args: &[&str]) -> usize {
+/// trace2 event stream, and what it printed on stderr.
+fn git_processes(root: &Path, home: &Path, args: &[&str]) -> (usize, String) {
     let trace = home.join(format!("trace-{}.json", args.join("-").replace('/', "_")));
     let _ = std::fs::remove_file(&trace);
     let output = Command::new(env!("CARGO_BIN_EXE_toimija"))
@@ -476,11 +504,12 @@ fn git_processes(root: &Path, home: &Path, args: &[&str]) -> usize {
         "toimija {args:?}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::read_to_string(&trace)
+    let starts = std::fs::read_to_string(&trace)
         .unwrap_or_default()
         .lines()
         .filter(|line| line.contains(r#""event":"start""#))
-        .count()
+        .count();
+    (starts, String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
 #[test]
@@ -495,17 +524,17 @@ fn run_costs_enter_plus_a_constant_however_long_the_agent_runs() {
     let home = tempfile::tempdir().unwrap();
     let home = home.path().canonicalize().unwrap();
 
-    let enter = git_processes(&root, &home, &["enter"]);
-    let quick = git_processes(&root, &home, &["run", "--intent", "budget", "--", "true"]);
-    let slow = git_processes(
+    let (enter, _) = git_processes(&root, &home, &["enter"]);
+    let (quick, _) = git_processes(&root, &home, &["run", "--intent", "budget", "--", "true"]);
+    let (slow, stderr) = git_processes(
         &root,
         &home,
         &["run", "--intent", "budget", "--", "sleep", "2"],
     );
 
-    // Linux's Git polling spends one `git status` per 500 ms tick; the event
-    // backends spend none while nothing changes.
-    let per_tick = usize::from(cfg!(target_os = "linux"));
+    // The event backends spend nothing while nothing changes. Git polling, the
+    // fallback when inotify cannot arm, spends one `git status` per 500 ms.
+    let per_tick = usize::from(stderr.contains("watcher armed (git polling)"));
     assert!(
         slow <= quick + 4 * per_tick + 1,
         "two seconds of an idle agent cost {} git processes (run -- true: {quick}, run -- sleep 2: {slow})",

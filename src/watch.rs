@@ -3,33 +3,39 @@
 //! A foreground command (NOT a daemon): it watches the repo for filesystem and
 //! Git-state changes and re-runs a [`refresh::Plan`](crate::refresh::Plan) after
 //! a debounce window, until it is stopped (Ctrl-C on the process, or the `stop`
-//! flag that `run` drives). No network, no validation execution. Events under
-//! build/vendor directories and Toimija's own live output are ignored, so writing
-//! the live packet — `.toimija/current.*`, or a per-session
-//! `.toimija/sessions/<id>/current.*` under `run` — never re-triggers a refresh.
+//! flag that `run` drives). No network, no validation execution. Toimija's own
+//! live output is ignored, so writing the live packet — `.toimija/current.*`,
+//! or a per-session `.toimija/sessions/<id>/current.*` under `run` — never
+//! re-triggers a refresh.
 //!
 //! # What a tick costs
 //!
 //! The repository root, git dir and common dir are found once per watch
 //! (`Repository::discover`) and passed down; nothing is discovered again per
-//! tick. When nothing changes, a tick starts no git process on the event
-//! backends and one `git status` under Linux's Git polling:
+//! tick. When nothing changes, a tick starts no git process:
 //!
-//! - **Work-tree changes** arrive as filesystem events and refresh after a
-//!   debounce. Under Git polling, which has no events, the tick's one
-//!   `git status` sees them.
+//! - **Work-tree changes** arrive as filesystem events — FSEvents on macOS,
+//!   inotify on Linux — and refresh after a debounce. Read-only access events
+//!   are dropped, so a refresh's own reads never re-trigger it. Events under a
+//!   build directory at the root (`target/`, `_build/`, `deps/`,
+//!   `node_modules/`) prompt one `git status` instead of a refresh: untracked
+//!   build output changes nothing, while a tracked file there shows as
+//!   modified. A tracked path is never ignored.
 //! - **Git's own state** is a `Stamp`: the metadata of HEAD, the index, the
-//!   operation markers, the refs, packed-refs and config, read with `stat`
-//!   alone. A moved ref or config refreshes. A moved HEAD or index is checked
-//!   first with one `git status`, because other tools rewrite the index without
-//!   changing anything a packet shows. Events inside `.git/` only prompt this
-//!   check; they never refresh by themselves.
-//! - **A safety net** runs once every `SAFETY_NET_INTERVAL` (a minute): one `git status`
-//!   compared with the packet, together with the changed files' contents — the
-//!   packet's consistency token. What no event and no stamp reported (a dropped
-//!   event, a change to a global excludes file, a second edit to an
-//!   already-modified file under Git polling) is caught there. It also retries
-//!   a refresh that failed, at that cadence rather than on every tick.
+//!   operation markers, the refs (files or reftable, the worktree's own too),
+//!   packed-refs and config, read with `stat` alone. A moved ref or config
+//!   refreshes. A moved HEAD or index is checked first with one `git status`,
+//!   because other tools rewrite the index without changing anything a packet
+//!   shows. Events inside `.git/` only prompt this check.
+//! - **Without events** — when inotify cannot arm (its watch limit, say) —
+//!   Linux falls back to Git polling: one `git status` per tick.
+//! - **A safety net** runs once every `SAFETY_NET_INTERVAL` (a minute): one
+//!   `git status` compared with the packet, together with the changed files'
+//!   contents — the packet's consistency token. What no event and no stamp
+//!   reported (a dropped event, a change to a global excludes file) is caught
+//!   there.
+//! - **A failed refresh** is retried after half a second, then after a delay
+//!   that doubles up to the safety net's minute, and at once on a new change.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -38,8 +44,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
-use notify::{Config, Event, RecursiveMode, Watcher};
-use tracing::{debug, info};
+use notify::{Config, Event, EventKind, RecursiveMode, Watcher};
+use tracing::{debug, info, warn};
 
 use crate::command::CommandRunner;
 use crate::consistency::{self, Consistency};
@@ -54,7 +60,6 @@ const TICK: Duration = Duration::from_millis(200);
 /// A wall/monotonic disagreement this large is suspension, not scheduler jitter.
 const SUSPENSION_THRESHOLD: Duration = Duration::from_secs(30);
 /// How long a watcher has to report its readiness probe before fallback/failure.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the Git state is checked: the [`Stamp`], and under Git polling one
 /// `git status`.
@@ -62,8 +67,13 @@ const STATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// How often the safety net compares one `git status`, and the changed files'
 /// contents, with the packet, whatever the events and stamps said.
 const SAFETY_NET_INTERVAL: Duration = Duration::from_secs(60);
-/// Directories whose churn must never trigger a refresh.
-const IGNORED_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
+/// The first retry of a failed refresh; each later one waits twice as long, up
+/// to [`SAFETY_NET_INTERVAL`].
+const RETRY_FIRST: Duration = Duration::from_millis(500);
+/// Build-output directories at the repository root. Their churn is checked with
+/// one `git status`, never refreshed on directly, and never ignored outright: a
+/// tracked file in one is still source.
+const BUILD_DIRS: [&str; 4] = ["target", "_build", "deps", "node_modules"];
 /// The readiness probe's file name, in the repository root: see [`prove_ready`].
 const PROBE_PREFIX: &str = "toimija-watch-probe-";
 /// Markers of an in-progress Git operation, in the git dir. The consistency
@@ -108,6 +118,7 @@ struct Timing {
     tick: Duration,
     state_poll: Duration,
     safety_net: Duration,
+    retry_first: Duration,
 }
 
 impl Timing {
@@ -115,7 +126,17 @@ impl Timing {
         tick: TICK,
         state_poll: STATE_POLL_INTERVAL,
         safety_net: SAFETY_NET_INTERVAL,
+        retry_first: RETRY_FIRST,
     };
+}
+
+/// How long to wait before retrying a failed refresh: the first retry after
+/// `retry_first`, each later one twice as long, never longer than the safety
+/// net's interval.
+fn next_retry_delay(previous: Option<Duration>, timing: Timing) -> Duration {
+    previous.map_or(timing.retry_first, |delay| {
+        (delay * 2).min(timing.safety_net)
+    })
 }
 
 /// What a watch finds once and passes down: never discovered again per tick.
@@ -204,8 +225,10 @@ impl Repository {
         walk(&common.join("refs"), &own, &mut refs);
         walk(&common.join("reftable"), &own, &mut refs);
         if git_dir != common {
-            // A linked worktree's own refs: bisect, worktree, rewritten.
+            // A linked worktree's own refs: bisect, worktree, rewritten — and,
+            // in a reftable repository, its HEAD.
             walk(&git_dir.join("refs"), &own, &mut refs);
+            walk(&git_dir.join("reftable"), &own, &mut refs);
         }
         Stamp { status, refs }
     }
@@ -231,6 +254,8 @@ impl Repository {
             Change::Ignored
         } else if first_component(relative) == Some(".git") {
             Change::Git
+        } else if is_build_output(relative) {
+            Change::Build
         } else {
             Change::Tree
         }
@@ -285,10 +310,10 @@ impl Repository {
         ) {
             return self.root.try_exists().unwrap_or(false);
         }
-        error
-            .paths
-            .iter()
-            .all(|path| self.relative(path).is_some_and(is_ignored))
+        error.paths.iter().all(|path| {
+            self.relative(path)
+                .is_some_and(|relative| is_ignored(relative) || is_build_output(relative))
+        })
     }
 }
 
@@ -299,6 +324,9 @@ enum Change {
     Ignored,
     /// Inside `.git/`: check the [`Stamp`], which decides.
     Git,
+    /// A build directory at the root: check the stamp and one `git status`,
+    /// which shows a tracked file there as modified.
+    Build,
     /// The work tree: refresh.
     Tree,
 }
@@ -395,8 +423,18 @@ struct Known {
     stamp: Stamp,
     status: Option<String>,
     consistency: Option<String>,
-    /// The last refresh failed: the safety net retries it.
-    failed: bool,
+    /// The last refresh failed: when to retry it, and the delay that led there.
+    retry: Option<Retry>,
+    /// A refresh failed with no `git status` behind it: take the next one as
+    /// seen rather than as a change, so the same state does not retry it on
+    /// every tick. The backoff retries it.
+    adopt_next: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Retry {
+    at: Instant,
+    delay: Duration,
 }
 
 impl Known {
@@ -405,27 +443,43 @@ impl Known {
             stamp,
             status: None,
             consistency: None,
-            failed: false,
+            retry: None,
+            adopt_next: false,
         }
     }
 
     fn learn(&mut self, packet: &ContextPacket) {
         self.status = Some(status_key(&packet.git));
         self.consistency = Some(packet.consistency.token.clone());
-        self.failed = false;
+        self.retry = None;
+        self.adopt_next = false;
     }
 
-    /// A refresh failed. What prompted it is taken as seen, so the same
-    /// evidence does not retry it on every tick; the safety net does, on its
-    /// own cadence.
-    fn fail(&mut self, observed: Option<Observed>) {
-        self.failed = true;
-        if let Some(observed) = observed {
-            self.status = Some(observed.status);
-            if let Some(consistency) = observed.consistency {
-                self.consistency = Some(consistency);
-            }
+    /// A refresh failed. Schedule its retry on the backoff, and take what
+    /// prompted it as seen, so the same evidence does not retry it on every
+    /// tick.
+    fn fail(&mut self, observed: Option<Observed>, timing: Timing, now: Instant) {
+        let delay = next_retry_delay(self.retry.map(|retry| retry.delay), timing);
+        self.retry = Some(Retry {
+            at: now + delay,
+            delay,
+        });
+        match observed {
+            Some(observed) => self.adopt(observed),
+            None => self.adopt_next = true,
         }
+    }
+
+    fn adopt(&mut self, observed: Observed) {
+        self.status = Some(observed.status);
+        if let Some(consistency) = observed.consistency {
+            self.consistency = Some(consistency);
+        }
+        self.adopt_next = false;
+    }
+
+    fn retry_due(&self, now: Instant) -> bool {
+        self.retry.is_some_and(|retry| now >= retry.at)
     }
 
     fn differs(&self, observed: &Observed) -> bool {
@@ -470,14 +524,15 @@ fn status_key(git: &GitState) -> String {
     crate::context::refresh_token(&view)
 }
 
-/// A probe-proven change detector: native when available, notify polling when
-/// native does not report readiness, and Git-state polling on Linux. Watcher
-/// payloads are held so dropping the backend unregisters the OS watch.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+/// A probe-proven change detector: the native backend (FSEvents, inotify) when
+/// it arms and proves ready; otherwise notify's polling on macOS and Git-state
+/// polling on Linux. Watcher payloads are held so dropping the backend
+/// unregisters the OS watch.
 enum Backend {
     Native(#[allow(dead_code)] notify::RecommendedWatcher),
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Poll(#[allow(dead_code)] notify::PollWatcher),
-    #[allow(dead_code)]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     GitPoll,
 }
 
@@ -506,6 +561,10 @@ pub struct Session {
     rx: Option<mpsc::Receiver<notify::Result<Event>>>,
     repo: Repository,
     known: Known,
+    timing: Timing,
+    /// The monotonic clock as the current tick read it: what the backoff and
+    /// the loop's cadences count from.
+    clock: Instant,
 }
 
 /// Begin watching the discovered repository. The fallible parts — creating the
@@ -521,30 +580,15 @@ pub fn start(repo: Repository) -> Result<Session> {
         rx,
         repo,
         known,
+        timing: Timing::LIVE,
+        clock: Instant::now(),
     })
 }
 
 fn arm(repo_root: &Path) -> Result<Armed> {
-    #[cfg(target_os = "linux")]
-    {
-        // Inotify can prove the readiness probe while still missing the first
-        // post-armed create event in CI/containerized Linux environments.
-        // Toimija only needs packet-visible Git state, so avoid recursively
-        // walking the whole repo through notify's polling backend.
-        fs::metadata(repo_root)
-            .with_context(|| format!("failed to watch {}", repo_root.display()))?;
-        Ok(Armed {
-            backend: Backend::GitPoll,
-            rx: None,
-        })
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        start_with_probe(repo_root, prove_ready)
-    }
+    start_with_probe(repo_root, prove_ready)
 }
 
-#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn start_with_probe(
     repo_root: &Path,
     probe: impl FnMut(
@@ -559,10 +603,9 @@ fn start_with_probe(
 }
 
 /// Decide the backend from the native arm attempt: native when it armed *and*
-/// proved ready, the poll fallback otherwise. A native arm failure (e.g. the
-/// inotify watch limit) must not abort startup while polling can still
-/// deliver — it degrades, with the failure logged.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+/// proved ready, the fallback otherwise. A native arm failure (e.g. the
+/// inotify watch limit) must not abort startup while a fallback can still
+/// deliver — it degrades, and says so once in the log.
 fn start_from_native(
     native: Result<(
         notify::RecommendedWatcher,
@@ -576,7 +619,7 @@ fn start_from_native(
         &str,
     ) -> Result<bool>,
 ) -> Result<Armed> {
-    match native {
+    let reason = match native {
         Ok((native, rx)) => {
             if probe(repo_root, &rx, None, "native")? {
                 return Ok(Armed {
@@ -584,20 +627,42 @@ fn start_from_native(
                     rx: Some(rx),
                 });
             }
-            drop(native);
+            "it did not report its readiness probe".to_owned()
         }
-        Err(error) => {
-            info!(
-                event = "toimija.watch.native_unavailable",
-                error = format!("{error:#}")
-            );
-        }
-    }
-    start_poll(repo_root, probe)
+        Err(error) => format!("{error:#}"),
+    };
+    let armed = fallback(repo_root, probe)?;
+    warn!(
+        event = "toimija.watch.native_unavailable",
+        reason = %reason,
+        fallback = armed.backend.label(),
+        "the native file watcher is unavailable; falling back"
+    );
+    Ok(armed)
 }
 
-#[cfg_attr(target_os = "linux", allow(dead_code))]
-fn start_poll(
+/// Linux without inotify: Git polling, one `git status` per tick, never a walk
+/// of the whole tree through notify's polling backend.
+#[cfg(target_os = "linux")]
+fn fallback(
+    repo_root: &Path,
+    _probe: impl FnMut(
+        &Path,
+        &mpsc::Receiver<notify::Result<Event>>,
+        Option<&notify::PollWatcher>,
+        &str,
+    ) -> Result<bool>,
+) -> Result<Armed> {
+    fs::metadata(repo_root).with_context(|| format!("failed to watch {}", repo_root.display()))?;
+    Ok(Armed {
+        backend: Backend::GitPoll,
+        rx: None,
+    })
+}
+
+/// Elsewhere: notify's polling backend, proved ready like the native one.
+#[cfg(not(target_os = "linux"))]
+fn fallback(
     repo_root: &Path,
     mut probe: impl FnMut(
         &Path,
@@ -615,14 +680,16 @@ fn start_poll(
     })
 }
 
-#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn arm_watcher<W: Watcher>(
     repo_root: &Path,
     config: Config,
 ) -> Result<(W, mpsc::Receiver<notify::Result<Event>>)> {
     let (tx, rx) = mpsc::channel();
     let mut watcher = W::new(
-        move |res| {
+        move |res: notify::Result<Event>| {
+            if res.as_ref().is_ok_and(|event| reads_only(&event.kind)) {
+                return;
+            }
             let _ = tx.send(res);
         },
         config,
@@ -634,7 +701,15 @@ fn arm_watcher<W: Watcher>(
     Ok((watcher, rx))
 }
 
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+/// An event that only says a file was opened, read or closed unwritten.
+/// Inotify reports every one, so the refresh's own reads — and any other
+/// reader's — would re-trigger it, and the debounce would never go quiet. A
+/// closed write is a change and stays.
+fn reads_only(kind: &EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    matches!(kind, EventKind::Access(access) if *access != AccessKind::Close(AccessMode::Write))
+}
+
 fn prove_ready(
     repo_root: &Path,
     rx: &mpsc::Receiver<notify::Result<Event>>,
@@ -661,7 +736,6 @@ fn prove_ready(
     result
 }
 
-#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn wait_for_probe(
     rx: &mpsc::Receiver<notify::Result<Event>>,
     poll: Option<&notify::PollWatcher>,
@@ -756,15 +830,17 @@ impl Session {
         mut clocks: impl FnMut() -> ClockPair,
         timing: Timing,
     ) -> Result<()> {
+        self.timing = timing;
         let rx = self.rx.take();
         if rx.is_none() && !matches!(self.backend, Backend::GitPoll) {
             anyhow::bail!("filesystem watcher backend missing event receiver");
         }
         let mut previous = clocks();
-        let mut last_poll = Instant::now();
-        let mut last_net = Instant::now();
+        let mut last_poll = previous.mono;
+        let mut last_net = previous.mono;
         while !stop.load(Ordering::Relaxed) {
             let now = clocks();
+            self.clock = now.mono;
             if let Some(slept) = detect_suspension(&previous, &now, SUSPENSION_THRESHOLD) {
                 info!(
                     event = "toimija.watch.resumed",
@@ -776,7 +852,9 @@ impl Session {
                 continue;
             }
             previous = now;
-            let mut git_moved = false;
+            // What the events since the last tick ask for: a refresh is done
+            // here; a check waits for the state check below.
+            let mut asked = Change::Ignored;
             match &rx {
                 Some(rx) => match rx.recv_timeout(timing.tick) {
                     Ok(Ok(event)) => match self.repo.classify_event(&event) {
@@ -790,7 +868,7 @@ impl Session {
                                 let stamp = self.repo.stamp();
                                 self.refresh(runner, plan, &mut on_refresh, stamp, None);
                             } else {
-                                git_moved = true;
+                                asked = change;
                             }
                         }
                     },
@@ -812,16 +890,21 @@ impl Session {
                 },
                 None => std::thread::sleep(timing.tick),
             }
-            let poll_due = last_poll.elapsed() >= timing.state_poll;
-            if poll_due || git_moved {
-                let net_due = poll_due && last_net.elapsed() >= timing.safety_net;
+            let poll_due = self.clock.saturating_duration_since(last_poll) >= timing.state_poll;
+            if poll_due || asked != Change::Ignored {
+                let safety_net =
+                    poll_due && self.clock.saturating_duration_since(last_net) >= timing.safety_net;
                 if poll_due {
-                    last_poll = Instant::now();
+                    last_poll = self.clock;
                 }
-                if net_due {
-                    last_net = Instant::now();
+                if safety_net {
+                    last_net = self.clock;
                 }
-                self.check_state(runner, plan, &mut on_refresh, net_due);
+                let check = Check {
+                    safety_net,
+                    build: asked == Change::Build,
+                };
+                self.check_state(runner, plan, &mut on_refresh, check);
             }
         }
         Ok(())
@@ -829,16 +912,17 @@ impl Session {
 
     /// Check the Git state against what the packet was built from. With
     /// nothing moved this starts no git process on the event backends, and one
-    /// `git status` under Git polling or when the safety net is due.
+    /// `git status` under Git polling, after a build-directory event, or when
+    /// the safety net is due.
     fn check_state(
         &mut self,
         runner: &impl CommandRunner,
         plan: &refresh::Plan,
         on_refresh: &mut impl FnMut(),
-        safety_net: bool,
+        check: Check,
     ) {
         let stamp = self.repo.stamp();
-        if safety_net && self.known.failed {
+        if self.known.retry_due(self.clock) {
             debug!(event = "toimija.watch.retry_failed_refresh");
             self.refresh(runner, plan, on_refresh, stamp, None);
             return;
@@ -850,16 +934,22 @@ impl Session {
         }
         let status_moved = stamp.status != self.known.stamp.status;
         let git_polling = matches!(self.backend, Backend::GitPoll);
-        if !(status_moved || safety_net || git_polling) {
+        let deep = status_moved || check.safety_net || check.build;
+        if !(deep || git_polling) {
             return;
         }
-        match self.observe(runner, status_moved || safety_net) {
+        match self.observe(runner, deep) {
+            Ok(observed) if self.known.adopt_next => {
+                self.known.adopt(observed);
+                self.known.stamp = stamp;
+            }
             Ok(observed) if self.known.differs(&observed) => {
                 debug!(event = "toimija.watch.state_poll_changed");
                 self.refresh(runner, plan, on_refresh, stamp, Some(observed));
             }
             // Rewritten without a visible change (another tool's `git status`
-            // refreshing the index, say): nothing to refresh.
+            // refreshing the index, say), or untracked build output: nothing
+            // to refresh.
             Ok(_) => self.known.stamp = stamp,
             Err(error) => {
                 eprintln!("toimija: Git-state poll failed (packet may be stale): {error:#}");
@@ -892,9 +982,20 @@ impl Session {
         self.known.stamp = stamp;
         match refresh_or_warn(runner, &self.repo.root, plan, on_refresh) {
             Some(refreshed) => self.known.learn(&refreshed.packet),
-            None => self.known.fail(observed),
+            None => self.known.fail(observed, self.timing, self.clock),
         }
     }
+}
+
+/// What a state check is asked to look at beyond the stamp.
+#[derive(Debug, Clone, Copy)]
+struct Check {
+    /// The safety net is due: compare one `git status` and the changed files'
+    /// contents with the packet.
+    safety_net: bool,
+    /// Something moved in a build directory at the root: the same comparison,
+    /// which shows a tracked file there as modified.
+    build: bool,
 }
 
 /// A transient refresh failure must not kill live updates: keep watching so
@@ -949,17 +1050,20 @@ pub fn watch(
     session.run(runner, plan, stop, on_refresh)
 }
 
-/// Whether a path relative to the repository root is generated local tool
-/// output, Toimija's own Git footprint, its readiness probe, or under a
-/// build/vendor directory. Matched relative to the root only: a repository
-/// that itself lives under a `target/` or `.sykli/` directory is not ignored.
+/// Whether a path relative to the repository root is Toimija's own: generated
+/// local tool output, its Git footprint, or its readiness probe. Matched
+/// relative to the root only: a repository that itself lives under a
+/// `target/` or `.sykli/` directory is not ignored.
 fn is_ignored(relative: &Path) -> bool {
     consistency::is_generated_output(relative)
         || is_toimija_git_footprint(relative)
         || first_component(relative).is_some_and(|name| name.starts_with(PROBE_PREFIX))
-        || relative.components().any(|component| {
-            matches!(component, Component::Normal(name) if IGNORED_DIRS.iter().any(|dir| name == *dir))
-        })
+}
+
+/// Whether a path relative to the repository root lies in a build directory
+/// at the root. Only there: `lib/deps/` is source.
+fn is_build_output(relative: &Path) -> bool {
+    first_component(relative).is_some_and(|name| BUILD_DIRS.contains(&name))
 }
 
 /// Toimija's own Git writes must not refresh the packet that caused them.
@@ -1044,6 +1148,8 @@ mod tests {
     struct Traced {
         trace: PathBuf,
         calls: RefCell<Vec<Vec<String>>>,
+        /// When each refresh began.
+        attempts: RefCell<Vec<Instant>>,
     }
 
     impl Traced {
@@ -1051,6 +1157,7 @@ mod tests {
             Self {
                 trace: dir.join("trace2.json"),
                 calls: RefCell::new(Vec::new()),
+                attempts: RefCell::new(Vec::new()),
             }
         }
 
@@ -1088,6 +1195,9 @@ mod tests {
             args: &[&str],
             env: &[(&str, &OsStr)],
         ) -> std::io::Result<CommandOutput> {
+            if args == ["rev-parse", "--show-toplevel"] {
+                self.attempts.borrow_mut().push(Instant::now());
+            }
             self.calls
                 .borrow_mut()
                 .push(args.iter().map(|arg| arg.to_string()).collect());
@@ -1171,6 +1281,8 @@ mod tests {
                 rx: None,
                 repo,
                 known,
+                timing: Timing::LIVE,
+                clock: Instant::now(),
             };
             return (session, None);
         }
@@ -1181,6 +1293,8 @@ mod tests {
             rx: Some(rx),
             repo,
             known,
+            timing: Timing::LIVE,
+            clock: Instant::now(),
         };
         (session, Some(tx))
     }
@@ -1209,6 +1323,7 @@ mod tests {
         tick: Duration::from_millis(2),
         state_poll: Duration::ZERO,
         safety_net: Duration::from_secs(3600),
+        retry_first: Duration::from_secs(3600),
     };
 
     /// Run the real loop for `ticks` ticks, each one a state check; returns
@@ -1258,6 +1373,8 @@ mod tests {
             rx: Some(rx),
             known: Known::new(repo.discovered.clone()),
             repo,
+            timing: Timing::LIVE,
+            clock: Instant::now(),
         }
     }
 
@@ -1287,7 +1404,7 @@ mod tests {
 
         let during = runner.starts() - before;
         assert!(
-            during <= 3,
+            during == 0,
             "20 idle ticks started {during} git processes: {:?}",
             runner.calls.borrow()
         );
@@ -1346,7 +1463,7 @@ mod tests {
 
         let during = runner.starts() - before;
         assert!(
-            during <= 20 * per_tick + 3,
+            during <= 20 * per_tick + 1,
             "20 idle ticks started {during} git processes: {:?}",
             runner.calls.borrow()
         );
@@ -1640,9 +1757,9 @@ mod tests {
 
         assert_eq!(run_ticks(session, &runner, 10, FAST), 0);
 
-        // Once for the moved configuration, once for the status it shows.
-        let attempts = runner.refreshes() - before;
-        assert!(attempts <= 2, "{attempts} attempts in 10 ticks");
+        // Once, for the moved configuration: the status that moved with it is
+        // taken as seen, and the backoff's first retry is not due yet.
+        assert_eq!(runner.refreshes() - before, 1);
     }
 
     #[test]
@@ -1904,10 +2021,26 @@ mod tests {
     }
 
     #[test]
-    fn build_and_vendor_dirs_are_ignored() {
-        assert!(is_ignored_at("/repo", "/repo/target/debug/foo"));
-        assert!(is_ignored_at("/repo", "/repo/apps/web/node_modules/x.js"));
-        assert!(is_ignored_at("/repo", "/repo/_build/dev/app.beam"));
+    fn build_output_at_the_root_is_checked_and_nested_build_names_are_source() {
+        // A tracked file is never ignored. Build output at the root costs one
+        // `git status`, which shows a tracked file there as modified; a
+        // directory of the same name anywhere else is ordinary source.
+        let repo = repo_at("/repo");
+        for build in [
+            "/repo/target/debug/foo",
+            "/repo/_build/dev/app.beam",
+            "/repo/deps/plug/mix.exs",
+            "/repo/node_modules/x.js",
+        ] {
+            assert_eq!(repo.classify(Path::new(build)), Change::Build, "{build}");
+        }
+        for source in [
+            "/repo/lib/deps/x.rs",
+            "/repo/apps/web/node_modules/x.js",
+            "/repo/src/target/mod.rs",
+        ] {
+            assert_eq!(repo.classify(Path::new(source)), Change::Tree, "{source}");
+        }
     }
 
     #[test]
@@ -1935,7 +2068,7 @@ mod tests {
             );
             assert_eq!(
                 repo.classify(&Path::new(root).join("target/debug/x")),
-                Change::Ignored,
+                Change::Build,
                 "{root}"
             );
         }
@@ -2016,8 +2149,16 @@ mod tests {
         assert!(format!("{err:#}").contains("watch"));
     }
 
+    /// What arms when native cannot: Git polling on Linux, never a walk of
+    /// the whole tree; notify's polling elsewhere.
+    const FALLBACK: &str = if cfg!(target_os = "linux") {
+        "git polling"
+    } else {
+        "poll fallback"
+    };
+
     #[test]
-    fn native_probe_timeout_arms_the_poll_fallback_and_says_so() {
+    fn native_probe_timeout_arms_the_fallback_and_says_so() {
         let temp = tempfile::tempdir().unwrap();
         let armed = start_with_probe(temp.path(), |repo_root, rx, poll, backend| {
             if poll.is_none() {
@@ -2028,11 +2169,11 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(armed.backend.label(), "poll fallback");
+        assert_eq!(armed.backend.label(), FALLBACK);
     }
 
     #[test]
-    fn native_arm_failure_arms_the_poll_fallback_instead_of_aborting() {
+    fn native_arm_failure_arms_the_fallback_instead_of_aborting() {
         // The inotify watch limit (ENOSPC) fails the native *arm*, not the
         // probe. Startup must degrade to polling, not abort.
         let temp = tempfile::tempdir().unwrap();
@@ -2043,17 +2184,17 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(armed.backend.label(), "poll fallback");
+        assert_eq!(armed.backend.label(), FALLBACK);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_uses_git_state_polling_instead_of_notify_polling() {
+    fn linux_arms_inotify_when_it_proves_ready() {
         let temp = tempfile::tempdir().unwrap();
 
         let armed = arm(temp.path()).unwrap();
 
-        assert_eq!(armed.backend.label(), "git polling");
+        assert_eq!(armed.backend.label(), "native");
     }
 
     #[cfg(unix)]
@@ -2165,5 +2306,220 @@ mod tests {
             notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
                 .add_path(repo_root.join("different-spelling"));
         assert!(!missing.error_is_ignorable(&missing_root_error));
+    }
+    fn event(kind: notify::EventKind, path: PathBuf) -> notify::Result<Event> {
+        Ok(Event::new(kind).add_path(path))
+    }
+
+    #[test]
+    fn the_stamp_sees_a_detach_in_a_reftable_linked_worktree() {
+        // In a reftable repository a linked worktree keeps its HEAD in its own
+        // `reftable/`, beside no HEAD file that moves.
+        if !git_usable() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(temp.path()).unwrap();
+        if !fixture_git(&base, &["init", "-q", "--ref-format=reftable", "probe"])
+            .status
+            .success()
+        {
+            return; // git older than 2.45: no reftable
+        }
+        let primary = base.join("primary");
+        fs::create_dir(&primary).unwrap();
+        git(
+            &primary,
+            &["init", "-q", "-b", "main", "--ref-format=reftable"],
+        );
+        git(
+            &primary,
+            &["config", "user.email", "toimija@example.invalid"],
+        );
+        git(&primary, &["config", "user.name", "Toimija Test"]);
+        git(&primary, &["config", "commit.gpgsign", "false"]);
+        fs::write(primary.join("a.txt"), "x\n").unwrap();
+        git(&primary, &["add", "."]);
+        git(&primary, &["commit", "-q", "-m", "init"]);
+        let linked = base.join("linked");
+        git(
+            &primary,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let repo = Repository::discover(&ProcessCommandRunner, &linked).unwrap();
+        let before = repo.stamp();
+
+        git(&linked, &["switch", "-q", "--detach"]);
+
+        assert_ne!(
+            repo.stamp().refs,
+            before.refs,
+            "the detach is in the worktree's reftable"
+        );
+    }
+
+    #[test]
+    fn a_root_build_dir_event_refreshes_only_when_git_status_shows_a_change() {
+        // Untracked build output costs one `git status` and no refresh. A
+        // tracked file under a build directory's name is never ignored.
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        fs::create_dir_all(root.join("deps")).unwrap();
+        fs::write(root.join("deps/vendored.ex"), "v1\n").unwrap();
+        fs::write(root.join(".gitignore"), "/target/\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "vendor"]);
+        let runner = Traced::new(temp.path());
+
+        let (session, events) = armed(&runner, &root, false);
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::write(root.join("target/debug/out"), "o\n").unwrap();
+        let create = notify::EventKind::Create(notify::event::CreateKind::File);
+        events
+            .unwrap()
+            .send(event(create, root.join("target/debug/out")))
+            .unwrap();
+        let before = runner.starts();
+        assert_eq!(run_ticks(session, &runner, 2, FAST), 0, "build output");
+        assert_eq!(runner.starts() - before, 1, "one `git status`");
+
+        let (session, events) = armed(&runner, &root, false);
+        fs::write(root.join("deps/vendored.ex"), "v2\n").unwrap();
+        let modify = notify::EventKind::Modify(notify::event::ModifyKind::Any);
+        events
+            .unwrap()
+            .send(event(modify, root.join("deps/vendored.ex")))
+            .unwrap();
+        assert_eq!(run_ticks(session, &runner, 2, FAST), 1, "a tracked file");
+    }
+
+    #[test]
+    fn read_only_access_events_are_dropped_but_a_closed_write_is_kept() {
+        // Inotify reports every open and close: the refresh's own reads would
+        // re-trigger it, and the debounce would never go quiet.
+        use notify::event::{AccessKind, AccessMode};
+        for read in [
+            AccessKind::Open(AccessMode::Read),
+            AccessKind::Open(AccessMode::Any),
+            AccessKind::Close(AccessMode::Read),
+            AccessKind::Read,
+            AccessKind::Any,
+        ] {
+            assert!(reads_only(&notify::EventKind::Access(read)), "{read:?}");
+        }
+        assert!(!reads_only(&notify::EventKind::Access(AccessKind::Close(
+            AccessMode::Write
+        ))));
+        assert!(!reads_only(&notify::EventKind::Modify(
+            notify::event::ModifyKind::Any
+        )));
+    }
+
+    #[test]
+    fn a_failed_refresh_backs_off_from_half_a_second_to_the_safety_net() {
+        let mut delay = None;
+        let mut delays = Vec::new();
+        for _ in 0..10 {
+            let next = next_retry_delay(delay, Timing::LIVE);
+            delays.push(next.as_millis());
+            delay = Some(next);
+        }
+        assert_eq!(
+            delays,
+            [
+                500, 1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failing_refresh_is_retried_with_a_doubling_delay() {
+        // The loop's clock is the fabricated one: it advances 5 ms a tick, so
+        // the retries land on exact ticks however long each git call takes.
+        if !git_usable() {
+            return;
+        }
+        let (temp, root) = repo_with_commit();
+        let runner = Traced::new(temp.path());
+        let (session, _events) = armed(&runner, &root, false);
+        // An unparseable configuration: every refresh fails until it is fixed.
+        fs::create_dir_all(root.join(".toimija")).unwrap();
+        fs::write(root.join(crate::config::CONFIG_PATH), "repo: [\n").unwrap();
+        let timing = Timing {
+            tick: Duration::from_millis(1),
+            state_poll: Duration::ZERO,
+            safety_net: Duration::from_millis(160),
+            retry_first: Duration::from_millis(10),
+        };
+        let stop = AtomicBool::new(false);
+        let tick = Cell::new(0u32);
+        let ticked = Ticked {
+            inner: &runner,
+            tick: &tick,
+            attempts: RefCell::new(Vec::new()),
+        };
+        let mono = Instant::now();
+
+        session
+            .run_with(
+                &ticked,
+                &plan(),
+                &stop,
+                || {},
+                || {
+                    let now = tick.get();
+                    if now == 100 {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    tick.set(now + 1);
+                    let elapsed = Duration::from_millis(5 * u64::from(now));
+                    ClockPair {
+                        wall: UNIX_EPOCH + elapsed,
+                        mono: mono + elapsed,
+                    }
+                },
+                timing,
+            )
+            .unwrap();
+
+        // Tick 1 sees the moved configuration and fails at 5 ms. Retries wait
+        // 10, 20, 40, 80, then 160 ms — the safety net's interval — twice.
+        assert_eq!(*ticked.attempts.borrow(), [1, 3, 7, 15, 31, 63, 95]);
+    }
+
+    /// Records the loop's tick at each refresh attempt.
+    struct Ticked<'a> {
+        inner: &'a Traced,
+        tick: &'a Cell<u32>,
+        attempts: RefCell<Vec<u32>>,
+    }
+
+    impl CommandRunner for Ticked<'_> {
+        fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
+            self.run_with_env(cwd, program, args, &[])
+        }
+
+        fn run_with_env(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            env: &[(&str, &OsStr)],
+        ) -> std::io::Result<CommandOutput> {
+            if args == ["rev-parse", "--show-toplevel"] {
+                // The clock has been read for the tick that is running.
+                self.attempts.borrow_mut().push(self.tick.get() - 1);
+            }
+            self.inner.run_with_env(cwd, program, args, env)
+        }
     }
 }
