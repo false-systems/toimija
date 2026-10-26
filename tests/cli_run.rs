@@ -765,9 +765,9 @@ fn a_session_that_ends_leaves_no_brief_in_the_repo_packet() {
     .unwrap();
     assert!(json["session"].is_null(), "{}", json["session"]);
     assert!(
-        json["sauma"]["producer"]["run"].is_null(),
+        json["seal"]["producer"]["run"].is_null(),
         "{}",
-        json["sauma"]
+        json["seal"]
     );
     Command::cargo_bin("toimija")
         .unwrap()
@@ -1048,7 +1048,7 @@ fn run_hands_the_child_its_repository_point() {
     let id = point["repository"]["id"].as_str().unwrap();
     assert!(id.starts_with("rpoint_"), "{point}");
     assert!(point["repository"]["tree_oid"].is_string(), "{point}");
-    assert_eq!(packet["schema"], "toimija-context.v2");
+    assert_eq!(packet["schema"], "toimija-context.v3");
     assert_eq!(packet["session"]["execution"]["repository"]["id"], id);
     assert_eq!(
         fs::read_to_string(out.path().join("retired.txt")).unwrap(),

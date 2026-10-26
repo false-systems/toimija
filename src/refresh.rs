@@ -272,7 +272,7 @@ struct Computed {
 fn sessionless(packet: &ContextPacket, budget_override: Option<usize>) -> Result<(String, String)> {
     let mut packet = packet.clone();
     packet.session = None;
-    packet.attach_sauma(None)?;
+    packet.attach_seal(None)?;
     Ok(render_pair(&packet, budget_override)?)
 }
 
@@ -400,7 +400,7 @@ fn compute_once(
         )?);
     }
     let run = packet.session.as_ref().map(|session| session.id.clone());
-    packet.attach_sauma(run)?;
+    packet.attach_seal(run)?;
     let (markdown, json) = render_pair(&packet, budget_override)?;
     Ok(Computed {
         packet,

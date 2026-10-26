@@ -49,7 +49,7 @@ That is the whole design move, and it repeats at every layer:
   garbage-collected by git itself.
 - **Freshness** is a content-based token — the same content-addressing trick
   git's object model is built on, applied one layer up.
-- **Provenance** (the sauma envelope) is passive files plus a reader — the same
+- **Provenance** (the packet's seal) is passive files plus a reader — the same
   shape as git itself: no service, no daemon.
 
 Every repo already ships a battle-tested, content-addressed, distributed
@@ -76,8 +76,8 @@ What you get:
 | **What to read first** | The repository's configured and important docs, always and first, then the changed files and their companion tests by existence-checked path. Advisory; no history mining, no source parsing. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
 | **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, and bounded stewardship. Visibility, never orchestration. |
-| **Chain of custody** | Every packet carries a sauma envelope — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
-| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS. A repo with `sykli.json` gets its declared gate instead (`mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json`, `source: sykli.json`). It never runs commands. |
+| **Chain of custody** | Every packet carries a seal — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
+| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS/Terraform. A repo with `sykli.json` gets its declared gate instead (`mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json`, `source: sykli.json`). It never runs commands. |
 | **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
 
 ## What Toimija is
@@ -541,13 +541,16 @@ tells you whether what `git status` lists has changed; a snapshot gives you a
 tree that cannot change, and a point gives that tree an id. Either way,
 nothing reads repo state on faith.
 
-## Chain of custody — the sauma envelope
+## Chain of custody — the seal
 
 Work done by agents should be auditable the way commits are: *what produced
 this, from what state, and does it still verify?* Toimija's packets carry a
-**sauma envelope** for exactly this — a small, versioned
-attestation block (current schema `sauma-envelope.v2`; legacy v1 remains readable,
-design in `docs/proposals/0003-sauma-attested-artifacts.md`):
+**seal** for exactly this — a small, versioned attestation block under the
+packet's `seal` key. Its envelope format is `sauma-envelope.v2`, a name it keeps
+from sauma, the tool that wrote the sealing code; sauma is archived, and Toimija
+carries that code as its own (`src/seal.rs`, over the vendored canonical crate;
+the design's history is proposal 0003). The digest covers the whole packet, the
+seal included, without the seal's own `digest`:
 
 - **`digest`** — sha256 over the artifact's canonical form: compact JSON with
   object keys sorted at every level. Canonical means *portable*: any tool, in
@@ -574,10 +577,12 @@ correctly, not importing a library or calling a service. There is no provenance
 daemon, no graph database, no index — passive files plus a reader, the same
 shape as git itself.
 
-`cargo xtask sauma-why <digest|token|session-id>` is the in-repo dev walker: it
-verifies local sauma artifacts, renders verified token/digest links as an
-indented chain, tolerates unknown provenance edge kinds, and reports digest
-mismatches without walking through them.
+`cargo xtask why <digest|token|session-id>` is the in-repo dev walker: it
+verifies the local sealed artifacts (Toimija's packets under `seal`, and other
+tools' artifacts in `.toimija/runs/`, which carry the same envelope under the
+key `sauma`), renders verified token/digest links as an indented chain,
+tolerates unknown provenance edge kinds, and reports digest mismatches without
+walking through them.
 
 ## One-time repo setup
 
@@ -648,28 +653,41 @@ The packet includes:
   never anything read from the observer's environment, so the same repo yields
   the same token from any process — used by `verify`, and by `watch` over the
   part one `git status` reads
-- a **sauma** envelope — a local attestation digest and provenance edge set for
-  the packet artifact
+- a **seal** — a local attestation digest and provenance edge set for the
+  packet artifact, under the key `seal`
 
 See **Verify before read** for what the token buys you, **Chain of custody**
-for what the envelope buys you, and **Example context output** below for a full
+for what the seal buys you, and **Example context output** below for a full
 rendering.
 
 ### Packet compatibility
 
 The JSON packet is the machine contract; Markdown is a bounded presentation of
 the same artifact and may omit optional sections to meet its budget. The packet
-names its schema in `schema` (and again in `sauma.schema`):
+names its schema in `schema` (and again in `seal.schema`):
 
 - New optional fields may be added without a schema-version bump.
-- Removing or changing a field bumps the schema version. The current schema,
-  `toimija-context.v2`, is v1 without its `relevance` block (scope, read order,
-  coupling, risk and their history coverage); every other field is unchanged.
-- Consumers must ignore unknown fields and tolerate unknown sauma provenance
-  edge kinds.
+- Removing, renaming or changing a field bumps the schema version. The current
+  schema is `toimija-context.v3`.
+- `toimija-context.v3` is v2 with its envelope under the key `seal` instead of
+  `sauma`, and nothing else changed: the envelope inside is the same
+  `sauma-envelope.v2`, with the same fields, and its digest is the same rule
+  over the packet as it now reads. A reader of v2 that reads `sauma.digest`,
+  `sauma.provenance`, `sauma.anchored_at` or `sauma.schema` reads `seal.digest`
+  and so on instead, and checks `schema` for `toimija-context.v3`. A digest
+  recomputed by hand drops `seal.digest`, not `sauma.digest`, before
+  canonicalizing. `toimija verify --json` reports a tampered seal as
+  `seal_digest_mismatch` (was `sauma_digest_mismatch`).
+- `toimija-context.v2` was v1 without its `relevance` block (scope, read order,
+  coupling, risk and their history coverage).
+- `verify` reads a packet under its own schema's rules only: one an earlier
+  toimija wrote (`toimija-context.v2` or `.v1`) is `invalid_packet`, with a
+  message naming its schema and `toimija refresh`, which replaces it.
+- Consumers must ignore unknown fields and tolerate unknown provenance edge
+  kinds.
 - Unix paths are JSON strings when valid UTF-8 and `{ "bytes_hex": "..." }`
   otherwise. Consumers must accept both forms.
-- Do not materialize additive defaults before verifying the sauma digest;
+- Do not materialize additive defaults before verifying the seal's digest;
   verify the raw JSON value first.
 
 `toimija verify --json` is the verify-before-read gate for machines. Exit 0
@@ -678,7 +696,7 @@ and `"status": "verified"` carry the selected `packet_path`, the consistency
 refusal to trust the packet, with one of these statuses: `missing_packet`,
 `invalid_packet`, `missing_consistency`, `not_comparable`,
 `unsupported_consistency_algorithm`, `stale_packet`, `session_not_live`,
-`sauma_digest_mismatch`, `unsafe_git_operation`, `unverifiable_repository`,
+`seal_digest_mismatch`, `unsafe_git_operation`, `unverifiable_repository`,
 `io_error`.
 
 ## Commands
@@ -796,11 +814,12 @@ The plan has tiers — `Focused` (derived from the changed surface), `Fast`,
 them empty. The agent runs the commands itself and reports the exact output.
 
 Two languages have full adapters (Rust, Elixir: inferred tiers plus the
-focused per-unit heuristics below). Go, Python, and JS/TS get the **minimum
-language pack** — a data table, not a module: manifest detection (`go.mod`,
-`pyproject.toml`/`setup.py`, `package.json`), inferred test + lint tiers
-(`go test ./...`/`go vet ./...`, `pytest`/`ruff check .`, `npm test`/`npm run
-lint`/`npm run typecheck`), and companion-test hints (`foo.go` → `foo_test.go`,
+focused per-unit heuristics below). Go, Python, JS/TS and Terraform get the
+**minimum language pack** — a data table, not a module: manifest detection
+(`go.mod`, `pyproject.toml`/`setup.py`, `package.json`, a `.tf` file at the
+root), inferred test + lint tiers (`go test ./...`/`go vet ./...`,
+`pytest`/`ruff check .`, `npm test`/`npm run lint`/`npm run typecheck`,
+`terraform fmt -check -recursive`), and companion-test hints (`foo.go` → `foo_test.go`,
 `foo.py` → `test_foo.py` or `tests/test_foo.py`, `foo.ts` →
 `foo.test.ts`/`foo.spec.ts`, existence-checked). Node commands require matching
 string-valued scripts; Python commands require explicit pytest and Ruff
@@ -1159,7 +1178,7 @@ These are intentionally not implemented:
 
 - MCP server
 - Tree-sitter, LSP, SCIP, Kythe
-- Sykli, Vaisto, or Kerto integration
+- Sykli integration beyond this repository's CI
 - checkpoint and worktree management
 - cross-repo / multi-repo coordination
 - dynamic plugins

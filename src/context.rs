@@ -10,10 +10,14 @@ use crate::config::RepoConfig;
 use crate::consistency::Consistency;
 use crate::git::{self, ChangedFile, GitState};
 use crate::repo::{self, RepoInfo, RepoKind};
-use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
+use crate::seal::{self, Envelope, Provenance};
 use crate::validate::ValidationPlan;
 
-pub const CONTEXT_SCHEMA: &str = "toimija-context.v2";
+pub const CONTEXT_SCHEMA: &str = "toimija-context.v3";
+
+/// Packet schemas earlier toimijas wrote. A packet of one is not read under
+/// this schema's rules: `verify` refuses it, and a refresh replaces it.
+pub const EARLIER_CONTEXT_SCHEMAS: &[&str] = &["toimija-context.v1", "toimija-context.v2"];
 
 fn default_context_schema() -> String {
     CONTEXT_SCHEMA.to_string()
@@ -55,11 +59,12 @@ pub struct ContextPacket {
     /// repo-level packets. Additive per the packet contract's evolution rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionBlock>,
-    /// Sauma attestation envelope for the serialized packet. Current producers
-    /// emit v2; the option remains only so old documents can deserialize before
-    /// the verification boundary rejects unattested packets.
+    /// The packet's seal (`crate::seal`): a `sauma-envelope.v2` over the
+    /// serialized packet. `toimija-context.v2` carried it under `sauma`. The
+    /// option remains only so an unsealed document can deserialize before the
+    /// verification boundary rejects it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sauma: Option<SaumaEnvelope>,
+    pub seal: Option<Envelope>,
 }
 
 /// The session half of a per-session packet: who this packet is for and why
@@ -108,22 +113,22 @@ impl ContextPacket {
         self.default_budget
     }
 
-    pub fn attach_sauma(&mut self, run: Option<String>) -> serde_json::Result<()> {
+    pub fn attach_seal(&mut self, run: Option<String>) -> serde_json::Result<()> {
         let provenance = self
             .git
             .head_oid
             .iter()
             .cloned()
-            .map(|oid| SaumaProvenance::Git { oid })
+            .map(|oid| Provenance::Git { oid })
             .collect();
         let token = self.consistency.token.clone();
-        sauma::attach(self, CONTEXT_SCHEMA, provenance, &token, run)
+        seal::attach(self, CONTEXT_SCHEMA, provenance, &token, run)
     }
 }
 
-impl sauma::Carrier for ContextPacket {
-    fn sauma_mut(&mut self) -> &mut Option<SaumaEnvelope> {
-        &mut self.sauma
+impl seal::Sealed for ContextPacket {
+    fn seal_mut(&mut self) -> &mut Option<Envelope> {
+        &mut self.seal
     }
 }
 
@@ -262,7 +267,7 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         // (`refresh::refresh_session`), which knows the session directory;
         // packet compilation itself is session-agnostic.
         session: None,
-        sauma: None,
+        seal: None,
     };
     debug!(
         event = "toimija.context.git_section.rendered",
@@ -606,7 +611,7 @@ mod tests {
             default_budget: Some(4000),
             consistency,
             session: None,
-            sauma: None,
+            seal: None,
         };
         let json = serde_json::to_string(&packet).unwrap();
         assert!(json.contains("\"repo\""));
@@ -664,7 +669,7 @@ mod tests {
             default_budget: Some(4000),
             consistency: Consistency::fingerprint(&git),
             session: None,
-            sauma: None,
+            seal: None,
         };
         let mut value = serde_json::to_value(packet).unwrap();
         value.as_object_mut().unwrap().remove("schema");
@@ -673,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn packet_sauma_digest_round_trips_without_self_reference() {
+    fn packet_seal_digest_round_trips_without_self_reference() {
         let git = GitState {
             repo_root: PathBuf::from("/repo"),
             git_dir: Some(PathBuf::from(".git")),
@@ -732,20 +737,20 @@ mod tests {
                 entry_branch: None,
                 entry_head: None,
             }),
-            sauma: None,
+            seal: None,
         };
 
-        packet.attach_sauma(Some("100-1".to_string())).unwrap();
-        let envelope = packet.sauma.as_ref().unwrap();
+        packet.attach_seal(Some("100-1".to_string())).unwrap();
+        let envelope = packet.seal.as_ref().unwrap();
         let digest = envelope.digest.clone();
         let value = serde_json::to_value(&packet).unwrap();
 
-        assert_eq!(crate::sauma::artifact_digest_value(&value), digest);
+        assert_eq!(crate::seal::digest_of(&value), digest);
         assert_eq!(envelope.schema, CONTEXT_SCHEMA);
         assert_eq!(envelope.producer.run.as_deref(), Some("100-1"));
         assert_eq!(
             envelope.provenance,
-            vec![SaumaProvenance::Git {
+            vec![Provenance::Git {
                 oid: "abc".to_string()
             }]
         );

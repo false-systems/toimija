@@ -78,10 +78,10 @@ fn context_json_is_valid() {
         value["repo"]["name"].as_str(),
         Some(temp.path().file_name().unwrap().to_string_lossy().as_ref())
     );
-    assert_eq!(value["schema"], "toimija-context.v2");
-    assert_eq!(value["sauma"]["schema"], "toimija-context.v2");
+    assert_eq!(value["schema"], "toimija-context.v3");
+    assert_eq!(value["seal"]["schema"], "toimija-context.v3");
     let mut packet: toimija::context::ContextPacket = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(toimija::sauma::verify(&mut packet).unwrap(), None);
+    assert_eq!(toimija::seal::verify(&mut packet).unwrap(), None);
 }
 
 #[test]

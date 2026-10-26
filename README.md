@@ -267,7 +267,7 @@ They are never recomputed or relabelled, and a comparison across versions says
 - snapshot leases name their token's version (`token_algorithm`). One
   written earlier names none, and none is claimed for it.
 
-The token keeps its `sha256:<hex>` shape, which sauma's envelope schema
+The token keeps its `sha256:<hex>` shape, which the seal's envelope format
 requires of an anchor. Its hash covers the version name, so tokens of two
 versions never coincide.
 
@@ -281,7 +281,7 @@ model calls on startup-only discovery or bookkeeping. Scope is still declared
 before repository work, and verification before commit or handoff still applies.
 
 Toimija writes human-readable Markdown and complete machine-readable JSON
-(schema `toimija-context.v2`; docs/reference.md, "Packet compatibility"):
+(schema `toimija-context.v3`; docs/reference.md, "Packet compatibility"):
 
 ```text
 .toimija/current.md
@@ -313,7 +313,8 @@ A packet combines:
   repository point;
 - a content-based Git consistency token (a freshness check, versioned in
   `consistency.algorithm`) and a refresh token over the collected Git state;
-- a Sauma provenance envelope.
+- a seal: the digest of the packet's canonical form, its provenance edges and
+  its producer, under the key `seal`.
 
 Every packet carries a workset contract:
 
@@ -337,10 +338,13 @@ Among the paths `git status` lists, same-size edits, index changes, conflicts,
 and unsafe Git operations cannot hide behind timestamps; what `git status` does
 not list, the token does not see ("Repository points", "Known gaps"). A packet
 whose token is of an earlier version is `not_comparable`, never fresh or stale;
-refresh it. Sauma envelopes must be v1 or v2; unknown versions are
-rejected instead of being interpreted as legacy body-only seals, and packets
-with no envelope are refused. The envelope schema and anchor must match the
-packet schema and consistency token.
+refresh it. A packet's seal must be a `sauma-envelope.v2` (the name the
+envelope format keeps from the archived sauma, whose sealing code Toimija now
+carries as its own); any other is refused rather than read as a body-only seal,
+and a packet with no seal is refused. The seal's schema and anchor must match
+the packet schema and consistency token. A packet an earlier toimija wrote
+(`toimija-context.v2`, whose seal sat under `sauma`) is refused with the way
+out: `toimija refresh` replaces it.
 
 ## Sessions and collaboration
 
@@ -509,10 +513,10 @@ documentation remain aligned.
 
 ## Language and validation support
 
-Rust and Elixir have full adapters. Go, Python, and JavaScript/TypeScript receive
-the minimum language pack: repository detection, evidence-backed validation
-hints, and companion-test discovery. Other repositories work through explicit
-`.toimija/repo.yaml` configuration.
+Rust and Elixir have full adapters. Go, Python, JavaScript/TypeScript and
+Terraform receive the minimum language pack: repository detection,
+evidence-backed validation hints, and companion-test discovery. Other
+repositories work through explicit `.toimija/repo.yaml` configuration.
 
 Adapters contribute planning hints; they do not parse source code. `toimija
 validate --plan` prints commands and provenance but never executes them.

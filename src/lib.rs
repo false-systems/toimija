@@ -22,7 +22,7 @@ pub(crate) use sauma_canonical::path_codec;
 pub mod refresh;
 pub mod render;
 pub mod repo;
-pub mod sauma;
+pub mod seal;
 pub mod semantic;
 pub mod session;
 pub mod sessions;

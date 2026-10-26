@@ -74,7 +74,7 @@ fn refresh_inside_a_run_session_targets_the_session_packet() {
         &fs::read_to_string(temp.path().join(".toimija/sessions/100-1/current.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(session_json["schema"], "toimija-context.v2");
+    assert_eq!(session_json["schema"], "toimija-context.v3");
     let artifact_id = session_json["artifact_id"].as_str().unwrap();
     assert!(
         fs::read_to_string(&session_md)
@@ -83,7 +83,7 @@ fn refresh_inside_a_run_session_targets_the_session_packet() {
         "the Markdown and JSON session packets must identify the same refresh"
     );
     assert_eq!(
-        session_json["sauma"]["producer"]["run"].as_str(),
+        session_json["seal"]["producer"]["run"].as_str(),
         Some("100-1")
     );
     // Refreshing one's own packet is activity: the heartbeat is stamped.
@@ -225,25 +225,27 @@ fn refresh_writes_current_md_and_json() {
     let value: serde_json::Value =
         serde_json::from_str(&json).expect("current.json must be valid JSON");
     assert!(value.is_object());
-    assert_eq!(value["schema"], "toimija-context.v2");
+    assert_eq!(value["schema"], "toimija-context.v3");
     let artifact_id = value["artifact_id"].as_str().unwrap();
     assert!(
         md.contains(&format!("- artifact-id: {artifact_id}")),
         "the Markdown and JSON repo packets must identify the same refresh"
     );
     assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v3");
-    assert_eq!(value["sauma"]["envelope"], "sauma-envelope.v2");
-    assert_eq!(value["sauma"]["schema"], "toimija-context.v2");
-    assert_eq!(value["sauma"]["producer"]["tool"], "toimija");
-    assert_eq!(value["sauma"]["producer"]["run"], serde_json::Value::Null);
-    assert_eq!(value["sauma"]["anchored_at"], value["consistency"]["token"]);
+    // v3 carries the seal under `seal`; v2's `sauma` key is gone.
+    assert!(value.get("sauma").is_none(), "{value:#}");
+    assert_eq!(value["seal"]["envelope"], "sauma-envelope.v2");
+    assert_eq!(value["seal"]["schema"], "toimija-context.v3");
+    assert_eq!(value["seal"]["producer"]["tool"], "toimija");
+    assert_eq!(value["seal"]["producer"]["run"], serde_json::Value::Null);
+    assert_eq!(value["seal"]["anchored_at"], value["consistency"]["token"]);
     assert!(
-        value["sauma"]["digest"]
+        value["seal"]["digest"]
             .as_str()
             .unwrap()
             .starts_with("sha256:")
     );
-    assert_eq!(value["sauma"]["provenance"][0]["kind"], "git");
+    assert_eq!(value["seal"]["provenance"][0]["kind"], "git");
     assert!(
         value["consistency"]["index_fingerprint"]
             .as_str()
@@ -275,9 +277,9 @@ fn refresh_writes_current_md_and_json() {
     let mut packet: toimija::context::ContextPacket =
         serde_json::from_str(&json).expect("current.json must match the packet type");
     assert_eq!(
-        toimija::sauma::verify(&mut packet).unwrap(),
+        toimija::seal::verify(&mut packet).unwrap(),
         None,
-        "pretty on-disk current.json must reproduce its sauma digest via canonical serialization"
+        "pretty on-disk current.json must reproduce its seal digest via canonical serialization"
     );
 }
 

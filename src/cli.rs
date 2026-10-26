@@ -446,7 +446,7 @@ pub struct VerifyArgs {
     /// Emit the verdict as JSON: `{ "status": "verified", "packet_path", "token",
     /// "artifact_digest", ... }`, or on failure a non-`verified` status
     /// (`stale_packet`, `session_not_live`, `missing_packet`, `invalid_packet`,
-    /// `sauma_digest_mismatch`, `unsafe_git_operation`, ...) with its details.
+    /// `seal_digest_mismatch`, `unsafe_git_operation`, ...) with its details.
     /// The exit code is 0 only for `verified`.
     #[arg(long)]
     pub json: bool,
@@ -690,7 +690,7 @@ fn run_context(args: ContextCommandArgs) -> Result<()> {
     let args = args.packet;
     let mut packet = context::build_context_packet(&runner, &cwd, args.for_diff)
         .context("failed to build context packet")?;
-    packet.attach_sauma(None)?;
+    packet.attach_seal(None)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&packet)?);
     } else {
@@ -2182,6 +2182,9 @@ fn verify_status(
 ) -> VerifyStatus {
     match load_stored_packet(packet_path) {
         StoredPacket::Ready { packet, raw } => {
+            if let Some(message) = schema_refusal(&packet.schema) {
+                return VerifyStatus::InvalidPacket { message };
+            }
             match crate::consistency::comparability(&packet.consistency.algorithm) {
                 None => {}
                 Some(Verdict::NotComparable(algorithm)) => {
@@ -2196,14 +2199,14 @@ fn verify_status(
                     };
                 }
             }
-            if packet.sauma.is_none() {
+            if packet.seal.is_none() {
                 return VerifyStatus::InvalidPacket {
-                    message: "packet has no Sauma envelope".to_string(),
+                    message: "packet has no seal".to_string(),
                 };
             }
-            match crate::sauma::verify_value(*raw) {
+            match crate::seal::verify_value(&raw) {
                 Ok(Some((expected, actual))) => {
-                    return VerifyStatus::SaumaDigestMismatch { expected, actual };
+                    return VerifyStatus::SealDigestMismatch { expected, actual };
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -2212,19 +2215,18 @@ fn verify_status(
                     };
                 }
             }
-            let envelope = packet.sauma.as_ref().expect("checked above");
-            if envelope.schema != packet.schema {
+            let seal = packet.seal.as_ref().expect("checked above");
+            if seal.schema != packet.schema {
                 return VerifyStatus::InvalidPacket {
-                    message: "Sauma envelope schema differs from packet schema".to_string(),
+                    message: "seal schema differs from packet schema".to_string(),
                 };
             }
-            if envelope.anchored_at != packet.consistency.token {
+            if seal.anchored_at != packet.consistency.token {
                 return VerifyStatus::InvalidPacket {
-                    message: "Sauma envelope anchor differs from packet consistency token"
-                        .to_string(),
+                    message: "seal anchor differs from packet consistency token".to_string(),
                 };
             }
-            let artifact_digest = packet.sauma.as_ref().map(|sauma| sauma.digest.clone());
+            let artifact_digest = Some(seal.digest.clone());
             let packet_refresh_token = packet.refresh_token.clone();
             let named_session = packet.session.as_ref().map(|session| session.id.clone());
             let stored = packet.consistency;
@@ -2419,6 +2421,27 @@ enum StoredPacket {
     IoError(String),
 }
 
+/// Why a packet of `schema` is not read here, if it is not. A packet is read
+/// under its own schema's rules: one an earlier toimija wrote (the
+/// `toimija-context.v2` seal sat under `sauma`, say) is refused with the way
+/// out, a refresh, which replaces it; one this toimija does not know at all is
+/// refused as such.
+fn schema_refusal(schema: &str) -> Option<String> {
+    let current = context::CONTEXT_SCHEMA;
+    if schema == current {
+        None
+    } else if context::EARLIER_CONTEXT_SCHEMAS.contains(&schema) {
+        Some(format!(
+            "the packet is `{schema}`, which an earlier toimija wrote; this toimija reads \
+             `{current}`. Run `toimija refresh` to replace it"
+        ))
+    } else {
+        Some(format!(
+            "the packet is `{schema}`, which this toimija does not read; it reads `{current}`"
+        ))
+    }
+}
+
 fn load_stored_packet(path: &std::path::Path) -> StoredPacket {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -2473,7 +2496,7 @@ enum VerifyStatus {
         packet_token: String,
         current_token: String,
     },
-    SaumaDigestMismatch {
+    SealDigestMismatch {
         expected: String,
         actual: String,
     },
@@ -2571,8 +2594,8 @@ impl VerifyStatus {
                 "stale_packet: repository state changed after the selected packet was generated"
                     .to_string()
             }
-            VerifyStatus::SaumaDigestMismatch { .. } => {
-                "sauma_digest_mismatch: selected packet was tampered with".to_string()
+            VerifyStatus::SealDigestMismatch { .. } => {
+                "seal_digest_mismatch: selected packet was tampered with".to_string()
             }
             VerifyStatus::SessionNotLive { session, state } => format!(
                 "session_not_live: the packet briefs session {session}, which is {state}; \

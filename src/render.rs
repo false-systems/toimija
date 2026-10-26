@@ -801,7 +801,7 @@ mod tests {
                 recent_commits: Vec::new(),
             }),
             session: None,
-            sauma: None,
+            seal: None,
         }
     }
 
@@ -1233,7 +1233,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     fn json_context_snapshot_is_stable() {
         let rendered = serde_json::to_string_pretty(&packet()).unwrap();
         let expected = r#"{
-  "schema": "toimija-context.v2",
+  "schema": "toimija-context.v3",
   "repo": {
     "name": "demo",
     "role": "tool",
