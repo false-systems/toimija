@@ -211,8 +211,9 @@ the tree. The fallback is logged once.
 Every 500 ms the watcher also compares the metadata of the Git files a packet
 depends on — HEAD, the index, the operation markers, the refs (files or
 reftable, a linked worktree's own included), packed-refs, config, `shallow`,
-`info/exclude` and `.toimija/repo.yaml` — read with `stat` alone, no git
-process. A moved ref or config refreshes the packet; a moved HEAD or index is
+`info/grafts`, `objects/info/alternates`, `info/exclude` and
+`.toimija/repo.yaml` — read with `stat` alone, no git process. A moved ref,
+config, graft or alternates file refreshes the packet; a moved HEAD or index is
 checked first with one `git status`, because other tools rewrite the index
 without changing anything the packet shows. This is how staging, commits,
 branch switches, a fetch that moves the upstream, and a worktree or branch

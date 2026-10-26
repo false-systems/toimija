@@ -268,6 +268,10 @@ impl Repository {
             entry(common.join("config")),
             entry(git_dir.join("config.worktree")),
             entry(common.join("shallow")),
+            // History without any ref moving: a graft rewrites parents, and
+            // alternates change which objects the history reads can reach.
+            entry(common.join("info").join("grafts")),
+            entry(common.join("objects").join("info").join("alternates")),
             entry(self.root.join(crate::config::CONFIG_PATH)),
         ];
         // `refs/toimija` is Toimija's own footprint (snapshot leases).
@@ -391,8 +395,9 @@ struct Stamp {
     /// `info/exclude`. A change here is checked with one `git status` before
     /// refreshing.
     status: Vec<Entry>,
-    /// What only a refresh reads: refs, packed-refs, config, `shallow`, and the
-    /// packet's own configuration. A change here refreshes.
+    /// What only a refresh reads: refs, packed-refs, config, `shallow`,
+    /// `info/grafts`, `objects/info/alternates`, and the packet's own
+    /// configuration. A change here refreshes, and reads them again.
     refs: Vec<Entry>,
 }
 
