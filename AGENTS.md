@@ -6,7 +6,7 @@ Read `.toimija/current.md` before reading anything else (under `toimija run` you
 
 Keep changes small and reviewable. Preserve the v0.0 scope: Git-aware local context compilation, config, repo detection, validation plan rendering, observability, and tests.
 
-Do not add MCP, Tree-sitter, LSP, SCIP, Kythe, Sykli delegation, Vaisto integration, Kerto integration, background daemons, or network calls. (The `watch`/`run` commands are foreground-only and run solely while explicitly invoked.) Other products read Toimija's facts through its CLI and files — `repository-point --json`, `sessions --json`, the packet — never through product imports, plugins, or dynamic libraries.
+Do not add MCP, Tree-sitter, LSP, SCIP, Kythe, Sykli delegation, background daemons, or network calls. (The `watch`/`run` commands are foreground-only and run solely while explicitly invoked.) Other products read Toimija's facts through its CLI and files — `repository-point --json`, `sessions --json`, the packet — never through product imports, plugins, or dynamic libraries.
 
 ## Boundaries
 
@@ -14,7 +14,7 @@ These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if
 they drift apart. Edit both together.
 
 - Keep v0.0 as one Rust crate.
-- Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Vaisto, or Kerto integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.json contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.
+- Do not add MCP, LSP, SCIP, Tree-sitter, or Kythe integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.json contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.
 - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
 - Agent coordination — per-session live packets and sibling-session awareness — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
 - A session outside any Git repository is in scope since 2026-09-26 (issue #225): `run` opens a visible session (marker, heartbeat, handshake; no packet) in the machine-local state directory, never a `.toimija/` folder where the agent works. Workspace context compilation stays out of scope.
