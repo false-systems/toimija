@@ -68,13 +68,13 @@
       "type": ["integer", "null"]
     },
     "handoffs": {
-      "description": "Up to ten handoff notes retained from the live session directory.",
+      "description": "Up to ten handoff notes retained from the live session directory. Toimija no longer records handoffs, so records it writes now carry an empty list; earlier records may carry notes.",
       "type": "array",
       "items": { "type": "string" },
       "maxItems": 10
     },
     "handoffs_total": {
-      "description": "Full handoff-note count before the list was capped.",
+      "description": "Full handoff-note count before the list was capped; 0 in records written since toimija stopped recording handoffs.",
       "type": "integer",
       "minimum": 0
     },
