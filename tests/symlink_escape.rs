@@ -130,7 +130,6 @@ fn a_symlinked_toimija_dir_is_refused_by_every_writer() {
     for args in [
         &["enter"][..],
         &["refresh"],
-        &["current", "--write"],
         &["init"],
         &["clean"],
         &["snapshot", "--lease"],
@@ -166,23 +165,8 @@ fn a_symlinked_session_dir_is_refused_by_the_session_writers() {
 
     let session = [("TOIMIJA_SESSION", "100-1")];
     fx.assert_refused(&["intent", "hijacked"], &session);
-    fx.assert_refused(&["handoff", "hijacked"], &session);
     fx.assert_refused(&["enter"], &session);
     fx.assert_refused(&["refresh"], &session);
-}
-
-#[test]
-fn a_symlinked_handoff_log_is_never_appended_to() {
-    if !git_available() {
-        return;
-    }
-    let fx = fixture();
-    let dir = fx.repo.join(".toimija/sessions/100-1");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("session.json"), marker("100-1", "active")).unwrap();
-    fx.link(".toimija/sessions/100-1/handoff.jsonl", "sentinel.txt");
-
-    fx.assert_refused(&["handoff", "hijacked"], &[("TOIMIJA_SESSION", "100-1")]);
 }
 
 #[test]
@@ -213,25 +197,4 @@ fn a_symlinked_snapshots_dir_is_refused_by_lease_and_release() {
 
     fx.assert_refused(&["snapshot", "--lease"], &[]);
     fx.assert_refused(&["snapshot", "--release", "victim"], &[]);
-}
-
-#[test]
-fn adopt_never_writes_an_entry_file_that_resolves_outside() {
-    if !git_available() {
-        return;
-    }
-    let fx = fixture();
-    fx.link("AGENTS.md", "sentinel.txt");
-    fx.assert_refused(&["adopt"], &[]);
-}
-
-#[test]
-fn adopt_hooks_never_write_settings_through_a_symlinked_claude_dir() {
-    if !git_available() {
-        return;
-    }
-    let fx = fixture();
-    fs::write(fx.repo.join("AGENTS.md"), "# Agents\n").unwrap();
-    fx.link(".claude", "");
-    fx.assert_refused(&["adopt", "--hooks"], &[]);
 }

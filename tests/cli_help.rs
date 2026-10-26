@@ -24,13 +24,9 @@ fn top_level_help_describes_every_subcommand() {
             "Enter, watch while an agent command runs",
         ))
         .stdout(predicate::str::contains(
-            "Append or inspect a session handoff record",
-        ))
-        .stdout(predicate::str::contains(
             "List durable records of concluded sessions",
         ))
         .stdout(predicate::str::contains("Reclaim expired Toimija sessions"))
-        .stdout(predicate::str::contains("Print suggested preflight text"))
         .stdout(predicate::str::contains(
             "Check whether this branch's work has landed",
         ))
@@ -60,26 +56,8 @@ fn every_subcommand_help_says_when_to_use_it() {
     // Each subcommand's long help must carry a "use this …" orientation line so
     // an agent can pick between siblings (enter vs context vs refresh, …).
     for subcommand in [
-        "init",
-        "doctor",
-        "context",
-        "current",
-        "refresh",
-        "enter",
-        "watch",
-        "run",
-        "intent",
-        "handoff",
-        "history",
-        "clean",
-        "snippet",
-        "landed",
-        "sessions",
-        "validate",
-        "verify",
-        "snapshot",
-        "audit-plan",
-        "adopt",
+        "init", "doctor", "context", "refresh", "enter", "watch", "run", "intent", "history",
+        "clean", "landed", "sessions", "validate", "verify", "snapshot",
     ] {
         Command::cargo_bin("toimija")
             .unwrap()
@@ -101,17 +79,13 @@ fn high_traffic_subcommands_carry_examples() {
         ("run", "toimija run --intent"),
         ("sessions", "toimija sessions --prune"),
         ("intent", "toimija intent"),
-        ("handoff", "toimija handoff --show"),
         ("history", "toimija history --json"),
         ("clean", "toimija clean --dry-run"),
-        ("current", "toimija current --verify --json"),
         ("verify", "toimija verify --json"),
         ("landed", "toimija landed"),
         ("doctor", "toimija doctor --strict"),
         ("snapshot", "toimija snapshot --lease"),
         ("context", "toimija context --for-diff"),
-        ("audit-plan", "toimija audit-plan --surface"),
-        ("adopt", "toimija adopt --hooks"),
     ] {
         Command::cargo_bin("toimija")
             .unwrap()
@@ -161,4 +135,71 @@ fn run_help_offers_alerts_for_launchers_to_detect() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--alert <TEXT>"));
+}
+
+/// Every `` `toimija <command>` `` that toimija's source names — in a hint, a
+/// help text, a launch prompt or a comment — is a command `--help` lists. A
+/// hint that sends an agent to a removed command is worse than no hint.
+#[test]
+fn every_command_the_source_names_exists() {
+    use std::collections::BTreeSet;
+
+    let help = Command::cargo_bin("toimija")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success();
+    let help = String::from_utf8_lossy(&help.get_output().stdout).into_owned();
+    let commands: BTreeSet<String> = help
+        .lines()
+        .skip_while(|line| !line.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_string)
+        .collect();
+    assert!(commands.contains("refresh"), "{help}");
+
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+
+    let mut named = 0;
+    let mut unknown = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for (at, _) in text.match_indices("`toimija ") {
+            let rest = &text[at + "`toimija ".len()..];
+            let word: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                .collect();
+            // Global flags (`toimija -q …`) and placeholders name no command.
+            if word.is_empty() || word.starts_with('-') {
+                continue;
+            }
+            named += 1;
+            if !commands.contains(&word) {
+                unknown.push(format!("{}: `toimija {word}`", file.display()));
+            }
+        }
+    }
+    assert!(named > 20, "the scan found only {named} command names");
+    assert!(
+        unknown.is_empty(),
+        "commands named in src/ that --help does not list:\n{}",
+        unknown.join("\n")
+    );
 }

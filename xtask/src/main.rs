@@ -345,7 +345,6 @@ fn scan_artifacts(root: &Path) -> Result<Vec<Artifact>> {
         for entry in entries.flatten() {
             let dir = entry.path();
             push_if_exists(&mut files, dir.join("current.json"));
-            push_if_exists(&mut files, dir.join("handoff.jsonl"));
         }
     }
     let runs = root.join(".toimija/runs");
@@ -504,7 +503,7 @@ mod tests {
         .unwrap();
 
         let output = render_sauma_why(&root, token).unwrap();
-        assert!(output.contains("toimija-context.v1"));
+        assert!(output.contains("toimija-context.v2"));
         assert!(output.contains("  ← kisko-model-call.v1"));
         assert!(!output.contains("digest mismatch"));
 
@@ -515,7 +514,7 @@ mod tests {
         )
         .unwrap();
         let output = render_sauma_why(&root, token).unwrap();
-        assert!(output.contains("toimija-context.v1"));
+        assert!(output.contains("toimija-context.v2"));
         assert!(output.contains("kisko-model-call.v1"));
         assert!(output.contains("digest mismatch"));
         assert!(!output.contains("  ← kisko-model-call.v1"));

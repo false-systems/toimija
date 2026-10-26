@@ -562,8 +562,7 @@ fn run_exit_summary_reports_consumption() {
         .stderr(predicate::str::contains(
             "intent:    \"fix the roof\" (declared at launch)",
         ))
-        .stderr(predicate::str::contains("expansions: none declared"))
-        .stderr(predicate::str::contains("handoff:   none recorded"));
+        .stderr(predicate::str::contains("expansions: none declared"));
 }
 
 #[test]
@@ -1043,7 +1042,7 @@ fn run_hands_the_child_its_repository_point() {
     let id = point["repository"]["id"].as_str().unwrap();
     assert!(id.starts_with("rpoint_"), "{point}");
     assert!(point["repository"]["tree_oid"].is_string(), "{point}");
-    assert_eq!(packet["schema"], "toimija-context.v1");
+    assert_eq!(packet["schema"], "toimija-context.v2");
     assert_eq!(packet["session"]["execution"]["repository"]["id"], id);
     assert_eq!(
         fs::read_to_string(out.path().join("retired.txt")).unwrap(),
@@ -1064,16 +1063,35 @@ fn run_closes_the_session_when_the_last_launch_check_refuses() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_git_repo(temp.path());
-    // `run` asks `gh` about the branch's pull requests between its first and
-    // its last pre-launch check. This `gh` starts a merge while answering.
-    let bin = tempfile::tempdir().unwrap();
-    let gh = bin.path().join("gh");
-    fs::write(
-        &gh,
-        "#!/bin/sh\ngit rev-parse HEAD > \"$(git rev-parse --git-dir)/MERGE_HEAD\"\necho '[]'\n",
+    // `run` records the entry HEAD on the session marker right after its
+    // first pre-launch check passes. This `git` starts a merge on its first
+    // call after that, so the merge lands between the first check and the
+    // last one, whatever git runs in between.
+    let real_git = String::from_utf8(
+        std::process::Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
     )
     .unwrap();
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let git = bin.path().join("git");
+    fs::write(
+        &git,
+        format!(
+            "#!/bin/sh\n\
+             if [ ! -e \"$MERGE_STARTED\" ] && \
+             grep -qs '\"head\": \"' \"$REPO\"/.toimija/sessions/*/session.json; then\n\
+             \x20 : > \"$MERGE_STARTED\"\n\
+             \x20 '{real}' -C \"$REPO\" rev-parse HEAD > \"$REPO/.git/MERGE_HEAD\"\n\
+             fi\n\
+             exec '{real}' \"$@\"\n",
+            real = real_git.trim()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
         "{}:{}",
         bin.path().display(),
@@ -1084,6 +1102,8 @@ fn run_closes_the_session_when_the_last_launch_check_refuses() {
         .unwrap()
         .current_dir(temp.path())
         .env("PATH", path)
+        .env("REPO", temp.path())
+        .env("MERGE_STARTED", bin.path().join("merge-started"))
         .env_remove("TOIMIJA_SESSION")
         .args([
             "run",
@@ -1108,84 +1128,12 @@ fn run_closes_the_session_when_the_last_launch_check_refuses() {
         serde_json::from_str(&fs::read_to_string(sessions[0].join("session.json")).unwrap())
             .unwrap();
     assert_eq!(marker["status"], "closed", "{marker}");
+    // The entry HEAD was recorded: the first check passed, and the last one refused.
+    assert!(marker["head"].is_string(), "{marker}");
+    assert!(bin.path().join("merge-started").exists());
     assert!(
         !sessions[0].join("semantic-point.json").exists(),
         "a closed session still publishes a repository point"
-    );
-}
-
-/// A cycle leg (Ohjaa's `--cycle`, `--cycle-leg`, `--cycle-attempt`) is
-/// recorded on the session marker with the repository point it launched at,
-/// and `sessions --json` shows it. The same leg at the same point cannot be
-/// live twice: a second `run` of it, launched while the first is still
-/// running, is refused.
-#[test]
-fn a_cycle_leg_is_recorded_and_cannot_be_live_twice() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    let out = tempfile::tempdir().unwrap();
-    let leg = [
-        "--cycle",
-        "cycle-1",
-        "--cycle-leg",
-        "code",
-        "--cycle-attempt",
-        "0",
-    ];
-
-    let mut outer = vec!["run", "--intent", "cycle leg"];
-    outer.extend(leg);
-    outer.extend([
-        "--",
-        "sh",
-        "-c",
-        "\"$TOIMIJA_BIN\" run --intent again --cycle cycle-1 --cycle-leg code \
-         --cycle-attempt 0 -- true; echo $? > \"$OUT/inner\"",
-    ]);
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .env("OUT", out.path())
-        .env("TOIMIJA_BIN", env!("CARGO_BIN_EXE_toimija"))
-        .env_remove("TOIMIJA_SESSION")
-        .args(&outer)
-        .assert()
-        .success();
-
-    assert_eq!(
-        fs::read_to_string(out.path().join("inner")).unwrap().trim(),
-        "1",
-        "the duplicate leg was not refused"
-    );
-    let report = Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .args(["sessions", "--json"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let report: serde_json::Value = serde_json::from_slice(&report).unwrap();
-    let actions: Vec<&serde_json::Value> = report["sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|session| session.get("cycle_action"))
-        .collect();
-    assert_eq!(actions.len(), 1, "{report}");
-    assert_eq!(actions[0]["cycle"], "cycle-1");
-    assert_eq!(actions[0]["leg"], "code");
-    assert_eq!(actions[0]["attempt"], 0);
-    assert!(
-        actions[0]["repository_point"]
-            .as_str()
-            .unwrap()
-            .starts_with("rpoint_"),
-        "{report}"
     );
 }
 
@@ -1252,77 +1200,6 @@ fn run_does_not_execute_the_validation_plan() {
     );
     // It still entered (refreshed the live packet).
     assert!(temp.path().join(".toimija/current.json").exists());
-}
-
-#[test]
-fn run_records_a_commit_made_inside_the_session_as_an_observed_effect() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-
-    let assert = Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .args([
-            "run",
-            "--intent",
-            "test",
-            "--",
-            "sh",
-            "-c",
-            "git commit -q --allow-empty -m inside",
-        ])
-        .assert()
-        .success();
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
-    assert!(stderr.contains("effects:   commit"), "{stderr}");
-
-    let session_dir = fs::read_dir(temp.path().join(".toimija/sessions"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let marker: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(session_dir.join("session.json")).unwrap())
-            .unwrap();
-    assert_eq!(marker["effects_observed"], serde_json::json!(["commit"]));
-    // No upstream and (probably) no `gh` here: the answer must say it is
-    // partial rather than pretend it looked everywhere.
-    assert!(
-        marker["effects_coverage"] == "partial" || marker["effects_coverage"] == "complete",
-        "{marker}"
-    );
-
-    // And a session that only reads records nothing, without lying about it.
-    let quiet = tempfile::tempdir().unwrap();
-    init_git_repo(quiet.path());
-    let assert = Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(quiet.path())
-        .args([
-            "run",
-            "--intent",
-            "test",
-            "--",
-            "sh",
-            "-c",
-            "git status >/dev/null",
-        ])
-        .assert()
-        .success();
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
-    assert!(stderr.contains("effects:   none observed"), "{stderr}");
-    let session_dir = fs::read_dir(quiet.path().join(".toimija/sessions"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let marker = fs::read_to_string(session_dir.join("session.json")).unwrap();
-    assert!(!marker.contains("effects_observed"), "{marker}");
 }
 
 /// The instructions an idle Codex stub was launched with.
@@ -1625,4 +1502,95 @@ fn alerts_are_capped_near_a_kilobyte_and_an_unknown_agent_is_told_it_missed_them
         .assert()
         .success()
         .stderr(predicate::str::contains("not delivered: alert, packet"));
+}
+
+/// Ohjaa launches every session as `toimija run --intent <why> --task <what>
+/// --briefing <knowledge> --scope <path>... -- <agent>`, then finds that
+/// session with `toimija sessions --json`: by an id of the shape
+/// `<secs>-<pid>`, the pid being `toimija run`'s own, and reads its agent,
+/// worktree, branch, intent, scope, liveness, pid_check and last_seen_at, and
+/// the report's warnings and coverage. All of that, together, as ohjaa asks.
+#[cfg(unix)]
+#[test]
+fn run_takes_the_flags_ohjaa_launches_with_and_sessions_reports_what_it_reads() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let toimija = assert_cmd::cargo::cargo_bin("toimija");
+    let stub = temp.path().join("claude");
+    fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > launch-arg\n\
+             printf '%s' \"$PPID\" > ppid\n'{}' sessions --json > during.json\n",
+            toimija.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .args([
+            "run",
+            "--intent",
+            "ohjaa intent",
+            "--task",
+            "the assigned task",
+            "--briefing",
+            "Knowledge: what ohjaa knows.",
+            "--scope",
+            "src/a.rs",
+            "--scope",
+            "docs/",
+            "--",
+        ])
+        .arg(&stub)
+        .assert()
+        .success();
+
+    let prompt = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    let task = prompt.find("Task: the assigned task").unwrap();
+    // The instruction above the packet names sections the packet has.
+    assert!(prompt.contains("Read first list"), "{prompt}");
+    assert!(prompt.contains("\n## Read first\n"), "{prompt}");
+    let briefing = prompt.find("Knowledge: what ohjaa knows.").unwrap();
+    assert!(task < briefing, "{prompt}");
+
+    let during: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join("during.json")).unwrap())
+            .unwrap();
+    assert_eq!(during["coverage"]["status"], "available", "{during}");
+    assert!(during["warnings"].is_array(), "{during}");
+    let sessions = during["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{during}");
+    let session = &sessions[0];
+    let ppid = fs::read_to_string(temp.path().join("ppid")).unwrap();
+    let id = session["id"].as_str().unwrap();
+    let (secs, pid) = id.split_once('-').unwrap();
+    assert!(secs.parse::<u64>().is_ok(), "{id}");
+    assert_eq!(pid, ppid.trim(), "the id names `toimija run`'s pid");
+    assert_eq!(session["agent"][0], stub.display().to_string());
+    assert!(session["worktree"].is_string(), "{session}");
+    assert!(session["branch"].is_string(), "{session}");
+    assert_eq!(session["intent"], "ohjaa intent");
+    assert_eq!(session["scope"], serde_json::json!(["src/a.rs", "docs/"]));
+    assert_eq!(session["liveness"], "active");
+    assert_eq!(session["pid_check"], "alive");
+    assert!(session["last_seen_at"].as_u64().is_some(), "{session}");
+
+    let after = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["sessions", "--json"])
+        .assert()
+        .success();
+    let after: serde_json::Value = serde_json::from_slice(&after.get_output().stdout).unwrap();
+    assert_eq!(after["sessions"][0]["id"], id);
+    assert_eq!(after["sessions"][0]["liveness"], "closed");
 }

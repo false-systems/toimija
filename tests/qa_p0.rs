@@ -82,7 +82,7 @@ fn interrupted_merge_is_visible_and_verification_is_unsafe() {
     toimija(repo.path()).arg("refresh").assert().success();
     let verify = json_output(
         toimija(repo.path())
-            .args(["current", "--verify", "--json"])
+            .args(["verify", "--json"])
             .assert()
             .failure(),
     );
@@ -130,6 +130,6 @@ fn identical_context_json_has_stable_semantic_ordering() {
     );
     assert_eq!(first["git"], second["git"]);
     assert_eq!(first["validation_plan"], second["validation_plan"]);
-    assert_eq!(first["relevance"], second["relevance"]);
+    assert_eq!(first["read_first"], second["read_first"]);
     assert_eq!(first["consistency"], second["consistency"]);
 }

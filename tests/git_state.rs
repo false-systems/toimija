@@ -51,13 +51,13 @@ fn init_creates_config_without_overwrite() {
     assert_eq!(first, second);
 
     // Toimija owns `.toimija/`, not root agent policy. init must not create
-    // AGENTS.md or CLAUDE.md — it only suggests preflight text via `snippet`.
+    // AGENTS.md or CLAUDE.md — it only says what they should carry.
     assert!(!temp.path().join("AGENTS.md").exists());
     assert!(!temp.path().join("CLAUDE.md").exists());
 }
 
 #[test]
-fn init_points_at_the_snippet_for_agent_docs() {
+fn init_says_what_the_agent_docs_should_carry() {
     if !git_available() {
         return;
     }
@@ -69,7 +69,7 @@ fn init_points_at_the_snippet_for_agent_docs() {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicate::str::contains("toimija snippet preflight"));
+        .stdout(predicate::str::contains("run `toimija enter` first"));
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn branch_surface_uses_trunk_not_feature_upstream() {
 }
 
 #[test]
-fn context_surfaces_missing_companion_test_and_risk_action() {
+fn context_reads_the_changed_file_then_its_companion_test_first() {
     if !git_available() {
         return;
     }
@@ -267,18 +267,9 @@ fn context_surfaces_missing_companion_test_and_risk_action() {
         .arg("context")
         .assert()
         .success()
-        .stdout(predicate::str::contains("## Coupling"))
         .stdout(predicate::str::contains(
-            "src/foo.rs changed, but tests/foo.rs was not",
-        ))
-        .stdout(predicate::str::contains(
-            "companion test exists but is not in this diff",
-        ))
-        .stdout(predicate::str::contains("## Risk"))
-        .stdout(predicate::str::contains(
-            "src/foo.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage",
-        ))
-        .stdout(predicate::str::contains("↔").not());
+            "## Read first\n- README.md (important doc)\n- src/foo.rs (changed)\n- tests/foo.rs (matching test heuristic)\n",
+        ));
 }
 
 #[test]
@@ -383,8 +374,8 @@ fn working_tree_dirt_at_base_is_not_labelled_branch_diff() {
     let temp = tempfile::tempdir().unwrap();
     init_repo(temp.path());
     // A branch sitting at its base: merge-base exists (== HEAD) but the branch
-    // has no committed diff. Only an untracked file is present. The surface and
-    // the relevance scope must say "working tree and index", not branch diff.
+    // has no committed diff. Only an untracked file is present. The surface
+    // must say "working tree and index", not branch diff.
     run_git(temp.path(), &["branch", "-M", "main"]);
     run_git(temp.path(), &["checkout", "-b", "feature"]);
     fs::write(temp.path().join("scratch.txt"), "scratch\n").unwrap();
@@ -399,10 +390,6 @@ fn working_tree_dirt_at_base_is_not_labelled_branch_diff() {
     assert_eq!(
         value["changed_surface_source"], "working_tree_and_index",
         "no committed branch diff -> working tree, not merge-base diff"
-    );
-    assert_eq!(
-        value["relevance"]["scope"]["source"], "working_tree_and_index",
-        "relevance scope must mirror the real surface source"
     );
 }
 
@@ -739,4 +726,72 @@ fn init_ignores_the_packet_so_the_first_refresh_leaves_the_tree_clean() {
         fs::read_to_string(temp.path().join(".toimija/.gitignore")).unwrap(),
         first
     );
+}
+
+/// The repo owner's "read this first" (`context.read_first` and
+/// `important_docs`) always shows, first, however wide the branch: the
+/// changed files fill only what is left of the list's cap.
+#[test]
+fn read_first_keeps_the_configured_docs_first_on_a_wide_branch() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    run_git(temp.path(), &["branch", "-M", "main"]);
+    fs::create_dir_all(temp.path().join("docs")).unwrap();
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(temp.path().join("docs/architecture.md"), "# Arch\n").unwrap();
+    fs::write(temp.path().join("AGENTS.md"), "# Agents\n").unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: wide\n  role: fixture\ncontext:\n  read_first:\n    - docs/architecture.md\n  important_docs:\n    - README.md\n    - AGENTS.md\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join(".gitignore"), ".toimija/\n").unwrap();
+    run_git(temp.path(), &["add", "."]);
+    run_git(temp.path(), &["commit", "-m", "docs"]);
+
+    run_git(temp.path(), &["checkout", "-b", "wide"]);
+    fs::create_dir_all(temp.path().join("src")).unwrap();
+    for index in 1..=30 {
+        fs::write(
+            temp.path().join(format!("src/f{index:02}.txt")),
+            format!("{index}\n"),
+        )
+        .unwrap();
+    }
+    // A configured doc the branch also changes is still listed with the docs.
+    fs::write(temp.path().join("README.md"), "# Demo, changed\n").unwrap();
+    run_git(temp.path(), &["add", "."]);
+    run_git(temp.path(), &["commit", "-m", "thirty files"]);
+
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let section: Vec<&str> = stdout
+        .split("## Read first\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .take_while(|line| line.starts_with("- "))
+        .collect();
+    assert_eq!(
+        section[..3],
+        [
+            "- docs/architecture.md (repo config)",
+            "- README.md (important doc)",
+            "- AGENTS.md (important doc)",
+        ],
+        "{stdout}"
+    );
+    assert_eq!(section[3], "- src/f01.txt (changed)", "{stdout}");
+    // Twenty-five entries in all, then an honest count of the rest.
+    assert_eq!(section.len(), 26, "{stdout}");
+    assert_eq!(section[24], "- src/f22.txt (changed)", "{stdout}");
+    assert_eq!(section[25], "- ... and 8 more (truncated)", "{stdout}");
 }

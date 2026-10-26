@@ -9,12 +9,11 @@ use crate::command::CommandRunner;
 use crate::config::RepoConfig;
 use crate::consistency::Consistency;
 use crate::git::{self, ChangedFile, GitState};
-use crate::relevance::{RelevanceInput, RelevancePacket, RelevanceSource};
 use crate::repo::{self, RepoInfo, RepoKind};
 use crate::sauma::{self, SaumaEnvelope, SaumaProvenance};
 use crate::validate::ValidationPlan;
 
-pub const CONTEXT_SCHEMA: &str = "toimija-context.v1";
+pub const CONTEXT_SCHEMA: &str = "toimija-context.v2";
 
 fn default_context_schema() -> String {
     CONTEXT_SCHEMA.to_string()
@@ -45,7 +44,6 @@ pub struct ContextPacket {
     pub warnings: Vec<String>,
     pub for_diff: bool,
     pub default_budget: Option<usize>,
-    pub relevance: RelevancePacket,
     /// Verifiable fingerprint of the Git state this packet was compiled from. A
     /// reader (e.g. the harness) checks it against the live repo before trusting
     /// the packet, instead of re-deriving repo state itself.
@@ -66,8 +64,8 @@ pub struct ContextPacket {
 
 /// The session half of a per-session packet: who this packet is for and why
 /// that session says it is here. `scope` is the agent's declaration, distinct
-/// from the Git-derived workset under `relevance.scope`. Advisory, like the
-/// marker it mirrors.
+/// from the Git-derived `changed_surface`. Advisory, like the marker it
+/// mirrors.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionBlock {
     pub id: String,
@@ -198,26 +196,6 @@ pub fn build_context_packet(
     if validation_plan.gate.is_none() {
         validation_plan.focused = adapter.focused_validation(&git.repo_root, &changed_surface);
     }
-    // Files this branch added (status A in the merge-base..HEAD diff): the
-    // youngest possible surface, which base-history mining cannot see.
-    let branch_added: Vec<PathBuf> = git
-        .branch_files
-        .iter()
-        .filter(|file| matches!(file.status, git::ChangeStatus::Added))
-        .map(|file| file.path.clone())
-        .collect();
-    let relevance = crate::relevance::compute_relevance(
-        runner,
-        &git.repo_root,
-        RelevanceInput {
-            adapter: adapter.as_ref(),
-            changed: &changed_surface,
-            branch_added: &branch_added,
-            scope_source: scope_source(changed_surface_source),
-            merge_base: git.merge_base.as_deref(),
-            head_available: git.head_oid.is_some(),
-        },
-    );
     let read_first = read_first(
         &git.repo_root,
         &config,
@@ -245,7 +223,6 @@ pub fn build_context_packet(
         warnings,
         for_diff,
         default_budget: Some(config.context.default_budget),
-        relevance,
         consistency,
         // Session identity is injected by the per-session refresh writer
         // (`refresh::refresh_session`), which knows the session directory;
@@ -310,16 +287,6 @@ fn changed_surface_source(git: &GitState) -> ChangedSurfaceSource {
         ChangedSurfaceSource::WorkingTreeAndIndex
     } else {
         ChangedSurfaceSource::Unknown
-    }
-}
-
-/// Map the changed-surface provenance onto a relevance source so the Scope
-/// section never claims branch-diff evidence it does not have.
-fn scope_source(source: ChangedSurfaceSource) -> RelevanceSource {
-    match source {
-        ChangedSurfaceSource::BranchDiffSinceMergeBase => RelevanceSource::MergeBaseDiff,
-        ChangedSurfaceSource::WorkingTreeAndIndex => RelevanceSource::WorkingTreeAndIndex,
-        ChangedSurfaceSource::Unknown => RelevanceSource::Unavailable,
     }
 }
 
@@ -447,6 +414,10 @@ fn stable_strings(strings: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// What to read first: the repository's own list (`context.read_first`, then
+/// `important_docs`) first, so a wide branch can never push it out of a capped
+/// rendering, then the changed files, then their companion tests. A path
+/// appears once, under the first reason that names it.
 fn read_first(
     repo_root: &Path,
     config: &RepoConfig,
@@ -456,21 +427,6 @@ fn read_first(
 ) -> Vec<ReadFirstEntry> {
     let mut seen = BTreeSet::new();
     let mut entries = Vec::new();
-    for file in changed {
-        if seen.insert(file.path.clone()) {
-            entries.push(ReadFirstEntry {
-                path: file.path.clone(),
-                reason: "changed".to_string(),
-            });
-        }
-    }
-    let mut hints = adapter.read_first_hints(repo_root, changed);
-    hints.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-    for (path, reason) in hints {
-        if seen.insert(path.clone()) {
-            entries.push(ReadFirstEntry { path, reason });
-        }
-    }
     for path in &config.context.read_first {
         if repo_root.join(path).exists() {
             if seen.insert(path.clone()) {
@@ -492,6 +448,21 @@ fn read_first(
                 path: doc.clone(),
                 reason: "important doc".to_string(),
             });
+        }
+    }
+    for file in changed {
+        if seen.insert(file.path.clone()) {
+            entries.push(ReadFirstEntry {
+                path: file.path.clone(),
+                reason: "changed".to_string(),
+            });
+        }
+    }
+    let mut hints = adapter.read_first_hints(repo_root, changed);
+    hints.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    for (path, reason) in hints {
+        if seen.insert(path.clone()) {
+            entries.push(ReadFirstEntry { path, reason });
         }
     }
     entries
@@ -591,7 +562,6 @@ mod tests {
             warnings: Vec::new(),
             for_diff: false,
             default_budget: Some(4000),
-            relevance: RelevancePacket::default(),
             consistency,
             session: None,
             sauma: None,
@@ -650,7 +620,6 @@ mod tests {
             warnings: Vec::new(),
             for_diff: false,
             default_budget: Some(4000),
-            relevance: RelevancePacket::default(),
             consistency: Consistency::fingerprint(&git),
             session: None,
             sauma: None,
@@ -712,7 +681,6 @@ mod tests {
             warnings: Vec::new(),
             for_diff: false,
             default_budget: Some(4000),
-            relevance: RelevancePacket::default(),
             consistency,
             session: Some(SessionBlock {
                 id: "100-1".to_string(),
@@ -742,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn read_first_includes_changed_and_docs() {
+    fn read_first_lists_configured_docs_before_changed_files() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("README.md"), "docs").unwrap();
         let mut config = RepoConfig::default();
@@ -762,12 +730,8 @@ mod tests {
             &changed,
             &mut warnings,
         );
-        assert_eq!(entries[0].path, PathBuf::from("src/lib.rs"));
-        assert!(
-            entries
-                .iter()
-                .any(|entry| entry.path == Path::new("README.md"))
-        );
+        let paths: Vec<&Path> = entries.iter().map(|entry| entry.path.as_path()).collect();
+        assert_eq!(paths, [Path::new("README.md"), Path::new("src/lib.rs")]);
         assert!(warnings.is_empty());
     }
 

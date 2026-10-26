@@ -7,10 +7,9 @@ use tracing::{debug, info};
 
 use crate::error::ToimijaError;
 
-/// Default UTF-8 byte budget for the Markdown context packet. Sized so the full
-/// relevance layer (Scope, Read order, Coupling, Risk) survives on a real-repo
-/// packet; a tighter packet stays well under it. Raised from 4000 when the
-/// relevance layer (#12) enlarged the packet (#23).
+/// Default UTF-8 byte budget for the Markdown context packet, when repo.yaml
+/// names none. Raised from 4000 for the history-mined relevance layer (#23),
+/// since removed; a real-repo packet now stays well under it.
 pub const DEFAULT_BUDGET: usize = 8000;
 pub const CONFIG_PATH: &str = ".toimija/repo.yaml";
 pub const DAY_SECS: u64 = 24 * 60 * 60;
@@ -290,11 +289,10 @@ pub fn init_repo(repo_root: &Path) -> anyhow::Result<InitReport> {
             "Fill role, not, and boundaries in .toimija/repo.yaml so the packet can orient an agent."
                 .to_string(),
         );
-        // Toimija owns `.toimija/`, not root agent policy. It suggests preflight
-        // text for AGENTS.md/CLAUDE.md via `toimija snippet`, but never writes
-        // those human-owned files itself.
+        // Toimija owns `.toimija/`, not root agent policy: it never writes the
+        // human-owned AGENTS.md/CLAUDE.md, so it says what they should carry.
         report.guidance.push(
-            "Run `toimija snippet preflight` and paste it into your AGENTS.md/CLAUDE.md so agents run `toimija enter` first."
+            "Tell agents in your AGENTS.md/CLAUDE.md to run `toimija enter` first, or launch them with `toimija run`."
                 .to_string(),
         );
     }

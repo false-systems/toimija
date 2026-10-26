@@ -102,56 +102,6 @@ fn point_extensions() -> Extensions {
     extensions
 }
 
-/// How two recorded identities compare. Within one version they are equal or
-/// different; across versions there is no answer, and none is invented.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Comparison {
-    Equal,
-    Different,
-    NotComparable,
-}
-
-/// The version of a point id: [`POINT_ID_PREFIX`]'s, or the one before it
-/// (`rpoint_` and 64 hex digits, from the repository and the token alone).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PointIdVersion {
-    Repository,
-    Tree,
-}
-
-fn point_id_version(id: &str) -> Option<PointIdVersion> {
-    let is_hex = |body: &str| {
-        body.len() == 64
-            && body
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    };
-    if let Some(body) = id.strip_prefix(POINT_ID_PREFIX) {
-        is_hex(body).then_some(PointIdVersion::Tree)
-    } else {
-        id.strip_prefix("rpoint_")
-            .filter(|body| is_hex(body))
-            .map(|_| PointIdVersion::Repository)
-    }
-}
-
-/// Compare two point ids. Ids of one version compare under that version's
-/// meaning; ids of two versions, or an id of no version this build knows, are
-/// [`Comparison::NotComparable`] — an old id is never read as if it were
-/// derived from a tree, and never declared different from a new one.
-pub fn compare_points(left: &str, right: &str) -> Comparison {
-    match (point_id_version(left), point_id_version(right)) {
-        (Some(a), Some(b)) if a == b => {
-            if left == right {
-                Comparison::Equal
-            } else {
-                Comparison::Different
-            }
-        }
-        _ => Comparison::NotComparable,
-    }
-}
-
 pub fn execution_context(
     runner: &impl CommandRunner,
     context: &ContextPacket,
@@ -364,35 +314,6 @@ mod tests {
             extensions[CONSISTENCY_ALGORITHM_EXTENSION],
             serde_json::Value::String("toimija-consistency-v3".to_string())
         );
-    }
-
-    /// Old ids keep their meaning among themselves; new ids among
-    /// themselves; across the two, and for anything unrecognised, there is no
-    /// answer.
-    #[test]
-    fn point_ids_compare_only_within_their_version() {
-        let old = |digit: &str| format!("rpoint_{}", digit.repeat(64));
-        let new = |digit: &str| format!("{POINT_ID_PREFIX}{}", digit.repeat(64));
-        assert_eq!(compare_points(&new("a"), &new("a")), Comparison::Equal);
-        assert_eq!(compare_points(&new("a"), &new("b")), Comparison::Different);
-        assert_eq!(compare_points(&old("a"), &old("a")), Comparison::Equal);
-        assert_eq!(compare_points(&old("a"), &old("b")), Comparison::Different);
-        // The same digest under two versions is still not "equal".
-        assert_eq!(
-            compare_points(&old("a"), &new("a")),
-            Comparison::NotComparable
-        );
-        assert_eq!(
-            compare_points(&new("b"), &old("a")),
-            Comparison::NotComparable
-        );
-        for unknown in ["rpoint_01", "rpoint_v4_aa", "rpoint_v3_XYZ", ""] {
-            assert_eq!(
-                compare_points(unknown, unknown),
-                Comparison::NotComparable,
-                "{unknown}"
-            );
-        }
     }
 
     #[test]

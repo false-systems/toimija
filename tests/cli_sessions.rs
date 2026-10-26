@@ -22,12 +22,6 @@ fn write_marker(repo: &Path, id: &str, json: &str) {
     fs::write(dir.join("session.json"), json).unwrap();
 }
 
-fn write_handoff(repo: &Path, id: &str, line: &str) {
-    let dir = repo.join(".toimija/sessions").join(id);
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("handoff.jsonl"), line).unwrap();
-}
-
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -78,47 +72,6 @@ fn lists_a_closed_marker_with_its_intent_and_scope() {
     assert_eq!(session["intent"], "ship it");
     assert_eq!(session["scope"][0], "src/a.rs");
     assert_eq!(session["packet"], ".toimija/sessions/100-1/current.md");
-    assert_eq!(session["handoffs"], 0);
-}
-
-#[test]
-fn sessions_surfaces_handoff_counts_in_text_and_json() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    write_marker(
-        temp.path(),
-        "100-1",
-        r#"{
-            "id": "100-1",
-            "pid": 1,
-            "agent": ["codex"],
-            "worktree": "/repo",
-            "branch": "feat/x",
-            "head": null,
-            "intent": "ship it",
-            "scope": [],
-            "started_at": 100,
-            "status": "closed",
-            "closed_at": 200,
-            "exit_status": 0
-        }"#,
-    );
-    let record = r#"{"version":1,"session_id":"100-1","written_at":1,"agent":[],"agent_total":0,"intent":null,"branch":null,"entry_head":null,"head":null,"merge_base":null,"staged":[],"staged_total":0,"unstaged":[],"unstaged_total":0,"untracked":[],"untracked_total":0,"conflicts":[],"conflicts_total":0,"branch_scope":[],"branch_scope_total":0,"suggested_validation":[],"suggested_validation_total":0,"coupling":[],"coupling_total":0,"risk":[],"risk_total":0,"consistency_token":"t","next_step":null}"#;
-    write_handoff(temp.path(), "100-1", &format!("{record}\n{record}\n"));
-
-    let value = sessions_json(temp.path());
-    assert_eq!(value["sessions"][0]["handoffs"], 2);
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("sessions")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("handoff: 2 record(s)"));
 }
 
 #[test]

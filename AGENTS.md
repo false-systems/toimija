@@ -1,12 +1,8 @@
 # Agent guide
 
-<!-- toimija:adopt:v1:begin -->
-Read `.toimija/current.md` before reading anything else in this repo; it is your workset contract. Under a toimija session your launch prompt names your live packet — that file supersedes this one.
-<!-- toimija:adopt:v1:end -->
-
 This repo is Toimija, an internal False Systems Rust CLI.
 
-Read `.toimija/current.md` before reading anything else (the preamble above already says so; under `toimija run` your launch prompt carries your session packet inline and names the live copy — re-read that copy after HEAD, branch, index, or unfamiliar worktree changes, not after your own expected source edits; run `toimija verify` before commit or handoff). To refresh it by hand, `toimija enter --for-diff --budget 4000`. Toimija starts from Git state — branch, HEAD, index, merge-base, staged/unstaged/untracked files — so use the packet, and especially its Git and Branch intent sections, before reading the repo cold. The packet also carries a Git-derived Compiled workset, Read order, Coupling, and Risk mined from bounded Git history — advisory, not semantic truth, but use them to read the right files first.
+Read `.toimija/current.md` before reading anything else (under `toimija run` your launch prompt carries your session packet inline and names the live copy — re-read that copy after HEAD, branch, index, or unfamiliar worktree changes, not after your own expected source edits; run `toimija verify` before commit or handoff). To refresh it by hand, `toimija enter --for-diff --budget 4000`. Toimija starts from Git state — branch, HEAD, index, merge-base, staged/unstaged/untracked files — so use the packet, and especially its Git and Branch intent sections, before reading the repo cold. Its Read first list names the important docs first, then the changed files and their companion tests — advisory, path-derived, but use it to read the right files first.
 
 Keep changes small and reviewable. Preserve the v0.0 scope: Git-aware local context compilation, config, repo detection, validation plan rendering, observability, and tests.
 
@@ -20,7 +16,7 @@ they drift apart. Edit both together.
 - Keep v0.0 as one Rust crate.
 - Do not add MCP, LSP, SCIP, Tree-sitter, Kythe, Vaisto, or Kerto integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.json contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.
 - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
-- Agent coordination — per-session live packets, sibling-session awareness, and session handoff records — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
+- Agent coordination — per-session live packets and sibling-session awareness — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
 - A session outside any Git repository is in scope since 2026-09-26 (issue #225): `run` opens a visible session (marker, heartbeat, handshake; no packet) in the machine-local state directory, never a `.toimija/` folder where the agent works. Workspace context compilation stays out of scope.
 - Toimija reports facts and refuses to decide. No gates, checks, or receipts (Evidence belongs to Sykli), no work providers or plugins, and no dispatch, assignment, or closure of work.
 
@@ -81,11 +77,11 @@ GitHub primitives, not assumptions:
   — a stale local binary lies about the code.
 
 Coordination state — who is doing what right now — lives in issue assignments,
-draft PRs, and labels, not in Git. Toimija reports Git work state, surfaces live
-sibling sessions, and can record a session handoff (see
-`docs/proposals/0001-sessions-awareness-handoff.md`). It still does not
-*coordinate* agents — no dispatch, no assignment, no orchestration. Claiming work
-stays in GitHub issues, draft PRs, and labels; the human remains the orchestrator.
+draft PRs, and labels, not in Git. Toimija reports Git work state and surfaces
+live sibling sessions (see `docs/proposals/0001-sessions-awareness-handoff.md`).
+It still does not *coordinate* agents — no dispatch, no assignment, no
+orchestration. Claiming work stays in GitHub issues, draft PRs, and labels; the
+human remains the orchestrator.
 
 ## Languages
 

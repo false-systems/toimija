@@ -63,8 +63,6 @@ Toimija reads that evidence once and produces a bounded packet that answers:
 - What repository and branch am I in?
 - What changed in commits, the index, and the worktree?
 - What should I read first?
-- Which files tend to change together?
-- Which areas are risky or high-churn?
 - What validation commands does this repository expect?
 - Who else is working in this repository, and on what?
 - Does this packet still describe the live repository?
@@ -83,12 +81,11 @@ cd toimija
 cargo install --path .
 ```
 
-Adopt it in a repository:
+Set it up in a repository:
 
 ```bash
 cd /path/to/repository
 toimija init
-toimija adopt --hooks
 toimija run \
   --intent "fix authentication regression" \
   --scope src/auth/ \
@@ -97,8 +94,8 @@ toimija run \
 ```
 
 `init` creates `.toimija/repo.yaml` without overwriting an existing file.
-`adopt --hooks` installs the small “read the live packet first” preamble in
-recognized agent instruction files and adds best-effort Git refresh hooks.
+Toimija installs nothing else on the repository: the agent docs, hooks and
+harness settings stay yours.
 
 `run` then:
 
@@ -120,8 +117,8 @@ marker lives in the machine-local state directory (`$TOIMIJA_STATE_DIR`, else
 `$XDG_STATE_HOME/toimija`, else `~/.local/state/toimija`), never as a
 `.toimija/` folder where the agent works, and `toimija sessions
 --outside-repos` lists it. Sessions in the repos it touches do not count it as
-a sibling, so the agent should declare its scope. A cycle leg, `--for-diff`,
-and `--budget` need a repository and are refused there.
+a sibling, so the agent should declare its scope. `--for-diff` and `--budget`
+need a repository and are refused there.
 
 **Alerts.** `--alert <TEXT>` (repeatable, 1024 bytes in total) puts a
 launcher's urgent lines first in the launch prompt, above the packet, under
@@ -262,11 +259,8 @@ They are never recomputed or relabelled, and a comparison across versions says
 
 - `verify` on a packet from an earlier toimija reports `not_comparable`, and
   `toimija refresh` replaces the packet;
-- a cycle leg that is live at a point id of an earlier version refuses a second
-  launch of the same leg, and says the two points are not comparable;
-- snapshot leases and handoff records name their token's version
-  (`token_algorithm`, `consistency_algorithm`). One written earlier names none,
-  and none is claimed for it.
+- snapshot leases name their token's version (`token_algorithm`). One
+  written earlier names none, and none is claimed for it.
 
 The token keeps its `sha256:<hex>` shape, which sauma's envelope schema
 requires of an anchor. Its hash covers the version name, so tokens of two
@@ -274,14 +268,15 @@ versions never coincide.
 
 ## The live packet
 
-The delivered packet replaces repository discovery: use its Git facts, read
-order and validation plan directly, then read the named files for unresolved
+The delivered packet replaces repository discovery: use its Git facts, Read
+first list and validation plan directly, then read the named files for unresolved
 task details. Refresh when those facts become stale or contradictory. A session
 outside a repository with no concrete task waits for work; it does not spend
 model calls on startup-only discovery or bookkeeping. Scope is still declared
 before repository work, and verification before commit or handoff still applies.
 
-Toimija writes human-readable Markdown and complete machine-readable JSON:
+Toimija writes human-readable Markdown and complete machine-readable JSON
+(schema `toimija-context.v2`; docs/reference.md, "Packet compatibility"):
 
 ```text
 .toimija/current.md
@@ -304,8 +299,9 @@ A packet combines:
 - staged, unstaged, untracked, renamed, and conflicted paths;
 - unsafe Git operation state;
 - the committed branch surface;
-- a Git-derived workset and ordered reading plan;
-- coupling and risk hints with evidence and confidence;
+- what to read first: the repository's configured and important docs, always
+  and first, then the changed files and their companion tests (by path, not by
+  mining history) up to the list's cap;
 - collection coverage: `available`, `degraded`, or `failed`;
 - repository boundaries, exclusions, and validation plans;
 - session identity, entry baseline, declared intent, scope, and the session's
@@ -316,7 +312,7 @@ A packet combines:
 
 Every packet carries a workset contract:
 
-> Work from the compiled workset and read order. Treat configured exclusions as
+> Work from the changed surface and Read first. Treat configured exclusions as
 > do-not-scan. If a concrete dependency requires reading outside the workset,
 > declare that expansion first. Expansion is never forbidden; invisible
 > expansion is.
@@ -368,24 +364,6 @@ A wrapped agent can update its own declaration:
 toimija intent "repairing token refresh" --scope src/auth/
 ```
 
-It can leave a durable continuation record:
-
-```bash
-toimija handoff "redirect fixed; rerun the integration tests"
-toimija handoff --show <session-id>
-```
-
-Every closed session also records the **effects** it had outside the working
-tree, detected after the fact from Git and `gh`: `commit` when HEAD moved,
-`push` when the branch's upstream ref moved to something HEAD contains,
-`open_pr` when a pull request for the branch appeared. `toimija sessions --json`
-exposes them as `effects_observed`, with `effects_coverage` set to `partial`
-whenever an inspection could not run (no `gh`, no answer within its deadline,
-git unavailable) — so an effect that was not seen is never read as an effect
-that did not happen. Consumers such as Ohjaa compare this list with what a
-cycle declared. This is detection, not prevention; preventing an undeclared
-push is a sandbox's job (Rauha), not a Git observer's.
-
 Closed sessions are summarized in `.toimija/history.jsonl`. Stewardship remains
 explicit and bounded:
 
@@ -413,8 +391,7 @@ The runtime boundary is intentionally narrow:
 - no shell interpolation: `run` executes the named command with its arguments
   directly;
 - no hidden daemon or background service;
-- no network access of its own; `run` asks an installed `gh` about the
-  branch's pull requests to detect effects, and says so when it cannot;
+- no network access of its own;
 - nothing is written, appended, or deleted through a symlink out of the
   repository: a symlinked `.toimija`, or directory under it, is refused loudly;
 - snapshot lease ids are names, never paths.
@@ -439,7 +416,7 @@ flowchart LR
 ```
 
 Toimija does not maintain a second repository index. Snapshots use Git tree
-objects; relevance uses bounded Git history; freshness uses content-derived
+objects; Read first uses existence-checked paths; freshness uses content-derived
 tokens. When evidence is missing, the packet says so instead of converting
 failure into an empty, reassuring list.
 
@@ -449,14 +426,13 @@ failure into an empty, reassuring list.
 | --- | --- |
 | `run --intent "..." -- <harness>` | Compose context, launch a harness, refresh, and summarize |
 | `repository-point` | Export the exact current repository point |
-| `enter`, `context`, `refresh`, `watch`, `current` | Produce or maintain a live packet |
+| `enter`, `context`, `refresh`, `watch` | Produce or maintain a live packet |
 | `verify`, `snapshot` | Verify freshness or materialize an immutable Git tree |
-| `sessions`, `intent`, `handoff`, `history` | Observe and record local session continuity |
+| `sessions`, `intent`, `history` | Observe and record local session continuity |
 | `clean` | Reclaim expired Toimija-owned artifacts |
-| `audit-plan` | Partition a broad review into bounded deterministic worksets |
 | `validate --plan` | Render validation commands without executing them |
 | `landed` | Check whether branch content reached a base ref |
-| `init`, `adopt`, `doctor`, `snippet` | Configure a repository and detect setup drift |
+| `init`, `doctor` | Configure a repository and detect setup drift |
 
 On Linux, `watch` and `run` poll collected Git state at roughly 500 ms instead
 of recursively polling the filesystem; other platforms try the native watcher
@@ -550,7 +526,7 @@ Toimija reports facts and refuses to decide. It intentionally does not:
 - build an MCP, LSP, SCIP, Kythe, or Tree-sitter index;
 - persist a semantic graph.
 
-Relevance remains file-level, bounded, heuristic, and advisory. Coverage says
+Read first remains file-level, path-derived, and advisory. Coverage says
 what Toimija successfully observed, not what it knows with certainty.
 
 ## Development
@@ -617,6 +593,5 @@ other changed file that no task declares.
 ## Documentation
 
 - [Complete command and packet reference](docs/reference.md)
-- [Cross-tool packet contract](docs/joskus-contract.md)
 - [Design proposals](docs/proposals/)
 - [Audit history](docs/audit/)

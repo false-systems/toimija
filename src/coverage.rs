@@ -1,8 +1,8 @@
 //! Collection coverage — the difference between "we looked and found nothing"
 //! and "we could not look" (R10, TA-005).
 //!
-//! A [`Coverage`] value is attached at a stage boundary (branch diff, history
-//! relevance, session scan — later stages such as repository projects,
+//! A [`Coverage`] value is attached at a stage boundary (branch diff, session
+//! scan — later stages such as repository projects,
 //! instructions, and ownership/CI adopt the same type as they are built). It is
 //! deliberately not a generic wrapper around every value: one observation per
 //! stage, next to that stage's result. Empty evidence with `available` coverage
@@ -75,15 +75,6 @@ impl Coverage {
     }
 }
 
-/// `Default` is the unrecorded state so derived-`Default` carriers (e.g.
-/// [`crate::relevance::RelevancePacket`]) stay honest rather than claiming an
-/// observation that never ran.
-impl Default for Coverage {
-    fn default() -> Self {
-        Coverage::unrecorded()
-    }
-}
-
 impl std::fmt::Display for CoverageStatus {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
@@ -112,12 +103,5 @@ mod tests {
     fn available_omits_reason() {
         let json = serde_json::to_value(Coverage::available("scan")).unwrap();
         assert!(json.get("reason").is_none());
-    }
-
-    #[test]
-    fn default_is_unrecorded_degraded() {
-        let coverage = Coverage::default();
-        assert_eq!(coverage.status, CoverageStatus::Degraded);
-        assert!(!coverage.is_available());
     }
 }

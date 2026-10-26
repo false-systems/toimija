@@ -11,7 +11,6 @@ use tracing::{info, warn};
 
 use crate::atomic_write::TEMP_MARKER;
 use crate::command::CommandRunner;
-use crate::handoff;
 use crate::session::SessionMarker;
 use crate::sessions::{self, Liveness};
 
@@ -19,7 +18,6 @@ pub const HISTORY_PATH: &str = ".toimija/history.jsonl";
 pub const HISTORY_LOCK_PATH: &str = ".toimija/history.lock";
 const RUNS_SUBDIR: &str = ".toimija/runs";
 const HISTORY_VERSION: u32 = 1;
-const HANDOFF_CAP: usize = 10;
 pub const DEFAULT_RUNS_RETENTION_SECS: u64 = 14 * 24 * 60 * 60;
 pub const ORPHAN_TEMP_RETENTION_SECS: u64 = 60 * 60;
 pub const DEFAULT_HISTORY_MAX_RECORDS: usize = 500;
@@ -174,6 +172,10 @@ pub struct HistoryRecord {
     pub last_seen_at: Option<u64>,
     pub end: HistoryEnd,
     pub exit_status: Option<i32>,
+    /// Handoff notes. Toimija no longer records handoffs (decision D8.4:
+    /// ohjaa's handover is the one concept), so it writes these empty; they
+    /// stay because they are required in history-record v1, and records from
+    /// an earlier toimija may still carry notes.
     pub handoffs: Vec<String>,
     pub handoffs_total: usize,
     pub recorded_at: u64,
@@ -214,7 +216,6 @@ impl Journal {
 
     pub fn journal_session(
         &mut self,
-        repo_root: &Path,
         marker: &SessionMarker,
         end: HistoryEnd,
         recorded_at: u64,
@@ -222,36 +223,17 @@ impl Journal {
         if self.recorded.contains(&marker.id) {
             return Ok(false);
         }
-        let handoff_path = repo_root
-            .join(".toimija/sessions")
-            .join(&marker.id)
-            .join("handoff.jsonl");
-        let handoffs = if handoff_path.exists() {
-            handoff::read_all(repo_root, &marker.id)?
-        } else {
-            Vec::new()
-        };
         append_locked(
             &mut self.file,
             &self.path,
-            &derive_record(marker, &handoffs, end, recorded_at),
+            &derive_record(marker, end, recorded_at),
         )?;
         self.recorded.insert(marker.id.clone());
         Ok(true)
     }
 }
 
-pub fn derive_record(
-    marker: &SessionMarker,
-    handoffs: &[handoff::HandoffRecord],
-    end: HistoryEnd,
-    recorded_at: u64,
-) -> HistoryRecord {
-    let notes: Vec<String> = handoffs
-        .iter()
-        .filter_map(|record| record.next_step.clone())
-        .collect();
-    let handoffs_total = notes.len();
+pub fn derive_record(marker: &SessionMarker, end: HistoryEnd, recorded_at: u64) -> HistoryRecord {
     HistoryRecord {
         version: HISTORY_VERSION,
         id: marker.id.clone(),
@@ -263,8 +245,8 @@ pub fn derive_record(
         last_seen_at: marker.last_seen_at,
         end,
         exit_status: marker.exit_status,
-        handoffs: notes.into_iter().take(HANDOFF_CAP).collect(),
-        handoffs_total,
+        handoffs: Vec::new(),
+        handoffs_total: 0,
         recorded_at,
     }
 }
@@ -372,13 +354,12 @@ pub fn journal_session(
     end: HistoryEnd,
     recorded_at: u64,
 ) -> Result<bool> {
-    Journal::open(repo_root)?.journal_session(repo_root, marker, end, recorded_at)
+    Journal::open(repo_root)?.journal_session(marker, end, recorded_at)
 }
 
 /// Durably remember a concluded session, then and only then remove its dir.
 /// `toimija` is the repository's `.toimija/`, already resolved by the sweep.
 pub fn reap(
-    repo_root: &Path,
     toimija: &Path,
     dir: &Path,
     marker: &SessionMarker,
@@ -387,7 +368,7 @@ pub fn reap(
     journal: &mut Journal,
 ) -> Result<bool> {
     ensure_inside_toimija(toimija, dir)?;
-    let journaled = journal.journal_session(repo_root, marker, end, recorded_at)?;
+    let journaled = journal.journal_session(marker, end, recorded_at)?;
     match fs::remove_dir_all(dir) {
         Ok(()) => {}
         // A sibling sweep won the race; the directory is already reclaimed.
@@ -541,7 +522,6 @@ fn sweep_inner(
             // — a sibling's freshly written heartbeat tmp file is enough —
             // must not abort the whole pass. Keep it for the next sweep.
             match reap(
-                repo_root,
                 &toimija,
                 &candidate.dir,
                 &candidate.marker,
@@ -944,17 +924,12 @@ mod tests {
             head: Some("abc".to_string()),
             intent: Some("ship".to_string()),
             scope: vec!["src".to_string()],
-            cycle_action: None,
             started_at: 100,
             last_seen_at: Some(150),
             status: SessionStatus::Closed,
             closed_at: Some(200),
             exit_status: Some(0),
 
-            entry_upstream_oid: None,
-            entry_open_prs: None,
-            effects_observed: Vec::new(),
-            effects_coverage: Default::default(),
             undelivered: Vec::new(),
         }
     }
@@ -996,47 +971,6 @@ mod tests {
     }
 
     #[test]
-    fn derive_record_caps_handoff_notes_and_keeps_the_note_total() {
-        let handoffs: Vec<handoff::HandoffRecord> = (0..14)
-            .map(|index| handoff::HandoffRecord {
-                version: 1,
-                session_id: "100-1".to_string(),
-                written_at: index,
-                agent: Vec::new(),
-                agent_total: 0,
-                intent: None,
-                branch: None,
-                entry_head: None,
-                head: None,
-                merge_base: None,
-                staged: Vec::new(),
-                staged_total: 0,
-                unstaged: Vec::new(),
-                unstaged_total: 0,
-                untracked: Vec::new(),
-                untracked_total: 0,
-                conflicts: Vec::new(),
-                conflicts_total: 0,
-                branch_scope: Vec::new(),
-                branch_scope_total: 0,
-                suggested_validation: Vec::new(),
-                suggested_validation_total: 0,
-                coupling: Vec::new(),
-                coupling_total: 0,
-                risk: Vec::new(),
-                risk_total: 0,
-                consistency_token: String::new(),
-                consistency_algorithm: None,
-                next_step: (![0, 7].contains(&index)).then(|| format!("note {index}")),
-                sauma: None,
-            })
-            .collect();
-        let record = derive_record(&marker("100-1"), &handoffs, HistoryEnd::Closed, 300);
-        assert_eq!(record.handoffs.len(), 10);
-        assert_eq!(record.handoffs_total, 12);
-    }
-
-    #[test]
     fn concurrent_journaling_records_a_session_once() {
         let temp = tempfile::tempdir().unwrap();
         let marker = marker("100-1");
@@ -1064,7 +998,6 @@ mod tests {
 
         assert!(
             reap(
-                temp.path(),
                 &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
@@ -1089,7 +1022,6 @@ mod tests {
         let mut journal = Journal::open(temp.path()).unwrap();
         assert!(
             reap(
-                temp.path(),
                 &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
@@ -1208,7 +1140,6 @@ mod tests {
         let mut journal = Journal::open(temp.path()).unwrap();
 
         reap(
-            temp.path(),
             &temp.path().join(".toimija").canonicalize().unwrap(),
             &dir,
             &marker,
@@ -1247,12 +1178,11 @@ mod tests {
 
         assert!(
             journal
-                .journal_session(temp.path(), &marker, HistoryEnd::Closed, 200)
+                .journal_session(&marker, HistoryEnd::Closed, 200)
                 .unwrap()
         );
         assert!(
             !reap(
-                temp.path(),
                 &temp.path().join(".toimija").canonicalize().unwrap(),
                 &dir,
                 &marker,
@@ -1271,13 +1201,9 @@ mod tests {
     fn unknown_history_fields_are_tolerated_and_malformed_lines_are_counted() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join(".toimija")).unwrap();
-        let record = serde_json::to_string(&derive_record(
-            &marker("100-1"),
-            &[],
-            HistoryEnd::Closed,
-            300,
-        ))
-        .unwrap();
+        let record =
+            serde_json::to_string(&derive_record(&marker("100-1"), HistoryEnd::Closed, 300))
+                .unwrap();
         let with_unknown = record.replacen("{", "{\"future_optional\":true,", 1);
         fs::write(
             temp.path().join(HISTORY_PATH),
@@ -1348,12 +1274,7 @@ mod tests {
         for index in 0..4 {
             append_record(
                 temp.path(),
-                &derive_record(
-                    &marker(&format!("100-{index}")),
-                    &[],
-                    HistoryEnd::Closed,
-                    index,
-                ),
+                &derive_record(&marker(&format!("100-{index}")), HistoryEnd::Closed, index),
             )
             .unwrap();
         }

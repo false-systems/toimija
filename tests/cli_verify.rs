@@ -64,7 +64,7 @@ fn fresh_packet_verifies_consistent_then_a_change_makes_it_stale() {
     // Nothing changed since the refresh -> consistent, exit 0.
     toimija(temp.path()).arg("verify").assert().success();
     let ok = toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .assert()
         .success()
         .get_output()
@@ -131,10 +131,7 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo_with_commit(temp.path());
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     let path = temp.path().join(".toimija/current.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
@@ -146,10 +143,6 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
         .as_object_mut()
         .unwrap()
         .remove("branch_diff_coverage");
-    value["relevance"]
-        .as_object_mut()
-        .unwrap()
-        .remove("history_coverage");
     value.as_object_mut().unwrap().remove("refresh_token");
     let mut envelope = value.as_object_mut().unwrap().remove("sauma").unwrap();
     envelope["envelope"] = serde_json::json!(toimija::sauma::LEGACY_ENVELOPE_SCHEMA);
@@ -158,7 +151,7 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
     toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .assert()
         .success();
 }
@@ -170,10 +163,7 @@ fn verify_rejects_a_packet_after_its_sauma_envelope_is_removed() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo_with_commit(temp.path());
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     let path = temp.path().join(".toimija/current.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
@@ -181,7 +171,7 @@ fn verify_rejects_a_packet_after_its_sauma_envelope_is_removed() {
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
     let output = toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .assert()
         .failure()
         .get_output()
@@ -199,10 +189,7 @@ fn verify_rejects_digest_valid_envelopes_bound_to_the_wrong_schema_or_anchor() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo_with_commit(temp.path());
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     let path = temp.path().join(".toimija/current.json");
     let original = fs::read_to_string(&path).unwrap();
 
@@ -225,7 +212,7 @@ fn verify_rejects_digest_valid_envelopes_bound_to_the_wrong_schema_or_anchor() {
         fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
         let output = toimija(temp.path())
-            .args(["current", "--verify", "--json"])
+            .args(["verify", "--json"])
             .assert()
             .failure()
             .get_output()
@@ -246,12 +233,17 @@ fn verify_without_a_packet_is_missing_packet() {
     init_repo_with_commit(temp.path());
     // No refresh has run, so there is no packet to trust.
     let assert = toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .assert()
         .failure();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(value["status"], "missing_packet");
+    // The hint names a command that exists.
+    let assert = toimija(temp.path()).arg("verify").assert().failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("missing_packet:"), "{stderr}");
+    assert!(stderr.contains("run `toimija refresh`"), "{stderr}");
 }
 
 #[test]
@@ -261,10 +253,7 @@ fn ambient_session_verifies_its_packet_not_the_repo_summary() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo_with_commit(temp.path());
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
 
     let id = "100-1";
     let session = active_session(temp.path(), id);
@@ -275,12 +264,9 @@ fn ambient_session_verifies_its_packet_not_the_repo_summary() {
     // Make only the repo-level packet fresh. If verify reads that mirror, this
     // incorrectly succeeds; the authoritative session packet must be stale.
     fs::write(temp.path().join("a.txt"), "changed\n").unwrap();
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     let assert = toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .env("TOIMIJA_SESSION", id)
         .env("TOIMIJA_LIVE_JSON", &session_packet)
         .assert()
@@ -297,10 +283,7 @@ fn explicit_packet_wins_and_reports_its_identity() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo_with_commit(temp.path());
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     let session = active_session(temp.path(), "100-1");
     let session_packet = session.join("current.json");
     fs::copy(temp.path().join(".toimija/current.json"), &session_packet).unwrap();
@@ -349,10 +332,7 @@ fn tampered_ambient_packet_fails_even_when_repo_summary_is_valid() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo_with_commit(temp.path());
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     let id = "100-1";
     let session = active_session(temp.path(), id);
     let session_packet = session.join("current.json");
@@ -391,23 +371,26 @@ fn verify_distinguishes_missing_and_unsupported_consistency() {
     fs::create_dir_all(temp.path().join(".toimija")).unwrap();
     fs::write(temp.path().join(".toimija/current.json"), "{}").unwrap();
     let assert = toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .assert()
         .failure();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
     assert_eq!(value["status"], "missing_consistency");
+    let assert = toimija(temp.path()).arg("verify").assert().failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("missing_consistency: run `toimija refresh`"),
+        "{stderr}"
+    );
 
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     let path = temp.path().join(".toimija/current.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     value["consistency"]["algorithm"] = serde_json::json!("other");
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
     let assert = toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .assert()
         .failure();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
@@ -421,10 +404,7 @@ fn verify_rejects_a_forged_sauma_digest() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo_with_commit(temp.path());
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     let path = temp.path().join(".toimija/current.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
@@ -434,7 +414,7 @@ fn verify_rejects_a_forged_sauma_digest() {
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
     let assert = toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .assert()
         .failure();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
@@ -448,28 +428,19 @@ fn staged_and_deleted_and_renamed_changes_are_stale() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo_with_commit(temp.path());
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
 
     fs::write(temp.path().join("a.txt"), "changed\n").unwrap();
     run_git(temp.path(), &["add", "a.txt"]);
     assert_stale(temp.path());
 
     run_git(temp.path(), &["reset", "--hard", "HEAD"]);
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     run_git(temp.path(), &["rm", "a.txt"]);
     assert_stale(temp.path());
 
     run_git(temp.path(), &["reset", "--hard", "HEAD"]);
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     run_git(temp.path(), &["mv", "a.txt", "renamed.txt"]);
     assert_stale(temp.path());
 }
@@ -497,10 +468,7 @@ fn staged_index_content_change_is_stale_even_when_worktree_bytes_do_not_change()
         temp.path(),
         &["update-index", "--cacheinfo", "100644", &index1, "a.txt"],
     );
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
 
     fs::write(blobs.path().join("index2.txt"), "ONE\n\nx\n").unwrap();
     let index2 = git_stdout(
@@ -529,14 +497,11 @@ fn ignored_file_does_not_change_token() {
     fs::write(temp.path().join(".gitignore"), "ignored.log\n").unwrap();
     run_git(temp.path(), &["add", ".gitignore"]);
     run_git(temp.path(), &["commit", "-m", "ignore"]);
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
 
     fs::write(temp.path().join("ignored.log"), "ignored\n").unwrap();
     toimija(temp.path())
-        .args(["current", "--verify", "--json"])
+        .args(["verify", "--json"])
         .assert()
         .success();
 }
@@ -553,10 +518,7 @@ fn git_stdout(path: &Path, args: &[&str]) -> String {
 }
 
 fn assert_stale(path: &Path) {
-    let assert = toimija(path)
-        .args(["current", "--verify", "--json"])
-        .assert()
-        .failure();
+    let assert = toimija(path).args(["verify", "--json"]).assert().failure();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
     assert_eq!(value["status"], "stale_packet");
 }
@@ -573,10 +535,7 @@ fn an_empty_live_json_handshake_reads_as_unset() {
     init_repo_with_commit(temp.path());
     let id = "100-1";
     let session = active_session(temp.path(), id);
-    toimija(temp.path())
-        .args(["current", "--write"])
-        .assert()
-        .success();
+    toimija(temp.path()).arg("refresh").assert().success();
     fs::copy(
         temp.path().join(".toimija/current.json"),
         session.join("current.json"),

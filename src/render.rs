@@ -1,11 +1,9 @@
 use std::fmt::Write;
 
-use crate::audit_plan::{AuditPlan, AuditSurface};
 use crate::config::InitReport;
 use crate::context::{ChangedSurfaceSource, ContextPacket};
 use crate::git::{ChangeStatus, ChangedFile};
 use crate::landed::{LandedReport, LandedStatus};
-use crate::relevance::{HintConfidence, HintEvidence, RelevanceSource};
 use crate::repo::{DoctorReport, DoctorStatus, RepoKind};
 use crate::validate::{ValidationPlan, ValidationSource};
 
@@ -261,12 +259,9 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     // cheaper than rediscovery. Honest counts from data already computed.
     writeln!(
         &mut output,
-        "- compiled-from: {} changed file(s), {} recent commit(s), {} relevance hint(s) — reading this replaces that discovery",
+        "- compiled-from: {} changed file(s), {} recent commit(s) — reading this replaces that discovery",
         packet.changed_surface.len(),
         packet.git.recent_commits.len(),
-        packet.relevance.read_order.len()
-            + packet.relevance.coupling.len()
-            + packet.relevance.risk.len(),
     )
     .unwrap();
     if packet.for_diff {
@@ -409,37 +404,13 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
 
     write_session_drift(&mut output, packet);
     write_branch_surface(&mut output, packet);
-    write_compiled_workset(&mut output, packet);
-    write_read_order(&mut output, packet);
 
-    write_h2(&mut output, "Read first");
-    let read_first: Vec<_> = packet
-        .read_first
-        .iter()
-        .filter(|entry| entry.reason == "repo config" || entry.reason == "important doc")
-        .collect();
-    if read_first.is_empty() {
-        writeln!(&mut output, "- none").unwrap();
-    } else {
-        for entry in read_first.iter().take(MAX_LIST_SHOWN) {
-            writeln!(
-                &mut output,
-                "- {} ({})",
-                crate::path_codec::display(&entry.path),
-                entry.reason
-            )
-            .unwrap();
-        }
-        write_more_line(&mut output, read_first.len(), MAX_LIST_SHOWN, "");
-    }
+    write_read_first(&mut output, packet);
 
     output.push_str(&render_validation_plan(&packet.validation_plan));
 
     write_h2(&mut output, "Warnings");
-    // Relevance warnings (e.g. shallow history) render alongside Git warnings.
-    let mut warnings = packet.warnings.clone();
-    warnings.extend(packet.relevance.warnings.iter().cloned());
-    write_str_list(&mut output, &warnings, "none");
+    write_str_list(&mut output, &packet.warnings, "none");
 
     write_h2(&mut output, "Configured exclusions");
     // Proposal 0005 D3: an instruction, not an inventory.
@@ -453,16 +424,6 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     // Optional sections are selected atomically. A budget may omit a whole
     // section, never cut a path or silently drop safety-critical state.
     let mut optional = Vec::new();
-    if !packet.relevance.coupling.is_empty() {
-        let mut section = String::new();
-        write_coupling(&mut section, packet);
-        optional.push(("coupling hints", packet.relevance.coupling.len(), section));
-    }
-    if !packet.relevance.risk.is_empty() {
-        let mut section = String::new();
-        write_risk(&mut section, packet);
-        optional.push(("risk hints", packet.relevance.risk.len(), section));
-    }
     let mut recent = String::new();
     write_recent_commits(&mut recent, packet);
     optional.push(("recent commits", packet.git.recent_commits.len(), recent));
@@ -511,82 +472,38 @@ fn append_optional_sections(
     .unwrap();
 }
 
-pub fn render_audit_plan(plan: &AuditPlan, budget: usize, surface: Option<usize>) -> String {
-    let mut output = String::new();
-    if let Some(index) = surface {
-        let selected = &plan.surfaces[index - 1];
-        writeln!(
-            &mut output,
-            "# Toimija Audit Surface {index}/{}",
-            plan.surfaces.len()
-        )
-        .unwrap();
-        writeln!(
-            &mut output,
-            "- HEAD: {}",
-            plan.head.as_deref().unwrap_or("unavailable")
-        )
-        .unwrap();
-        writeln!(&mut output, "- consistency: {}", plan.consistency).unwrap();
-        write_workset_contract(&mut output);
-        write_audit_surface(&mut output, selected);
-        write_prior_findings(&mut output, plan);
-        output.push_str(&render_validation_plan(&plan.validation_plan));
-        write_h2(&mut output, "Warnings");
-        write_str_list(&mut output, &plan.warnings, "none");
-        let mandatory_end = mandatory_surface_end(&output);
-        return truncate_to_budget(output, budget, mandatory_end);
+/// The repository's own entries (`repo config`, `important doc`) always render,
+/// first, however many there are; the changed files and their tests fill what
+/// is left of the list's cap, so a wide branch cannot push the owner's
+/// "read this first" out of the packet.
+fn write_read_first(output: &mut String, packet: &ContextPacket) {
+    write_h2(output, "Read first");
+    if packet.read_first.is_empty() {
+        writeln!(output, "- none").unwrap();
+        return;
     }
-
-    writeln!(&mut output, "# Toimija Audit Plan").unwrap();
-    writeln!(
-        &mut output,
-        "- HEAD: {}",
-        plan.head.as_deref().unwrap_or("unavailable")
-    )
-    .unwrap();
-    writeln!(&mut output, "- consistency: {}", plan.consistency).unwrap();
-    write_h2(&mut output, "Surfaces");
-    for (index, surface) in plan.surfaces.iter().enumerate() {
-        let areas = surface
-            .areas
-            .iter()
-            .map(|area| area.label.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let findings = plan
-            .findings_root
-            .as_ref()
-            .map_or_else(|| "none".to_string(), |path| path.display().to_string());
+    let configured = |entry: &&crate::context::ReadFirstEntry| {
+        entry.reason == "repo config" || entry.reason == "important doc"
+    };
+    let (owned, derived): (Vec<_>, Vec<_>) = packet.read_first.iter().partition(configured);
+    let room = MAX_LIST_SHOWN.saturating_sub(owned.len());
+    for entry in owned.iter().chain(derived.iter().take(room)) {
         writeln!(
-            &mut output,
-            "surface {}/{} — {} — ~files: {} — churn: {} — findings: {findings}",
-            index + 1,
-            plan.surfaces.len(),
-            areas,
-            surface.files,
-            surface.churn
+            output,
+            "- {} ({})",
+            crate::path_codec::display(&entry.path),
+            entry.reason
         )
         .unwrap();
     }
-    writeln!(
-        &mut output,
-        "\nRequest one workset: `toimija audit-plan --surface K`"
-    )
-    .unwrap();
-    if let Some(path) = &plan.findings_root {
-        writeln!(&mut output, "Prior findings: {}", path.display()).unwrap();
-    } else {
-        writeln!(&mut output, "Prior findings: none").unwrap();
-    }
-    truncate_to_budget(output, budget, 0)
+    write_more_line(output, derived.len(), room, "");
 }
 
 fn write_workset_contract(output: &mut String) {
     write_h2(output, "Workset contract");
     writeln!(
         output,
-        "Work from this packet's Compiled workset and Read order; they are your working\n\
+        "Work from this packet's Changed surface and Read first; they are your working\n\
          set, not a preamble. A session's declared scope is intent, not evidence.\n\
          Configured exclusions are do-not-scan. You MAY read outside the\n\
          workset when a concrete unresolved dependency requires it — but you MUST\n\
@@ -595,90 +512,6 @@ fn write_workset_contract(output: &mut String) {
          visible output). Expansion is never forbidden; invisible expansion is."
     )
     .unwrap();
-}
-
-fn write_audit_surface(output: &mut String, surface: &AuditSurface) {
-    write_h2(output, "Surface");
-    writeln!(
-        output,
-        "- boundary: everything outside this surface belongs to another pass"
-    )
-    .unwrap();
-    writeln!(output, "- files: {}", surface.files).unwrap();
-    writeln!(
-        output,
-        "- churn: {} (last 200 non-merge commits)",
-        surface.churn
-    )
-    .unwrap();
-    for area in &surface.areas {
-        writeln!(
-            output,
-            "- {} — {} files — {} churn",
-            area.label, area.files, area.churn
-        )
-        .unwrap();
-    }
-}
-
-fn write_prior_findings(output: &mut String, plan: &AuditPlan) {
-    write_h2(output, "Prior findings");
-    if plan.prior_findings.is_empty() {
-        writeln!(output, "- none").unwrap();
-    } else {
-        writeln!(
-            output,
-            "Read these before re-deriving anything they already conclude:"
-        )
-        .unwrap();
-        write_path_list(output, &plan.prior_findings, "none");
-    }
-}
-
-fn mandatory_surface_end(output: &str) -> usize {
-    output.find("\n## Prior findings").unwrap_or(output.len())
-}
-
-/// Render the Coupling section: companions that are absent from the current
-/// diff. Advisory; omitted when there is no signal.
-fn write_coupling(output: &mut String, packet: &ContextPacket) {
-    let coupling = &packet.relevance.coupling;
-    if coupling.is_empty() {
-        return;
-    }
-    write_h2(output, "Coupling");
-    for hint in coupling {
-        writeln!(
-            output,
-            "- {} changed, but {} was not — {} [{}]",
-            crate::path_codec::display(&hint.changed),
-            crate::path_codec::display(&hint.missing),
-            hint.reason,
-            relevance_evidence_label(hint.source, &hint.evidence)
-        )
-        .unwrap();
-    }
-}
-
-/// Render the Risk section: changed files flagged by cheap Git-history
-/// heuristics, with an advisory action. Omitted when empty.
-fn write_risk(output: &mut String, packet: &ContextPacket) {
-    let risk = &packet.relevance.risk;
-    if risk.is_empty() {
-        return;
-    }
-    write_h2(output, "Risk");
-    for hint in risk {
-        writeln!(
-            output,
-            "- {} — {}; {} [{}]",
-            crate::path_codec::display(&hint.path),
-            hint.reason,
-            hint.action,
-            relevance_evidence_label(hint.source, &hint.evidence)
-        )
-        .unwrap();
-    }
 }
 
 /// `<n> ahead, <m> behind <ref> (<what the ref is>)`, or why it is unknown.
@@ -835,7 +668,7 @@ fn write_changed_surface(output: &mut String, packet: &ContextPacket) {
     } else {
         writeln!(
             output,
-            "- {} files — see Read order",
+            "- {} files — see Read first",
             packet.changed_surface.len()
         )
         .unwrap();
@@ -876,120 +709,6 @@ fn status_label(status: &ChangeStatus) -> &'static str {
     }
 }
 
-/// Render the compiled workset: the areas this branch is touching versus the
-/// areas it leaves alone. Advisory, Git-derived; omitted when there is nothing
-/// to say.
-fn write_compiled_workset(output: &mut String, packet: &ContextPacket) {
-    let Some(scope) = &packet.relevance.scope else {
-        return;
-    };
-    if scope.in_play.is_empty() {
-        return;
-    }
-    write_h2(output, "Compiled workset");
-    writeln!(output, "- source: {}", relevance_source_label(scope.source)).unwrap();
-    let in_play = scope
-        .in_play
-        .iter()
-        .map(|area| crate::path_codec::display(std::path::Path::new(&area.label)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    writeln!(output, "- in play: {in_play}").unwrap();
-    if !scope.out_of_scope.is_empty() {
-        let out = scope
-            .out_of_scope
-            .iter()
-            .map(|area| crate::path_codec::display(std::path::Path::new(&area.label)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(output, "- unchanged top-level areas: {out}").unwrap();
-    }
-}
-
-/// Render the Read order section: changed areas ranked by likely relevance,
-/// each with a short boring reason. Numbered for the reader; paths grouped and
-/// capped so it stays a digest, not a raw dump.
-fn write_read_order(output: &mut String, packet: &ContextPacket) {
-    let entries = &packet.relevance.read_order;
-    if entries.is_empty() {
-        return;
-    }
-    write_h2(output, "Read order");
-    const PATHS_PER_ENTRY: usize = 5;
-    for (index, entry) in entries.iter().enumerate() {
-        let mut shown: Vec<String> = entry
-            .paths
-            .iter()
-            .take(PATHS_PER_ENTRY)
-            .map(|path| crate::path_codec::display(path))
-            .collect();
-        if entry.paths.len() > PATHS_PER_ENTRY {
-            shown.push(format!("+{} more", entry.paths.len() - PATHS_PER_ENTRY));
-        }
-        writeln!(
-            output,
-            "{}. {} — {}",
-            index + 1,
-            shown.join(", "),
-            entry.reason
-        )
-        .unwrap();
-    }
-}
-
-fn relevance_source_label(source: RelevanceSource) -> &'static str {
-    match source {
-        RelevanceSource::MergeBaseDiff => "branch diff since merge-base",
-        RelevanceSource::WorkingTreeAndIndex => "working tree and index",
-        RelevanceSource::GitLog => "git log history",
-        RelevanceSource::GitBlame => "git blame",
-        RelevanceSource::Heuristic => "file-pattern heuristic",
-        RelevanceSource::Unavailable => "unavailable",
-    }
-}
-
-fn relevance_evidence_label(source: RelevanceSource, evidence: &HintEvidence) -> String {
-    let confidence = match evidence.confidence {
-        HintConfidence::Unrecorded => "unrecorded",
-        HintConfidence::Medium => "medium",
-        HintConfidence::High => "high",
-    };
-    format!(
-        "source: {}; evidence: {}/{}; confidence: {confidence}",
-        relevance_source_label(source),
-        evidence.support,
-        evidence.observations
-    )
-}
-
-pub(crate) fn truncate_to_budget(
-    mut output: String,
-    budget: usize,
-    mandatory_end: usize,
-) -> String {
-    if output.len() <= budget {
-        return output;
-    }
-    let marker = "\n\nOutput truncated to fit approximate budget.\n";
-    let keep = budget.saturating_sub(marker.len());
-    // Cut on a line boundary at or before `keep`, never mid-line: a half-path
-    // fragment reads like a real file to an agent, and a cut inside a multi-byte
-    // char (—, ↔) would panic in String::truncate. '\n' is a single byte that
-    // never appears inside a multi-byte UTF-8 sequence, so scanning raw bytes is
-    // safe and the resulting index is always a char boundary.
-    // Keep the complete mandatory prefix even when the caller's budget is too
-    // small to include it. The budget is approximate by design; dropping the
-    // contract would make the packet contradict its own output guarantee.
-    let upper = keep.max(mandatory_end).min(output.len());
-    let cut = output.as_bytes()[..upper]
-        .iter()
-        .rposition(|&byte| byte == b'\n')
-        .map_or(0, |index| index + 1);
-    output.truncate(cut);
-    output.push_str(marker);
-    output
-}
-
 fn source_label(source: &ValidationSource) -> &'static str {
     match source {
         ValidationSource::RepoConfig => "repo config",
@@ -1009,7 +728,6 @@ mod tests {
     use crate::config::RepoConfig;
     use crate::context::ContextPacket;
     use crate::git::GitState;
-    use crate::relevance::RelevancePacket;
     use crate::repo::{RepoInfo, RepoKind};
 
     fn packet() -> ContextPacket {
@@ -1060,7 +778,6 @@ mod tests {
             warnings: vec!["No upstream detected. Branch divergence is unavailable.".to_string()],
             for_diff: false,
             default_budget: Some(4000),
-            relevance: RelevancePacket::default(),
             consistency: crate::consistency::Consistency::fingerprint(&GitState {
                 repo_root: PathBuf::from("/repo"),
                 git_dir: Some(PathBuf::from("/repo/.git")),
@@ -1230,107 +947,12 @@ mod tests {
     }
 
     #[test]
-    fn relevance_sections_survive_the_default_budget() {
-        use crate::config::DEFAULT_BUDGET;
-        use crate::relevance::{
-            CouplingHint, HintConfidence, HintEvidence, RelevanceSource, RiskHint, RiskKind,
-            ScopeArea, ScopeHints,
-        };
-        // A packet sized like a real feature branch: populated relevance plus a
-        // sizable changed surface and working tree. Guards against the default
-        // budget falling behind the packet (it did at 4000 — see #23).
-        let mut packet = packet();
-        packet.relevance.scope = Some(ScopeHints {
-            in_play: vec![ScopeArea {
-                label: "src".to_string(),
-                paths: vec![PathBuf::from("src/a.rs")],
-                reason: "1 changed file".to_string(),
-            }],
-            out_of_scope: vec![ScopeArea {
-                label: "docs".to_string(),
-                paths: Vec::new(),
-                reason: "untouched by this branch".to_string(),
-            }],
-            source: RelevanceSource::MergeBaseDiff,
-        });
-        packet.relevance.coupling = (0..5)
-            .map(|i| CouplingHint {
-                changed: PathBuf::from(format!("apps/core/lib/very/long/module_{i}.ex")),
-                missing: PathBuf::from(format!("apps/core/test/very/long/module_{i}_test.exs")),
-                reason: "companion test exists but is not in this diff — confirm intentional"
-                    .to_string(),
-                source: RelevanceSource::GitLog,
-                evidence: HintEvidence {
-                    support: 6,
-                    observations: 10,
-                    confidence: HintConfidence::Medium,
-                },
-            })
-            .collect();
-        packet.relevance.risk = (0..5)
-            .map(|i| RiskHint {
-                path: PathBuf::from(format!("apps/core/lib/risky/module_{i}.ex")),
-                kind: RiskKind::HighChurn,
-                reason: "high churn — 9 commits in the last 200 commits".to_string(),
-                action: "hot file — keep the change small and well-tested".to_string(),
-                source: RelevanceSource::GitLog,
-                evidence: HintEvidence {
-                    support: 9,
-                    observations: 200,
-                    confidence: HintConfidence::High,
-                },
-            })
-            .collect();
-        packet.changed_surface = (0..30)
-            .map(|i| PathBuf::from(format!("apps/core/lib/some/deep/path/module_{i:02}.ex")))
-            .collect();
-        packet.git.unstaged_files = (0..30)
-            .map(|i| ChangedFile {
-                path: PathBuf::from(format!("apps/core/lib/some/deep/path/module_{i:02}.ex")),
-                status: ChangeStatus::Modified,
-                index_entry: None,
-                original_path: None,
-                similarity: None,
-            })
-            .collect();
-
-        let rendered = render_context_markdown(&packet, DEFAULT_BUDGET);
-        // Risk is the last relevance section; if it survives, all of them do.
-        assert!(rendered.contains("## Compiled workset"));
-        assert!(
-            rendered.contains("## Coupling"),
-            "coupling must survive the default budget"
-        );
-        assert!(
-            rendered.contains("## Risk"),
-            "risk must survive the default budget"
-        );
-        assert!(rendered.contains("source: git log history; evidence: 6/10; confidence: medium"));
-        assert!(rendered.contains("source: git log history; evidence: 9/200; confidence: high"));
-    }
-
-    #[test]
     fn small_budget_preserves_mandatory_context_without_fake_omissions() {
         let rendered = render_context_markdown(&packet(), 100);
         assert!(rendered.contains("## Workset contract"));
         assert!(rendered.contains("invisible expansion is."));
         assert!(!rendered.contains("## Budget omissions"));
         assert!(!rendered.contains("Output truncated"));
-    }
-
-    #[test]
-    fn budget_truncation_cuts_on_line_boundary_without_splitting_chars() {
-        const MARKER: &str = "\n\nOutput truncated to fit approximate budget.\n";
-        let output = "surface 1/2 — src\nsurface 2/2 — docs\n".repeat(20);
-        for budget in 0..output.len() {
-            let rendered = truncate_to_budget(output.clone(), budget, 0);
-            if let Some(kept) = rendered.strip_suffix(MARKER) {
-                assert!(
-                    kept.is_empty() || kept.ends_with('\n'),
-                    "kept content must end on a line boundary at budget {budget}"
-                );
-            }
-        }
     }
 
     #[test]
@@ -1385,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_consolidates_changed_file_views_without_changing_json() {
+    fn markdown_read_first_lists_configured_docs_then_changed_files_and_tests() {
         let mut packet = packet();
         packet.changed_surface = vec![PathBuf::from("src/lib.rs"), PathBuf::from("tests/lib.rs")];
         packet.read_first = vec![
@@ -1411,14 +1033,46 @@ mod tests {
         assert!(rendered.contains("## Read first"));
         assert!(rendered.contains("- docs/architecture.md (repo config)"));
         assert!(rendered.contains("- README.md (important doc)"));
-        assert!(!rendered.contains("- src/lib.rs (changed)"));
-        assert!(!rendered.contains("- tests/lib.rs (matching test heuristic)"));
-        assert!(rendered.contains("- 2 files — see Read order"));
+        assert!(rendered.contains("- src/lib.rs (changed)"));
+        assert!(rendered.contains("- tests/lib.rs (matching test heuristic)"));
+        // The repository's own entries first, then changed files and their tests.
+        let order: Vec<usize> = [
+            "- docs/architecture.md (repo config)",
+            "- README.md (important doc)",
+            "- src/lib.rs (changed)",
+            "- tests/lib.rs (matching test heuristic)",
+        ]
+        .iter()
+        .map(|line| rendered.find(line).unwrap())
+        .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{rendered}");
+        assert!(rendered.contains("- 2 files — see Read first"));
         assert!(!rendered.contains("  - src/lib.rs"));
 
         let json = serde_json::to_value(&packet).unwrap();
         assert_eq!(json["changed_surface"].as_array().unwrap().len(), 2);
         assert_eq!(json["read_first"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn every_configured_read_first_entry_renders_even_past_the_cap() {
+        let mut packet = packet();
+        packet.read_first = (0..(MAX_LIST_SHOWN + 5))
+            .map(|index| crate::context::ReadFirstEntry {
+                path: PathBuf::from(format!("docs/d{index:02}.md")),
+                reason: "repo config".to_string(),
+            })
+            .chain(std::iter::once(crate::context::ReadFirstEntry {
+                path: PathBuf::from("src/lib.rs"),
+                reason: "changed".to_string(),
+            }))
+            .collect();
+        let rendered = render_context_markdown(&packet, 100_000);
+        assert!(rendered.contains("- docs/d00.md (repo config)"));
+        assert!(rendered.contains("- docs/d29.md (repo config)"));
+        // No room is left for derived entries, and the count says so.
+        assert!(!rendered.contains("- src/lib.rs (changed)"));
+        assert!(rendered.contains("- ... and 1 more (truncated)"));
     }
 
     #[test]
@@ -1492,7 +1146,7 @@ mod tests {
     fn markdown_context_snapshot_is_stable() {
         let rendered = render_context_markdown(&packet(), 4000);
         let expected = r#"# Toimija Context
-- compiled-from: 0 changed file(s), 0 recent commit(s), 0 relevance hint(s) — reading this replaces that discovery
+- compiled-from: 0 changed file(s), 0 recent commit(s) — reading this replaces that discovery
 
 ## Repo
 - name: demo
@@ -1505,7 +1159,7 @@ mod tests {
 - also present: none
 
 ## Workset contract
-Work from this packet's Compiled workset and Read order; they are your working
+Work from this packet's Changed surface and Read first; they are your working
 set, not a preamble. A session's declared scope is intent, not evidence.
 Configured exclusions are do-not-scan. You MAY read outside the
 workset when a concrete unresolved dependency requires it — but you MUST
@@ -1579,7 +1233,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     fn json_context_snapshot_is_stable() {
         let rendered = serde_json::to_string_pretty(&packet()).unwrap();
         let expected = r#"{
-  "schema": "toimija-context.v1",
+  "schema": "toimija-context.v2",
   "repo": {
     "name": "demo",
     "role": "tool",
@@ -1641,18 +1295,6 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
   ],
   "for_diff": false,
   "default_budget": 4000,
-  "relevance": {
-    "scope": null,
-    "read_order": [],
-    "coupling": [],
-    "risk": [],
-    "warnings": [],
-    "history_coverage": {
-      "status": "degraded",
-      "reason": "packet predates coverage reporting",
-      "source": "unrecorded"
-    }
-  },
   "consistency": {
     "algorithm": "toimija-consistency-v3",
     "head": {

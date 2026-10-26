@@ -147,21 +147,12 @@ fn run_outside_a_repo_refuses_what_needs_one_before_opening_a_session() {
     }
     let folder = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
-    for (flags, said) in [
-        (
-            vec!["--cycle", "c", "--cycle-leg", "l", "--cycle-attempt", "0"],
-            "cycle leg",
-        ),
-        (vec!["--for-diff"], "--for-diff and --budget"),
-    ] {
-        toimija_outside(folder.path(), state.path())
-            .args(["run", "--intent", "t"])
-            .args(&flags)
-            .args(["--", "sh", "-c", "touch CHILD_RAN"])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains(said));
-    }
+    toimija_outside(folder.path(), state.path())
+        .args(["run", "--intent", "t", "--for-diff"])
+        .args(["--", "sh", "-c", "touch CHILD_RAN"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--for-diff and --budget"));
     assert!(!folder.path().join("CHILD_RAN").exists());
     assert_eq!(
         outside_sessions(folder.path(), state.path())["sessions"],

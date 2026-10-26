@@ -564,9 +564,10 @@ fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
 }
 
 /// The whole budget, exactly. A point's id is derived from the tree the point
-/// writes anyway (KATANA D9), so the id costs no git process: these are the
-/// counts from before the id covered the tree, unchanged. A change to either
-/// is a change to the budget, made here on purpose.
+/// writes anyway (KATANA D9), so the id costs no git process. A change to either
+/// count is a change to the budget, made here on purpose: `repository-point`
+/// went from 22 to 19 when the packet stopped mining history (the two bounded
+/// `git log` walks and the `git ls-tree` of the removed relevance layer).
 ///
 /// Positive controls first: the trace must see every step of the tree write
 /// once, and both reads of the token (before the write and after it), so a
@@ -577,7 +578,7 @@ fn a_point_id_from_the_tree_costs_no_git_process() {
         return;
     }
     for (args, budget) in [
-        (&["repository-point", "--json"][..], 22),
+        (&["repository-point", "--json"][..], 19),
         (&["snapshot", "--json"], 10),
     ] {
         let temp = fixture(IGNORE_RULES[1]);

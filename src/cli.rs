@@ -2,18 +2,15 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use tracing::{info, info_span, warn};
 
-use crate::adoption;
-use crate::audit_plan;
 use crate::command::{CommandRunner, ProcessCommandRunner};
 use crate::config::{self, RepoConfig};
 use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency, GitOperationState, Verdict};
 use crate::context;
 use crate::footprint::{self, HistoryEnd};
 use crate::git;
-use crate::handoff;
 use crate::landed;
 use crate::logging::LogFormat;
 use crate::refresh;
@@ -22,7 +19,6 @@ use crate::repo;
 use crate::session;
 use crate::sessions;
 use crate::snapshot;
-use crate::snippet;
 use crate::validate;
 use crate::watch;
 
@@ -44,8 +40,7 @@ use crate::watch;
         Boundaries: Toimija reports facts and refuses to decide. It is local-only: \
         it writes only under .toimija/ and, for snapshots, Git objects and \
         refs/toimija/; it never executes validation or gates, starts no daemons, \
-        and makes no network calls of its own (`run` asks an installed `gh` \
-        about the branch's pull requests)."
+        and makes no network calls of its own."
 )]
 pub struct Cli {
     /// Increase log verbosity: -v for info, -vv for debug. Logs go to stderr.
@@ -67,20 +62,11 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Create .toimija/repo.yaml. Agent docs (AGENTS.md/CLAUDE.md) stay yours;
-    /// run `toimija snippet preflight` to seed them.
+    /// tell your agents there to run `toimija enter` first.
     ///
     /// Use this once per repo to seed the config. It never overwrites an
-    /// existing file. Writes only .toimija/repo.yaml.
+    /// existing file. Writes only .toimija/repo.yaml and .toimija/.gitignore.
     Init,
-    /// [experimental] Install the canonical Toimija preamble in the repo's agent entry files.
-    ///
-    /// Use this once when adopting Toimija into an existing repository. With
-    /// `--hooks`, also install best-effort Git freshness hooks.
-    #[command(
-        after_help = "Examples:\n  toimija adopt             # adopt existing entry files\n  \
-        toimija adopt --hooks  # adopt and install refresh hooks"
-    )]
-    Adopt(AdoptArgs),
     /// Check Toimija setup: git, config, repo kind, and agent docs.
     ///
     /// Use this when setting up a repo or gating CI: it verifies git is
@@ -96,26 +82,15 @@ pub enum Command {
     /// Compile the current Git work state into a context packet.
     ///
     /// Use this to *see* the packet without writing anything: branch, HEAD,
-    /// merge-base, changed surface, relevance hints (scope, read order,
-    /// coupling, risk), and the validation plan. `enter` prints the same packet
-    /// and also writes `.toimija/current.*` — prefer it as the agent preflight.
+    /// merge-base, changed surface, what to read first, and the validation
+    /// plan. `enter` prints the same packet and also writes
+    /// `.toimija/current.*` — prefer it as the agent preflight.
     /// Read-only; no validation execution, no network.
     #[command(
         after_help = "Examples:\n  toimija context --for-diff --budget 4000   # diff-focused, capped for a prompt\n  \
         toimija context --json                     # machine-readable packet"
     )]
     Context(ContextArgs),
-    /// Joskus-facing current packet contract: write or verify `.toimija/current.*`.
-    ///
-    /// Use this from a harness: `--write` synchronously (re)writes the packet
-    /// files, `--verify` checks the packet's consistency token against the live
-    /// repo and exits non-zero when stale — the verify-before-read gate a
-    /// harness calls before trusting the packet.
-    #[command(
-        after_help = "Examples:\n  toimija current --write            # (re)write .toimija/current.md + current.json\n  \
-        toimija current --verify --json    # harness verifier: exit 0 fresh, 1 stale"
-    )]
-    Current(CurrentArgs),
     /// Recompute the live packet and write .toimija/current.md + current.json.
     ///
     /// Use this when you want the packet files refreshed without printing them
@@ -127,7 +102,7 @@ pub enum Command {
     /// The recommended command an agent runs on entering the repo: it refreshes
     /// `.toimija/current.*` and prints the same compact packet as `context`.
     /// Use this before reading files broadly — the packet's Git state and
-    /// relevance hints tell you what to read first. Writes only the two packet
+    /// Read first list tell you what to read first. Writes only the two packet
     /// files; no validation execution, no network.
     #[command(
         after_help = "Examples:\n  toimija enter --for-diff --budget 4000   # the standard agent preflight\n  \
@@ -179,17 +154,6 @@ pub enum Command {
         toimija intent \"fix #51\" --scope src/cli.rs --scope tests/cli_run.rs"
     )]
     Intent(IntentArgs),
-    /// [experimental] Append or inspect a session handoff record.
-    ///
-    /// Use this from inside a `toimija run` session when pausing or finishing:
-    /// unlike `intent` (why I am here), a handoff says what I leave behind.
-    /// Writing uses the TOIMIJA_SESSION env handshake and appends one local JSONL
-    /// record. `--show` is read-only and also works for closed sessions.
-    #[command(
-        after_help = "Examples:\n  toimija handoff \"auth migration half done; run cargo test -p auth next\"\n  \
-        toimija handoff --show 1782951227-52574"
-    )]
-    Handoff(HandoffArgs),
     /// List durable records of concluded sessions.
     ///
     /// Use this to see which agents worked in the repo after their live session
@@ -211,11 +175,6 @@ pub enum Command {
         toimija clean --dry-run   # list candidates without changing disk"
     )]
     Clean(CleanArgs),
-    /// Print suggested preflight text or an entry script. Writes no files.
-    ///
-    /// Use this to seed AGENTS.md/CLAUDE.md (`preflight`) or to save a
-    /// `scripts/agent-enter` stub (`script`). Output goes to stdout only.
-    Snippet(SnippetArgs),
     /// Check whether this branch's work has landed in a base ref by content.
     ///
     /// Answers "did this land?" as a content question, not an ancestry one —
@@ -243,15 +202,6 @@ pub enum Command {
         toimija sessions --outside-repos   # sessions opened outside any repository"
     )]
     Sessions(SessionsArgs),
-    /// [experimental] Partition the committed repository tree into bounded audit worksets.
-    ///
-    /// Use this for breadth-scoped audits. Read-only and deterministic: it derives surfaces from Git state and
-    /// points at committed prior findings without writing plans or findings.
-    #[command(
-        after_help = "Examples:\n  toimija audit-plan                         # list all surfaces\n  \
-        toimija audit-plan --surface 3 --budget 4000   # print one workset packet"
-    )]
-    AuditPlan(AuditPlanArgs),
     /// Print the validation plan. Does not run any commands.
     ///
     /// Use this to see what the repo considers its fast/strict/full validation
@@ -314,29 +264,6 @@ pub struct SemanticArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct AdoptArgs {
-    /// Install post-checkout, post-merge, and post-commit refresh hooks.
-    #[arg(long)]
-    pub hooks: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct CurrentArgs {
-    /// Synchronously write `.toimija/current.md` and `.toimija/current.json`.
-    #[arg(long, conflicts_with = "verify")]
-    pub write: bool,
-    /// Verify `.toimija/current.json` against the live repo.
-    #[arg(long)]
-    pub verify: bool,
-    /// Emit JSON. Required for stable verifier output consumed by harnesses.
-    #[arg(long)]
-    pub json: bool,
-    /// Packet to verify instead of the ambient session or repo-level packet.
-    #[arg(long, value_name = "PATH", requires = "verify")]
-    pub packet: Option<std::path::PathBuf>,
-}
-
-#[derive(Debug, Args)]
 pub struct LandedArgs {
     /// Ref the work lands in; the branch surface is compared against it.
     #[arg(long, default_value = "origin/main")]
@@ -383,15 +310,6 @@ pub struct RunArgs {
     /// none.
     #[arg(long = "alert", value_name = "TEXT", allow_hyphen_values = true)]
     pub alert: Vec<String>,
-    /// Sealed cycle digest for this worker leg; requires --cycle-leg and --cycle-attempt.
-    #[arg(long, requires_all = ["cycle_leg", "cycle_attempt"])]
-    pub cycle: Option<String>,
-    /// Cycle leg name; requires --cycle and --cycle-attempt.
-    #[arg(long, requires_all = ["cycle", "cycle_attempt"])]
-    pub cycle_leg: Option<String>,
-    /// Zero-based cycle attempt; requires --cycle and --cycle-leg.
-    #[arg(long, requires_all = ["cycle", "cycle_leg"])]
-    pub cycle_attempt: Option<u32>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
@@ -406,19 +324,6 @@ pub struct IntentArgs {
     /// declared scope). Advisory only — never a lock.
     #[arg(long = "scope", value_name = "PATH")]
     pub scope: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct HandoffArgs {
-    /// Free-text note for the next agent.
-    #[arg(conflicts_with = "show")]
-    pub note: Option<String>,
-    /// Print recorded handoffs for a session id. Read-only; works on closed sessions.
-    #[arg(long, value_name = "SESSION_ID")]
-    pub show: Option<String>,
-    /// Emit JSON: written record for write mode, all records array for --show.
-    #[arg(long)]
-    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -448,19 +353,6 @@ pub struct SessionsArgs {
     /// default when not inside a repository.
     #[arg(long)]
     pub outside_repos: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct AuditPlanArgs {
-    /// Number of surfaces; defaults to a Git-derived count capped at eight.
-    #[arg(long)]
-    pub surfaces: Option<usize>,
-    /// Print one 1-based surface workset instead of the summary.
-    #[arg(long, value_name = "K")]
-    pub surface: Option<usize>,
-    /// Approximate output cap in UTF-8 bytes; optional sections are omitted atomically.
-    #[arg(long)]
-    pub budget: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -495,21 +387,6 @@ pub struct SnapshotArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct SnippetArgs {
-    /// Which snippet to print.
-    #[arg(value_enum)]
-    pub kind: SnippetKind,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum SnippetKind {
-    /// Agent preflight text to paste into AGENTS.md/CLAUDE.md or a task prompt.
-    Preflight,
-    /// A `scripts/agent-enter` bash stub a human may save and run.
-    Script,
-}
-
-#[derive(Debug, Args)]
 pub struct DoctorArgs {
     /// Escalate every actionable warning to a failure (non-zero exit). Use as a
     /// CI or pre-commit gate so config/doc drift blocks the change.
@@ -522,12 +399,6 @@ pub struct ValidateArgs {
     /// Print the plan only. Required: Toimija never runs validation in v0.
     #[arg(long)]
     pub plan: bool,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum OutputFormat {
-    Markdown,
-    Json,
 }
 
 impl Cli {
@@ -548,8 +419,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Context(args) | Command::Enter(args) | Command::Refresh(args) if args.json => {
             "json"
         }
-        Command::Current(args) if args.json => "json",
-        Command::Handoff(args) if args.json => "json",
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         Command::RepositoryPoint(args) if args.json => "json",
@@ -566,22 +435,17 @@ pub fn run(cli: Cli) -> Result<i32> {
 
     let result = match cli.command {
         Command::Init => run_init().map(|()| 0),
-        Command::Adopt(args) => run_adopt(args).map(|()| 0),
         Command::Doctor(args) => run_doctor(args).map(|()| 0),
         Command::Context(args) => run_context(args).map(|()| 0),
-        Command::Current(args) => run_current(args),
         Command::Refresh(args) => run_refresh(args).map(|()| 0),
         Command::Enter(args) => run_enter(args).map(|()| 0),
         Command::Watch(args) => run_watch(args).map(|()| 0),
         Command::Run(args) => run_run(args),
         Command::Intent(args) => run_intent(args).map(|()| 0),
-        Command::Handoff(args) => run_handoff(args).map(|()| 0),
         Command::History(args) => run_history(args).map(|()| 0),
         Command::Clean(args) => run_clean(args).map(|()| 0),
-        Command::Snippet(args) => run_snippet(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
-        Command::AuditPlan(args) => run_audit_plan(args).map(|()| 0),
         Command::Validate(args) => run_validate(args).map(|()| 0),
         Command::Verify(args) => run_verify(args),
         Command::RepositoryPoint(args) => run_repository_point(args).map(|()| 0),
@@ -673,22 +537,17 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Init => "init",
-            Command::Adopt(_) => "adopt",
             Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
-            Command::Current(_) => "current",
             Command::Refresh(_) => "refresh",
             Command::Enter(_) => "enter",
             Command::Watch(_) => "watch",
             Command::Run(_) => "run",
             Command::Intent(_) => "intent",
-            Command::Handoff(_) => "handoff",
             Command::History(_) => "history",
             Command::Clean(_) => "clean",
-            Command::Snippet(_) => "snippet",
             Command::Landed(_) => "landed",
             Command::Sessions(_) => "sessions",
-            Command::AuditPlan(_) => "audit-plan",
             Command::Validate(_) => "validate",
             Command::Verify(_) => "verify",
             Command::RepositoryPoint(_) => "repository-point",
@@ -703,32 +562,6 @@ fn run_init() -> Result<()> {
     let repo_root = git::discover_repo_root(&runner, &cwd).unwrap_or(cwd);
     let report = config::init_repo(&repo_root)?;
     println!("{}", render::render_init_report(&report));
-    Ok(())
-}
-
-fn run_adopt(args: AdoptArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let report = adoption::adopt(&repo_root, args.hooks)?;
-    for path in &report.files {
-        println!("adopted {}", rel_display(path, &repo_root));
-    }
-    if report.created_agents {
-        println!("created AGENTS.md because no known entry file existed");
-    }
-    if !report.hooks.is_empty() {
-        println!("installed Git hooks: {}", report.hooks.join(", "));
-        println!(
-            "note: hooks live in this clone's Git hooks directory and are shared by every worktree of this clone"
-        );
-        if report.settings_written {
-            println!("wrote .claude/settings.json (SessionStart: toimija context)");
-        }
-        println!(
-            "note: toimija never writes config outside this repo; ~/.claude/settings.json stays yours"
-        );
-    }
     Ok(())
 }
 
@@ -808,26 +641,6 @@ fn run_repository_point(args: SemanticArgs) -> Result<()> {
         protocol_minor = point.protocol.minor
     );
     Ok(())
-}
-
-fn run_current(args: CurrentArgs) -> Result<i32> {
-    if args.write {
-        return run_refresh(ContextArgs {
-            json: args.json,
-            for_diff: false,
-            budget: None,
-        })
-        .map(|()| 0);
-    }
-    if args.verify {
-        // Delegates to `verify`, exit code included — harness verifiers gate
-        // on it (the verify-before-read contract).
-        return run_verify(VerifyArgs {
-            json: args.json,
-            packet: args.packet,
-        });
-    }
-    anyhow::bail!("use `toimija current --write` or `toimija current --verify`")
 }
 
 fn run_refresh(args: ContextArgs) -> Result<()> {
@@ -916,11 +729,11 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     args.alert.retain(|alert| !alert.trim().is_empty());
 
     // Armed before a session can exist, not after. Arming once the marker is
-    // on disk leaves a window — `Session::open` returning, `record_cycle_action`
-    // writing — where a signal still kills the wrapper with the marker `active`.
-    // That window is microseconds in an ordinary run and wide enough to hit
-    // reliably under coverage instrumentation, which is how it was found. A
-    // signal arriving before this point has no marker to strand.
+    // on disk leaves a window — `Session::open` returning — where a signal
+    // still kills the wrapper with the marker `active`. That window is
+    // microseconds in an ordinary run and wide enough to hit reliably under
+    // coverage instrumentation, which is how it was found. A signal arriving
+    // before this point has no marker to strand.
     let termination =
         TerminationWatch::install().context("failed to register termination signal handlers")?;
 
@@ -938,51 +751,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
-    // A cycle leg is identified by the repository point it launches at, so
-    // only a leg pays for materializing that point before the session opens.
-    let cycle_action = match (&args.cycle, &args.cycle_leg, args.cycle_attempt) {
-        (Some(cycle), Some(leg), Some(attempt)) => {
-            let point = crate::semantic::retry_moved(|| {
-                let preflight = context::build_context_packet(&runner, &repo_root, false)?;
-                crate::semantic::repository_point(&runner, &preflight)
-            })?;
-            let action = session::CycleAction {
-                cycle: cycle.clone(),
-                leg: leg.clone(),
-                attempt,
-                repository_point: point.id.to_string(),
-            };
-            let live_sessions =
-                sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
-            for session in &live_sessions.sessions {
-                let Some(live) = session.marker.cycle_action.as_ref() else {
-                    continue;
-                };
-                if session.liveness == sessions::Liveness::Closed {
-                    continue;
-                }
-                match live.compare(&action) {
-                    crate::semantic::Comparison::Different => {}
-                    crate::semantic::Comparison::Equal => anyhow::bail!(
-                        "cycle action {cycle}/{leg}/{attempt} is already live in session {}",
-                        session.marker.id
-                    ),
-                    crate::semantic::Comparison::NotComparable => anyhow::bail!(
-                        "cycle action {cycle}/{leg}/{attempt} is live in session {} at \
-                         repository point {}, whose id is of another version than this \
-                         toimija's {}; point ids of different versions are not comparable, so \
-                         whether this is the same action is unknown",
-                        session.marker.id,
-                        live.repository_point,
-                        action.repository_point
-                    ),
-                }
-            }
-            Some(action)
-        }
-        _ => None,
-    };
-
     // Asked to stop before any marker exists: leave without creating one.
     if let Some(number) = termination.requested() {
         eprintln!("toimija run: termination requested before the session opened");
@@ -998,9 +766,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         args.scope.clone(),
     )
     .context("failed to open the toimija session")?;
-    if let Some(action) = cycle_action {
-        session.record_cycle_action(action)?;
-    }
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
@@ -1030,14 +795,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         entry.packet.git.branch.clone(),
         entry.packet.git.head_oid.clone(),
     ) {
-        close_session_after_startup_failure(&repo_root, &mut session);
-        return Err(error);
-    }
-    // What the world outside the tree looks like now — upstream ref, open
-    // PRs — so exit can say what this session did to it (effects_observed).
-    let entry_effects =
-        crate::effects::observe_entry(&runner, &repo_root, entry.packet.git.branch.as_deref());
-    if let Err(error) = session.record_entry_effects(&entry_effects) {
         close_session_after_startup_failure(&repo_root, &mut session);
         return Err(error);
     }
@@ -1271,16 +1028,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         .as_ref()
         .ok()
         .map(|status| wrapped_exit_code(*status));
-    // Effects this session had outside the tree, detected after the fact.
-    if launched.is_ok() {
-        let exit_effects = crate::effects::observe_exit(&runner, &repo_root, session.branch());
-        let (observed, coverage) = crate::effects::derive(
-            session.entry_head(),
-            &session.entry_effects(),
-            &exit_effects,
-        );
-        session.set_effects(observed, coverage);
-    }
     match session.close(exit_status) {
         Ok(()) => journal_closed_session(&repo_root, &session),
         Err(error) => eprintln!(
@@ -1292,7 +1039,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     // Skip the exit summary if the command never launched — there is nothing to
     // summarize, and the launch error is surfaced below.
     if launched.is_ok() {
-        let consumption = collect_consumption(&repo_root, &session, &args);
+        let consumption = collect_consumption(&session, &args);
         match plan.run(&runner, &repo_root) {
             Ok(exit) => {
                 eprint!(
@@ -1542,7 +1289,7 @@ fn verify_run_entry(
 /// packet. The marker lives under the machine-local state root (never in
 /// `folder`), a heartbeat keeps it from reading stale while the agent works,
 /// and `toimija sessions --outside-repos` lists it. What needs Git — the
-/// packet and its watcher, a cycle leg, effects, the exit summary — is not
+/// packet and its watcher, the exit summary — is not
 /// attempted, and the agent is told so in its launch prompt.
 fn run_outside_repo(
     args: RunArgs,
@@ -1554,12 +1301,6 @@ fn run_outside_repo(
 
     if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
-    }
-    if args.cycle.is_some() {
-        anyhow::bail!(
-            "not a Git repository: a cycle leg is identified by a repository point, so it \
-             cannot run outside one"
-        );
     }
     if args.for_diff || args.budget.is_some() {
         anyhow::bail!(
@@ -1860,22 +1601,15 @@ fn journal_closed_session(repo_root: &std::path::Path, session: &session::Sessio
 }
 
 /// What the session consumed of toimija — and nothing else. Proposal 0006 D7:
-/// built only from toimija-owned state (the session marker and handoff
-/// records); nothing observed about the agent's behavior or file access.
+/// built only from toimija-owned state (the session marker); nothing observed
+/// about the agent's behavior or file access.
 struct Consumption {
     intent: String,
     intent_source: &'static str,
     expansions: usize,
-    handoffs: usize,
-    effects: Vec<String>,
-    effects_coverage: crate::effects::EffectsCoverage,
 }
 
-fn collect_consumption(
-    repo_root: &std::path::Path,
-    session: &session::Session,
-    args: &RunArgs,
-) -> Consumption {
+fn collect_consumption(session: &session::Session, args: &RunArgs) -> Consumption {
     let marker = session::load_marker(&session.dir).ok();
     let launch_intent = args.intent.clone().unwrap_or_default();
     let (intent, intent_source) = match marker.as_ref().and_then(|m| m.intent.clone()) {
@@ -1887,17 +1621,10 @@ fn collect_consumption(
         .as_ref()
         .map(|m| m.scope.len().saturating_sub(args.scope.len()))
         .unwrap_or(0);
-    let handoffs = handoff::count(repo_root, &session.id).unwrap_or(0);
-    let (effects, effects_coverage) = marker
-        .map(|m| (m.effects_observed, m.effects_coverage))
-        .unwrap_or_else(|| (Vec::new(), crate::effects::EffectsCoverage::Partial));
     Consumption {
         intent,
         intent_source,
         expansions,
-        handoffs,
-        effects,
-        effects_coverage,
     }
 }
 
@@ -1906,7 +1633,7 @@ fn collect_consumption(
 /// the state at exit. Only the deltas worth a glance are shown — a switched
 /// branch, a moved HEAD (commits made), the working tree at exit, branch scope
 /// since the merge-base, how many times the live packet refreshed, and what
-/// the session consumed of toimija (intent, declared expansions, handoff).
+/// the session consumed of toimija (intent, declared expansions).
 fn render_run_summary(
     entry: &git::GitState,
     exit: &git::GitState,
@@ -1977,23 +1704,6 @@ fn render_run_summary(
             consumption.expansions
         );
     }
-    if consumption.handoffs == 0 {
-        let _ = writeln!(out, "  handoff:   none recorded");
-    } else {
-        let _ = writeln!(out, "  handoff:   {} record(s)", consumption.handoffs);
-    }
-    // Effects outside the tree, detected after the fact. Partial coverage is
-    // said out loud: an effect not seen is not an effect that did not happen.
-    let effects = if consumption.effects.is_empty() {
-        "none observed".to_string()
-    } else {
-        consumption.effects.join(", ")
-    };
-    let coverage = match consumption.effects_coverage {
-        crate::effects::EffectsCoverage::Complete => "",
-        crate::effects::EffectsCoverage::Partial => " (coverage partial)",
-    };
-    let _ = writeln!(out, "  effects:   {effects}{coverage}");
     out
 }
 
@@ -2676,13 +2386,11 @@ impl VerifyStatus {
         match self {
             VerifyStatus::Verified { .. } => "verified".to_string(),
             VerifyStatus::MissingPacket { path } => {
-                format!(
-                    "missing_packet: no verifiable packet at {path}; run `toimija current --write`"
-                )
+                format!("missing_packet: no verifiable packet at {path}; run `toimija refresh`")
             }
             VerifyStatus::InvalidPacket { message } => format!("invalid_packet: {message}"),
             VerifyStatus::MissingConsistency => {
-                "missing_consistency: run `toimija current --write`".to_string()
+                "missing_consistency: run `toimija refresh`".to_string()
             }
             VerifyStatus::NotComparable {
                 packet_algorithm,
@@ -2822,30 +2530,6 @@ fn sweep_options(config: &RepoConfig, dry_run: bool) -> footprint::SweepOptions 
     }
 }
 
-fn run_audit_plan(args: AuditPlanArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let plan =
-        audit_plan::build(&runner, &cwd, args.surfaces).context("failed to build audit plan")?;
-    if let Some(surface) = args.surface
-        && (surface == 0 || surface > plan.surfaces.len())
-    {
-        anyhow::bail!(
-            "surface {surface} is out of range; valid range is 1..={}",
-            plan.surfaces.len()
-        );
-    }
-    let budget = args.budget.unwrap_or(plan.default_budget);
-    info!(
-        event = "toimija.audit_plan.rendered",
-        surfaces = plan.surfaces.len(),
-        surface = args.surface.unwrap_or(0),
-        findings = plan.prior_findings.len()
-    );
-    println!("{}", render::render_audit_plan(&plan, budget, args.surface));
-    Ok(())
-}
-
 fn run_intent(args: IntentArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
@@ -2893,38 +2577,6 @@ fn session_root(
     repo.context("not a Git repository")
 }
 
-fn run_handoff(args: HandoffArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    if let Some(id) = args.show {
-        let records = handoff::read_all(&repo_root, &id)?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&records)?);
-        } else {
-            print_handoff_records(&id, &records)?;
-        }
-        return Ok(());
-    }
-
-    let id = std::env::var("TOIMIJA_SESSION").map_err(|_| {
-        anyhow::anyhow!(
-            "TOIMIJA_SESSION is not set — `toimija handoff` writes for a wrapped session, \
-             so run it from inside `toimija run -- <agent>` (the handshake provides the id)"
-        )
-    })?;
-    let record = handoff::write(&runner, &repo_root, &id, args.note)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&record)?);
-    } else {
-        println!(
-            "Wrote handoff for session {} at {}",
-            record.session_id, record.written_at
-        );
-    }
-    Ok(())
-}
-
 fn run_history(args: HistoryArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
@@ -2943,60 +2595,11 @@ fn run_history(args: HistoryArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_handoff_records(id: &str, records: &[handoff::HandoffRecord]) -> Result<()> {
-    anyhow::ensure!(!records.is_empty(), "no handoff recorded for session {id}");
-    let latest = records.last().expect("checked non-empty");
-    let age = now_secs().saturating_sub(latest.written_at);
-    println!(
-        "Handoff for session {id}: {} record(s), latest written {} ago",
-        records.len(),
-        humanize_age(age)
-    );
-    println!("  written_at: {}", latest.written_at);
-    if let Some(step) = &latest.next_step {
-        println!("  next_step: {step}");
-    }
-    if !latest.suggested_validation.is_empty() {
-        println!(
-            "  suggested_validation: {}",
-            latest.suggested_validation.join("; ")
-        );
-    }
-    println!(
-        "  consistency_token: {} ({})",
-        latest.consistency_token,
-        latest
-            .consistency_algorithm
-            .as_deref()
-            .unwrap_or("token version unrecorded")
-    );
-    Ok(())
-}
-
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0)
-}
-
-fn humanize_age(secs: u64) -> String {
-    match secs {
-        s if s < 60 => format!("{s}s"),
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 86_400 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86_400),
-    }
-}
-
-fn run_snippet(args: SnippetArgs) -> Result<()> {
-    let snippet = match args.kind {
-        SnippetKind::Preflight => snippet::Snippet::Preflight,
-        SnippetKind::Script => snippet::Snippet::Script,
-    };
-    // The text already ends in a newline; print it verbatim so it pastes clean.
-    print!("{}", snippet.text());
-    Ok(())
 }
 
 fn run_validate(args: ValidateArgs) -> Result<()> {
@@ -3167,9 +2770,6 @@ mod tests {
             intent: "test".to_string(),
             intent_source: "declared at launch",
             expansions: 0,
-            handoffs: 0,
-            effects: Vec::new(),
-            effects_coverage: crate::effects::EffectsCoverage::Complete,
         }
     }
 
@@ -3208,15 +2808,11 @@ mod tests {
             "{quiet}"
         );
         assert!(quiet.contains("expansions: none declared"), "{quiet}");
-        assert!(quiet.contains("handoff:   none recorded"), "{quiet}");
 
         let busy = Consumption {
             intent: "widened".to_string(),
             intent_source: "updated mid-session",
             expansions: 2,
-            handoffs: 1,
-            effects: vec!["commit".to_string(), "push".to_string()],
-            effects_coverage: crate::effects::EffectsCoverage::Partial,
         };
         let out = render_run_summary(&unchanged, &unchanged, 0, &busy);
         assert!(
@@ -3227,12 +2823,6 @@ mod tests {
             out.contains("expansions: 2 scope path(s) declared while working"),
             "{out}"
         );
-        assert!(out.contains("handoff:   1 record(s)"), "{out}");
-        assert!(
-            out.contains("effects:   commit, push (coverage partial)"),
-            "{out}"
-        );
-        assert!(quiet.contains("effects:   none observed\n"), "{quiet}");
     }
 
     #[test]
