@@ -299,8 +299,9 @@ A packet combines:
 - staged, unstaged, untracked, renamed, and conflicted paths;
 - unsafe Git operation state;
 - the committed branch surface;
-- what to read first: the changed files, their companion tests (by path, not
-  by mining history), then configured and important docs;
+- what to read first: the repository's configured and important docs, always
+  and first, then the changed files and their companion tests (by path, not by
+  mining history) up to the list's cap;
 - collection coverage: `available`, `degraded`, or `failed`;
 - repository boundaries, exclusions, and validation plans;
 - session identity, entry baseline, declared intent, scope, and the session's

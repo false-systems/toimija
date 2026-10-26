@@ -73,7 +73,7 @@ What you get:
 | **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed on every relevant change while the agent works. |
 | **A workset contract** | Every packet opens with a normative contract: work from the Changed surface and Read first, exclusions are do-not-scan, and any expansion outside the workset is declared — *expansion is never forbidden; invisible expansion is.* |
 | **Wrapped means used** | Under `run`, using toimija is not voluntary: an explicit intent is required to launch, known agents get the packet **in their launch prompt** (argv — they cannot not-see it), and the exit summary reports what the session actually consumed. |
-| **What to read first** | The changed files, their companion tests by existence-checked path, then configured and important docs. Advisory; no history mining, no source parsing. |
+| **What to read first** | The repository's configured and important docs, always and first, then the changed files and their companion tests by existence-checked path. Advisory; no history mining, no source parsing. |
 | **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
 | **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, and bounded stewardship. Visibility, never orchestration. |
 | **Chain of custody** | Every packet carries a sauma envelope — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
@@ -567,8 +567,8 @@ The packet includes:
   (`available` / `degraded` / `failed` with a reason and source), so an empty
   list from a failed collection is never presented as a real observation
 - changed surface
-- read first: changed files, their companion tests, configured and important
-  docs
+- read first: configured and important docs (always, first), then changed
+  files and their companion tests
 - validation plan
 - warnings
 - on per-session packets, a **session** block — the session's id, declared
@@ -885,7 +885,9 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 - files changed since merge-base: 3
 
 ## Read first
-- README.md (changed)
+- README.md (important doc)
+- AGENTS.md (important doc)
+- docs/reference.md (important doc)
 - src/git.rs (changed)
 - src/render.rs (changed)
 - tests/git_state.rs (changed)
@@ -1044,7 +1046,7 @@ Context packets use explicit ordering rules so agents can diff and consume them 
 
 - the changed surface unions working-tree changes (staged, unstaged, untracked) with files changed by commits on this branch since the merge-base, so a clean tree on a feature branch still reports its diff
 - changed files are sorted by path and deduplicated in the changed surface
-- read-first entries are grouped as changed files, matching-test hints, then configured and important docs, and Markdown renders all of them
+- read-first entries are grouped as configured `read_first` paths, important docs, changed files, then matching-test hints; a path appears once, under its first group. Markdown always renders every configured and important entry, and the changed files and tests fill what is left of the 25-entry cap
 - warnings are sorted and deduplicated
 - Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
 - every packet carries a normative `Workset contract` section (proposal 0005), rendered early so budget truncation cannot drop it: work from the Changed surface and Read first, treat declared session scope as advisory intent, treat exclusions as do-not-scan, and declare any expansion outside the workset (`toimija intent --scope`) instead of reading invisibly

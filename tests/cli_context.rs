@@ -203,6 +203,7 @@ fn context_json_has_stable_ordering_in_real_repo() {
     assert_eq!(
         read_first_paths(&value),
         vec![
+            "README.md",
             ".toimija/repo.yaml",
             "Cargo.toml",
             "aa_untracked.txt",
@@ -211,7 +212,6 @@ fn context_json_has_stable_ordering_in_real_repo() {
             "src/z.rs",
             "tests/foo/bar.rs",
             "zz_untracked.txt",
-            "README.md",
         ]
     );
 

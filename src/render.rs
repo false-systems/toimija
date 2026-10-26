@@ -405,22 +405,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     write_session_drift(&mut output, packet);
     write_branch_surface(&mut output, packet);
 
-    write_h2(&mut output, "Read first");
-    let read_first = &packet.read_first;
-    if read_first.is_empty() {
-        writeln!(&mut output, "- none").unwrap();
-    } else {
-        for entry in read_first.iter().take(MAX_LIST_SHOWN) {
-            writeln!(
-                &mut output,
-                "- {} ({})",
-                crate::path_codec::display(&entry.path),
-                entry.reason
-            )
-            .unwrap();
-        }
-        write_more_line(&mut output, read_first.len(), MAX_LIST_SHOWN, "");
-    }
+    write_read_first(&mut output, packet);
 
     output.push_str(&render_validation_plan(&packet.validation_plan));
 
@@ -485,6 +470,33 @@ fn append_optional_sections(
          Output truncated to fit approximate budget."
     )
     .unwrap();
+}
+
+/// The repository's own entries (`repo config`, `important doc`) always render,
+/// first, however many there are; the changed files and their tests fill what
+/// is left of the list's cap, so a wide branch cannot push the owner's
+/// "read this first" out of the packet.
+fn write_read_first(output: &mut String, packet: &ContextPacket) {
+    write_h2(output, "Read first");
+    if packet.read_first.is_empty() {
+        writeln!(output, "- none").unwrap();
+        return;
+    }
+    let configured = |entry: &&crate::context::ReadFirstEntry| {
+        entry.reason == "repo config" || entry.reason == "important doc"
+    };
+    let (owned, derived): (Vec<_>, Vec<_>) = packet.read_first.iter().partition(configured);
+    let room = MAX_LIST_SHOWN.saturating_sub(owned.len());
+    for entry in owned.iter().chain(derived.iter().take(room)) {
+        writeln!(
+            output,
+            "- {} ({})",
+            crate::path_codec::display(&entry.path),
+            entry.reason
+        )
+        .unwrap();
+    }
+    write_more_line(output, derived.len(), room, "");
 }
 
 fn write_workset_contract(output: &mut String) {
@@ -995,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_read_first_lists_changed_files_tests_then_docs() {
+    fn markdown_read_first_lists_configured_docs_then_changed_files_and_tests() {
         let mut packet = packet();
         packet.changed_surface = vec![PathBuf::from("src/lib.rs"), PathBuf::from("tests/lib.rs")];
         packet.read_first = vec![
@@ -1023,12 +1035,12 @@ mod tests {
         assert!(rendered.contains("- README.md (important doc)"));
         assert!(rendered.contains("- src/lib.rs (changed)"));
         assert!(rendered.contains("- tests/lib.rs (matching test heuristic)"));
-        // Changed files, then their tests, then configured and important docs.
+        // The repository's own entries first, then changed files and their tests.
         let order: Vec<usize> = [
-            "- src/lib.rs (changed)",
-            "- tests/lib.rs (matching test heuristic)",
             "- docs/architecture.md (repo config)",
             "- README.md (important doc)",
+            "- src/lib.rs (changed)",
+            "- tests/lib.rs (matching test heuristic)",
         ]
         .iter()
         .map(|line| rendered.find(line).unwrap())
@@ -1040,6 +1052,27 @@ mod tests {
         let json = serde_json::to_value(&packet).unwrap();
         assert_eq!(json["changed_surface"].as_array().unwrap().len(), 2);
         assert_eq!(json["read_first"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn every_configured_read_first_entry_renders_even_past_the_cap() {
+        let mut packet = packet();
+        packet.read_first = (0..(MAX_LIST_SHOWN + 5))
+            .map(|index| crate::context::ReadFirstEntry {
+                path: PathBuf::from(format!("docs/d{index:02}.md")),
+                reason: "repo config".to_string(),
+            })
+            .chain(std::iter::once(crate::context::ReadFirstEntry {
+                path: PathBuf::from("src/lib.rs"),
+                reason: "changed".to_string(),
+            }))
+            .collect();
+        let rendered = render_context_markdown(&packet, 100_000);
+        assert!(rendered.contains("- docs/d00.md (repo config)"));
+        assert!(rendered.contains("- docs/d29.md (repo config)"));
+        // No room is left for derived entries, and the count says so.
+        assert!(!rendered.contains("- src/lib.rs (changed)"));
+        assert!(rendered.contains("- ... and 1 more (truncated)"));
     }
 
     #[test]

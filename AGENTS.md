@@ -2,7 +2,7 @@
 
 This repo is Toimija, an internal False Systems Rust CLI.
 
-Read `.toimija/current.md` before reading anything else (under `toimija run` your launch prompt carries your session packet inline and names the live copy — re-read that copy after HEAD, branch, index, or unfamiliar worktree changes, not after your own expected source edits; run `toimija verify` before commit or handoff). To refresh it by hand, `toimija enter --for-diff --budget 4000`. Toimija starts from Git state — branch, HEAD, index, merge-base, staged/unstaged/untracked files — so use the packet, and especially its Git and Branch intent sections, before reading the repo cold. Its Read first list names the changed files, their companion tests, and the important docs — advisory, path-derived, but use it to read the right files first.
+Read `.toimija/current.md` before reading anything else (under `toimija run` your launch prompt carries your session packet inline and names the live copy — re-read that copy after HEAD, branch, index, or unfamiliar worktree changes, not after your own expected source edits; run `toimija verify` before commit or handoff). To refresh it by hand, `toimija enter --for-diff --budget 4000`. Toimija starts from Git state — branch, HEAD, index, merge-base, staged/unstaged/untracked files — so use the packet, and especially its Git and Branch intent sections, before reading the repo cold. Its Read first list names the important docs first, then the changed files and their companion tests — advisory, path-derived, but use it to read the right files first.
 
 Keep changes small and reviewable. Preserve the v0.0 scope: Git-aware local context compilation, config, repo detection, validation plan rendering, observability, and tests.
 

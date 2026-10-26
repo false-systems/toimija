@@ -414,6 +414,10 @@ fn stable_strings(strings: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// What to read first: the repository's own list (`context.read_first`, then
+/// `important_docs`) first, so a wide branch can never push it out of a capped
+/// rendering, then the changed files, then their companion tests. A path
+/// appears once, under the first reason that names it.
 fn read_first(
     repo_root: &Path,
     config: &RepoConfig,
@@ -423,21 +427,6 @@ fn read_first(
 ) -> Vec<ReadFirstEntry> {
     let mut seen = BTreeSet::new();
     let mut entries = Vec::new();
-    for file in changed {
-        if seen.insert(file.path.clone()) {
-            entries.push(ReadFirstEntry {
-                path: file.path.clone(),
-                reason: "changed".to_string(),
-            });
-        }
-    }
-    let mut hints = adapter.read_first_hints(repo_root, changed);
-    hints.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-    for (path, reason) in hints {
-        if seen.insert(path.clone()) {
-            entries.push(ReadFirstEntry { path, reason });
-        }
-    }
     for path in &config.context.read_first {
         if repo_root.join(path).exists() {
             if seen.insert(path.clone()) {
@@ -459,6 +448,21 @@ fn read_first(
                 path: doc.clone(),
                 reason: "important doc".to_string(),
             });
+        }
+    }
+    for file in changed {
+        if seen.insert(file.path.clone()) {
+            entries.push(ReadFirstEntry {
+                path: file.path.clone(),
+                reason: "changed".to_string(),
+            });
+        }
+    }
+    let mut hints = adapter.read_first_hints(repo_root, changed);
+    hints.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    for (path, reason) in hints {
+        if seen.insert(path.clone()) {
+            entries.push(ReadFirstEntry { path, reason });
         }
     }
     entries
@@ -706,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn read_first_includes_changed_and_docs() {
+    fn read_first_lists_configured_docs_before_changed_files() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("README.md"), "docs").unwrap();
         let mut config = RepoConfig::default();
@@ -726,12 +730,8 @@ mod tests {
             &changed,
             &mut warnings,
         );
-        assert_eq!(entries[0].path, PathBuf::from("src/lib.rs"));
-        assert!(
-            entries
-                .iter()
-                .any(|entry| entry.path == Path::new("README.md"))
-        );
+        let paths: Vec<&Path> = entries.iter().map(|entry| entry.path.as_path()).collect();
+        assert_eq!(paths, [Path::new("README.md"), Path::new("src/lib.rs")]);
         assert!(warnings.is_empty());
     }
 
