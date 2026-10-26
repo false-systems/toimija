@@ -731,6 +731,12 @@ toimija init               # create .toimija/repo.yaml if missing
 `-q/--quiet`, `--log-format text|json`, `--no-color`. Logs go to stderr; command
 output goes to stdout.
 
+`toimija --version` names the build as well as the version number:
+`toimija 0.1.1 (a1b2c3d)`, the short commit the binary was built from, with
+`, dirty` when the code built (`src/`, `vendor/`, `build.rs`, the Cargo
+manifest and lock) differed from that commit. `build.rs` reads it with git at
+build time; a build without git or a repository says `unknown commit`.
+
 ## Boundaries / non-goals
 
 The boundaries are the feature: Toimija stays fast, predictable, and safe to

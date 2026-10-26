@@ -203,3 +203,47 @@ fn every_command_the_source_names_exists() {
         unknown.join("\n")
     );
 }
+
+/// `--version` names the commit the binary was built from, so two builds of
+/// one version number can be told apart: `toimija 0.1.1 (a1b2c3d)`, with
+/// `, dirty` when the code built differs from that commit.
+#[test]
+fn version_names_the_commit_it_was_built_from() {
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .arg("--version")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let printed = String::from_utf8(output).unwrap();
+    let prefix = format!("toimija {} (", env!("CARGO_PKG_VERSION"));
+    let build = printed
+        .trim_end()
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("{printed:?}"));
+    let commit = build.strip_suffix(", dirty").unwrap_or(build);
+    if commit == "unknown commit" {
+        // Built where git could not name a commit: a source archive.
+        return;
+    }
+    assert!(
+        commit.len() >= 7 && commit.chars().all(|c| c.is_ascii_hexdigit()),
+        "{printed:?}"
+    );
+    // The commit this checkout is at, when the test runs where it was built.
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    if head.status.success() {
+        let head = String::from_utf8(head.stdout).unwrap();
+        assert!(head.starts_with(commit), "{printed:?} is not HEAD {head}");
+    }
+}

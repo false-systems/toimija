@@ -21,10 +21,19 @@ use crate::snapshot;
 use crate::validate;
 use crate::watch;
 
+/// `toimija --version`: the version number and the commit the binary was
+/// built from (`build.rs`), so two builds of one version can be told apart.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("TOIMIJA_BUILD_COMMIT"),
+    ")"
+);
+
 #[derive(Debug, Parser)]
 #[command(
     name = "toimija",
-    version,
+    version = VERSION,
     about = "Git-aware local context compiler for coding agents",
     long_about = "Git-aware local context compiler for coding agents.\n\n\
         Toimija starts from Git's state machine — branch, HEAD, index, merge-base, \
