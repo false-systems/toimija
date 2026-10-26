@@ -18,6 +18,7 @@ use tracing::warn;
 use crate::command::CommandRunner;
 use crate::config::DEFAULT_BUDGET;
 use crate::context::{self, ContextPacket};
+use crate::git::{self, Worktree};
 use crate::render;
 use crate::session;
 
@@ -34,6 +35,9 @@ pub struct Refreshed {
     pub json: String,
     pub md_path: PathBuf,
     pub json_path: PathBuf,
+    /// The Git state the packet was compiled from, for a caller that can carry
+    /// its ref-derived facts into the next refresh ([`Plan::carrying`]).
+    pub collected: git::Collected,
 }
 
 /// What a refresh should produce: the budget knobs plus an optional per-session
@@ -48,12 +52,27 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Execute this plan against `repo_root`, dispatching to the per-session or
-    /// repo-level writer.
-    pub fn run(&self, runner: &impl CommandRunner, repo_root: &Path) -> Result<Refreshed> {
+    /// Execute this plan against `worktree`, dispatching to the per-session or
+    /// repo-level writer. The Git state is read afresh.
+    pub fn run(&self, runner: &impl CommandRunner, worktree: &Worktree) -> Result<Refreshed> {
+        self.carrying(runner, worktree, None)
+    }
+
+    /// [`Plan::run`], carrying `carried`'s ref-derived facts — the base, the
+    /// merge-base, the branch diff, the recent commits — into the packet beside
+    /// one fresh `git status` ([`git::restatus`]). Only for a caller that knows
+    /// the refs have not moved since `carried` was read. A retry after the
+    /// worktree moved under a tree write reads everything afresh.
+    pub fn carrying(
+        &self,
+        runner: &impl CommandRunner,
+        worktree: &Worktree,
+        carried: Option<&git::Collected>,
+    ) -> Result<Refreshed> {
+        let read = Read { worktree, carried };
         match &self.session_dir {
-            Some(dir) => refresh_session(runner, repo_root, self.for_diff, self.budget, dir),
-            None => refresh(runner, repo_root, self.for_diff, self.budget),
+            Some(dir) => refresh_session(runner, read, self.for_diff, self.budget, dir),
+            None => refresh(runner, read, self.for_diff, self.budget),
         }
     }
 
@@ -123,17 +142,26 @@ fn mark_stale_at(repo_root: &Path, md_path: &Path, reason: &str) -> Result<bool>
     Ok(true)
 }
 
-/// Recompute the context packet for `repo_root` and write it to the repo-level
-/// `.toimija/current.md` and `.toimija/current.json`. Those two files are the
-/// only paths mutated. Used by the sessionless commands (`enter`, `refresh`,
-/// `watch`, `context`).
-pub fn refresh(
+/// Where a refresh reads the Git state: the worktree, and a collection whose
+/// ref-derived facts still hold, when the caller knows one.
+#[derive(Clone, Copy)]
+struct Read<'a> {
+    worktree: &'a Worktree,
+    carried: Option<&'a git::Collected>,
+}
+
+/// Recompute the context packet for the worktree and write it to the
+/// repo-level `.toimija/current.md` and `.toimija/current.json`. Those two
+/// files are the only paths mutated. Used by the sessionless commands
+/// (`enter`, `refresh`, `watch`).
+fn refresh(
     runner: &impl CommandRunner,
-    repo_root: &Path,
+    read: Read<'_>,
     for_diff: bool,
     budget_override: Option<usize>,
 ) -> Result<Refreshed> {
-    let computed = compute(runner, repo_root, for_diff, budget_override, None)?;
+    let repo_root = &read.worktree.root;
+    let computed = compute(runner, read, for_diff, budget_override, None)?;
     let md_path = repo_root.join(CURRENT_MD);
     let json_path = repo_root.join(CURRENT_JSON);
     write_packet(
@@ -149,6 +177,7 @@ pub fn refresh(
         json: computed.json,
         md_path,
         json_path,
+        collected: computed.collected,
     })
 }
 
@@ -161,26 +190,22 @@ pub fn refresh(
 /// exit refresh runs after the marker is closed, and then the repo-level
 /// summary gets the same final facts without the block: a closed session's
 /// id, intent and scope must not survive in the packet the next agent reads.
-pub fn refresh_session(
+fn refresh_session(
     runner: &impl CommandRunner,
-    repo_root: &Path,
+    read: Read<'_>,
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: &Path,
 ) -> Result<Refreshed> {
+    let repo_root = &read.worktree.root;
     let Computed {
         packet,
         markdown,
         json,
         session_closed,
         point,
-    } = compute(
-        runner,
-        repo_root,
-        for_diff,
-        budget_override,
-        Some(session_dir),
-    )?;
+        collected,
+    } = compute(runner, read, for_diff, budget_override, Some(session_dir))?;
     let md_path = session_dir.join("current.md");
     let json_path = session_dir.join("current.json");
     // The session packet is authoritative for the agent — its failure is fatal.
@@ -225,18 +250,21 @@ pub fn refresh_session(
         json,
         md_path,
         json_path,
+        collected,
     })
 }
 
 /// A built packet and its two renderings, plus whether the session it was
 /// built for has already closed, and — for a refresh of a live session — the
-/// session's repository point, read from the same state as the packet.
+/// session's repository point, read from the same state as the packet; and the
+/// Git state it was all compiled from.
 struct Computed {
     packet: ContextPacket,
     markdown: String,
     json: String,
     session_closed: bool,
     point: Option<false_agent_protocol::RepositoryPoint>,
+    collected: git::Collected,
 }
 
 /// The same packet with no session block, sealed and rendered afresh: what the
@@ -279,25 +307,38 @@ fn render_pair(
 /// token from before it.
 fn compute(
     runner: &impl CommandRunner,
-    repo_root: &Path,
+    read: Read<'_>,
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: Option<&Path>,
 ) -> Result<Computed> {
+    // Only the first attempt carries: after a move, everything is read again.
+    let mut carried = read.carried;
     crate::semantic::retry_moved(|| {
-        compute_once(runner, repo_root, for_diff, budget_override, session_dir)
+        let read = Read {
+            worktree: read.worktree,
+            carried: carried.take(),
+        };
+        compute_once(runner, read, for_diff, budget_override, session_dir)
     })
 }
 
 fn compute_once(
     runner: &impl CommandRunner,
-    repo_root: &Path,
+    read: Read<'_>,
     for_diff: bool,
     budget_override: Option<usize>,
     session_dir: Option<&Path>,
 ) -> Result<Computed> {
-    let mut packet = context::build_context_packet(runner, repo_root, for_diff)
-        .context("failed to build context packet")?;
+    let repo_root = &read.worktree.root;
+    let collected = match read.carried {
+        Some(previous) => git::restatus(runner, read.worktree, previous),
+        None => git::collect(runner, read.worktree),
+    }
+    .map_err(anyhow::Error::from)
+    .context("failed to build context packet")?;
+    let mut packet =
+        context::compile_packet(&collected, for_diff).context("failed to build context packet")?;
     let artifact_id = artifact_id();
     packet.artifact_id = Some(artifact_id.clone());
     let generation = artifact_id
@@ -340,7 +381,8 @@ fn compute_once(
         // removes its point file as it exits), so none is computed for it: no
         // tree is written only to be deleted.
         if !session_closed {
-            let execution = crate::semantic::execution_context(runner, &packet, generation)?;
+            let execution =
+                crate::semantic::execution_context(runner, read.worktree, &packet, generation)?;
             point = Some(execution.repository.clone());
             packet
                 .session
@@ -350,7 +392,12 @@ fn compute_once(
         }
     } else if session_dir.is_some() {
         // A session directory without a readable marker still gets its point.
-        point = Some(crate::semantic::repository_point(runner, &packet)?);
+        point = Some(crate::semantic::repository_point(
+            runner,
+            read.worktree,
+            &packet.git,
+            &packet.consistency,
+        )?);
     }
     let run = packet.session.as_ref().map(|session| session.id.clone());
     packet.attach_sauma(run)?;
@@ -361,6 +408,7 @@ fn compute_once(
         json,
         session_closed,
         point,
+        collected,
     })
 }
 

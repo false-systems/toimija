@@ -20,13 +20,14 @@
 
 use std::collections::BTreeSet;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::command::CommandRunner;
+use crate::error::ToimijaError;
 use crate::git::run_git_ok;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,17 +77,70 @@ pub struct LandedReport {
     pub ambiguous: Vec<AmbiguousPath>,
 }
 
+/// The repository root at `cwd` and HEAD's short oid, read together with one
+/// `git rev-parse`. Where HEAD names no commit the call fails as a whole; the
+/// root is then read alone, as [`crate::git::discover_repo_root`] reads it, and
+/// there is no HEAD to name. An answer that cannot be split in two (a root
+/// with a newline in it) is read the same way, with HEAD read on its own.
+pub fn locate(
+    runner: &impl CommandRunner,
+    cwd: &Path,
+) -> Result<(PathBuf, Option<String>), ToimijaError> {
+    let output = runner
+        .run(
+            cwd,
+            "git",
+            &["rev-parse", "--show-toplevel", "--short", "HEAD"],
+        )
+        .map_err(|_| ToimijaError::CommandNotFound("git".to_string()))?;
+    if output.status != 0 {
+        return Ok((crate::git::discover_repo_root(runner, cwd)?, None));
+    }
+    let split = output
+        .stdout
+        .strip_suffix(b"\n")
+        .and_then(|body| {
+            let (root, head) = body.split_at(body.iter().position(|byte| *byte == b'\n')?);
+            Some((root, &head[1..]))
+        })
+        .filter(|(_, head)| !head.contains(&b'\n'))
+        .map(|(root, head)| {
+            (
+                crate::path_codec::from_git_bytes(root),
+                String::from_utf8_lossy(head).trim().to_string(),
+            )
+        })
+        .filter(|(root, _)| root.is_absolute());
+    match split {
+        Some((root, head)) => Ok((root, Some(head).filter(|oid| !oid.is_empty()))),
+        None => {
+            let root = crate::git::discover_repo_root(runner, cwd)?;
+            let head = short_head(runner, &root);
+            Ok((root, head))
+        }
+    }
+}
+
+fn short_head(runner: &impl CommandRunner, repo_root: &Path) -> Option<String> {
+    run_git_ok(runner, repo_root, &["rev-parse", "--short", "HEAD"])
+        .map(|out| out.trim().to_string())
+        .filter(|oid| !oid.is_empty())
+}
+
 /// Assess whether the current `HEAD`'s branch surface is reflected in `base`.
-/// Infallible: any git hiccup (missing base, no merge-base) degrades to
-/// `Unknown` with an actionable reason rather than erroring, mirroring `doctor`.
-pub fn assess_landing(runner: &impl CommandRunner, repo_root: &Path, base: &str) -> LandedReport {
+/// `head` is HEAD's short oid as [`locate`] read it. Infallible: any git hiccup
+/// (missing base, no merge-base) degrades to `Unknown` with an actionable
+/// reason rather than erroring, mirroring `doctor`.
+pub fn assess_landing(
+    runner: &impl CommandRunner,
+    repo_root: &Path,
+    head: Option<String>,
+    base: &str,
+) -> LandedReport {
     let branch = run_git_ok(runner, repo_root, &["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|out| out.trim().to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "HEAD".to_string());
-    let head = run_git_ok(runner, repo_root, &["rev-parse", "--short", "HEAD"])
-        .map(|out| out.trim().to_string())
-        .filter(|oid| !oid.is_empty());
 
     let merge_base = run_git_ok(runner, repo_root, &["merge-base", base, "HEAD"])
         .map(|out| out.trim().to_string())

@@ -10,9 +10,11 @@
 //!
 //! # What a tick costs
 //!
-//! The repository root, git dir and common dir are found once per watch
-//! (`Repository::discover`) and passed down; nothing is discovered again per
-//! tick. When nothing changes, a tick starts no git process:
+//! The repository root, git dir and common dir come from the command's one
+//! discovery (`Repository::of`) and are passed down; nothing is discovered
+//! again per tick. A refresh reads one `git status` and, while the refs' stamp
+//! holds, carries the last read's ref-derived facts (`Carried`). When nothing
+//! changes, a tick starts no git process:
 //!
 //! - **Work-tree changes** arrive as filesystem events — FSEvents on macOS,
 //!   inotify on Linux — and refresh after a debounce. Read-only access events
@@ -142,6 +144,9 @@ fn next_retry_delay(previous: Option<Duration>, timing: Timing) -> Duration {
 /// What a watch finds once and passes down: never discovered again per tick.
 #[derive(Debug, Clone)]
 pub struct Repository {
+    /// What every refresh is handed: the discovery's facts that last as long
+    /// as the worktree ([`git::Worktree::lasting`]).
+    worktree: git::Worktree,
     /// The work tree's root as Git names it.
     root: PathBuf,
     /// The same root with symlinks resolved: FSEvents reports `/private/tmp/x`
@@ -156,11 +161,41 @@ pub struct Repository {
 }
 
 impl Repository {
+    /// The repository of a discovered worktree, and the Git files' stamp. No
+    /// git process when the discovery named the git dir and the common dir;
+    /// otherwise one ([`Repository::discover`]). Call it before building the
+    /// packet the watch starts from: the first check compares against this
+    /// stamp, so a change made while that packet was built is not missed.
+    pub fn of(runner: &impl CommandRunner, worktree: &git::Worktree) -> Result<Self> {
+        let (git_dir, common_dir) = match (&worktree.absolute_git_dir, &worktree.common_dir) {
+            (Some(git_dir), Some(common_dir)) => (git_dir.clone(), common_dir.clone()),
+            _ => Self::locate(runner, &worktree.root)?,
+        };
+        Ok(Self::with(worktree.lasting(), git_dir, common_dir))
+    }
+
     /// Find the git dir and the common dir of the worktree at `root`, with one
-    /// git process, and stamp the Git files. Call it before building the packet
-    /// the watch starts from: the first check compares against this stamp, so
-    /// a change made while that packet was built is not missed.
+    /// git process, and stamp the Git files.
     pub fn discover(runner: &impl CommandRunner, root: &Path) -> Result<Self> {
+        let (git_dir, common_dir) = Self::locate(runner, root)?;
+        Ok(Self::at(root, git_dir, common_dir))
+    }
+
+    /// The worktree every refresh of this watch reads.
+    pub fn worktree(&self) -> &git::Worktree {
+        &self.worktree
+    }
+
+    /// Whether the refs, packed-refs, config and `shallow` are as they were
+    /// when the repository was discovered: then whatever a collection read
+    /// from them since still holds.
+    pub fn refs_held(&self) -> bool {
+        self.stamp().refs == self.discovered.refs
+    }
+
+    /// The git dir and the common dir of the worktree at `root`: one git
+    /// process.
+    fn locate(runner: &impl CommandRunner, root: &Path) -> Result<(PathBuf, PathBuf)> {
         let args = ["rev-parse", "--absolute-git-dir", "--git-common-dir"];
         let output = runner
             .run(root, "git", &args)
@@ -182,13 +217,28 @@ impl Repository {
         let git_dir = crate::path_codec::from_git_bytes(git_dir);
         // Relative to the directory git ran in; `join` keeps an absolute one.
         let common_dir = root.join(crate::path_codec::from_git_bytes(common_dir));
-        Ok(Self::at(root, git_dir, common_dir))
+        Ok((git_dir, common_dir))
     }
 
     fn at(root: &Path, git_dir: PathBuf, common_dir: PathBuf) -> Self {
-        let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        Self::with(
+            git::Worktree::at_root(root.to_path_buf()),
+            git_dir,
+            common_dir,
+        )
+    }
+
+    fn with(worktree: git::Worktree, git_dir: PathBuf, common_dir: PathBuf) -> Self {
+        let root = worktree.root.clone();
+        let canonical_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        let worktree = git::Worktree {
+            absolute_git_dir: Some(git_dir.clone()),
+            common_dir: Some(common_dir.clone()),
+            ..worktree
+        };
         let mut repository = Self {
-            root: root.to_path_buf(),
+            worktree,
+            root,
             canonical_root,
             git_dir,
             common_dir,
@@ -218,6 +268,10 @@ impl Repository {
             entry(common.join("config")),
             entry(git_dir.join("config.worktree")),
             entry(common.join("shallow")),
+            // History without any ref moving: a graft rewrites parents, and
+            // alternates change which objects the history reads can reach.
+            entry(common.join("info").join("grafts")),
+            entry(common.join("objects").join("info").join("alternates")),
             entry(self.root.join(crate::config::CONFIG_PATH)),
         ];
         // `refs/toimija` is Toimija's own footprint (snapshot leases).
@@ -341,8 +395,9 @@ struct Stamp {
     /// `info/exclude`. A change here is checked with one `git status` before
     /// refreshing.
     status: Vec<Entry>,
-    /// What only a refresh reads: refs, packed-refs, config, `shallow`, and the
-    /// packet's own configuration. A change here refreshes.
+    /// What only a refresh reads: refs, packed-refs, config, `shallow`,
+    /// `info/grafts`, `objects/info/alternates`, and the packet's own
+    /// configuration. A change here refreshes, and reads them again.
     refs: Vec<Entry>,
 }
 
@@ -561,10 +616,59 @@ pub struct Session {
     rx: Option<mpsc::Receiver<notify::Result<Event>>>,
     repo: Repository,
     known: Known,
+    carried: Carried,
     timing: Timing,
     /// The monotonic clock as the current tick read it: what the backoff and
     /// the loop's cadences count from.
     clock: Instant,
+}
+
+/// The Git state the last packet was compiled from, and the refs' stamp from
+/// before it was read. While the refs stamp holds, its ref-derived facts — the
+/// base, the merge-base, the branch diff, the recent commits — are what a
+/// fresh read would find, so a refresh reads only `git status` and carries
+/// them ([`git::restatus`]). It is the same trust the watch already puts in
+/// the stamp when it decides that nothing moved at all.
+#[derive(Debug, Clone, Default)]
+struct Carried {
+    state: Option<(git::Collected, Vec<Entry>)>,
+}
+
+impl Carried {
+    fn new(refreshed: &refresh::Refreshed, refs_before: &Stamp) -> Self {
+        Self {
+            state: Some((refreshed.collected.clone(), refs_before.refs.clone())),
+        }
+    }
+
+    /// The carried state, when the refs are still where it was read: `stamp`
+    /// is taken now.
+    fn holding(&self, stamp: &Stamp) -> Option<&git::Collected> {
+        self.state
+            .as_ref()
+            .filter(|(_, refs)| *refs == stamp.refs)
+            .map(|(collected, _)| collected)
+    }
+}
+
+/// What a watch knows when it stops: its repository, and the Git state its
+/// last packet was compiled from. `run`'s exit refresh carries it.
+pub struct Stopped {
+    repo: Repository,
+    carried: Carried,
+}
+
+impl Stopped {
+    /// The worktree the watch read.
+    pub fn worktree(&self) -> &git::Worktree {
+        self.repo.worktree()
+    }
+
+    /// The Git state the last packet was compiled from, when the refs have not
+    /// moved since it was read: stamped now.
+    pub fn holding(&self) -> Option<&git::Collected> {
+        self.carried.holding(&self.repo.stamp())
+    }
 }
 
 /// Begin watching the discovered repository. The fallible parts — creating the
@@ -580,6 +684,7 @@ pub fn start(repo: Repository) -> Result<Session> {
         rx,
         repo,
         known,
+        carried: Carried::default(),
         timing: Timing::LIVE,
         clock: Instant::now(),
     })
@@ -781,43 +886,55 @@ impl Session {
         self.backend.label()
     }
 
-    /// Close the gap between `packet` — the packet the caller built before the
-    /// watcher was registered — and the watcher's readiness. One `git status`,
-    /// compared with the packet together with the changed files' contents, and
-    /// the stamp taken at discovery: a refresh only when something moved.
-    /// Returns the refreshed packet, or `None` when `packet` still stands.
+    /// Close the gap between `entry` — the packet the caller built, after
+    /// discovering the repository and before the watcher was registered — and
+    /// the watcher's readiness. One `git status`, compared with the packet
+    /// together with the changed files' contents, and the stamp taken at
+    /// discovery: a refresh only when something moved, carrying `entry`'s
+    /// ref-derived facts when the refs did not. Returns the refreshed packet,
+    /// or `None` when `entry` still stands.
     pub fn catch_up(
         &mut self,
         runner: &impl CommandRunner,
         plan: &refresh::Plan,
-        packet: &ContextPacket,
+        entry: &refresh::Refreshed,
     ) -> Result<Option<refresh::Refreshed>> {
-        self.known.learn(packet);
+        self.known.learn(&entry.packet);
+        self.carried = Carried::new(entry, &self.known.stamp);
         let stamp = self.repo.stamp();
         let moved = stamp.refs != self.known.stamp.refs || {
             let observed = self.observe(runner, true)?;
             self.known.differs(&observed)
         };
-        self.known.stamp = stamp;
+        self.known.stamp = stamp.clone();
         if !moved {
             return Ok(None);
         }
         debug!(event = "toimija.watch.caught_up");
-        let refreshed = plan.run(runner, &self.repo.root)?;
+        let refreshed =
+            plan.carrying(runner, self.repo.worktree(), self.carried.holding(&stamp))?;
         self.known.learn(&refreshed.packet);
+        self.carried = Carried::new(&refreshed, &stamp);
         Ok(Some(refreshed))
+    }
+
+    /// Whether the refs are still where the last packet's Git state was read:
+    /// then its ref-derived facts hold.
+    pub fn refs_held(&self) -> bool {
+        self.carried.holding(&self.repo.stamp()).is_some()
     }
 
     /// Refresh the live packet on every relevant change until `stop` is set. The
     /// `plan` decides what is written (per-session vs. repo-level). `on_refresh`
-    /// is called after each refresh (for status logging).
+    /// is called after each refresh (for status logging). Returns what the
+    /// watch knew when it stopped, for a last refresh to carry.
     pub fn run(
         self,
         runner: &impl CommandRunner,
         plan: &refresh::Plan,
         stop: &AtomicBool,
         on_refresh: impl FnMut(),
-    ) -> Result<()> {
+    ) -> Result<Stopped> {
         self.run_with(runner, plan, stop, on_refresh, ClockPair::now, Timing::LIVE)
     }
 
@@ -829,7 +946,7 @@ impl Session {
         mut on_refresh: impl FnMut(),
         mut clocks: impl FnMut() -> ClockPair,
         timing: Timing,
-    ) -> Result<()> {
+    ) -> Result<Stopped> {
         self.timing = timing;
         let rx = self.rx.take();
         if rx.is_none() && !matches!(self.backend, Backend::GitPoll) {
@@ -907,7 +1024,10 @@ impl Session {
                 self.check_state(runner, plan, &mut on_refresh, check);
             }
         }
-        Ok(())
+        Ok(Stopped {
+            repo: self.repo,
+            carried: self.carried,
+        })
     }
 
     /// Check the Git state against what the packet was built from. With
@@ -970,7 +1090,9 @@ impl Session {
     }
 
     /// Refresh, having stamped the Git files *before* the refresh reads them:
-    /// a change landing while it runs moves the next stamp.
+    /// a change landing while it runs moves the next stamp. While the refs
+    /// stamp holds, the refresh reads `git status` and carries the last
+    /// packet's ref-derived facts ([`Carried`]).
     fn refresh(
         &mut self,
         runner: &impl CommandRunner,
@@ -979,11 +1101,15 @@ impl Session {
         stamp: Stamp,
         observed: Option<Observed>,
     ) {
-        self.known.stamp = stamp;
-        match refresh_or_warn(runner, &self.repo.root, plan, on_refresh) {
-            Some(refreshed) => self.known.learn(&refreshed.packet),
+        let carried = self.carried.holding(&stamp);
+        match refresh_or_warn(runner, self.repo.worktree(), carried, plan, on_refresh) {
+            Some(refreshed) => {
+                self.known.learn(&refreshed.packet);
+                self.carried = Carried::new(&refreshed, &stamp);
+            }
             None => self.known.fail(observed, self.timing, self.clock),
         }
+        self.known.stamp = stamp;
     }
 }
 
@@ -1005,11 +1131,13 @@ struct Check {
 /// every retry.
 fn refresh_or_warn(
     runner: &impl CommandRunner,
-    repo_root: &Path,
+    worktree: &git::Worktree,
+    carried: Option<&git::Collected>,
     plan: &refresh::Plan,
     on_refresh: &mut impl FnMut(),
 ) -> Option<refresh::Refreshed> {
-    match plan.run(runner, repo_root) {
+    let repo_root = &worktree.root;
+    match plan.carrying(runner, worktree, carried) {
         Ok(refreshed) => {
             on_refresh();
             Some(refreshed)
@@ -1031,23 +1159,23 @@ fn refresh_or_warn(
     }
 }
 
-/// Convenience for the standalone `watch` command: discover, baseline refresh,
-/// then start and catch up after registration before running the loop.
-/// Startup failures propagate via `?`.
+/// Convenience for the standalone `watch` command: stamp the discovered
+/// repository, baseline refresh, then start and catch up after registration
+/// before running the loop. Startup failures propagate via `?`.
 pub fn watch(
     runner: &impl CommandRunner,
-    repo_root: &Path,
+    worktree: &git::Worktree,
     plan: &refresh::Plan,
     stop: &AtomicBool,
     on_refresh: impl FnMut(),
 ) -> Result<()> {
-    let repo = Repository::discover(runner, repo_root)?;
+    let repo = Repository::of(runner, worktree)?;
     // Baseline so the live packet exists immediately, before any event.
-    let baseline = plan.run(runner, repo_root)?;
+    let baseline = plan.run(runner, worktree)?;
     let mut session = start(repo)?;
-    session.catch_up(runner, plan, &baseline.packet)?;
+    session.catch_up(runner, plan, &baseline)?;
     eprintln!("toimija watch: armed ({})", session.backend_label());
-    session.run(runner, plan, stop, on_refresh)
+    session.run(runner, plan, stop, on_refresh).map(|_| ())
 }
 
 /// Whether a path relative to the repository root is Toimija's own: generated
@@ -1100,6 +1228,9 @@ mod tests {
     use std::path::PathBuf;
     use std::time::UNIX_EPOCH;
 
+    /// The git call that marks a refresh reading the refs: the recent history.
+    const READS_THE_REFS: [&str; 4] = ["log", "-n", "10", "--oneline"];
+
     struct RefreshCountingRunner {
         refreshes: Cell<usize>,
     }
@@ -1109,11 +1240,8 @@ mod tests {
     }
 
     impl CommandRunner for RefreshCountingRunner {
-        fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
+        fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
             let (status, stdout) = match (program, args) {
-                ("git", ["rev-parse", "--show-toplevel"]) => {
-                    (0, cwd.as_os_str().as_encoded_bytes().to_vec())
-                }
                 ("git", ["--no-optional-locks", "status", ..]) => {
                     // A plan run collects Git status once, so this is the
                     // refresh-count proxy asserted below.
@@ -1173,12 +1301,13 @@ mod tests {
                 .unwrap_or(0)
         }
 
-        /// Refreshes attempted so far: each begins by finding the repo root.
+        /// Refreshes attempted so far that read the refs: each reads the recent
+        /// history. A refresh that carries them, the refs unmoved, does not.
         fn refreshes(&self) -> usize {
             self.calls
                 .borrow()
                 .iter()
-                .filter(|args| args[..] == ["rev-parse", "--show-toplevel"])
+                .filter(|args| args[..] == READS_THE_REFS)
                 .count()
         }
     }
@@ -1195,7 +1324,7 @@ mod tests {
             args: &[&str],
             env: &[(&str, &OsStr)],
         ) -> std::io::Result<CommandOutput> {
-            if args == ["rev-parse", "--show-toplevel"] {
+            if args == READS_THE_REFS {
                 self.attempts.borrow_mut().push(Instant::now());
             }
             self.calls
@@ -1281,6 +1410,7 @@ mod tests {
                 rx: None,
                 repo,
                 known,
+                carried: Carried::default(),
                 timing: Timing::LIVE,
                 clock: Instant::now(),
             };
@@ -1293,6 +1423,7 @@ mod tests {
             rx: Some(rx),
             repo,
             known,
+            carried: Carried::default(),
             timing: Timing::LIVE,
             clock: Instant::now(),
         };
@@ -1307,11 +1438,11 @@ mod tests {
         git_polling: bool,
     ) -> (Session, Option<mpsc::Sender<notify::Result<Event>>>) {
         let repo = Repository::discover(runner, root).unwrap();
-        let baseline = plan().run(runner, root).unwrap();
+        let baseline = plan().run(runner, repo.worktree()).unwrap();
         let (mut session, tx) = bare_session(repo, git_polling);
         assert!(
             session
-                .catch_up(runner, &plan(), &baseline.packet)
+                .catch_up(runner, &plan(), &baseline)
                 .unwrap()
                 .is_none(),
             "nothing moved since the baseline"
@@ -1373,6 +1504,7 @@ mod tests {
             rx: Some(rx),
             known: Known::new(repo.discovered.clone()),
             repo,
+            carried: Carried::default(),
             timing: Timing::LIVE,
             clock: Instant::now(),
         }
@@ -1442,12 +1574,12 @@ mod tests {
         let (temp, root) = repo_with_commit();
         let runner = Traced::new(temp.path());
         let repo = Repository::discover(&runner, &root).unwrap();
-        let baseline = plan().run(&runner, &root).unwrap();
+        let baseline = plan().run(&runner, repo.worktree()).unwrap();
         let mut session = start(repo).unwrap();
         let before_catch_up = runner.starts();
         assert!(
             session
-                .catch_up(&runner, &plan(), &baseline.packet)
+                .catch_up(&runner, &plan(), &baseline)
                 .unwrap()
                 .is_none()
         );
@@ -1486,8 +1618,8 @@ mod tests {
             session_dir: Some(root.join(".toimija/sessions/test")),
             ..plan()
         };
-        session_plan.run(&runner, &root).unwrap();
-        plan().run(&runner, &root).unwrap();
+        session_plan.run(&runner, repo.worktree()).unwrap();
+        plan().run(&runner, repo.worktree()).unwrap();
 
         assert_eq!(repo.stamp(), before);
     }
@@ -1636,14 +1768,12 @@ mod tests {
         let (temp, root) = repo_with_commit();
         let runner = Traced::new(temp.path());
         let repo = Repository::discover(&runner, &root).unwrap();
-        let baseline = plan().run(&runner, &root).unwrap();
+        let baseline = plan().run(&runner, repo.worktree()).unwrap();
         // Between the baseline packet and the watcher's registration.
         fs::write(root.join("late.txt"), "l\n").unwrap();
         let (mut session, _events) = bare_session(repo, false);
 
-        let caught_up = session
-            .catch_up(&runner, &plan(), &baseline.packet)
-            .unwrap();
+        let caught_up = session.catch_up(&runner, &plan(), &baseline).unwrap();
 
         let packet = caught_up
             .expect("a work-tree change before arming is caught up")
@@ -1657,12 +1787,12 @@ mod tests {
 
         // A ref moved before arming: refreshed without the probe.
         let repo = Repository::discover(&runner, &root).unwrap();
-        let baseline = plan().run(&runner, &root).unwrap();
+        let baseline = plan().run(&runner, repo.worktree()).unwrap();
         git(&root, &["branch", "moved"]);
         let (mut session, _events) = bare_session(repo, false);
         assert!(
             session
-                .catch_up(&runner, &plan(), &baseline.packet)
+                .catch_up(&runner, &plan(), &baseline)
                 .unwrap()
                 .is_some()
         );
@@ -1946,7 +2076,13 @@ mod tests {
         };
         let mut heartbeats = 0;
 
-        let refreshed = refresh_or_warn(&runner, temp.path(), &plan(), &mut || heartbeats += 1);
+        let refreshed = refresh_or_warn(
+            &runner,
+            &git::Worktree::at_root(temp.path().to_path_buf()),
+            None,
+            &plan(),
+            &mut || heartbeats += 1,
+        );
 
         assert!(refreshed.is_none());
         assert_eq!(heartbeats, 0);
@@ -1963,7 +2099,13 @@ mod tests {
         };
         let plan = plan();
 
-        refresh_or_warn(&runner, temp.path(), &plan, &mut || {});
+        refresh_or_warn(
+            &runner,
+            &git::Worktree::at_root(temp.path().to_path_buf()),
+            None,
+            &plan,
+            &mut || {},
+        );
         let marked = std::fs::read_to_string(&md).unwrap();
         assert!(
             marked.contains("Refresh failed — this packet is stale."),
@@ -2515,7 +2657,7 @@ mod tests {
             args: &[&str],
             env: &[(&str, &OsStr)],
         ) -> std::io::Result<CommandOutput> {
-            if args == ["rev-parse", "--show-toplevel"] {
+            if args == READS_THE_REFS {
                 // The clock has been read for the tick that is running.
                 self.attempts.borrow_mut().push(self.tick.get() - 1);
             }

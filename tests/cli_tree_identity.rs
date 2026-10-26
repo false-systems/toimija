@@ -543,23 +543,18 @@ fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
         );
     }
 
-    // The control that matters most: the reads a four-process re-read made,
-    // HEAD and the branch, are visible to this trace. repository-point still
-    // makes them, once, while compiling its packet before the tree.
+    // The reads a four-process re-read made, HEAD and the branch, are made
+    // nowhere, before the tree or after it: `status` names both, and a point
+    // reads nothing a packet would show beyond the token. (The positive control
+    // is above: the trace sees the token's first `status` before the write.)
     let temp = fixture(IGNORE_RULES[1]);
     let calls = git_processes(temp.path(), &["repository-point", "--json"]);
-    let write = calls
-        .iter()
-        .rposition(|argv| verb(argv) == "write-tree")
-        .unwrap();
     let head = |argv: &&Vec<String>| argv.as_slice() == ["rev-parse", "HEAD"];
-    let branch = |argv: &&Vec<String>| verb(argv) == "symbolic-ref";
-    assert_eq!(calls[..write].iter().filter(head).count(), 1, "{calls:?}");
-    assert!(calls[..write].iter().any(|argv| branch(&argv)), "{calls:?}");
+    let branch =
+        |argv: &&Vec<String>| argv.as_slice() == ["symbolic-ref", "--quiet", "--short", "HEAD"];
     assert!(
-        !calls[write..]
-            .iter()
-            .any(|argv| head(&argv) || branch(&argv))
+        !calls.iter().any(|argv| head(&argv) || branch(&argv)),
+        "{calls:?}"
     );
 }
 
@@ -567,7 +562,10 @@ fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
 /// writes anyway (KATANA D9), so the id costs no git process. A change to either
 /// count is a change to the budget, made here on purpose: `repository-point`
 /// went from 22 to 19 when the packet stopped mining history (the two bounded
-/// `git log` walks and the `git ls-tree` of the removed relevance layer).
+/// `git log` walks and the `git ls-tree` of the removed relevance layer), and
+/// from 19 to 8 when it stopped compiling a packet it never read: one
+/// discovery, the token's `status`, the five steps of the tree, the `status`
+/// after it. `snapshot` is the same eight.
 ///
 /// Positive controls first: the trace must see every step of the tree write
 /// once, and both reads of the token (before the write and after it), so a
@@ -578,8 +576,8 @@ fn a_point_id_from_the_tree_costs_no_git_process() {
         return;
     }
     for (args, budget) in [
-        (&["repository-point", "--json"][..], 19),
-        (&["snapshot", "--json"], 10),
+        (&["repository-point", "--json"][..], 8),
+        (&["snapshot", "--json"], 8),
     ] {
         let temp = fixture(IGNORE_RULES[1]);
         let calls = git_processes(temp.path(), args);

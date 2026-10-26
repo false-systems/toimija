@@ -211,8 +211,9 @@ the tree. The fallback is logged once.
 Every 500 ms the watcher also compares the metadata of the Git files a packet
 depends on — HEAD, the index, the operation markers, the refs (files or
 reftable, a linked worktree's own included), packed-refs, config, `shallow`,
-`info/exclude` and `.toimija/repo.yaml` — read with `stat` alone, no git
-process. A moved ref or config refreshes the packet; a moved HEAD or index is
+`info/grafts`, `objects/info/alternates`, `info/exclude` and
+`.toimija/repo.yaml` — read with `stat` alone, no git process. A moved ref,
+config, graft or alternates file refreshes the packet; a moved HEAD or index is
 checked first with one `git status`, because other tools rewrite the index
 without changing anything the packet shows. This is how staging, commits,
 branch switches, a fetch that moves the upstream, and a worktree or branch
@@ -223,12 +224,24 @@ directory at the repository root (`target/`, `_build/`, `deps/`,
 tracked file there as modified and untracked build output as nothing; a
 directory of the same name deeper in the tree is ordinary source.
 
+A refresh reads one `git status`. While that metadata says the refs have not
+moved since the last packet's Git state was read, and `status` finds HEAD and
+the upstream where that read did, the packet's ref-derived facts — the base,
+the merge-base and the branch diff from it, the recent commits, ahead/behind
+counted against the base, `shallow` — are carried from that read rather than
+read again. A ref, HEAD or upstream that moved is read again. `run`'s entry
+gate and its exit refresh read the same way, so `run` costs what `enter` costs
+plus nine git processes however long the agent works: the repository point's
+six, and one `git status` each for the gate, the catch-up and the exit
+(`tests/cli_budgets.rs` pins every command's count).
+
 Once a minute a safety net compares one `git status`, and the changed files'
 contents, with the packet, so what no event and no metadata reported — a
 dropped event — leaves the live packet stale for a minute at most while the
 loop turns. Known slow cases, both rare: a change to a global excludes file
-(`core.excludesFile`) or to global git config the packet shows (`core.abbrev`)
-waits for that minute or the next real change. And the debounce waits for a
+(`core.excludesFile`) waits for that minute or the next real change, and one
+to global git config the packet shows (`core.abbrev`) for the next refresh
+that reads the refs. And the debounce waits for a
 300 ms gap in events, so steady churn — a long build writing `target/` —
 delays refreshes until it pauses.
 
@@ -669,6 +682,7 @@ toimija refresh            # recompute current.md/current.json
 toimija watch              # keep current.* fresh on Git/filesystem changes
 toimija context            # print the packet without wrapping an agent
 toimija context --json
+toimija context --identity --json  # only what repo.yaml says the repo is; one git process
 toimija verify             # does the selected session/repo packet still match?
 toimija verify --json      # machine-readable verify-before-read gate
 toimija snapshot           # freeze the worktree as an immutable git tree (content @ version)
@@ -688,7 +702,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `enter` | Refresh and print the current packet as agent preflight. |
 | `refresh` | Recompute `current.md`/`current.json`. |
 | `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
-| `context` | Print the context packet without wrapping an agent. |
+| `context` | Print the context packet without wrapping an agent. `--identity --json` prints only what the repository says it is — the packet's `repo` object, from `.toimija/repo.yaml`, under schema `toimija-identity.v1` — with one git process, and collects no Git state. |
 | `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified — including `session_not_live` when the packet briefs a session that has closed or whose process is gone. A packet whose token is of an earlier version is `not_comparable`: neither fresh nor stale; refresh it. `--json` includes the selected path, digest, and token. |
 | `snapshot` | Materialize the working tree as an immutable git tree object (its tree-identity.v1 tree, content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; a lease id is 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`, and anything else is refused before anything is touched; `--json` emits the snapshot record, with `tree_algorithm` beside the tree (`algorithm` stays the token's version); a lease records `token_algorithm`, and one taken by an earlier toimija lists as `token version unrecorded`. Refuses in an unsafe git state, and when the worktree moves while the tree is written. |
 | `validate --plan` | Print the validation plan; never runs validation. |

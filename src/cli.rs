@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -88,9 +87,10 @@ pub enum Command {
     /// Read-only; no validation execution, no network.
     #[command(
         after_help = "Examples:\n  toimija context --for-diff --budget 4000   # diff-focused, capped for a prompt\n  \
-        toimija context --json                     # machine-readable packet"
+        toimija context --json                     # machine-readable packet\n  \
+        toimija context --identity --json          # only what the repo says it is"
     )]
-    Context(ContextArgs),
+    Context(ContextCommandArgs),
     /// Recompute the live packet and write .toimija/current.md + current.json.
     ///
     /// Use this when you want the packet files refreshed without printing them
@@ -257,6 +257,16 @@ pub struct ContextArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ContextCommandArgs {
+    #[command(flatten)]
+    pub packet: ContextArgs,
+    /// Emit only the packet's `repo` object — what `.toimija/repo.yaml` says
+    /// the repository is — read without collecting Git state. Requires `--json`.
+    #[arg(long, requires = "json", conflicts_with_all = ["for_diff", "budget"])]
+    pub identity: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct SemanticArgs {
     /// Emit the versioned machine projection as JSON.
     #[arg(long)]
@@ -416,7 +426,11 @@ pub fn run(cli: Cli) -> Result<i32> {
     let started = Instant::now();
     let command_name = cli.command.name();
     let output_format = match &cli.command {
-        Command::Context(args) | Command::Enter(args) | Command::Refresh(args) if args.json => {
+        Command::Context(ContextCommandArgs { packet: args, .. })
+        | Command::Enter(args)
+        | Command::Refresh(args)
+            if args.json =>
+        {
             "json"
         }
         Command::History(args) if args.json => "json",
@@ -586,9 +600,18 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_context(args: ContextArgs) -> Result<()> {
+fn run_context(args: ContextCommandArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
+    if args.identity {
+        let repo_root = git::discover_repo_root(&runner, &cwd)
+            .map_err(anyhow::Error::from)
+            .context("failed to build context packet")?;
+        let identity = context::identity(&repo_root).context("failed to build context packet")?;
+        println!("{}", serde_json::to_string_pretty(&identity)?);
+        return Ok(());
+    }
+    let args = args.packet;
     let mut packet = context::build_context_packet(&runner, &cwd, args.for_diff)
         .context("failed to build context packet")?;
     packet.attach_sauma(None)?;
@@ -607,13 +630,21 @@ fn run_context(args: ContextArgs) -> Result<()> {
 fn run_repository_point(args: SemanticArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
+    let worktree = git::discover(&runner, &cwd)?;
+    // The point is the token and the tree, and nothing else a packet holds:
+    // only what the token fingerprints is read. The configuration is still
+    // loaded, as compiling the packet did, so a broken repo.yaml fails the
+    // point as it always has.
+    RepoConfig::load_optional(&worktree.root)?;
     // Each attempt reads the repository afresh: a point whose worktree moved
     // under the tree write is retried, and refused once it keeps moving: a move
     // the token observes is never printed as a tree from after it beside a token
     // from before it.
     let point = crate::semantic::retry_moved(|| {
-        let packet = context::build_context_packet(&runner, &cwd, false)?;
-        crate::semantic::repository_point(&runner, &packet)
+        let mut git = git::token_state(&runner, &worktree)?;
+        context::normalize_git_state(&mut git);
+        let consistency = Consistency::fingerprint(&git);
+        crate::semantic::repository_point(&runner, &worktree, &git, &consistency)
     })?;
     let point = crate::semantic::point_envelope(point);
     point.validate().map_err(anyhow::Error::from)?;
@@ -646,15 +677,16 @@ fn run_repository_point(args: SemanticArgs) -> Result<()> {
 fn run_refresh(args: ContextArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let refreshed = ambient_refresh(&runner, &repo_root, &args)?;
+    let worktree = git::discover(&runner, &cwd).context("not a Git repository")?;
+    let repo_root = &worktree.root;
+    let refreshed = ambient_refresh(&runner, &worktree, &args)?;
     if args.json {
         println!("{}", refreshed.json);
     } else {
         println!(
             "Refreshed {} and {}",
-            rel_display(&refreshed.md_path, &repo_root),
-            rel_display(&refreshed.json_path, &repo_root)
+            rel_display(&refreshed.md_path, repo_root),
+            rel_display(&refreshed.json_path, repo_root)
         );
     }
     Ok(())
@@ -663,16 +695,17 @@ fn run_refresh(args: ContextArgs) -> Result<()> {
 fn run_enter(args: ContextArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let worktree = git::discover(&runner, &cwd).context("not a Git repository")?;
+    let repo_root = &worktree.root;
     // Enter is refresh + print: it writes the live packet, then frames it as the
     // work preflight an agent reads on entering the repo.
-    let refreshed = ambient_refresh(&runner, &repo_root, &args)?;
+    let refreshed = ambient_refresh(&runner, &worktree, &args)?;
     if args.json {
         println!("{}", refreshed.json);
     } else {
-        print_agent_entry(&refreshed, &repo_root);
+        print_agent_entry(&refreshed, repo_root);
     }
-    opportunistic_sweep(&runner, &repo_root);
+    opportunistic_sweep(&runner, repo_root);
     Ok(())
 }
 
@@ -684,16 +717,17 @@ fn run_enter(args: ContextArgs) -> Result<()> {
 /// session heartbeat is stamped too.
 fn ambient_refresh(
     runner: &ProcessCommandRunner,
-    repo_root: &std::path::Path,
+    worktree: &git::Worktree,
     args: &ContextArgs,
 ) -> Result<refresh::Refreshed> {
+    let repo_root = &worktree.root;
     let ambient = session::ambient_session(repo_root);
     let plan = refresh::Plan {
         for_diff: args.for_diff,
         budget: args.budget,
         session_dir: ambient.as_ref().map(|(_, dir)| dir.clone()),
     };
-    let refreshed = plan.run(runner, repo_root)?;
+    let refreshed = plan.run(runner, worktree)?;
     if let Some((id, _)) = &ambient
         && let Err(error) = session::touch(repo_root, id)
     {
@@ -739,8 +773,8 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
 
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = match git::discover_repo_root(&runner, &cwd) {
-        Ok(repo_root) => repo_root,
+    let worktree = match git::discover(&runner, &cwd) {
+        Ok(worktree) => worktree,
         // Git ran and said no: a session outside any repository (issue #225).
         // A missing git stays an error — that is not the same as "no repo".
         Err(crate::error::ToimijaError::NotGitRepo) => {
@@ -748,6 +782,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         }
         Err(error) => return Err(error).context("not a Git repository"),
     };
+    let repo_root = worktree.root.clone();
     if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
@@ -757,10 +792,10 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         return Ok(i32::try_from(128 + number).unwrap_or(1));
     }
 
-    // 0. Find the git dir and common dir once, for the watcher, and stamp the
-    //    Git files before any packet is built from them, so the watcher's first
-    //    check compares against state from before the entry packet.
-    let watch_repo = watch::Repository::discover(&runner, &repo_root)
+    // 0. Stamp the Git files of the discovered worktree, for the watcher,
+    //    before any packet is built from them, so the watcher's first check
+    //    compares against state from before the entry packet.
+    let watch_repo = watch::Repository::of(&runner, &worktree)
         .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")?;
 
     // 1. Open a session: its own packet directory + marker, so concurrent
@@ -781,14 +816,15 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         budget: args.budget,
         session_dir: Some(session.dir.clone()),
     };
-    let entry = match plan.run(&runner, &repo_root) {
+    let entry = match plan.run(&runner, &worktree) {
         Ok(entry) => entry,
         Err(error) => {
             close_session_after_startup_failure(&repo_root, &mut session);
             return Err(error);
         }
     };
-    let entry = match verify_run_entry(&runner, &cwd, &repo_root, &plan, entry, &session.id) {
+    let refs_held = watch_repo.refs_held();
+    let entry = match verify_run_entry(&runner, &worktree, &plan, entry, refs_held, &session.id) {
         Ok(entry) => entry,
         Err(error) => {
             close_session_after_startup_failure(&repo_root, &mut session);
@@ -820,12 +856,13 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     // and the watcher's registration. Launch with the packet as it stands now:
     // the entry packet, or the caught-up one, verified.
     let entry = match watch_session
-        .catch_up(&runner, &plan, &entry.packet)
+        .catch_up(&runner, &plan, &entry)
         .context("failed to refresh after arming the file watcher")
         .and_then(|caught_up| match caught_up {
             None => Ok(entry),
             Some(refreshed) => {
-                verify_run_entry(&runner, &cwd, &repo_root, &plan, refreshed, &session.id)
+                let refs_held = watch_session.refs_held();
+                verify_run_entry(&runner, &worktree, &plan, refreshed, refs_held, &session.id)
             }
         }) {
         Ok(entry) => entry,
@@ -1006,18 +1043,25 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     // The wrapped command is gone and the watcher with it: take the terminal
     // back. The capture count is final once the watcher is joined.
     let captured = capture.map_or(0, crate::diagnostics::Capture::finish);
-    match watcher_result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => eprintln!("toimija run: watcher stopped on error: {error:#}"),
+    // What the watch knew when it stopped: the exit refresh carries it.
+    let stopped = match watcher_result {
+        Ok(Ok(stopped)) => Some(stopped),
+        Ok(Err(error)) => {
+            eprintln!("toimija run: watcher stopped on error: {error:#}");
+            None
+        }
         // The default panic hook already printed message+location — into the
         // capture log, if it happened while the terminal was sealed; still,
         // include the payload here so the join site is not silent about *what*
         // panicked.
-        Err(payload) => eprintln!(
-            "toimija run: watcher thread panicked: {}",
-            panic_message(payload.as_ref())
-        ),
-    }
+        Err(payload) => {
+            eprintln!(
+                "toimija run: watcher thread panicked: {}",
+                panic_message(payload.as_ref())
+            );
+            None
+        }
+    };
     if captured > 0 {
         eprintln!(
             "toimija run: captured {captured} diagnostic line(s) while the wrapped command ran — {}",
@@ -1048,7 +1092,13 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     // summarize, and the launch error is surfaced below.
     if launched.is_ok() {
         let consumption = collect_consumption(&session, &args);
-        match plan.run(&runner, &repo_root) {
+        // One `git status`, carrying the last packet's ref-derived facts while
+        // the refs are where the watch last read them; otherwise read afresh.
+        let exit = match &stopped {
+            Some(stopped) => plan.carrying(&runner, stopped.worktree(), stopped.holding()),
+            None => plan.run(&runner, &worktree.lasting()),
+        };
+        match exit {
             Ok(exit) => {
                 eprint!(
                     "\n{}",
@@ -1222,18 +1272,33 @@ fn should_force_kill(since_forward: std::time::Duration) -> bool {
     since_forward > GRACE
 }
 
+/// The gate before launch: the entry packet must still match the live
+/// repository, or it is refreshed once and checked again, and then refused.
+///
+/// The live state is read with one `git status`. While `refs_held` — the refs
+/// are where they were before the entry packet's Git state was read — the
+/// packet's own ref-derived facts are carried beside it ([`git::restatus`]),
+/// so the refresh token compares the state a full read would find. Otherwise,
+/// and after a refresh here, everything is read again.
 fn verify_run_entry(
     runner: &impl crate::command::CommandRunner,
-    cwd: &std::path::Path,
-    repo_root: &std::path::Path,
+    worktree: &git::Worktree,
     plan: &refresh::Plan,
     mut entry: refresh::Refreshed,
+    refs_held: bool,
     session_id: &str,
 ) -> Result<refresh::Refreshed> {
+    let mut refs_held = refs_held;
     for attempt in 0..=1 {
-        let (mut live, _warnings) = git::collect_git_state(runner, cwd)
-            .context("failed to verify the `run` entry packet")?;
+        let live = if refs_held {
+            git::restatus(runner, worktree, &entry.collected)
+        } else {
+            git::collect(runner, worktree)
+        }
+        .context("failed to verify the `run` entry packet")?;
+        let mut live = live.state;
         context::normalize_git_state(&mut live);
+        refs_held = false;
         match entry.packet.consistency.verify(&live) {
             Verdict::Consistent => {
                 let refresh_changed = entry
@@ -1248,7 +1313,7 @@ fn verify_run_entry(
                         "refreshing once before launch"
                     );
                     entry = plan
-                        .run(runner, repo_root)
+                        .run(runner, worktree)
                         .context("failed to refresh the raced `run` entry packet")?;
                     continue;
                 }
@@ -1271,7 +1336,7 @@ fn verify_run_entry(
                     "refreshing once before launch"
                 );
                 entry = plan
-                    .run(runner, repo_root)
+                    .run(runner, worktree)
                     .context("failed to refresh the raced `run` entry packet")?;
             }
             Verdict::Stale { .. } => anyhow::bail!(
@@ -1751,7 +1816,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
 fn run_watch(args: ContextArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let worktree = git::discover(&runner, &cwd).context("not a Git repository")?;
     // Status goes to stderr so stdout stays clean for any piping.
     eprintln!(
         "toimija watch: refreshing {} on change (Ctrl-C to stop)",
@@ -1767,7 +1832,7 @@ fn run_watch(args: ContextArgs) -> Result<()> {
         budget: args.budget,
         session_dir: None,
     };
-    watch::watch(&runner, &repo_root, &plan, &stop, || {
+    watch::watch(&runner, &worktree, &plan, &stop, || {
         eprintln!(
             "refreshed {} / {}",
             refresh::CURRENT_MD,
@@ -1780,8 +1845,8 @@ fn run_watch(args: ContextArgs) -> Result<()> {
 fn run_landed(args: LandedArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    let report = landed::assess_landing(&runner, &repo_root, &args.base);
+    let (repo_root, head) = landed::locate(&runner, &cwd).context("not a Git repository")?;
+    let report = landed::assess_landing(&runner, &repo_root, head, &args.base);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -1807,16 +1872,16 @@ fn run_landed(args: LandedArgs) -> Result<()> {
 /// exact State compares the tree oid (or a repository point's id, which is
 /// derived from the tree), and reads content from that immutable tree.
 ///
-/// Both reads are of the token's inputs only: `git::collect_token_state`
-/// before the write, one `status` (`git::token_state_at`) after it. A snapshot
-/// needs nothing else from the repository.
+/// Both reads are of the token's inputs only: one `status` (`git::token_state`)
+/// before the write, one (`git::token_state_at`) after it. A snapshot needs
+/// nothing else from the repository than what its discovery found.
 fn snapshot_tree_and_token(
     runner: &impl CommandRunner,
-    repo_root: &Path,
+    worktree: &git::Worktree,
 ) -> Result<(String, Consistency)> {
     // Materialize only a *safe* state: `write-tree` should never freeze a
     // half-finished merge/rebase or a conflicted tree. Same gate as verify.
-    let mut live = git::collect_token_state(runner, repo_root)?;
+    let mut live = git::token_state(runner, worktree)?;
     context::normalize_git_state(&mut live);
     let consistency = Consistency::fingerprint(&live);
     if consistency.git_operation != GitOperationState::None {
@@ -1850,13 +1915,14 @@ fn snapshot_tree_and_token(
     // `tree_at_token` re-reads the token once the tree is written and requires
     // it to be what it was. A caller that wants resilience retries; a caller
     // that wants truth gets it.
-    let tree = snapshot::tree_at_token(runner, &live, &consistency.token).map_err(|error| {
-        if snapshot::is_worktree_moved(&error) {
-            anyhow::anyhow!("refusing to snapshot: {error}; retry")
-        } else {
-            error
-        }
-    })?;
+    let tree =
+        snapshot::tree_at_token(runner, worktree, &live, &consistency.token).map_err(|error| {
+            if snapshot::is_worktree_moved(&error) {
+                anyhow::anyhow!("refusing to snapshot: {error}; retry")
+            } else {
+                error
+            }
+        })?;
 
     Ok((tree, consistency))
 }
@@ -1864,11 +1930,12 @@ fn snapshot_tree_and_token(
 fn run_snapshot(args: SnapshotArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let worktree = git::discover(&runner, &cwd).context("not a Git repository")?;
+    let repo_root = &worktree.root;
 
     // List held leases.
     if args.list {
-        let leases = snapshot::list_leases(&repo_root)?;
+        let leases = snapshot::list_leases(repo_root)?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&leases)?);
         } else if leases.is_empty() {
@@ -1894,12 +1961,12 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
 
     // Release a held lease.
     if let Some(id) = &args.release {
-        snapshot::release_lease(&runner, &repo_root, id)?;
+        snapshot::release_lease(&runner, repo_root, id)?;
         println!("released snapshot lease {id}");
         return Ok(());
     }
 
-    let (tree, consistency) = snapshot_tree_and_token(&runner, &repo_root)?;
+    let (tree, consistency) = snapshot_tree_and_token(&runner, &worktree)?;
     let tree_algorithm = snapshot::TREE_ALGORITHM.id();
 
     if args.lease {
@@ -1915,7 +1982,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
                     .unwrap_or(0);
                 format!("{secs}-{}", std::process::id())
             });
-        let lease = snapshot::acquire_lease(&runner, &repo_root, &id, &tree, &consistency.token)?;
+        let lease = snapshot::acquire_lease(&runner, repo_root, &id, &tree, &consistency.token)?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&lease)?);
         } else {
@@ -1978,8 +2045,8 @@ fn compute_verify_status(
     cwd: &std::path::Path,
     explicit_packet: Option<&std::path::Path>,
 ) -> VerifyReport {
-    let repo_root = match git::discover_repo_root(runner, cwd) {
-        Ok(root) => root,
+    let worktree = match git::discover(runner, cwd) {
+        Ok(worktree) => worktree,
         Err(error) => {
             return VerifyReport {
                 packet_path: None,
@@ -1989,7 +2056,7 @@ fn compute_verify_status(
             };
         }
     };
-    let packet_path = match select_verify_packet(&repo_root, cwd, explicit_packet) {
+    let packet_path = match select_verify_packet(&worktree.root, cwd, explicit_packet) {
         Ok(path) => path,
         Err(message) => {
             return VerifyReport {
@@ -1999,9 +2066,11 @@ fn compute_verify_status(
         }
     };
     // Recompute the live fingerprint through the same path the packet build uses
-    // (collect -> normalize), so an unchanged repo verifies as consistent.
-    let mut live = match git::collect_git_state(runner, cwd) {
-        Ok((live, _warnings)) => live,
+    // (collect -> normalize), so an unchanged repo verifies as consistent. The
+    // token needs one `status`; the rest of the state is read from it only when
+    // the token holds and a refresh token is to be compared.
+    let status = match git::read_status_of(runner, &worktree) {
+        Ok(status) => status,
         Err(error) => {
             return VerifyReport {
                 packet_path: Some(packet_path),
@@ -2011,18 +2080,27 @@ fn compute_verify_status(
             };
         }
     };
+    let mut live = status.token_state();
     context::normalize_git_state(&mut live);
-    let status = verify_status(runner, &packet_path, &live);
+    let complete = || {
+        let mut full = git::complete(runner, &worktree, status).state;
+        context::normalize_git_state(&mut full);
+        full
+    };
+    let status = verify_status(runner, &packet_path, &live, complete);
     VerifyReport {
         packet_path: Some(packet_path),
         status,
     }
 }
 
+/// The verdict on the packet at `packet_path` against `live`, the token's
+/// state; `complete` reads the rest of the live state, for the refresh token.
 fn verify_status(
     runner: &ProcessCommandRunner,
     packet_path: &std::path::Path,
     live: &git::GitState,
+    complete: impl FnOnce() -> git::GitState,
 ) -> VerifyStatus {
     match load_stored_packet(packet_path) {
         StoredPacket::Ready { packet, raw } => {
@@ -2075,7 +2153,7 @@ fn verify_status(
             match stored.verify(live) {
                 Verdict::Consistent => {
                     if let Some(packet_token) = packet_refresh_token {
-                        let current_token = context::refresh_token(live);
+                        let current_token = context::refresh_token(&complete());
                         if current_token != packet_token {
                             return VerifyStatus::StalePacket {
                                 packet_token,
@@ -2436,11 +2514,11 @@ impl VerifyStatus {
 fn run_sessions(args: SessionsArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let outside = args.outside_repos
-        || matches!(
-            git::discover_repo_root(&runner, &cwd),
-            Err(crate::error::ToimijaError::NotGitRepo)
-        );
+    let discovered = (!args.outside_repos).then(|| git::discover_repo_root(&runner, &cwd));
+    let outside = match discovered {
+        None | Some(Err(crate::error::ToimijaError::NotGitRepo)) => true,
+        Some(_) => false,
+    };
     let repo_root = if outside {
         // Sessions `run` opened outside any repository (issue #225). Reading
         // them never creates the state directory; an absent one holds none.
@@ -2452,7 +2530,9 @@ fn run_sessions(args: SessionsArgs) -> Result<()> {
             )
         })?
     } else {
-        git::discover_repo_root(&runner, &cwd).context("not a Git repository")?
+        discovered
+            .expect("a repository was looked for")
+            .context("not a Git repository")?
     };
     if outside && !args.json {
         println!(
@@ -2633,7 +2713,7 @@ fn run_validate(args: ValidateArgs) -> Result<()> {
 mod tests {
     use super::*;
     use crate::git::GitState;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// Answers the reads `snapshot_tree_and_token` makes, and lets the worktree
     /// move exactly once — when `write-tree` runs, which is the middle of
@@ -2718,7 +2798,8 @@ mod tests {
         // pair is publishable.
         let still = MovingRunner::new(false);
         let (tree, consistency) =
-            snapshot_tree_and_token(&still, &repo).expect("a quiet repository still leases");
+            snapshot_tree_and_token(&still, &git::Worktree::at_root(repo.clone()))
+                .expect("a quiet repository still leases");
         assert_eq!(tree, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert!(!consistency.token.is_empty());
 
@@ -2726,7 +2807,7 @@ mod tests {
         // token would attest the state before it, so the pair is refused
         // rather than published.
         let moving = MovingRunner::new(true);
-        let error = snapshot_tree_and_token(&moving, &repo)
+        let error = snapshot_tree_and_token(&moving, &git::Worktree::at_root(repo.clone()))
             .expect_err("a worktree that moved mid-materialize must not publish a pair");
         let message = error.to_string();
         assert!(

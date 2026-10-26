@@ -540,11 +540,160 @@ fn run_costs_enter_plus_a_constant_however_long_the_agent_runs() {
         "two seconds of an idle agent cost {} git processes (run -- true: {quick}, run -- sleep 2: {slow})",
         slow.saturating_sub(quick)
     );
-    // What `run` does beyond `enter`, once, whatever the duration: find the
-    // git dir (1), write the repository point (6), the entry gate's re-read
-    // (12), the catch-up probe (1) and the exit refresh (12).
+    // What `run` does beyond `enter`, once, whatever the duration: write the
+    // repository point (6), the entry gate's `status` (1), the catch-up probe
+    // (1) and the exit refresh's `status` (1). The discovery `enter` makes
+    // already names the git dir and the common dir the watcher stamps, and
+    // with the refs unmoved the gate and the exit carry the entry packet's
+    // ref-derived facts.
     assert!(
-        slow <= enter + 34 + 5 * per_tick,
+        slow <= enter + 9 + 5 * per_tick,
         "run -- sleep 2 started {slow} git processes, enter {enter}"
+    );
+}
+
+/// `main` and, on `feat`, two commits past it: the merge-base, the branch diff
+/// and the recent commits all have something to say.
+fn feature_branch(root: &Path) {
+    init_main(root);
+    run_git(root, &["switch", "-q", "-c", "feat"]);
+    for name in ["b.txt", "c.txt"] {
+        std::fs::write(root.join(name), format!("{name}\n")).unwrap();
+        run_git(root, &["add", name]);
+        run_git(root, &["commit", "-q", "-m", name]);
+    }
+}
+
+fn head(root: &Path) -> String {
+    let output = common::git_at(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// A fresh `context --json` of `root`, sandboxed.
+fn fresh_packet(root: &Path) -> serde_json::Value {
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_toimija"))
+        .args(["context", "--json"])
+        .current_dir(root)
+        .env("HOME", home.path())
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("TOIMIJA_STATE_DIR", home.path().join("toimija"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// What a packet reads from history rather than from `git status`.
+const HISTORY_FACTS: [&str; 4] = [
+    "merge_base",
+    "branch_files",
+    "branch_diff_coverage",
+    "recent_commits",
+];
+
+fn assert_history_is_fresh(packet: &serde_json::Value, fresh: &serde_json::Value, what: &str) {
+    for field in HISTORY_FACTS {
+        assert_eq!(
+            packet["git"][field], fresh["git"][field],
+            "{what}: `{field}` is not what a fresh read finds"
+        );
+    }
+}
+
+/// A graft rewrites history and moves no ref, HEAD, upstream, config or
+/// `shallow`. The refresh after it must read the history again, not carry the
+/// merge-base, branch diff and recent commits it read before.
+#[test]
+fn watch_reads_history_again_after_a_graft() {
+    if !git_available() {
+        return;
+    }
+    let temp = watch_tempdir();
+    let root = temp.path().canonicalize().unwrap().join("repo");
+    std::fs::create_dir(&root).unwrap();
+    feature_branch(&root);
+    let watch = Watching::start(&root);
+    let before = fresh_packet(&root);
+
+    // The tip becomes a root commit: no merge-base with `main` any more.
+    std::fs::write(root.join(".git/info/grafts"), format!("{}\n", head(&root))).unwrap();
+    let after = fresh_packet(&root);
+    assert_ne!(
+        before["git"]["merge_base"], after["git"]["merge_base"],
+        "precondition: the graft moved the merge-base"
+    );
+    // An edit after it, so the watch refreshes whatever it makes of the graft.
+    std::fs::write(root.join("late.txt"), "late\n").unwrap();
+    watch.wait_for("the edit after the graft", |packet| {
+        lists(packet, "untracked_files", "late.txt")
+    });
+
+    assert_history_is_fresh(&watch.packet(), &after, "watch");
+}
+
+/// The same, made by the wrapped agent: `run`'s exit refresh must not carry
+/// history from before the graft into the session's last packet.
+#[test]
+fn run_s_exit_packet_reads_history_again_after_a_graft() {
+    if !git_available() {
+        return;
+    }
+    let temp = watch_tempdir();
+    let root = temp.path().canonicalize().unwrap().join("repo");
+    std::fs::create_dir(&root).unwrap();
+    feature_branch(&root);
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_toimija"))
+        .args([
+            "run",
+            "--intent",
+            "graft",
+            "--",
+            "sh",
+            "-c",
+            "printf '%s\\n' \"$GRAFT\" > .git/info/grafts && echo late > late.txt",
+        ])
+        .current_dir(&root)
+        .env("GRAFT", head(&root))
+        .env("HOME", home.path())
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("TOIMIJA_STATE_DIR", home.path().join("toimija"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fresh = fresh_packet(&root);
+    assert!(
+        fresh["git"]["merge_base"].is_null(),
+        "precondition: {}",
+        fresh["git"]
+    );
+
+    let read = |path: &Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    };
+    assert_history_is_fresh(
+        &read(&root.join(".toimija/current.json")),
+        &fresh,
+        "the repo-level packet after run",
+    );
+    let sessions = root.join(".toimija/sessions");
+    let session = std::fs::read_dir(&sessions)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|dir| dir.join("current.json").exists())
+        .expect("the session left its packet");
+    assert_history_is_fresh(
+        &read(&session.join("current.json")),
+        &fresh,
+        "the session's last packet",
     );
 }
