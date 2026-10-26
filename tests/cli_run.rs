@@ -283,7 +283,8 @@ fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
         .stderr(predicate::str::contains(
             "diagnostic line(s) while the wrapped command ran",
         ))
-        .stderr(predicate::str::contains("packet may be stale").not());
+        .stderr(predicate::str::contains("packet may be stale").not())
+        .stderr(predicate::str::contains("the packet now says it is stale").not());
 
     let session_dir = fs::read_dir(temp.path().join(".toimija/sessions"))
         .unwrap()
@@ -292,7 +293,12 @@ fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
         .unwrap()
         .path();
     let diagnostics = fs::read_to_string(session_dir.join("diagnostics.log")).unwrap();
-    assert!(diagnostics.contains("packet may be stale"), "{diagnostics}");
+    // With `.git` gone the stamp moves on every backend, so the refresh fails
+    // and marks the packet itself stale (#229) before any poll could warn.
+    assert!(
+        diagnostics.contains("the packet now says it is stale"),
+        "{diagnostics}"
+    );
 }
 
 #[test]

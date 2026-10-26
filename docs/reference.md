@@ -195,23 +195,51 @@ Each `run` opens a **session** with its own live packet under
 shared file. While the agent works, that session packet stays fresh: every
 relevant filesystem or Git-state change re-runs the refresh after a short
 debounce. After laptop sleep, the resumed watch loop re-proves the session within
-one tick through that same refresh and heartbeat path. On Linux, the watcher
-polls collected Git state at roughly 500 ms because inotify can prove
-the readiness probe while still missing the first post-armed event in
-CI/container environments, and Toimija only needs packet-visible Git/worktree
-state. This avoids recursively scanning ignored build/vendor/session trees as
-the change source. On other platforms, the watcher arms the platform-native
-backend first
-and reports `armed (native)` only after a readiness probe is observed. If that
-probe times out, it re-arms and re-proves notify's polling backend before
-reporting `armed (poll fallback)`. Both event backends also compare the packet
-state token periodically, so a Git state change the event stream missed cannot
-leave the live packet stale. When a refresh itself fails — an unparseable
-`.toimija/repo.yaml`, say — the packet cannot be rebuilt, so it says so instead:
+one tick through that same refresh and heartbeat path.
+
+The watcher finds the repository's git dir and common dir once, and an idle
+tick starts no git process. Work-tree edits arrive as filesystem events: the
+platform-native watcher (FSEvents on macOS, inotify on Linux) is armed first
+and reports `armed (native)` only after a readiness probe is observed.
+Read-only access events (open, read, close without writing) are dropped, so
+the refresh's own reads never re-trigger it. If native cannot arm — the inotify
+watch limit, say — or its probe times out, macOS re-arms and re-proves notify's
+polling backend (`armed (poll fallback)`), and Linux falls back to Git polling
+(`armed (git polling)`): one `git status` per tick, never a recursive scan of
+the tree. The fallback is logged once.
+
+Every 500 ms the watcher also compares the metadata of the Git files a packet
+depends on — HEAD, the index, the operation markers, the refs (files or
+reftable, a linked worktree's own included), packed-refs, config, `shallow`,
+`info/exclude` and `.toimija/repo.yaml` — read with `stat` alone, no git
+process. A moved ref or config refreshes the packet; a moved HEAD or index is
+checked first with one `git status`, because other tools rewrite the index
+without changing anything the packet shows. This is how staging, commits,
+branch switches, a fetch that moves the upstream, and a worktree or branch
+added elsewhere reach the packet, also in a linked worktree whose git dir lies
+outside the watched tree. A tracked path is never ignored: events in a build
+directory at the repository root (`target/`, `_build/`, `deps/`,
+`node_modules/`) prompt one `git status` instead of a refresh, which shows a
+tracked file there as modified and untracked build output as nothing; a
+directory of the same name deeper in the tree is ordinary source.
+
+Once a minute a safety net compares one `git status`, and the changed files'
+contents, with the packet, so what no event and no metadata reported — a
+dropped event — leaves the live packet stale for a minute at most while the
+loop turns. Known slow cases, both rare: a change to a global excludes file
+(`core.excludesFile`) or to global git config the packet shows (`core.abbrev`)
+waits for that minute or the next real change. And the debounce waits for a
+300 ms gap in events, so steady churn — a long build writing `target/` —
+delays refreshes until it pauses.
+
+When a refresh itself fails — an unparseable `.toimija/repo.yaml`, say — the
+packet cannot be rebuilt, so it says so instead:
 a notice at the top of the Markdown packet names the failure and since when,
 above the last good content, and the next successful refresh replaces it. The
 failure is written, and logged, once per distinct error rather than on every
-retry. It is
+retry. A failed refresh is retried at once on the next change, and otherwise
+after half a second, then after a delay that doubles up to the safety net's
+minute. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
 last-writer-wins "latest" summary for sessionless readers. It mirrors the
@@ -588,7 +616,8 @@ The packet includes:
   tree-identity.v1 leaves out
 - a **refresh token** over the collected Git state — repository state only,
   never anything read from the observer's environment, so the same repo yields
-  the same token from any process — used by `watch` and `verify`
+  the same token from any process — used by `verify`, and by `watch` over the
+  part one `git status` reads
 - a **sauma** envelope — a local attestation digest and provenance edge set for
   the packet artifact
 

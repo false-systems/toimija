@@ -757,6 +757,12 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         return Ok(i32::try_from(128 + number).unwrap_or(1));
     }
 
+    // 0. Find the git dir and common dir once, for the watcher, and stamp the
+    //    Git files before any packet is built from them, so the watcher's first
+    //    check compares against state from before the entry packet.
+    let watch_repo = watch::Repository::discover(&runner, &repo_root)
+        .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")?;
+
     // 1. Open a session: its own packet directory + marker, so concurrent
     //    wrapped agents do not race on the single repo-level packet.
     let mut session = session::Session::open(
@@ -801,7 +807,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
 
     // 3. Start watching synchronously, so a watcher startup failure is reported
     //    here — before launching the command — instead of being silently lost.
-    let mut watch_session = match watch::start(&repo_root)
+    let mut watch_session = match watch::start(watch_repo)
         .context("failed to start the file watcher for `run` (try `toimija enter` then run the command directly)")
     {
         Ok(watch_session) => watch_session,
@@ -810,16 +816,18 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
             return Err(error);
         }
     };
-    if let Err(error) = watch_session.catch_up(&runner, &repo_root, &plan) {
-        close_session_after_startup_failure(&repo_root, &mut session);
-        return Err(error).context("failed to refresh after arming the file watcher");
-    }
-    // `catch_up` may rewrite the session packet even when repository identity
-    // is unchanged. Launch with the packet as it stands now, verified, rather
-    // than the earlier preflight rendering.
-    let entry = match plan.run(&runner, &repo_root).and_then(|refreshed| {
-        verify_run_entry(&runner, &cwd, &repo_root, &plan, refreshed, &session.id)
-    }) {
+    // `catch_up` refreshes only when something moved between the entry packet
+    // and the watcher's registration. Launch with the packet as it stands now:
+    // the entry packet, or the caught-up one, verified.
+    let entry = match watch_session
+        .catch_up(&runner, &plan, &entry.packet)
+        .context("failed to refresh after arming the file watcher")
+        .and_then(|caught_up| match caught_up {
+            None => Ok(entry),
+            Some(refreshed) => {
+                verify_run_entry(&runner, &cwd, &repo_root, &plan, refreshed, &session.id)
+            }
+        }) {
         Ok(entry) => entry,
         Err(error) => {
             close_session_after_startup_failure(&repo_root, &mut session);
@@ -847,7 +855,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     let heartbeat_id = session.id.clone();
     let watcher = std::thread::spawn(move || {
         let runner = ProcessCommandRunner;
-        watch_session.run(&runner, &watch_root, &watch_plan, &watcher_stop, || {
+        watch_session.run(&runner, &watch_plan, &watcher_stop, || {
             watcher_refreshes.fetch_add(1, Ordering::Relaxed);
             // Heartbeat (proposal 0002): an event worth a refresh is worth a
             // `last_seen_at` stamp, so staleness measures inactivity rather

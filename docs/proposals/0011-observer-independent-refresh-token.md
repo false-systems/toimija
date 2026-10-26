@@ -113,3 +113,6 @@ repository until the repository itself moves.
   untouched repo is pinned by
   `packet_and_live_watch_tokens_agree_when_nothing_changes` — an asymmetric
   fingerprint would otherwise refresh every poll interval, silently.
+  (2026-10-26: the watcher no longer polls the token. It stamps the Git files
+  and compares one `git status` with the packet; the same symmetry is pinned
+  by `packet_and_live_probe_agree_in_every_head_and_file_state`.)
