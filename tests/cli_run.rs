@@ -293,11 +293,10 @@ fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
         .unwrap()
         .path();
     let diagnostics = fs::read_to_string(session_dir.join("diagnostics.log")).unwrap();
-    // A failed state poll, or a refresh that failed and marked the packet
-    // stale: which one sees the missing `.git` first depends on the backend.
+    // With `.git` gone the stamp moves on every backend, so the refresh fails
+    // and marks the packet itself stale (#229) before any poll could warn.
     assert!(
-        diagnostics.contains("packet may be stale")
-            || diagnostics.contains("the packet now says it is stale"),
+        diagnostics.contains("the packet now says it is stale"),
         "{diagnostics}"
     );
 }
