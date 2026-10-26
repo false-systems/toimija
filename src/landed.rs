@@ -21,7 +21,7 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -303,9 +303,8 @@ fn assess_paths(
 
     let index_path =
         std::env::temp_dir().join(format!("toimija-landed-{}.index", std::process::id()));
-    let staged = Command::new("git")
+    let staged = crate::command::git_command(repo_root)
         .args(["read-tree", base])
-        .current_dir(repo_root)
         .env("GIT_INDEX_FILE", &index_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -388,9 +387,8 @@ fn applies(repo_root: &Path, index_path: &Path, patch: &str, direction: Directio
     if matches!(direction, Direction::Reverse) {
         args.push("--reverse");
     }
-    let mut child = match Command::new("git")
+    let mut child = match crate::command::git_command(repo_root)
         .args(&args)
-        .current_dir(repo_root)
         .env("GIT_INDEX_FILE", index_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

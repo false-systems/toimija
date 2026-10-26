@@ -1336,9 +1336,9 @@ mod tests {
         }
     }
 
-    /// Fixture git, never traced. Scrub the redirecting variables:
-    /// `command::tests` sets `GIT_DIR` process-wide for a moment, and a
-    /// fixture `git` that inherits it acts on that test's repository instead.
+    /// Fixture git, never traced. Scrub the redirecting variables: a value
+    /// this process inherits (a hook's `GIT_DIR`, say) would point a fixture
+    /// `git` at that repository instead of the fixture's.
     fn fixture_git(dir: &Path, args: &[&str]) -> std::process::Output {
         std::process::Command::new("git")
             .args(args)
