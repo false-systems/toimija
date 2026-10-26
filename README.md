@@ -220,9 +220,12 @@ The token is read again after the tree is written (one `git status`). If it
 moved, the point is read afresh, after a short pause, up to three times in all,
 and then refused. A move the token observes is never paired across.
 
-`dirty: false` means `git status` reported nothing. It does not mean the tree
-equals `HEAD^{tree}`. Several of the cases below print `dirty: false` with a
-tree that differs from HEAD's.
+`dirty: false` means `git status` reported nothing outside the generated
+namespaces the token leaves out, so a receipt in `.sykli/` leaves a state
+clean on every machine, whatever its global ignore file hides; the packet's
+file lists still show everything `git status` reported. It does not mean the
+tree equals `HEAD^{tree}`. Several of the cases below print `dirty: false`
+with a tree that differs from HEAD's.
 
 ### Known gaps
 

@@ -305,10 +305,30 @@ fn git_dir_of(runner: &impl CommandRunner, worktree: &Worktree) -> Option<PathBu
 }
 
 fn is_dirty(parsed: &ParsedStatus) -> bool {
-    !parsed.staged_files.is_empty()
-        || !parsed.unstaged_files.is_empty()
-        || !parsed.untracked_files.is_empty()
-        || !parsed.conflicted_files.is_empty()
+    has_work(
+        &parsed.staged_files,
+        &parsed.unstaged_files,
+        &parsed.untracked_files,
+        &parsed.conflicted_files,
+    )
+}
+
+/// Whether any listed path is the repository's own work: one outside the
+/// generated namespaces the consistency token and tree-identity.v1 leave out
+/// (`.toimija/`, `.teko/`, `.sykli/`; `.toimija/repo.yaml` is work). `dirty`
+/// is read from these lists filtered as the token filters them, so a packet
+/// never calls a state dirty that its token and its point id call unchanged,
+/// and a gate's receipt counts the same on every machine, whatever its global
+/// ignore file hides. The lists themselves stay what `git status` reported.
+pub(crate) fn has_work(
+    staged: &[ChangedFile],
+    unstaged: &[ChangedFile],
+    untracked: &[PathBuf],
+    conflicted: &[PathBuf],
+) -> bool {
+    let work = |path: &Path| !crate::consistency::is_generated_output(path);
+    staged.iter().chain(unstaged).any(|file| work(&file.path))
+        || untracked.iter().chain(conflicted).any(|path| work(path))
 }
 
 /// One read of `git status` for a worktree: what a consistency token
@@ -1694,6 +1714,68 @@ mod token_state_tests {
         git(root, &["checkout", "-q", "--detach", "HEAD~1"]);
         let (full, lean) = tokens(root);
         assert_eq!(full, lean, "detached");
+    }
+
+    /// `dirty` reads the lists the token fingerprints, filtered as the token
+    /// and the tree filter them: a gate's receipt in a `.sykli/` git can see
+    /// moves neither the token nor the point id, so it does not make the
+    /// state dirty either, and it counts the same whether this machine's
+    /// ignore rules hide it or not. `.toimija/repo.yaml` is work.
+    #[test]
+    fn dirty_leaves_out_what_the_token_leaves_out() {
+        use super::collect_git_state;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        git(root, &["add", "a.txt"]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        // No ignore file from this machine: the exclude file below decides
+        // what git can see.
+        git(root, &["config", "core.excludesFile", "/dev/null"]);
+        let runner = ProcessCommandRunner;
+        let read = || {
+            let (mut full, _warnings) = collect_git_state(&runner, root).unwrap();
+            normalize_git_state(&mut full);
+            let mut lean =
+                token_state(&runner, &Worktree::at_root(full.repo_root.clone())).unwrap();
+            normalize_git_state(&mut lean);
+            assert_eq!(lean.dirty, full.dirty);
+            full
+        };
+        let clean = read();
+        assert!(!clean.dirty);
+        let token = Consistency::fingerprint(&clean).token;
+
+        for generated in [
+            ".sykli/receipt.json",
+            ".teko/teko.redb",
+            ".toimija/current.json",
+        ] {
+            let path = root.join(generated);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "generated\n").unwrap();
+        }
+        // Hidden by this machine's ignore rules, and visible to git.
+        std::fs::write(root.join(".git/info/exclude"), ".sykli/\n").unwrap();
+        let hidden = read();
+        std::fs::write(root.join(".git/info/exclude"), "").unwrap();
+        let visible = read();
+        assert!(
+            visible
+                .untracked_files
+                .contains(&std::path::PathBuf::from(".sykli/receipt.json")),
+            "git lists the receipt: {:?}",
+            visible.untracked_files
+        );
+        for state in [&hidden, &visible] {
+            assert!(!state.dirty, "{:?}", state.untracked_files);
+            assert_eq!(Consistency::fingerprint(state).token, token);
+        }
+
+        std::fs::write(root.join(".toimija/repo.yaml"), "repo:\n  name: x\n").unwrap();
+        assert!(read().dirty, "repo.yaml is the repository's own");
     }
 
     /// A refresh that carries the ref-derived facts must compile the packet a

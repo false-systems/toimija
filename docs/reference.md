@@ -601,7 +601,11 @@ The packet includes:
   `.gitignore` (`*`) hides it from Git, so a reader that lists untracked files
   and then stats them (`git add --all`, as `sykli run` does) never meets a temp
   file the rename is about to take away
-- branch / HEAD / dirty state
+- branch / HEAD / dirty state: `dirty` reads the lists the consistency token
+  reads, filtered as it filters them, so a path under `.toimija/`, `.teko/` or
+  `.sykli/` (other than `.toimija/repo.yaml`) never makes a state dirty while
+  the token and the point id say it is unchanged; the file lists themselves
+  are what `git status` reported
 - ahead / behind: commits HEAD has that its upstream lacks and the reverse, counted
   from local refs (no fetch); without an upstream, against `origin/<default>`;
   `git.ahead_behind_ref` names which

@@ -296,10 +296,12 @@ pub(crate) fn refresh_token(git: &GitState) -> String {
         .retain(|path| !crate::consistency::is_generated_output(path));
     git.conflict_entries
         .retain(|entry| !crate::consistency::is_generated_output(&entry.path));
-    git.dirty = !git.staged_files.is_empty()
-        || !git.unstaged_files.is_empty()
-        || !git.untracked_files.is_empty()
-        || !git.conflicted_files.is_empty();
+    git.dirty = git::has_work(
+        &git.staged_files,
+        &git.unstaged_files,
+        &git.untracked_files,
+        &git.conflicted_files,
+    );
     let state = serde_json::to_vec(&git).expect("refresh state serializes");
     crate::consistency::hash_bytes(&state)
 }
