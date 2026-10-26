@@ -1658,3 +1658,34 @@ fn a_flag_where_a_value_belongs_is_a_missing_value_and_nothing_launches() {
         .success();
     assert!(temp.path().join("CHILD_RAN").exists());
 }
+
+/// The session summary counts the work the session leaves behind, never
+/// Toimija's own files: in a repository without `toimija init` its packets,
+/// markers and history are visible to Git, and were counted as untracked.
+#[test]
+fn the_exit_summary_does_not_count_toimijas_own_files() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    for _ in 0..2 {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args([
+                "run",
+                "--intent",
+                "count",
+                "--",
+                "sh",
+                "-c",
+                "touch work.txt",
+            ])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(
+                "worktree:  0 staged, 0 unstaged, 1 untracked\n",
+            ));
+    }
+}

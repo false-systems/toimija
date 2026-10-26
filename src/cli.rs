@@ -1809,18 +1809,20 @@ fn render_run_summary(
         );
     }
 
-    // Working tree as the session leaves it.
-    let conflicts = if exit.conflicted_files.is_empty() {
+    // Working tree as the session leaves it: the repository's work, never
+    // Toimija's own files, which Git lists where `init` has not run.
+    let conflicted = git::work_paths(&exit.conflicted_files).count();
+    let conflicts = if conflicted == 0 {
         String::new()
     } else {
-        format!(", {} conflicted", exit.conflicted_files.len())
+        format!(", {conflicted} conflicted")
     };
     let _ = writeln!(
         out,
         "  worktree:  {} staged, {} unstaged, {} untracked{conflicts}",
-        exit.staged_files.len(),
-        exit.unstaged_files.len(),
-        exit.untracked_files.len(),
+        git::work_files(&exit.staged_files).count(),
+        git::work_files(&exit.unstaged_files).count(),
+        git::work_paths(&exit.untracked_files).count(),
     );
 
     let _ = writeln!(

@@ -326,9 +326,31 @@ pub(crate) fn has_work(
     untracked: &[PathBuf],
     conflicted: &[PathBuf],
 ) -> bool {
-    let work = |path: &Path| !crate::consistency::is_generated_output(path);
-    staged.iter().chain(unstaged).any(|file| work(&file.path))
-        || untracked.iter().chain(conflicted).any(|path| work(path))
+    work_files(staged)
+        .chain(work_files(unstaged))
+        .next()
+        .is_some()
+        || work_paths(untracked)
+            .chain(work_paths(conflicted))
+            .next()
+            .is_some()
+}
+
+/// Whether `path` is the repository's own work rather than generated tool
+/// state: Toimija's own files under `.toimija/` (but not `.toimija/repo.yaml`),
+/// and `.teko/` and `.sykli/`, which the token and the tree leave out too.
+pub(crate) fn is_work(path: &Path) -> bool {
+    !crate::consistency::is_generated_output(path)
+}
+
+/// The files of `files` that are the repository's own work ([`is_work`]).
+pub(crate) fn work_files(files: &[ChangedFile]) -> impl Iterator<Item = &ChangedFile> {
+    files.iter().filter(|file| is_work(&file.path))
+}
+
+/// The paths of `paths` that are the repository's own work ([`is_work`]).
+pub(crate) fn work_paths(paths: &[PathBuf]) -> impl Iterator<Item = &PathBuf> {
+    paths.iter().filter(|path| is_work(path))
 }
 
 /// One read of `git status` for a worktree: what a consistency token
@@ -666,10 +688,13 @@ fn assemble(status: Status, refs: RefFacts) -> Collected {
     if !parsed.conflicted_files.is_empty() {
         warnings.push("Conflicted files exist. Resolve conflicts before continuing.".to_string());
     }
-    if !parsed.unstaged_files.is_empty() {
+    // Toimija's own files, and the other generated namespaces, are not the
+    // repository's work: in a repository without `toimija init` Git lists
+    // every packet and marker, and they would warn on every refresh.
+    if work_files(&parsed.unstaged_files).next().is_some() {
         warnings.push("Working tree has unstaged changes.".to_string());
     }
-    if !parsed.untracked_files.is_empty() {
+    if work_paths(&parsed.untracked_files).next().is_some() {
         warnings
             .push("Untracked files exist. They will not be committed unless added.".to_string());
     }

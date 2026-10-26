@@ -351,9 +351,15 @@ fn all_changed(git: &GitState) -> Vec<ChangedFile> {
     files
 }
 
+/// The changed files that are the repository's work: not under a configured
+/// or built-in exclusion, and not generated tool state (Toimija's own files,
+/// which Git lists in a repository without `toimija init`, and `.teko/` and
+/// `.sykli/`), so neither the changed surface nor Read first sends an agent
+/// to a packet or a receipt.
 fn filter_ignored(files: Vec<ChangedFile>, safe_to_ignore: &[PathBuf]) -> Vec<ChangedFile> {
     files
         .into_iter()
+        .filter(|file| git::is_work(&file.path))
         .filter(|file| !matches_safe_to_ignore(&file.path, safe_to_ignore))
         .collect()
 }

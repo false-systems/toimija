@@ -462,6 +462,13 @@ toimija run: session summary
   expansions: 2 scope path(s) declared while working
 ```
 
+The worktree line counts the repository's work. Toimija's own files are never
+counted, even where Git lists them (a repository without `toimija init` has no
+`.toimija/.gitignore`), and neither are `.teko/` and `.sykli/`: the paths
+`dirty` and the token leave out. The packet treats them the same way: they
+stay in its file lists, as Git reported them, but raise no warning and are in
+neither the changed surface nor Read first.
+
 ## Verify before read — the packet is a claim, not a hope
 
 A context packet is only useful while it still matches the repo. A map an agent
@@ -993,7 +1000,7 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 ## Config
 
-`.toimija/repo.yaml` is the durable repo manifest. Build and vendor directories (`target`, `_build`, `deps`, `node_modules`, `vendor`) are filtered from the changed surface automatically, matched as a path segment anywhere in the tree (so nested `test_projects/app/target/` is caught too). This is applied live each run — not written into `repo.yaml` — so it tracks the repo as its kind changes. `context.safe_to_ignore` is for your own additional rules on top.
+`.toimija/repo.yaml` is the durable repo manifest. Build and vendor directories (`target`, `_build`, `deps`, `node_modules`, `vendor`) are filtered from the changed surface automatically, matched as a path segment anywhere in the tree (so nested `test_projects/app/target/` is caught too), and so is generated tool state at the root (`.toimija/` other than `repo.yaml`, `.teko/`, `.sykli/`). This is applied live each run — not written into `repo.yaml` — so it tracks the repo as its kind changes. `context.safe_to_ignore` is for your own additional rules on top.
 
 ```yaml
 repo:
