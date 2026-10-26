@@ -559,7 +559,9 @@ fn read_ref_facts(
             ),
         ),
     };
-    let recent_commits = run_git_ok(runner, repo_root, &["log", "-n", "10", "--oneline"])
+    // An unborn HEAD has no history: `git log` could only fail.
+    let recent_commits = head_oid
+        .and_then(|_| run_git_ok(runner, repo_root, &["log", "-n", "10", "--oneline"]))
         .map(|text| parse_recent_commits(&text))
         .unwrap_or_default();
     // Ahead/behind come from Git's own `branch.ab` line when the upstream
