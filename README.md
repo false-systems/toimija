@@ -123,7 +123,9 @@ need a repository and are refused there.
 **Alerts.** `--alert <TEXT>` (repeatable, 1024 bytes in total) puts a
 launcher's urgent lines first in the launch prompt, above the packet, under
 `## Before anything else (from the launcher)`. Long background still goes in
-`--briefing`, at the end.
+`--briefing`, at the end. `--task`, `--briefing` and `--alert` may start with
+`-`, but a value that is one of `run`'s own flags, or `--`, means the value was
+left out: `run` refuses it (exit 2) and launches nothing.
 
 **Idle Codex startup.** Without `--task` (or with a blank task), the built-in
 Codex adapter supplies the packet and optional `--briefing` through the

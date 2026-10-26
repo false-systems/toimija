@@ -302,27 +302,94 @@ pub struct RunArgs {
     /// The task for the agent, delivered inside the composed launch prompt of a
     /// known agent (`claude`, `codex`, `gemini`) or one configured under
     /// `agents:` in `.toimija/repo.yaml`. Pass the task here, not as the agent's
-    /// own positional argument. May start with `-`; a blank task is none.
-    #[arg(long, allow_hyphen_values = true)]
+    /// own positional argument. May start with `-`, but may not be one of
+    /// `run`'s own flags; a blank task is none.
+    #[arg(long, allow_hyphen_values = true, value_parser = RunText)]
     pub task: Option<String>,
     /// Background instructions, separate from an assigned task: appended after
     /// the packet (and the task) in a known or configured agent's launch
     /// prompt. An idle Codex launch receives them with its packet as session
     /// instructions, without starting a model turn. An agent toimija does not
-    /// recognise cannot receive them. May start with `-`; a blank briefing is
-    /// none.
-    #[arg(long, allow_hyphen_values = true)]
+    /// recognise cannot receive them. May start with `-`, but may not be one
+    /// of `run`'s own flags; a blank briefing is none.
+    #[arg(long, allow_hyphen_values = true, value_parser = RunText)]
     pub briefing: Option<String>,
     /// An urgent line for the agent, the first thing in its launch prompt,
     /// above the contract and the packet (repeatable). For a launcher's flags
     /// and warnings: at most 1024 bytes in total, the rest is cut. Long
-    /// background goes in `--briefing`. May start with `-`; a blank alert is
-    /// none.
-    #[arg(long = "alert", value_name = "TEXT", allow_hyphen_values = true)]
+    /// background goes in `--briefing`. May start with `-`, but may not be
+    /// one of `run`'s own flags; a blank alert is none.
+    #[arg(
+        long = "alert",
+        value_name = "TEXT",
+        allow_hyphen_values = true,
+        value_parser = RunText
+    )]
     pub alert: Vec<String>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
+}
+
+/// The text `--task`, `--briefing` and `--alert` take. It may start with `-`
+/// (a briefing is Markdown, whose lists do), so clap gives it the next
+/// argument whatever that is. When that argument is one of `run`'s own flags,
+/// or the `--` before the command, the value was left out: issue #237, where
+/// `--briefing --task "fix it"` took `--task` as the briefing and launched a
+/// program named `fix it`. That is refused as a usage error, before a session
+/// opens. The flags are read from the command clap is parsing, so a flag added
+/// to `run` later is covered without being listed here.
+#[derive(Debug, Clone, Copy)]
+struct RunText;
+
+impl clap::builder::TypedValueParser for RunText {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<String, clap::Error> {
+        let text = clap::builder::StringValueParser::new().parse_ref(cmd, arg, value)?;
+        if names_an_option(cmd, &text) {
+            let flag = arg
+                .and_then(clap::Arg::get_long)
+                .map_or_else(|| "the flag".to_string(), |long| format!("--{long}"));
+            let message = format!(
+                "`{flag}` is missing its value: `{text}` is one of `run`'s own flags, not \
+                 text. Give `{flag}` its text, or leave the flag out.\n"
+            );
+            return Err(
+                clap::Error::raw(clap::error::ErrorKind::InvalidValue, message).with_cmd(cmd),
+            );
+        }
+        Ok(text)
+    }
+}
+
+/// Whether `text` is `--`, or one of `cmd`'s flags as a user would spell it:
+/// `--name`, `--name=value`, or `-x`.
+fn names_an_option(cmd: &clap::Command, text: &str) -> bool {
+    if text == "--" {
+        return true;
+    }
+    if let Some(long) = text.strip_prefix("--") {
+        let name = long.split_once('=').map_or(long, |(name, _)| name);
+        return cmd.get_arguments().any(|arg| {
+            arg.get_long() == Some(name)
+                || arg
+                    .get_all_aliases()
+                    .is_some_and(|aliases| aliases.contains(&name))
+        });
+    }
+    let mut chars = text.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some('-'), Some(short), None) => cmd
+            .get_arguments()
+            .any(|arg| arg.get_short() == Some(short)),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Args)]

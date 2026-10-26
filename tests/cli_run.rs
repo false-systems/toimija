@@ -1600,3 +1600,61 @@ fn run_takes_the_flags_ohjaa_launches_with_and_sessions_reports_what_it_reads() 
     assert_eq!(after["sessions"][0]["id"], id);
     assert_eq!(after["sessions"][0]["liveness"], "closed");
 }
+
+/// Issue #237: `--task`, `--briefing` and `--alert` take text that may start
+/// with `-`, so one whose value was left out used to take the next flag as
+/// its text: `--briefing --task "fix it"` launched a program named `fix it`.
+/// A value that is one of `run`'s own flags (or the `--` separator) is a
+/// missing value: refused before any session opens, and nothing launches.
+#[test]
+fn a_flag_where_a_value_belongs_is_a_missing_value_and_nothing_launches() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let launch = ["--", "sh", "-c", "touch CHILD_RAN"];
+    for (flag, given) in [
+        (&["--briefing", "--task", "fix it"][..], "--task"),
+        (&["--task", "--briefing", "background"], "--briefing"),
+        (&["--alert", "--"], "--"),
+        (&["--briefing", "--scope=src/"], "--scope=src/"),
+        (&["--task", "--for-diff"], "--for-diff"),
+        (&["--briefing", "-q"], "-q"),
+    ] {
+        let missing = flag[0];
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args(["run", "--intent", "missing values"])
+            .args(flag)
+            .args(launch)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(format!(
+                "`{missing}` is missing its value: `{given}` is one of `run`'s own flags"
+            )));
+        assert!(!temp.path().join("CHILD_RAN").exists(), "{flag:?}");
+        assert!(!temp.path().join(".toimija/sessions").exists(), "{flag:?}");
+    }
+
+    // Text that only starts with a hyphen is still text.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "hyphenated text",
+            "--task",
+            "--- read the notes, then fix it",
+            "--briefing",
+            "- check the receipt first",
+            "--alert",
+            "-- FLAGGED: main is red",
+        ])
+        .args(launch)
+        .assert()
+        .success();
+    assert!(temp.path().join("CHILD_RAN").exists());
+}
