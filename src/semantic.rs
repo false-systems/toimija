@@ -12,8 +12,9 @@ use time::OffsetDateTime;
 use tracing::info;
 
 use crate::command::CommandRunner;
-use crate::consistency::CONSISTENCY_ALGORITHM;
+use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency};
 use crate::context::ContextPacket;
+use crate::git::{GitState, Worktree};
 
 /// The session's current repository point, as a `RepositoryPointEnvelope`.
 /// A wrapped command finds it through `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`.
@@ -104,10 +105,11 @@ fn point_extensions() -> Extensions {
 
 pub fn execution_context(
     runner: &impl CommandRunner,
+    worktree: &Worktree,
     context: &ContextPacket,
     generation: u64,
 ) -> Result<ExecutionContextEnvelope> {
-    let repository = repository_point(runner, context)?;
+    let repository = repository_point(runner, worktree, &context.git, &context.consistency)?;
     let mut envelope = ExecutionContextEnvelope {
         protocol: ProtocolVersion::V1,
         generated_at: now_timestamp(),
@@ -140,35 +142,39 @@ pub fn execution_context(
     Ok(envelope)
 }
 
-/// The repository point of the state `context` was compiled from: its token,
-/// and the tree-identity.v1 tree written from the worktree. Its id is derived
-/// from both ([`point_ref`]), so two points with one id hold one tree, whatever
-/// the token does not observe. The token is read again after the tree is
-/// written, so the two describe one state within what the token observes; if
-/// the worktree moved in between, this fails with
-/// [`crate::snapshot::WorktreeMoved`] and the caller rebuilds `context` and
+/// The repository point of the state `git` was read as, whose token is
+/// `consistency`: the token, and the tree-identity.v1 tree written from the
+/// worktree. A point reads nothing else: `git` may be a whole packet's state
+/// or only what a token fingerprints. Its id is derived from both
+/// ([`point_ref`]), so two points with one id hold one tree, whatever the
+/// token does not observe. The token is read again after the tree is written,
+/// so the two describe one state within what the token observes; if the
+/// worktree moved in between, this fails with
+/// [`crate::snapshot::WorktreeMoved`] and the caller reads the state again and
 /// tries again ([`retry_moved`]).
 pub fn repository_point(
     runner: &impl CommandRunner,
-    context: &ContextPacket,
+    worktree: &Worktree,
+    git: &GitState,
+    consistency: &Consistency,
 ) -> Result<RepositoryPoint> {
-    let tree = crate::snapshot::tree_at_token(runner, &context.git, &context.consistency.token)
+    let tree = crate::snapshot::tree_at_token(runner, worktree, git, &consistency.token)
         .context("failed to materialize the authoritative repository point")?;
-    let repository = repository_ref(&context.git.repo_root)?;
+    let repository = repository_ref(&git.repo_root)?;
     let id = point_ref(
         &repository,
-        &context.consistency.algorithm,
-        &context.consistency.token,
+        &consistency.algorithm,
+        &consistency.token,
         crate::snapshot::TREE_ALGORITHM.id(),
         &tree,
     )?;
     Ok(RepositoryPoint {
         id,
         repository,
-        consistency_token: ConsistencyToken(context.consistency.token.clone()),
+        consistency_token: ConsistencyToken(consistency.token.clone()),
         tree_oid: TreeOid(tree),
-        branch: context.git.branch.clone().map(BranchName),
-        dirty: context.git.dirty,
+        branch: git.branch.clone().map(BranchName),
+        dirty: git.dirty,
         captured_at: now_timestamp(),
     })
 }

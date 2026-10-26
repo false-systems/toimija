@@ -540,11 +540,14 @@ fn run_costs_enter_plus_a_constant_however_long_the_agent_runs() {
         "two seconds of an idle agent cost {} git processes (run -- true: {quick}, run -- sleep 2: {slow})",
         slow.saturating_sub(quick)
     );
-    // What `run` does beyond `enter`, once, whatever the duration: find the
-    // git dir (1), write the repository point (6), the entry gate's re-read
-    // (12), the catch-up probe (1) and the exit refresh (12).
+    // What `run` does beyond `enter`, once, whatever the duration: write the
+    // repository point (6), the entry gate's `status` (1), the catch-up probe
+    // (1) and the exit refresh's `status` (1). The discovery `enter` makes
+    // already names the git dir and the common dir the watcher stamps, and
+    // with the refs unmoved the gate and the exit carry the entry packet's
+    // ref-derived facts.
     assert!(
-        slow <= enter + 34 + 5 * per_tick,
+        slow <= enter + 9 + 5 * per_tick,
         "run -- sleep 2 started {slow} git processes, enter {enter}"
     );
 }

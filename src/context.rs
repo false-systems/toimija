@@ -127,13 +127,47 @@ impl sauma::Carrier for ContextPacket {
     }
 }
 
+pub const IDENTITY_SCHEMA: &str = "toimija-identity.v1";
+
+/// What a repository says it is: the packet's `repo` object, from
+/// `.toimija/repo.yaml` alone, with no Git state collected. For a tool that
+/// asks only that (ohjaa's system view): `context --identity --json`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Identity {
+    pub schema: String,
+    pub repo: RepoInfo,
+}
+
+/// The identity of the repository at `repo_root`, exactly as the packet
+/// compiled there would carry it in `repo`: the same configuration, loaded the
+/// same way (a broken repo.yaml fails here as it fails the packet), and the
+/// same defaults when there is none.
+pub fn identity(repo_root: &Path) -> anyhow::Result<Identity> {
+    let config =
+        RepoConfig::load_optional(repo_root)?.unwrap_or_else(|| RepoConfig::default_for(repo_root));
+    Ok(Identity {
+        schema: IDENTITY_SCHEMA.to_string(),
+        repo: RepoInfo::from_config(&config, repo_root),
+    })
+}
+
+/// Discover the worktree at `cwd`, collect its Git state, and compile the
+/// packet from it.
 pub fn build_context_packet(
     runner: &impl CommandRunner,
     cwd: &Path,
     for_diff: bool,
 ) -> anyhow::Result<ContextPacket> {
-    let (git, mut warnings) = git::collect_git_state(runner, cwd)?;
-    let mut git = git;
+    let worktree = git::discover(runner, cwd)?;
+    compile_packet(&git::collect(runner, &worktree)?, for_diff)
+}
+
+/// Compile the packet from one collection of the Git state. The
+/// configuration, the repo kind, what to read first and the validation plan
+/// are read from the worktree now; no git process is started.
+pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Result<ContextPacket> {
+    let mut git = collected.state.clone();
+    let mut warnings = collected.warnings.clone();
     normalize_git_state(&mut git);
     let config = match RepoConfig::load_optional(&git.repo_root)? {
         Some(config) => config,

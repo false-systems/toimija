@@ -191,14 +191,17 @@ fn session_refresh_with_an_unreadable_marker_still_writes_the_packet() {
     // Issue #161: the marker went unreadable mid-session. The session packet
     // is still written (best-effort, never a failed refresh) — it just loses
     // its session block; the warning is asserted at the CLI layer above.
-    let refreshed = toimija::refresh::refresh_session(
-        &toimija::command::ProcessCommandRunner,
-        temp.path(),
-        false,
-        None,
-        &dir,
-    )
-    .unwrap();
+    let runner = toimija::command::ProcessCommandRunner;
+    let worktree = toimija::git::discover(&runner, temp.path()).unwrap();
+    // The session directory under the root as Git names it (`/private/var`
+    // on macOS, not the `/var` spelling of the same temporary directory).
+    let dir = worktree.root.join(".toimija/sessions/100-1");
+    let plan = toimija::refresh::Plan {
+        for_diff: false,
+        budget: None,
+        session_dir: Some(dir.clone()),
+    };
+    let refreshed = plan.run(&runner, &worktree).unwrap();
     assert!(
         refreshed.packet.session.is_none(),
         "an unreadable marker must drop the session block, not fail the refresh"

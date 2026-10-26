@@ -80,10 +80,11 @@ pub fn is_worktree_moved(error: &anyhow::Error) -> bool {
 /// "Repository points", for what the token does not observe.
 pub fn tree_at_token(
     runner: &impl CommandRunner,
+    worktree: &crate::git::Worktree,
     read: &crate::git::GitState,
     token: &str,
 ) -> Result<String> {
-    let tree = materialize(runner, &read.repo_root)?;
+    let tree = materialize(runner, worktree)?;
     let mut settled = crate::git::token_state_at(runner, &read.repo_root, read.git_dir.clone())?;
     crate::context::normalize_git_state(&mut settled);
     if Consistency::fingerprint(&settled).token != token {
@@ -97,14 +98,19 @@ pub fn tree_at_token(
 /// generated namespaces `.toimija`, `.teko` and `.sykli`, with
 /// `.toimija/repo.yaml` forced in even when ignored. Uses a throwaway index, so
 /// the real index is untouched.
-pub fn materialize(runner: &impl CommandRunner, repo_root: &Path) -> Result<String> {
+pub fn materialize(runner: &impl CommandRunner, worktree: &crate::git::Worktree) -> Result<String> {
+    let repo_root = &worktree.root;
     // A *unique* throwaway index per run: concurrent `toimija snapshot`
     // invocations in one repo must not clobber or delete each other's index.
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
-    let index = git_dir(runner, repo_root)?.join(format!(
+    let git_dir = match &worktree.absolute_git_dir {
+        Some(git_dir) => git_dir.clone(),
+        None => git_dir(runner, repo_root)?,
+    };
+    let index = git_dir.join(format!(
         "toimija-snapshot-{}-{nanos}.index",
         std::process::id()
     ));
@@ -410,7 +416,11 @@ mod tests {
 
         // No repo.yaml: nothing to force in.
         let runner = RecordingRunner::default();
-        let tree = materialize(&runner, repo.path()).unwrap();
+        let tree = materialize(
+            &runner,
+            &crate::git::Worktree::at_root(repo.path().to_path_buf()),
+        )
+        .unwrap();
         assert_eq!(tree, "4b825dc642cb6eb9a060e54bf8d69288fbee4904");
         assert_eq!(*runner.calls.borrow(), expected(false));
 
@@ -418,7 +428,11 @@ mod tests {
         std::fs::create_dir_all(repo.path().join(".toimija")).unwrap();
         std::fs::write(repo.path().join(".toimija/repo.yaml"), "repo: {}\n").unwrap();
         let runner = RecordingRunner::default();
-        materialize(&runner, repo.path()).unwrap();
+        materialize(
+            &runner,
+            &crate::git::Worktree::at_root(repo.path().to_path_buf()),
+        )
+        .unwrap();
         assert_eq!(*runner.calls.borrow(), expected(true));
     }
 
