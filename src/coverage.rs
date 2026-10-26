@@ -75,14 +75,6 @@ impl Coverage {
     }
 }
 
-/// `Default` is the unrecorded state so derived-`Default` carriers stay honest
-/// rather than claiming an observation that never ran.
-impl Default for Coverage {
-    fn default() -> Self {
-        Coverage::unrecorded()
-    }
-}
-
 impl std::fmt::Display for CoverageStatus {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
@@ -111,12 +103,5 @@ mod tests {
     fn available_omits_reason() {
         let json = serde_json::to_value(Coverage::available("scan")).unwrap();
         assert!(json.get("reason").is_none());
-    }
-
-    #[test]
-    fn default_is_unrecorded_degraded() {
-        let coverage = Coverage::default();
-        assert_eq!(coverage.status, CoverageStatus::Degraded);
-        assert!(!coverage.is_available());
     }
 }

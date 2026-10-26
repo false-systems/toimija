@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use tracing::{info, info_span, warn};
 
 use crate::command::{CommandRunner, ProcessCommandRunner};
@@ -82,8 +82,9 @@ pub enum Command {
     /// Compile the current Git work state into a context packet.
     ///
     /// Use this to *see* the packet without writing anything: branch, HEAD,
-    /// merge-base, changed surface, what to read first, and the validation plan. `enter` prints the same packet
-    /// and also writes `.toimija/current.*` — prefer it as the agent preflight.
+    /// merge-base, changed surface, what to read first, and the validation
+    /// plan. `enter` prints the same packet and also writes
+    /// `.toimija/current.*` — prefer it as the agent preflight.
     /// Read-only; no validation execution, no network.
     #[command(
         after_help = "Examples:\n  toimija context --for-diff --budget 4000   # diff-focused, capped for a prompt\n  \
@@ -398,12 +399,6 @@ pub struct ValidateArgs {
     /// Print the plan only. Required: Toimija never runs validation in v0.
     #[arg(long)]
     pub plan: bool,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum OutputFormat {
-    Markdown,
-    Json,
 }
 
 impl Cli {
@@ -734,10 +729,11 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     args.alert.retain(|alert| !alert.trim().is_empty());
 
     // Armed before a session can exist, not after. Arming once the marker is
-    // on disk leaves a window — `Session::open` returning — where a signal still kills the wrapper with the marker `active`.
-    // That window is microseconds in an ordinary run and wide enough to hit
-    // reliably under coverage instrumentation, which is how it was found. A
-    // signal arriving before this point has no marker to strand.
+    // on disk leaves a window — `Session::open` returning — where a signal
+    // still kills the wrapper with the marker `active`. That window is
+    // microseconds in an ordinary run and wide enough to hit reliably under
+    // coverage instrumentation, which is how it was found. A signal arriving
+    // before this point has no marker to strand.
     let termination =
         TerminationWatch::install().context("failed to register termination signal handlers")?;
 
@@ -1605,7 +1601,8 @@ fn journal_closed_session(repo_root: &std::path::Path, session: &session::Sessio
 }
 
 /// What the session consumed of toimija — and nothing else. Proposal 0006 D7:
-/// built only from toimija-owned state (the session marker); nothing observed about the agent's behavior or file access.
+/// built only from toimija-owned state (the session marker); nothing observed
+/// about the agent's behavior or file access.
 struct Consumption {
     intent: String,
     intent_source: &'static str,
