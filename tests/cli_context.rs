@@ -293,3 +293,34 @@ fn read_first_paths(value: &serde_json::Value) -> Vec<String> {
         .map(|item| item["path"].as_str().unwrap().to_string())
         .collect()
 }
+
+/// Ohjaa learns what each repo is from `toimija context --json`, and reads
+/// exactly `repo.name`, `repo.role` and `repo.not_roles` from it.
+#[test]
+fn context_json_carries_the_repo_identity_ohjaa_reads() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".toimija")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: teko\n  role: durable task contract\n  not:\n    - inbox\n    - tracker\n",
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["context", "--json"])
+        .assert()
+        .success();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["repo"]["name"], "teko");
+    assert_eq!(value["repo"]["role"], "durable task contract");
+    assert_eq!(
+        value["repo"]["not_roles"],
+        serde_json::json!(["inbox", "tracker"])
+    );
+}

@@ -1503,3 +1503,91 @@ fn alerts_are_capped_near_a_kilobyte_and_an_unknown_agent_is_told_it_missed_them
         .success()
         .stderr(predicate::str::contains("not delivered: alert, packet"));
 }
+
+/// Ohjaa launches every session as `toimija run --intent <why> --task <what>
+/// --briefing <knowledge> --scope <path>... -- <agent>`, then finds that
+/// session with `toimija sessions --json`: by an id of the shape
+/// `<secs>-<pid>`, the pid being `toimija run`'s own, and reads its agent,
+/// worktree, branch, intent, scope, liveness, pid_check and last_seen_at, and
+/// the report's warnings and coverage. All of that, together, as ohjaa asks.
+#[cfg(unix)]
+#[test]
+fn run_takes_the_flags_ohjaa_launches_with_and_sessions_reports_what_it_reads() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let toimija = assert_cmd::cargo::cargo_bin("toimija");
+    let stub = temp.path().join("claude");
+    fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > launch-arg\n\
+             printf '%s' \"$PPID\" > ppid\n'{}' sessions --json > during.json\n",
+            toimija.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .args([
+            "run",
+            "--intent",
+            "ohjaa intent",
+            "--task",
+            "the assigned task",
+            "--briefing",
+            "Knowledge: what ohjaa knows.",
+            "--scope",
+            "src/a.rs",
+            "--scope",
+            "docs/",
+            "--",
+        ])
+        .arg(&stub)
+        .assert()
+        .success();
+
+    let prompt = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    let task = prompt.find("Task: the assigned task").unwrap();
+    let briefing = prompt.find("Knowledge: what ohjaa knows.").unwrap();
+    assert!(task < briefing, "{prompt}");
+
+    let during: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join("during.json")).unwrap())
+            .unwrap();
+    assert_eq!(during["coverage"]["status"], "available", "{during}");
+    assert!(during["warnings"].is_array(), "{during}");
+    let sessions = during["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{during}");
+    let session = &sessions[0];
+    let ppid = fs::read_to_string(temp.path().join("ppid")).unwrap();
+    let id = session["id"].as_str().unwrap();
+    let (secs, pid) = id.split_once('-').unwrap();
+    assert!(secs.parse::<u64>().is_ok(), "{id}");
+    assert_eq!(pid, ppid.trim(), "the id names `toimija run`'s pid");
+    assert_eq!(session["agent"][0], stub.display().to_string());
+    assert!(session["worktree"].is_string(), "{session}");
+    assert!(session["branch"].is_string(), "{session}");
+    assert_eq!(session["intent"], "ohjaa intent");
+    assert_eq!(session["scope"], serde_json::json!(["src/a.rs", "docs/"]));
+    assert_eq!(session["liveness"], "active");
+    assert_eq!(session["pid_check"], "alive");
+    assert!(session["last_seen_at"].as_u64().is_some(), "{session}");
+
+    let after = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["sessions", "--json"])
+        .assert()
+        .success();
+    let after: serde_json::Value = serde_json::from_slice(&after.get_output().stdout).unwrap();
+    assert_eq!(after["sessions"][0]["id"], id);
+    assert_eq!(after["sessions"][0]["liveness"], "closed");
+}
