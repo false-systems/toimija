@@ -436,12 +436,12 @@ failure into an empty, reassuring list.
 
 `watch` and `run` find the git dir once, then check the Git files' metadata
 (HEAD, index, refs, config) every 500 ms with `stat` alone. Work-tree edits
-arrive as filesystem events — from the native watcher, or from notify polling
-if the native readiness probe does not report — and an idle tick starts no git
-process. On Linux the watcher takes no filesystem events and runs one
-`git status` per tick instead of recursively polling the filesystem. Once a
-minute a safety net compares one `git status` with the packet, so a missed
-event does not leave a live packet stale for long.
+arrive as filesystem events — FSEvents on macOS, inotify on Linux — so an idle
+tick starts no git process. When the native watcher cannot arm, macOS falls
+back to notify polling and Linux to one `git status` per tick, never a
+recursive scan of the tree. Once a minute a safety net compares one
+`git status` with the packet, so a missed event does not leave a live packet
+stale for long.
 
 Use `toimija <command> --help` for flags and examples. The
 [complete reference](docs/reference.md) documents packet fields, environment
