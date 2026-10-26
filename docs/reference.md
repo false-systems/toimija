@@ -881,11 +881,13 @@ Toimija landed
 - reflected: 7/7
 ```
 
-Status is `landed` (every touched path's change is proven present), `not landed`
-(all proven absent), `partially landed` (a clean split of reflected and not),
-`ambiguous` (base diverged on at least one path, so landing could not be proven —
-the paths and their heuristic evidence are listed), or `unknown` (no merge-base —
-unrelated histories or an unfetched base). The check runs against a scratch index
+Status is `landed` (every touched path's change is proven present, or HEAD is
+the base or behind it, so every commit on it is reachable from the base), `not
+landed` (all proven absent), `partially landed` (a clean split of reflected and
+not), `ambiguous` (base diverged on at least one path, so landing could not be
+proven — the paths and their heuristic evidence are listed), or `unknown` (no
+merge-base — unrelated histories or an unfetched base — or commits of HEAD's own
+that change nothing, such as a commit and its revert). The check runs against a scratch index
 seeded from the base, so it never touches your index or working tree. Useful for
 stacked PRs: after a parent merges via squash, check a child with `toimija landed`
 rather than trusting ancestry.

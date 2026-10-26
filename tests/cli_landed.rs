@@ -225,3 +225,47 @@ fn landed_outside_git_repo_fails() {
         .assert()
         .failure();
 }
+
+/// A branch at its base, or behind it, has nothing the base lacks: every
+/// commit on HEAD is reachable from the base. That is landed, proven by
+/// ancestry, not `unknown` for want of a branch diff.
+#[test]
+fn landed_when_head_is_the_base_or_behind_it() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    setup(temp.path());
+    run_git(temp.path(), &["checkout", "-q", "trunk"]);
+
+    let landed = |expected_reason: &str| {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args(["landed", "--base", "trunk"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("status: landed"))
+            .stdout(predicate::str::contains(expected_reason.to_string()));
+    };
+    // HEAD is the base.
+    landed("HEAD is in `trunk`");
+
+    // HEAD is behind the base: the base moved on after HEAD.
+    run_git(temp.path(), &["merge", "-q", "--ff-only", "work"]);
+    run_git(temp.path(), &["checkout", "-q", "--detach", "trunk~1"]);
+    landed("HEAD is in `trunk`");
+
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["landed", "--base", "trunk", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["status"], "landed");
+    assert_eq!(value["touched"], 0);
+}

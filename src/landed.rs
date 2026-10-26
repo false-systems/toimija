@@ -33,7 +33,8 @@ use crate::git::run_git_ok;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LandedStatus {
-    /// Every touched path's change is proven present in `base`.
+    /// Every touched path's change is proven present in `base`, or HEAD is
+    /// `base` or behind it: every commit on HEAD is reachable from `base`.
     Landed,
     /// Every touched path's change is proven still absent.
     NotLanded,
@@ -42,7 +43,8 @@ pub enum LandedStatus {
     /// At least one touched path could not be proven either way (base diverged on
     /// it). The conservative default: never claim landed without a clean proof.
     Ambiguous,
-    /// Cannot tell: no merge-base with the base, or the branch changed nothing.
+    /// Cannot tell: no merge-base with the base, or HEAD has commits of its
+    /// own that change nothing (a commit and its revert).
     Unknown,
 }
 
@@ -158,6 +160,29 @@ pub fn assess_landing(
             ),
         );
     };
+
+    // HEAD at its base, or behind it: every commit on HEAD is reachable from
+    // the base, so nothing it holds can be missing there. Ancestry is proof
+    // in this direction. HEAD's short oid is the unique prefix git printed for
+    // it, so the merge-base starting with it is HEAD itself, with no git
+    // process to ask.
+    if head
+        .as_deref()
+        .is_some_and(|short| merge_base.starts_with(short))
+    {
+        info!(event = "toimija.landed.head_in_base", base);
+        return LandedReport {
+            base: base.to_string(),
+            branch,
+            head,
+            status: LandedStatus::Landed,
+            reason: format!("HEAD is in `{base}`: every commit on it is reachable from `{base}`"),
+            touched: 0,
+            reflected: 0,
+            differing: Vec::new(),
+            ambiguous: Vec::new(),
+        };
+    }
 
     // The branch's own surface: paths it changed relative to its fork point.
     let touched = name_only(runner, repo_root, &merge_base, "HEAD");
