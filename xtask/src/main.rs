@@ -503,7 +503,7 @@ mod tests {
         .unwrap();
 
         let output = render_sauma_why(&root, token).unwrap();
-        assert!(output.contains("toimija-context.v1"));
+        assert!(output.contains("toimija-context.v2"));
         assert!(output.contains("  ← kisko-model-call.v1"));
         assert!(!output.contains("digest mismatch"));
 
@@ -514,7 +514,7 @@ mod tests {
         )
         .unwrap();
         let output = render_sauma_why(&root, token).unwrap();
-        assert!(output.contains("toimija-context.v1"));
+        assert!(output.contains("toimija-context.v2"));
         assert!(output.contains("kisko-model-call.v1"));
         assert!(output.contains("digest mismatch"));
         assert!(!output.contains("  ← kisko-model-call.v1"));

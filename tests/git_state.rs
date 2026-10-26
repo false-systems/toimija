@@ -238,7 +238,7 @@ fn branch_surface_uses_trunk_not_feature_upstream() {
 }
 
 #[test]
-fn context_surfaces_missing_companion_test_and_risk_action() {
+fn context_reads_the_changed_file_then_its_companion_test_first() {
     if !git_available() {
         return;
     }
@@ -267,18 +267,9 @@ fn context_surfaces_missing_companion_test_and_risk_action() {
         .arg("context")
         .assert()
         .success()
-        .stdout(predicate::str::contains("## Coupling"))
         .stdout(predicate::str::contains(
-            "src/foo.rs changed, but tests/foo.rs was not",
-        ))
-        .stdout(predicate::str::contains(
-            "companion test exists but is not in this diff",
-        ))
-        .stdout(predicate::str::contains("## Risk"))
-        .stdout(predicate::str::contains(
-            "src/foo.rs — added on this branch — new surface; new surface without a changed companion test — consider adding coverage",
-        ))
-        .stdout(predicate::str::contains("↔").not());
+            "## Read first\n- src/foo.rs (changed)\n- tests/foo.rs (matching test heuristic)\n",
+        ));
 }
 
 #[test]
@@ -383,8 +374,8 @@ fn working_tree_dirt_at_base_is_not_labelled_branch_diff() {
     let temp = tempfile::tempdir().unwrap();
     init_repo(temp.path());
     // A branch sitting at its base: merge-base exists (== HEAD) but the branch
-    // has no committed diff. Only an untracked file is present. The surface and
-    // the relevance scope must say "working tree and index", not branch diff.
+    // has no committed diff. Only an untracked file is present. The surface
+    // must say "working tree and index", not branch diff.
     run_git(temp.path(), &["branch", "-M", "main"]);
     run_git(temp.path(), &["checkout", "-b", "feature"]);
     fs::write(temp.path().join("scratch.txt"), "scratch\n").unwrap();
@@ -399,10 +390,6 @@ fn working_tree_dirt_at_base_is_not_labelled_branch_diff() {
     assert_eq!(
         value["changed_surface_source"], "working_tree_and_index",
         "no committed branch diff -> working tree, not merge-base diff"
-    );
-    assert_eq!(
-        value["relevance"]["scope"]["source"], "working_tree_and_index",
-        "relevance scope must mirror the real surface source"
     );
 }
 

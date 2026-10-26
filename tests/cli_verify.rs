@@ -143,10 +143,6 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
         .as_object_mut()
         .unwrap()
         .remove("branch_diff_coverage");
-    value["relevance"]
-        .as_object_mut()
-        .unwrap()
-        .remove("history_coverage");
     value.as_object_mut().unwrap().remove("refresh_token");
     let mut envelope = value.as_object_mut().unwrap().remove("sauma").unwrap();
     envelope["envelope"] = serde_json::json!(toimija::sauma::LEGACY_ENVELOPE_SCHEMA);

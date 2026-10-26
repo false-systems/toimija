@@ -93,8 +93,7 @@ pub enum Command {
     /// Compile the current Git work state into a context packet.
     ///
     /// Use this to *see* the packet without writing anything: branch, HEAD,
-    /// merge-base, changed surface, relevance hints (scope, read order,
-    /// coupling, risk), and the validation plan. `enter` prints the same packet
+    /// merge-base, changed surface, what to read first, and the validation plan. `enter` prints the same packet
     /// and also writes `.toimija/current.*` — prefer it as the agent preflight.
     /// Read-only; no validation execution, no network.
     #[command(
@@ -113,7 +112,7 @@ pub enum Command {
     /// The recommended command an agent runs on entering the repo: it refreshes
     /// `.toimija/current.*` and prints the same compact packet as `context`.
     /// Use this before reading files broadly — the packet's Git state and
-    /// relevance hints tell you what to read first. Writes only the two packet
+    /// Read first list tell you what to read first. Writes only the two packet
     /// files; no validation execution, no network.
     #[command(
         after_help = "Examples:\n  toimija enter --for-diff --budget 4000   # the standard agent preflight\n  \

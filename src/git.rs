@@ -496,8 +496,7 @@ fn run_git_required_bytes(
     Ok(output.stdout)
 }
 
-/// Run a git command, returning its stdout only on success. Shared with the
-/// relevance layer for bounded history mining.
+/// Run a git command, returning its stdout only on success.
 pub(crate) fn run_git_ok(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> Option<String> {
     run_git_ok_bytes(runner, cwd, args).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }

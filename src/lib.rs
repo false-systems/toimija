@@ -21,7 +21,6 @@ mod owned;
 // path, not a module — are unchanged.
 pub(crate) use sauma_canonical::path_codec;
 pub mod refresh;
-pub mod relevance;
 pub mod render;
 pub mod repo;
 pub mod sauma;

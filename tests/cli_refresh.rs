@@ -74,7 +74,7 @@ fn refresh_inside_a_run_session_targets_the_session_packet() {
         &fs::read_to_string(temp.path().join(".toimija/sessions/100-1/current.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(session_json["schema"], "toimija-context.v1");
+    assert_eq!(session_json["schema"], "toimija-context.v2");
     let artifact_id = session_json["artifact_id"].as_str().unwrap();
     assert!(
         fs::read_to_string(&session_md)
@@ -222,7 +222,7 @@ fn refresh_writes_current_md_and_json() {
     let value: serde_json::Value =
         serde_json::from_str(&json).expect("current.json must be valid JSON");
     assert!(value.is_object());
-    assert_eq!(value["schema"], "toimija-context.v1");
+    assert_eq!(value["schema"], "toimija-context.v2");
     let artifact_id = value["artifact_id"].as_str().unwrap();
     assert!(
         md.contains(&format!("- artifact-id: {artifact_id}")),
@@ -230,7 +230,7 @@ fn refresh_writes_current_md_and_json() {
     );
     assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v3");
     assert_eq!(value["sauma"]["envelope"], "sauma-envelope.v2");
-    assert_eq!(value["sauma"]["schema"], "toimija-context.v1");
+    assert_eq!(value["sauma"]["schema"], "toimija-context.v2");
     assert_eq!(value["sauma"]["producer"]["tool"], "toimija");
     assert_eq!(value["sauma"]["producer"]["run"], serde_json::Value::Null);
     assert_eq!(value["sauma"]["anchored_at"], value["consistency"]["token"]);

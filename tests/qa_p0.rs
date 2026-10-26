@@ -130,6 +130,6 @@ fn identical_context_json_has_stable_semantic_ordering() {
     );
     assert_eq!(first["git"], second["git"]);
     assert_eq!(first["validation_plan"], second["validation_plan"]);
-    assert_eq!(first["relevance"], second["relevance"]);
+    assert_eq!(first["read_first"], second["read_first"]);
     assert_eq!(first["consistency"], second["consistency"]);
 }
