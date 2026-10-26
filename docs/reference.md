@@ -603,7 +603,8 @@ The packet includes:
   tree-identity.v1 leaves out
 - a **refresh token** over the collected Git state — repository state only,
   never anything read from the observer's environment, so the same repo yields
-  the same token from any process — used by `watch` and `verify`
+  the same token from any process — used by `verify`, and by `watch` over the
+  part one `git status` reads
 - a **sauma** envelope — a local attestation digest and provenance edge set for
   the packet artifact
 
