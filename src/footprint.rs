@@ -924,7 +924,6 @@ mod tests {
             head: Some("abc".to_string()),
             intent: Some("ship".to_string()),
             scope: vec!["src".to_string()],
-            cycle_action: None,
             started_at: 100,
             last_seen_at: Some(150),
             status: SessionStatus::Closed,

@@ -371,15 +371,6 @@ pub struct RunArgs {
     /// none.
     #[arg(long = "alert", value_name = "TEXT", allow_hyphen_values = true)]
     pub alert: Vec<String>,
-    /// Sealed cycle digest for this worker leg; requires --cycle-leg and --cycle-attempt.
-    #[arg(long, requires_all = ["cycle_leg", "cycle_attempt"])]
-    pub cycle: Option<String>,
-    /// Cycle leg name; requires --cycle and --cycle-attempt.
-    #[arg(long, requires_all = ["cycle", "cycle_attempt"])]
-    pub cycle_leg: Option<String>,
-    /// Zero-based cycle attempt; requires --cycle and --cycle-leg.
-    #[arg(long, requires_all = ["cycle", "cycle_leg"])]
-    pub cycle_attempt: Option<u32>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
@@ -888,8 +879,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     args.alert.retain(|alert| !alert.trim().is_empty());
 
     // Armed before a session can exist, not after. Arming once the marker is
-    // on disk leaves a window — `Session::open` returning, `record_cycle_action`
-    // writing — where a signal still kills the wrapper with the marker `active`.
+    // on disk leaves a window — `Session::open` returning — where a signal still kills the wrapper with the marker `active`.
     // That window is microseconds in an ordinary run and wide enough to hit
     // reliably under coverage instrumentation, which is how it was found. A
     // signal arriving before this point has no marker to strand.
@@ -910,51 +900,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
     }
-    // A cycle leg is identified by the repository point it launches at, so
-    // only a leg pays for materializing that point before the session opens.
-    let cycle_action = match (&args.cycle, &args.cycle_leg, args.cycle_attempt) {
-        (Some(cycle), Some(leg), Some(attempt)) => {
-            let point = crate::semantic::retry_moved(|| {
-                let preflight = context::build_context_packet(&runner, &repo_root, false)?;
-                crate::semantic::repository_point(&runner, &preflight)
-            })?;
-            let action = session::CycleAction {
-                cycle: cycle.clone(),
-                leg: leg.clone(),
-                attempt,
-                repository_point: point.id.to_string(),
-            };
-            let live_sessions =
-                sessions::report(&runner, &repo_root, sessions::DEFAULT_STALE_AFTER_SECS)?;
-            for session in &live_sessions.sessions {
-                let Some(live) = session.marker.cycle_action.as_ref() else {
-                    continue;
-                };
-                if session.liveness == sessions::Liveness::Closed {
-                    continue;
-                }
-                match live.compare(&action) {
-                    crate::semantic::Comparison::Different => {}
-                    crate::semantic::Comparison::Equal => anyhow::bail!(
-                        "cycle action {cycle}/{leg}/{attempt} is already live in session {}",
-                        session.marker.id
-                    ),
-                    crate::semantic::Comparison::NotComparable => anyhow::bail!(
-                        "cycle action {cycle}/{leg}/{attempt} is live in session {} at \
-                         repository point {}, whose id is of another version than this \
-                         toimija's {}; point ids of different versions are not comparable, so \
-                         whether this is the same action is unknown",
-                        session.marker.id,
-                        live.repository_point,
-                        action.repository_point
-                    ),
-                }
-            }
-            Some(action)
-        }
-        _ => None,
-    };
-
     // Asked to stop before any marker exists: leave without creating one.
     if let Some(number) = termination.requested() {
         eprintln!("toimija run: termination requested before the session opened");
@@ -970,9 +915,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         args.scope.clone(),
     )
     .context("failed to open the toimija session")?;
-    if let Some(action) = cycle_action {
-        session.record_cycle_action(action)?;
-    }
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
@@ -1514,7 +1456,7 @@ fn verify_run_entry(
 /// packet. The marker lives under the machine-local state root (never in
 /// `folder`), a heartbeat keeps it from reading stale while the agent works,
 /// and `toimija sessions --outside-repos` lists it. What needs Git — the
-/// packet and its watcher, a cycle leg, effects, the exit summary — is not
+/// packet and its watcher, effects, the exit summary — is not
 /// attempted, and the agent is told so in its launch prompt.
 fn run_outside_repo(
     args: RunArgs,
@@ -1526,12 +1468,6 @@ fn run_outside_repo(
 
     if args.intent.is_none() {
         return Err(refuse_missing_intent(&args.command).into());
-    }
-    if args.cycle.is_some() {
-        anyhow::bail!(
-            "not a Git repository: a cycle leg is identified by a repository point, so it \
-             cannot run outside one"
-        );
     }
     if args.for_diff || args.budget.is_some() {
         anyhow::bail!(

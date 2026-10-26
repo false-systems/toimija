@@ -771,7 +771,6 @@ mod tests {
             head: None,
             intent: None,
             scope: Vec::new(),
-            cycle_action: None,
             started_at,
             last_seen_at: None,
             status,
@@ -1079,7 +1078,6 @@ mod tests {
                 head: None,
                 intent: intent.map(str::to_string),
                 scope: scope.iter().map(|s| s.to_string()).collect(),
-                cycle_action: None,
                 started_at: 0,
                 last_seen_at: None,
                 status: match liveness {

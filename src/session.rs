@@ -109,9 +109,6 @@ pub struct SessionMarker {
     /// `unknown`.
     #[serde(default)]
     pub scope: Vec<String>,
-    /// Immutable identity of a cycle leg when Ohjaa launched this session.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cycle_action: Option<CycleAction>,
     pub started_at: u64,
     /// Unix seconds of the last observed activity — stamped by `run`'s watcher
     /// on each packet refresh (proposal 0002). Staleness measures inactivity
@@ -145,28 +142,6 @@ pub struct SessionMarker {
     /// when everything was delivered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undelivered: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CycleAction {
-    pub cycle: String,
-    pub leg: String,
-    pub attempt: u32,
-    pub repository_point: String,
-}
-
-impl CycleAction {
-    /// Whether `other` is the same action: the same cycle, leg and attempt at
-    /// the same repository point. A different cycle, leg or attempt is a
-    /// different action; at those, two points of different id versions are
-    /// [`Comparison::NotComparable`](crate::semantic::Comparison), never
-    /// "different".
-    pub fn compare(&self, other: &CycleAction) -> crate::semantic::Comparison {
-        if (&self.cycle, &self.leg, self.attempt) != (&other.cycle, &other.leg, other.attempt) {
-            return crate::semantic::Comparison::Different;
-        }
-        crate::semantic::compare_points(&self.repository_point, &other.repository_point)
-    }
 }
 
 /// Compose a session id as `<unix-secs>-<pid>` (decision D1). Roughly sortable by
@@ -254,7 +229,6 @@ impl Session {
             head: None,
             intent,
             scope,
-            cycle_action: None,
             started_at,
             last_seen_at: Some(started_at),
             status: SessionStatus::Active,
@@ -284,11 +258,6 @@ impl Session {
     pub fn record_git(&mut self, branch: Option<String>, head: Option<String>) -> Result<()> {
         self.marker.branch = branch;
         self.marker.head = head;
-        self.write_marker()
-    }
-
-    pub fn record_cycle_action(&mut self, action: CycleAction) -> Result<()> {
-        self.marker.cycle_action = Some(action);
         self.write_marker()
     }
 
