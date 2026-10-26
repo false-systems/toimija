@@ -342,7 +342,7 @@ mod tests {
 
         let missing = open(
             &repo,
-            &repo.join(".toimija/sessions/100-1/handoff.jsonl"),
+            &repo.join(".toimija/sessions/100-1/session.json"),
             OpenOptions::new().create(true).append(true),
         )
         .unwrap_err();

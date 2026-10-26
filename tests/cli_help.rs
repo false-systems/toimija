@@ -24,9 +24,6 @@ fn top_level_help_describes_every_subcommand() {
             "Enter, watch while an agent command runs",
         ))
         .stdout(predicate::str::contains(
-            "Append or inspect a session handoff record",
-        ))
-        .stdout(predicate::str::contains(
             "List durable records of concluded sessions",
         ))
         .stdout(predicate::str::contains("Reclaim expired Toimija sessions"))
@@ -69,7 +66,6 @@ fn every_subcommand_help_says_when_to_use_it() {
         "watch",
         "run",
         "intent",
-        "handoff",
         "history",
         "clean",
         "snippet",
@@ -101,7 +97,6 @@ fn high_traffic_subcommands_carry_examples() {
         ("run", "toimija run --intent"),
         ("sessions", "toimija sessions --prune"),
         ("intent", "toimija intent"),
-        ("handoff", "toimija handoff --show"),
         ("history", "toimija history --json"),
         ("clean", "toimija clean --dry-run"),
         ("current", "toimija current --verify --json"),

@@ -20,7 +20,6 @@ use tracing::{debug, info};
 
 use crate::command::{CommandOutput, CommandRunner};
 use crate::coverage::Coverage;
-use crate::handoff;
 use crate::session::{SESSIONS_SUBDIR, SessionMarker, SessionStatus};
 
 /// A session open longer than this with no live process is treated as stale.
@@ -93,7 +92,6 @@ pub struct SessionView {
     /// The process probe, distinct from heartbeat age. Never persisted in the marker.
     pub pid_check: PidCheck,
     pub packet: String,
-    pub handoffs: usize,
 }
 
 impl SessionView {
@@ -140,13 +138,11 @@ pub fn report(
             liveness = ?liveness
         );
         let packet = packet_path(repo_root, &marker.id);
-        let handoffs = handoff::count(repo_root, &marker.id).unwrap_or(0);
         sessions.push(SessionView {
             marker,
             liveness,
             pid_check,
             packet,
-            handoffs,
         });
     }
     // Stable order: newest first by start time, then id.
@@ -730,9 +726,6 @@ pub fn render_text(report: &SessionsReport) -> String {
                 ));
             }
             out.push_str(&format!("    packet: {}\n", view.packet));
-            if view.handoffs > 0 {
-                out.push_str(&format!("    handoff: {} record(s)\n", view.handoffs));
-            }
         }
         out.push('\n');
     }
@@ -1104,7 +1097,6 @@ mod tests {
             liveness,
             pid_check: PidCheck::Unknown,
             packet: format!(".toimija/sessions/{id}/current.md"),
-            handoffs: 0,
         }
     }
 

@@ -13,7 +13,6 @@ mod effects;
 pub mod error;
 pub mod footprint;
 pub mod git;
-pub mod handoff;
 pub mod landed;
 pub mod logging;
 mod owned;

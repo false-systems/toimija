@@ -13,7 +13,6 @@ use crate::consistency::{CONSISTENCY_ALGORITHM, Consistency, GitOperationState, 
 use crate::context;
 use crate::footprint::{self, HistoryEnd};
 use crate::git;
-use crate::handoff;
 use crate::landed;
 use crate::logging::LogFormat;
 use crate::refresh;
@@ -179,17 +178,6 @@ pub enum Command {
         toimija intent \"fix #51\" --scope src/cli.rs --scope tests/cli_run.rs"
     )]
     Intent(IntentArgs),
-    /// [experimental] Append or inspect a session handoff record.
-    ///
-    /// Use this from inside a `toimija run` session when pausing or finishing:
-    /// unlike `intent` (why I am here), a handoff says what I leave behind.
-    /// Writing uses the TOIMIJA_SESSION env handshake and appends one local JSONL
-    /// record. `--show` is read-only and also works for closed sessions.
-    #[command(
-        after_help = "Examples:\n  toimija handoff \"auth migration half done; run cargo test -p auth next\"\n  \
-        toimija handoff --show 1782951227-52574"
-    )]
-    Handoff(HandoffArgs),
     /// List durable records of concluded sessions.
     ///
     /// Use this to see which agents worked in the repo after their live session
@@ -409,19 +397,6 @@ pub struct IntentArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct HandoffArgs {
-    /// Free-text note for the next agent.
-    #[arg(conflicts_with = "show")]
-    pub note: Option<String>,
-    /// Print recorded handoffs for a session id. Read-only; works on closed sessions.
-    #[arg(long, value_name = "SESSION_ID")]
-    pub show: Option<String>,
-    /// Emit JSON: written record for write mode, all records array for --show.
-    #[arg(long)]
-    pub json: bool,
-}
-
-#[derive(Debug, Args)]
 pub struct HistoryArgs {
     /// Emit all valid history records as a JSON array.
     #[arg(long)]
@@ -549,7 +524,6 @@ pub fn run(cli: Cli) -> Result<i32> {
             "json"
         }
         Command::Current(args) if args.json => "json",
-        Command::Handoff(args) if args.json => "json",
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
         Command::RepositoryPoint(args) if args.json => "json",
@@ -575,7 +549,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Watch(args) => run_watch(args).map(|()| 0),
         Command::Run(args) => run_run(args),
         Command::Intent(args) => run_intent(args).map(|()| 0),
-        Command::Handoff(args) => run_handoff(args).map(|()| 0),
         Command::History(args) => run_history(args).map(|()| 0),
         Command::Clean(args) => run_clean(args).map(|()| 0),
         Command::Snippet(args) => run_snippet(args).map(|()| 0),
@@ -682,7 +655,6 @@ impl Command {
             Command::Watch(_) => "watch",
             Command::Run(_) => "run",
             Command::Intent(_) => "intent",
-            Command::Handoff(_) => "handoff",
             Command::History(_) => "history",
             Command::Clean(_) => "clean",
             Command::Snippet(_) => "snippet",
@@ -1292,7 +1264,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     // Skip the exit summary if the command never launched — there is nothing to
     // summarize, and the launch error is surfaced below.
     if launched.is_ok() {
-        let consumption = collect_consumption(&repo_root, &session, &args);
+        let consumption = collect_consumption(&session, &args);
         match plan.run(&runner, &repo_root) {
             Ok(exit) => {
                 eprint!(
@@ -1860,22 +1832,16 @@ fn journal_closed_session(repo_root: &std::path::Path, session: &session::Sessio
 }
 
 /// What the session consumed of toimija — and nothing else. Proposal 0006 D7:
-/// built only from toimija-owned state (the session marker and handoff
-/// records); nothing observed about the agent's behavior or file access.
+/// built only from toimija-owned state (the session marker); nothing observed about the agent's behavior or file access.
 struct Consumption {
     intent: String,
     intent_source: &'static str,
     expansions: usize,
-    handoffs: usize,
     effects: Vec<String>,
     effects_coverage: crate::effects::EffectsCoverage,
 }
 
-fn collect_consumption(
-    repo_root: &std::path::Path,
-    session: &session::Session,
-    args: &RunArgs,
-) -> Consumption {
+fn collect_consumption(session: &session::Session, args: &RunArgs) -> Consumption {
     let marker = session::load_marker(&session.dir).ok();
     let launch_intent = args.intent.clone().unwrap_or_default();
     let (intent, intent_source) = match marker.as_ref().and_then(|m| m.intent.clone()) {
@@ -1887,7 +1853,6 @@ fn collect_consumption(
         .as_ref()
         .map(|m| m.scope.len().saturating_sub(args.scope.len()))
         .unwrap_or(0);
-    let handoffs = handoff::count(repo_root, &session.id).unwrap_or(0);
     let (effects, effects_coverage) = marker
         .map(|m| (m.effects_observed, m.effects_coverage))
         .unwrap_or_else(|| (Vec::new(), crate::effects::EffectsCoverage::Partial));
@@ -1895,7 +1860,6 @@ fn collect_consumption(
         intent,
         intent_source,
         expansions,
-        handoffs,
         effects,
         effects_coverage,
     }
@@ -1906,7 +1870,7 @@ fn collect_consumption(
 /// the state at exit. Only the deltas worth a glance are shown — a switched
 /// branch, a moved HEAD (commits made), the working tree at exit, branch scope
 /// since the merge-base, how many times the live packet refreshed, and what
-/// the session consumed of toimija (intent, declared expansions, handoff).
+/// the session consumed of toimija (intent, declared expansions).
 fn render_run_summary(
     entry: &git::GitState,
     exit: &git::GitState,
@@ -1976,11 +1940,6 @@ fn render_run_summary(
             "  expansions: {} scope path(s) declared while working",
             consumption.expansions
         );
-    }
-    if consumption.handoffs == 0 {
-        let _ = writeln!(out, "  handoff:   none recorded");
-    } else {
-        let _ = writeln!(out, "  handoff:   {} record(s)", consumption.handoffs);
     }
     // Effects outside the tree, detected after the fact. Partial coverage is
     // said out loud: an effect not seen is not an effect that did not happen.
@@ -2893,38 +2852,6 @@ fn session_root(
     repo.context("not a Git repository")
 }
 
-fn run_handoff(args: HandoffArgs) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
-    if let Some(id) = args.show {
-        let records = handoff::read_all(&repo_root, &id)?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&records)?);
-        } else {
-            print_handoff_records(&id, &records)?;
-        }
-        return Ok(());
-    }
-
-    let id = std::env::var("TOIMIJA_SESSION").map_err(|_| {
-        anyhow::anyhow!(
-            "TOIMIJA_SESSION is not set — `toimija handoff` writes for a wrapped session, \
-             so run it from inside `toimija run -- <agent>` (the handshake provides the id)"
-        )
-    })?;
-    let record = handoff::write(&runner, &repo_root, &id, args.note)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&record)?);
-    } else {
-        println!(
-            "Wrote handoff for session {} at {}",
-            record.session_id, record.written_at
-        );
-    }
-    Ok(())
-}
-
 fn run_history(args: HistoryArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
@@ -2943,50 +2870,11 @@ fn run_history(args: HistoryArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_handoff_records(id: &str, records: &[handoff::HandoffRecord]) -> Result<()> {
-    anyhow::ensure!(!records.is_empty(), "no handoff recorded for session {id}");
-    let latest = records.last().expect("checked non-empty");
-    let age = now_secs().saturating_sub(latest.written_at);
-    println!(
-        "Handoff for session {id}: {} record(s), latest written {} ago",
-        records.len(),
-        humanize_age(age)
-    );
-    println!("  written_at: {}", latest.written_at);
-    if let Some(step) = &latest.next_step {
-        println!("  next_step: {step}");
-    }
-    if !latest.suggested_validation.is_empty() {
-        println!(
-            "  suggested_validation: {}",
-            latest.suggested_validation.join("; ")
-        );
-    }
-    println!(
-        "  consistency_token: {} ({})",
-        latest.consistency_token,
-        latest
-            .consistency_algorithm
-            .as_deref()
-            .unwrap_or("token version unrecorded")
-    );
-    Ok(())
-}
-
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0)
-}
-
-fn humanize_age(secs: u64) -> String {
-    match secs {
-        s if s < 60 => format!("{s}s"),
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 86_400 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86_400),
-    }
 }
 
 fn run_snippet(args: SnippetArgs) -> Result<()> {
@@ -3167,7 +3055,6 @@ mod tests {
             intent: "test".to_string(),
             intent_source: "declared at launch",
             expansions: 0,
-            handoffs: 0,
             effects: Vec::new(),
             effects_coverage: crate::effects::EffectsCoverage::Complete,
         }
@@ -3208,13 +3095,11 @@ mod tests {
             "{quiet}"
         );
         assert!(quiet.contains("expansions: none declared"), "{quiet}");
-        assert!(quiet.contains("handoff:   none recorded"), "{quiet}");
 
         let busy = Consumption {
             intent: "widened".to_string(),
             intent_source: "updated mid-session",
             expansions: 2,
-            handoffs: 1,
             effects: vec!["commit".to_string(), "push".to_string()],
             effects_coverage: crate::effects::EffectsCoverage::Partial,
         };
@@ -3227,7 +3112,6 @@ mod tests {
             out.contains("expansions: 2 scope path(s) declared while working"),
             "{out}"
         );
-        assert!(out.contains("handoff:   1 record(s)"), "{out}");
         assert!(
             out.contains("effects:   commit, push (coverage partial)"),
             "{out}"

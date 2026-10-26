@@ -562,8 +562,7 @@ fn run_exit_summary_reports_consumption() {
         .stderr(predicate::str::contains(
             "intent:    \"fix the roof\" (declared at launch)",
         ))
-        .stderr(predicate::str::contains("expansions: none declared"))
-        .stderr(predicate::str::contains("handoff:   none recorded"));
+        .stderr(predicate::str::contains("expansions: none declared"));
 }
 
 #[test]

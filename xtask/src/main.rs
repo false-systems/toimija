@@ -345,7 +345,6 @@ fn scan_artifacts(root: &Path) -> Result<Vec<Artifact>> {
         for entry in entries.flatten() {
             let dir = entry.path();
             push_if_exists(&mut files, dir.join("current.json"));
-            push_if_exists(&mut files, dir.join("handoff.jsonl"));
         }
     }
     let runs = root.join(".toimija/runs");
