@@ -10,9 +10,11 @@
 //!
 //! # What a tick costs
 //!
-//! The repository root, git dir and common dir are found once per watch
-//! (`Repository::discover`) and passed down; nothing is discovered again per
-//! tick. When nothing changes, a tick starts no git process:
+//! The repository root, git dir and common dir come from the command's one
+//! discovery (`Repository::of`) and are passed down; nothing is discovered
+//! again per tick. A refresh reads one `git status` and, while the refs' stamp
+//! holds, carries the last read's ref-derived facts (`Carried`). When nothing
+//! changes, a tick starts no git process:
 //!
 //! - **Work-tree changes** arrive as filesystem events — FSEvents on macOS,
 //!   inotify on Linux — and refresh after a debounce. Read-only access events
@@ -623,7 +625,7 @@ pub struct Session {
 /// them ([`git::restatus`]). It is the same trust the watch already puts in
 /// the stamp when it decides that nothing moved at all.
 #[derive(Debug, Clone, Default)]
-pub struct Carried {
+struct Carried {
     state: Option<(git::Collected, Vec<Entry>)>,
 }
 

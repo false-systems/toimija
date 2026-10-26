@@ -181,7 +181,7 @@ impl Worktree {
     }
 }
 
-/// Find the worktree at `cwd` with one git process ([`DISCOVERY`]); from a
+/// Find the worktree at `cwd` with one git process (`DISCOVERY`); from a
 /// subdirectory, a second one at the root, so the relative answers are the
 /// root's. A path Git prints with a newline in it cannot be split from its
 /// neighbours: then only the root is read, as [`discover_repo_root`] reads it,
@@ -383,16 +383,6 @@ pub fn token_state(
     Ok(read_status_of(runner, worktree)?.token_state())
 }
 
-/// The Git state a consistency token fingerprints, and nothing more, for the
-/// repository already found at `repo_root`: two git processes (`rev-parse
-/// --git-dir`, then [`token_state_at`]'s `status`).
-pub fn collect_token_state(
-    runner: &impl CommandRunner,
-    repo_root: &Path,
-) -> Result<GitState, ToimijaError> {
-    token_state_at(runner, repo_root, read_git_dir(runner, repo_root))
-}
-
 /// The Git state a consistency token fingerprints, read with one git process
 /// for a repository whose root and git dir are already known: a worktree's
 /// git dir does not move, and `status` itself names HEAD (`# branch.oid`) and
@@ -454,7 +444,9 @@ fn upstream_counted(parsed: &ParsedStatus) -> bool {
     parsed.ahead_behind.is_some() && parsed.upstream.is_some()
 }
 
-/// Discover the worktree at `cwd` and collect its whole Git state.
+/// Discover the worktree at `cwd` and collect its whole Git state: what the
+/// tests read a repository with.
+#[cfg(test)]
 pub fn collect_git_state(
     runner: &impl CommandRunner,
     cwd: &Path,
@@ -464,7 +456,7 @@ pub fn collect_git_state(
 }
 
 /// The whole Git state of `worktree`: one `status`, then the refs and history
-/// the packet shows ([`read_ref_facts`]).
+/// the packet shows (`read_ref_facts`).
 pub fn collect(
     runner: &impl CommandRunner,
     worktree: &Worktree,
@@ -1376,6 +1368,230 @@ R094\tsrc/old.rs\tsrc/renamed.rs
         let base = discover_base(&runner, Path::new("."));
         assert_eq!(base.as_deref(), Some("main"));
     }
+
+    #[test]
+    fn one_rev_parse_names_the_whole_worktree() {
+        let (worktree, at_root) = parse_discovery(DISCOVERED.as_bytes()).unwrap();
+        assert!(at_root);
+        assert_eq!(
+            worktree,
+            Worktree {
+                root: PathBuf::from("/repo"),
+                git_dir: Some(PathBuf::from(".git")),
+                absolute_git_dir: Some(PathBuf::from("/repo/.git")),
+                common_dir: Some(PathBuf::from("/repo/.git")),
+                shallow: Some(false),
+            }
+        );
+
+        // A linked worktree: its own git dir, absolute, and the main
+        // checkout's common dir; a shallow clone says so.
+        let linked = b"/wt\n\n/main/.git/worktrees/wt\n/main/.git/worktrees/wt\n/main/.git\ntrue\n";
+        let (worktree, _) = parse_discovery(linked).unwrap();
+        assert_eq!(
+            worktree.git_dir.as_deref(),
+            Some(Path::new("/main/.git/worktrees/wt"))
+        );
+        assert_eq!(
+            worktree.common_dir.as_deref(),
+            Some(Path::new("/main/.git"))
+        );
+        assert_eq!(worktree.shallow, Some(true));
+
+        // Below the root: the relative answers are this directory's.
+        let below = b"/repo\nsrc/\n/repo/.git\n/repo/.git\n../.git\nfalse\n";
+        assert!(!parse_discovery(below).unwrap().1);
+    }
+
+    #[test]
+    fn an_answer_that_cannot_be_split_is_not_guessed_at() {
+        for stdout in [
+            // A root with a newline in it: seven lines for six questions.
+            &b"/re\npo\n\n.git\n/re\npo/.git\n.git\nfalse\n"[..],
+            // A git that does not know a question echoes it back.
+            b"/repo\n\n.git\n/repo/.git\n.git\n--is-shallow-repository\n",
+            // Not one answer per line at all.
+            b"/repo\n",
+            b"",
+            // A root that is not a path from the filesystem root.
+            b"repo\n\n.git\n/repo/.git\n.git\nfalse\n",
+        ] {
+            assert_eq!(parse_discovery(stdout), None, "{stdout:?}");
+        }
+
+        // Discovery then reads the root alone, as before, and leaves the
+        // rest to the readers that need it.
+        let runner = FakeRunner::default()
+            .with(
+                &DISCOVERY,
+                0,
+                "/re\npo\n\n.git\n/re\npo/.git\n.git\nfalse\n",
+            )
+            .with(&["rev-parse", "--show-toplevel"], 0, "/re\npo\n");
+        assert_eq!(
+            discover(&runner, Path::new("/re\npo")).unwrap(),
+            Worktree::at_root(PathBuf::from("/re\npo"))
+        );
+    }
+
+    /// Answers by the directory git runs in, and records every call.
+    #[derive(Default)]
+    struct WhereRunner {
+        answers: HashMap<(PathBuf, Vec<String>), String>,
+        calls: std::cell::RefCell<Vec<(PathBuf, Vec<String>)>>,
+    }
+
+    impl WhereRunner {
+        fn with(mut self, cwd: &str, args: &[&str], stdout: &str) -> Self {
+            self.answers.insert(
+                (
+                    PathBuf::from(cwd),
+                    args.iter().map(|arg| arg.to_string()).collect(),
+                ),
+                stdout.to_string(),
+            );
+            self
+        }
+    }
+
+    impl CommandRunner for WhereRunner {
+        fn run(&self, cwd: &Path, _program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
+            let key = (
+                cwd.to_path_buf(),
+                args.iter().map(|arg| arg.to_string()).collect(),
+            );
+            self.calls.borrow_mut().push(key.clone());
+            Ok(match self.answers.get(&key) {
+                Some(stdout) => CommandOutput {
+                    status: 0,
+                    stdout: stdout.as_bytes().to_vec(),
+                    stderr: Vec::new(),
+                },
+                None => CommandOutput {
+                    status: 1,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+            })
+        }
+    }
+
+    #[test]
+    fn from_a_subdirectory_the_root_is_asked_again() {
+        let runner = WhereRunner::default()
+            .with(
+                "/repo/src",
+                &DISCOVERY,
+                "/repo\nsrc/\n/repo/.git\n/repo/.git\n../.git\nfalse\n",
+            )
+            .with("/repo", &DISCOVERY, DISCOVERED);
+        let worktree = discover(&runner, Path::new("/repo/src")).unwrap();
+        assert_eq!(worktree.git_dir.as_deref(), Some(Path::new(".git")));
+        assert_eq!(
+            worktree.common_dir.as_deref(),
+            Some(Path::new("/repo/.git"))
+        );
+        assert_eq!(runner.calls.borrow().len(), 2);
+
+        // A root that does not answer as the root keeps what held from below
+        // and leaves the relative answers to their readers.
+        let runner = WhereRunner::default().with(
+            "/repo/src",
+            &DISCOVERY,
+            "/repo\nsrc/\n/repo/.git\n/repo/.git\n../.git\nfalse\n",
+        );
+        let worktree = discover(&runner, Path::new("/repo/src")).unwrap();
+        assert_eq!(worktree.git_dir, None);
+        assert_eq!(worktree.common_dir, None);
+        assert_eq!(
+            worktree.absolute_git_dir.as_deref(),
+            Some(Path::new("/repo/.git"))
+        );
+    }
+
+    #[test]
+    fn outside_a_repository_discovery_says_so_with_one_process() {
+        let runner = WhereRunner::default();
+        assert!(matches!(
+            discover(&runner, Path::new("/tmp")),
+            Err(ToimijaError::NotGitRepo)
+        ));
+        assert_eq!(runner.calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_status_carries_the_ref_facts_only_while_head_and_the_upstream_hold() {
+        let status = "# branch.oid headoid\0# branch.head feat/x\0\
+                      # branch.upstream origin/feat/x\0# branch.ab +1 -0\0";
+        let worktree = discover(&runner_with_merge_base(), Path::new("/repo")).unwrap();
+        let read = |status: &str| {
+            let runner = runner_with_merge_base().with(&STATUS, 0, status).with(
+                &["log", "-n", "10", "--oneline"],
+                0,
+                "headoid feat\n",
+            );
+            collect(&runner, &worktree).unwrap()
+        };
+        let previous = read(status);
+        assert_eq!(previous.state.merge_base.as_deref(), Some("baseoid"));
+
+        // HEAD and the upstream where they were: one `status`, and the facts
+        // carried are the ones a full read finds.
+        let edited = format!("{status}? notes.txt\0");
+        let runner = WhereRunner::default().with("/repo", &STATUS, &edited);
+        let carried = restatus(&runner, &worktree, &previous).unwrap();
+        assert_eq!(runner.calls.borrow().len(), 1);
+        let fresh = read(&edited);
+        assert_eq!(carried.state, fresh.state);
+        assert_eq!(carried.warnings, fresh.warnings);
+
+        // HEAD moved: the facts are read again.
+        let moved = "# branch.oid otheroid\0# branch.head feat/x\0\
+                     # branch.upstream origin/feat/x\0# branch.ab +2 -0\0";
+        let runner = WhereRunner::default().with("/repo", &STATUS, moved);
+        let reread = restatus(&runner, &worktree, &previous).unwrap();
+        assert!(runner.calls.borrow().len() > 1);
+        assert_eq!(reread.state.head_oid.as_deref(), Some("otheroid"));
+        assert_eq!(
+            reread.state.merge_base, None,
+            "nothing answered the re-read"
+        );
+
+        // The upstream gone: ahead/behind are no longer `status`'s to count.
+        let gone = "# branch.oid headoid\0# branch.head feat/x\0# branch.upstream origin/feat/x\0";
+        let runner = WhereRunner::default().with("/repo", &STATUS, gone);
+        restatus(&runner, &worktree, &previous).unwrap();
+        assert!(runner.calls.borrow().len() > 1);
+    }
+
+    #[test]
+    fn an_unborn_head_has_no_history_to_read() {
+        let runner = FakeRunner::default().with(&DISCOVERY, 0, DISCOVERED).with(
+            &STATUS,
+            0,
+            "# branch.oid (initial)\0# branch.head main\0",
+        );
+        let recording = Recording(runner, Default::default());
+        let (state, warnings) = collect_git_state(&recording, Path::new("/repo")).unwrap();
+        assert!(state.recent_commits.is_empty());
+        assert!(warnings.contains(&"HEAD unavailable; branch has no commits yet.".to_string()));
+        assert!(
+            !recording.1.borrow().iter().any(|args| args[0] == "log"),
+            "{:?}",
+            recording.1.borrow()
+        );
+    }
+
+    struct Recording(FakeRunner, std::cell::RefCell<Vec<Vec<String>>>);
+
+    impl CommandRunner for Recording {
+        fn run(&self, cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
+            self.1
+                .borrow_mut()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            self.0.run(cwd, program, args)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1383,7 +1599,7 @@ mod token_state_tests {
     use std::path::Path;
     use std::process::Command;
 
-    use super::{collect_git_state, collect_token_state, token_state_at};
+    use super::{Worktree, collect_git_state, token_state, token_state_at};
     use crate::command::ProcessCommandRunner;
     use crate::consistency::Consistency;
     use crate::context::normalize_git_state;
@@ -1415,14 +1631,15 @@ mod token_state_tests {
         );
     }
 
-    /// The token from the full collector, and from each lean one: the
-    /// two-process read a snapshot starts from, and the one-process re-read
-    /// that follows a tree write. Their HEAD fields must agree too.
+    /// The token from the full collector, and from each lean one: the read a
+    /// snapshot starts from (here of a worktree only its root names, so the
+    /// git dir is asked too), and the one-process re-read that follows a tree
+    /// write. Their HEAD fields must agree too.
     fn tokens(root: &Path) -> (String, String) {
         let runner = ProcessCommandRunner;
         let (mut full, _warnings) = collect_git_state(&runner, root).unwrap();
         normalize_git_state(&mut full);
-        let mut lean = collect_token_state(&runner, &full.repo_root).unwrap();
+        let mut lean = token_state(&runner, &Worktree::at_root(full.repo_root.clone())).unwrap();
         normalize_git_state(&mut lean);
         let mut reread = token_state_at(&runner, &full.repo_root, full.git_dir.clone()).unwrap();
         normalize_git_state(&mut reread);
@@ -1477,5 +1694,63 @@ mod token_state_tests {
         git(root, &["checkout", "-q", "--detach", "HEAD~1"]);
         let (full, lean) = tokens(root);
         assert_eq!(full, lean, "detached");
+    }
+
+    /// A refresh that carries the ref-derived facts must compile the packet a
+    /// fresh read would: in every state reached from the last read without a
+    /// ref moving — and, where HEAD or the upstream did move, by reading them
+    /// again.
+    #[test]
+    fn a_carried_collection_is_what_a_fresh_read_finds() {
+        use super::{collect, discover, restatus};
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let origin = root.join("origin");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        std::fs::write(origin.join("a.txt"), "a\n").unwrap();
+        git(&origin, &["add", "a.txt"]);
+        git(&origin, &["commit", "-q", "-m", "init"]);
+        git(&root, &["clone", "-q", "origin", "repo"]);
+        git(
+            &repo,
+            &["switch", "-q", "-c", "feat", "--track", "origin/main"],
+        );
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        git(&repo, &["add", "b.txt"]);
+        git(&repo, &["commit", "-q", "-m", "feat"]);
+
+        let runner = ProcessCommandRunner;
+        let worktree = discover(&runner, &repo).unwrap();
+        let mut previous = collect(&runner, &worktree).unwrap();
+        let check = |what: &str, previous: &super::Collected| {
+            let carried = restatus(&runner, &worktree, previous).unwrap();
+            let fresh = collect(&runner, &worktree).unwrap();
+            assert_eq!(carried.state, fresh.state, "{what}");
+            assert_eq!(carried.warnings, fresh.warnings, "{what}");
+            fresh
+        };
+
+        // The worktree moves; HEAD and the refs do not.
+        std::fs::write(repo.join("a.txt"), "edited\n").unwrap();
+        std::fs::write(repo.join("c.txt"), "untracked\n").unwrap();
+        std::fs::write(repo.join("b.txt"), "staged\n").unwrap();
+        git(&repo, &["add", "b.txt"]);
+        previous = check("dirty", &previous);
+        // Detached at the same commit: no upstream to count against.
+        git(&repo, &["checkout", "-q", "--detach"]);
+        previous = check("detached in place", &previous);
+        git(&repo, &["stash", "-q", "-u"]);
+        previous = check("stashed", &previous);
+        // HEAD moved and no ref with it.
+        git(&repo, &["checkout", "-q", "--detach", "HEAD~1"]);
+        previous = check("detached elsewhere", &previous);
+        // Back on the branch, where a commit moves HEAD and the ref.
+        git(&repo, &["checkout", "-q", "feat"]);
+        previous = check("back on the branch", &previous);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "more"]);
+        check("committed", &previous);
     }
 }

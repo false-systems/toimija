@@ -434,8 +434,15 @@ failure into an empty, reassuring list.
 | `landed` | Check whether branch content reached a base ref |
 | `init`, `doctor` | Configure a repository and detect setup drift |
 
-`watch` and `run` find the git dir once, then check the Git files' metadata
-(HEAD, index, refs, config) every 500 ms with `stat` alone. Work-tree edits
+Every command finds its worktree with one `git rev-parse` and reads
+`git status` once, and reads nothing its output does not show:
+`tests/cli_budgets.rs` pins how many git processes each starts. A tool that
+needs only what a repository says it is reads `toimija context --identity
+--json`: the packet's `repo` object, for one git process.
+
+`watch` and `run` keep that discovery, then check the Git files' metadata
+(HEAD, index, refs, config) every 500 ms with `stat` alone. While the refs hold
+still, a refresh reads one `git status` and carries the rest of the last read. Work-tree edits
 arrive as filesystem events — FSEvents on macOS, inotify on Linux — so an idle
 tick starts no git process. When the native watcher cannot arm, macOS falls
 back to notify polling and Linux to one `git status` per tick, never a
