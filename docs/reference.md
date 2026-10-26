@@ -195,23 +195,38 @@ Each `run` opens a **session** with its own live packet under
 shared file. While the agent works, that session packet stays fresh: every
 relevant filesystem or Git-state change re-runs the refresh after a short
 debounce. After laptop sleep, the resumed watch loop re-proves the session within
-one tick through that same refresh and heartbeat path. On Linux, the watcher
-polls collected Git state at roughly 500 ms because inotify can prove
-the readiness probe while still missing the first post-armed event in
-CI/container environments, and Toimija only needs packet-visible Git/worktree
-state. This avoids recursively scanning ignored build/vendor/session trees as
-the change source. On other platforms, the watcher arms the platform-native
-backend first
+one tick through that same refresh and heartbeat path.
+
+The watcher finds the repository's git dir and common dir once, and an idle
+tick costs almost nothing. Every 500 ms it compares the metadata of the Git
+files a packet depends on — HEAD, the index, the operation markers, the refs,
+packed-refs, config, `shallow`, `info/exclude` and `.toimija/repo.yaml` — read
+with `stat` alone, no git process. A moved ref or config refreshes the packet;
+a moved HEAD or index is checked first with one `git status`, because other
+tools rewrite the index without changing anything the packet shows. This is how
+staging, commits, branch switches, a fetch that moves the upstream, and a
+worktree or branch added elsewhere reach the packet, also in a linked worktree
+whose git dir lies outside the watched tree. Work-tree edits arrive as
+filesystem events. On Linux there are none: the watcher runs one `git status`
+per tick instead, because inotify can prove the readiness probe while still
+missing the first post-armed event in CI/container environments, and this
+avoids recursively scanning ignored build/vendor/session trees as the change
+source. On other platforms, the watcher arms the platform-native backend first
 and reports `armed (native)` only after a readiness probe is observed. If that
 probe times out, it re-arms and re-proves notify's polling backend before
-reporting `armed (poll fallback)`. Both event backends also compare the packet
-state token periodically, so a Git state change the event stream missed cannot
-leave the live packet stale. When a refresh itself fails — an unparseable
-`.toimija/repo.yaml`, say — the packet cannot be rebuilt, so it says so instead:
+reporting `armed (poll fallback)`; an idle tick there starts no git process.
+Once a minute a safety net compares one `git status`, and the changed files'
+contents, with the packet, so what no event and no metadata reported — a
+dropped event, a global excludes file, a second edit to an already-modified
+file on Linux — leaves the live packet stale for a minute at most.
+
+When a refresh itself fails — an unparseable `.toimija/repo.yaml`, say — the
+packet cannot be rebuilt, so it says so instead:
 a notice at the top of the Markdown packet names the failure and since when,
 above the last good content, and the next successful refresh replaces it. The
 failure is written, and logged, once per distinct error rather than on every
-retry. It is
+retry, and a failed refresh is retried by the minute's safety net or the next
+change rather than on every tick. It is
 foreground-only and stops the moment the agent exits — no daemon survives the
 command. The repo-level `.toimija/current.*` is kept too, demoted to a
 last-writer-wins "latest" summary for sessionless readers. It mirrors the
