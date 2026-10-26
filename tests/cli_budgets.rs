@@ -207,10 +207,12 @@ fn the_identity_costs_one_git_process_and_is_the_packets_repo() {
         identity["repo"]["not_roles"],
         serde_json::json!(["platform"])
     );
-    assert_eq!(
-        identity.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["repo", "schema"]
-    );
+    // Which keys, not their order: `cargo test --workspace` unifies xtask's
+    // `serde_json/preserve_order` into this build, and a parsed `Value` then
+    // keeps the order it read instead of sorting.
+    let mut keys: Vec<&String> = identity.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["repo", "schema"]);
 }
 
 #[test]
