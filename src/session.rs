@@ -75,9 +75,9 @@ pub enum SessionStatus {
     Closed,
 }
 
-/// On-disk session marker (`session.json`). Self-describing so later layers
-/// (`toimija sessions`, `toimija handoff`) can read it without extra context —
-/// and so the cross-repo north star is not blocked by an under-specified record.
+/// On-disk session marker (`session.json`). Self-describing so its readers
+/// (`toimija sessions`, `toimija history`) need no extra context — and so the
+/// cross-repo north star is not blocked by an under-specified record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionMarker {
     pub id: String,

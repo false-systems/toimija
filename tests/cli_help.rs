@@ -136,3 +136,70 @@ fn run_help_offers_alerts_for_launchers_to_detect() {
         .success()
         .stdout(predicate::str::contains("--alert <TEXT>"));
 }
+
+/// Every `` `toimija <command>` `` that toimija's source names — in a hint, a
+/// help text, a launch prompt or a comment — is a command `--help` lists. A
+/// hint that sends an agent to a removed command is worse than no hint.
+#[test]
+fn every_command_the_source_names_exists() {
+    use std::collections::BTreeSet;
+
+    let help = Command::cargo_bin("toimija")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success();
+    let help = String::from_utf8_lossy(&help.get_output().stdout).into_owned();
+    let commands: BTreeSet<String> = help
+        .lines()
+        .skip_while(|line| !line.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_string)
+        .collect();
+    assert!(commands.contains("refresh"), "{help}");
+
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+
+    let mut named = 0;
+    let mut unknown = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for (at, _) in text.match_indices("`toimija ") {
+            let rest = &text[at + "`toimija ".len()..];
+            let word: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                .collect();
+            // Global flags (`toimija -q …`) and placeholders name no command.
+            if word.is_empty() || word.starts_with('-') {
+                continue;
+            }
+            named += 1;
+            if !commands.contains(&word) {
+                unknown.push(format!("{}: `toimija {word}`", file.display()));
+            }
+        }
+    }
+    assert!(named > 20, "the scan found only {named} command names");
+    assert!(
+        unknown.is_empty(),
+        "commands named in src/ that --help does not list:\n{}",
+        unknown.join("\n")
+    );
+}

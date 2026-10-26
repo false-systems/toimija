@@ -2389,13 +2389,11 @@ impl VerifyStatus {
         match self {
             VerifyStatus::Verified { .. } => "verified".to_string(),
             VerifyStatus::MissingPacket { path } => {
-                format!(
-                    "missing_packet: no verifiable packet at {path}; run `toimija current --write`"
-                )
+                format!("missing_packet: no verifiable packet at {path}; run `toimija refresh`")
             }
             VerifyStatus::InvalidPacket { message } => format!("invalid_packet: {message}"),
             VerifyStatus::MissingConsistency => {
-                "missing_consistency: run `toimija current --write`".to_string()
+                "missing_consistency: run `toimija refresh`".to_string()
             }
             VerifyStatus::NotComparable {
                 packet_algorithm,

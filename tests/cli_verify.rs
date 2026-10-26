@@ -239,6 +239,11 @@ fn verify_without_a_packet_is_missing_packet() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(value["status"], "missing_packet");
+    // The hint names a command that exists.
+    let assert = toimija(temp.path()).arg("verify").assert().failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("missing_packet:"), "{stderr}");
+    assert!(stderr.contains("run `toimija refresh`"), "{stderr}");
 }
 
 #[test]
@@ -371,6 +376,12 @@ fn verify_distinguishes_missing_and_unsupported_consistency() {
         .failure();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
     assert_eq!(value["status"], "missing_consistency");
+    let assert = toimija(temp.path()).arg("verify").assert().failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("missing_consistency: run `toimija refresh`"),
+        "{stderr}"
+    );
 
     toimija(temp.path()).arg("refresh").assert().success();
     let path = temp.path().join(".toimija/current.json");
