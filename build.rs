@@ -1,8 +1,12 @@
 //! Names the commit a binary was built from, for `toimija --version`:
 //! `toimija 0.1.1 (a1b2c3d)`, or `(a1b2c3d, dirty)` when the code that went
 //! into the binary differs from that commit. Two builds of one version number
-//! are then told apart. Read with git when the build runs; a build with no git
-//! or no repository (a source archive) says `unknown commit`.
+//! are then told apart. Read with git when the build runs. A build from a tree
+//! that is not its own repository's root (a source archive, unpacked inside
+//! some other repository or none) says `unknown commit`, never another
+//! repository's commit.
+//!
+//! `tests/cli_help.rs` includes this file to test [`describe`].
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,58 +15,100 @@ use std::process::Command;
 /// build dirty, and a change here runs this script again.
 const CODE: [&str; 5] = ["src", "build.rs", "Cargo.toml", "Cargo.lock", "vendor"];
 
-fn main() {
-    let commit = git(&["rev-parse", "--short", "HEAD"]);
-    let mut status = vec!["status", "--porcelain", "--"];
-    status.extend(CODE);
-    let dirty = git(&status).map(|changes| !changes.is_empty());
-    let build = match (commit, dirty) {
-        (Some(commit), Some(true)) => format!("{commit}, dirty"),
-        (Some(commit), _) => commit,
-        (None, _) => "unknown commit".to_string(),
-    };
-    println!("cargo:rustc-env=TOIMIJA_BUILD_COMMIT={build}");
+/// What [`describe`] found: the commit text for `--version`, and the git
+/// files whose change means HEAD moved.
+#[derive(Debug)]
+pub struct Build {
+    pub commit: String,
+    pub watched: Vec<PathBuf>,
+}
 
+#[allow(dead_code)] // `tests/cli_help.rs` includes this file without running it.
+fn main() {
+    let package = std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| ".".into(), PathBuf::from);
+    let build = describe(&package);
+    println!("cargo:rustc-env=TOIMIJA_BUILD_COMMIT={}", build.commit);
     for path in CODE {
         println!("cargo:rerun-if-changed={path}");
     }
-    // And when HEAD moves: HEAD itself, the branch it names, and where refs
-    // are kept when the branch's own file is not (packed-refs, a reftable).
-    // Only paths that exist: cargo reruns a script whose path is missing on
-    // every build.
-    let Some(located) = git(&[
-        "rev-parse",
-        "--git-dir",
-        "--git-common-dir",
-        "--symbolic-full-name",
-        "HEAD",
-    ]) else {
-        return;
+    for path in &build.watched {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
+
+/// The commit `package` is built from, when `package` is the root of its own
+/// repository, and the git files to watch for HEAD moving.
+pub fn describe(package: &Path) -> Build {
+    let unknown = || Build {
+        commit: "unknown commit".to_string(),
+        watched: Vec::new(),
+    };
+    let Some(located) = git(
+        package,
+        &[
+            "rev-parse",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+            "--symbolic-full-name",
+            "HEAD",
+        ],
+    ) else {
+        return unknown();
     };
     let mut lines = located.lines();
-    let (Some(git_dir), Some(common_dir)) = (lines.next(), lines.next()) else {
-        return;
+    let (Some(toplevel), Some(git_dir), Some(common_dir)) =
+        (lines.next(), lines.next(), lines.next())
+    else {
+        return unknown();
     };
-    let (git_dir, common_dir) = (PathBuf::from(git_dir), PathBuf::from(common_dir));
-    let mut watched = vec![git_dir.join("HEAD")];
+    // The repository git found must be the package's own: a source tree
+    // unpacked inside another repository is not that repository's commit.
+    let own = |path: &Path| std::fs::canonicalize(path).ok();
+    if own(Path::new(toplevel)).is_none() || own(Path::new(toplevel)) != own(package) {
+        return unknown();
+    }
+    let Some(commit) = git(package, &["rev-parse", "--short", "HEAD"]) else {
+        return unknown();
+    };
+    let mut status = vec!["status", "--porcelain", "--"];
+    status.extend(CODE);
+    let commit = match git(package, &status) {
+        Some(changes) if !changes.is_empty() => format!("{commit}, dirty"),
+        _ => commit,
+    };
+
+    // HEAD moves: HEAD itself, the branch it names, where refs are kept when
+    // the branch's own file is not (packed-refs, a reftable), and HEAD's
+    // reflog, which every commit, checkout and reset appends to, whichever of
+    // those holds the branch (a commit after `pack-refs` writes a loose ref
+    // this script did not see at its last run). Only paths that exist: cargo
+    // reruns a script whose path is missing on every build.
+    let at = |dir: &str| {
+        let dir = Path::new(dir);
+        if dir.is_absolute() {
+            dir.to_path_buf()
+        } else {
+            package.join(dir)
+        }
+    };
+    let (git_dir, common_dir) = (at(git_dir), at(common_dir));
+    let mut watched = vec![git_dir.join("HEAD"), git_dir.join("logs/HEAD")];
     if let Some(branch) = lines.next().filter(|name| name.starts_with("refs/")) {
         watched.push(common_dir.join(branch));
     }
     watched.push(common_dir.join("packed-refs"));
     watched.push(common_dir.join("reftable"));
-    for path in watched.iter().filter(|path| path.exists()) {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
+    watched.retain(|path| path.exists());
+    Build { commit, watched }
 }
 
-/// `git <args>` in this package's directory, its trimmed output when it
-/// succeeds. The variables that would point git at another repository (a
-/// hook's `GIT_DIR`, `GIT_INDEX_FILE`) are removed, so the package's own
-/// directory decides.
-fn git(args: &[&str]) -> Option<String> {
+/// `git <args>` in `package`, its trimmed output when it succeeds. The
+/// variables that would point git at another repository (a hook's `GIT_DIR`,
+/// `GIT_INDEX_FILE`) are removed, so the package's directory decides.
+fn git(package: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new("git");
-    let package = std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_else(|| ".".into());
-    command.args(args).current_dir(Path::new(&package));
+    command.args(args).current_dir(package);
     for key in [
         "GIT_DIR",
         "GIT_WORK_TREE",
