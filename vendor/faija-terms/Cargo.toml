@@ -1,10 +1,10 @@
 [package]
 name = "faija-terms"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-description = "Shared vocabulary for the False Systems workflow stack: terms two or more tools must mean identically."
+description = "tree-identity.v1: the Git tree of a repository's work content, with tool state left out (faija-ontology.v1)."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

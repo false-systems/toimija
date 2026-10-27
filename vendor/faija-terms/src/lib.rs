@@ -1,41 +1,24 @@
-//! Shared vocabulary for the False Systems workflow stack.
+//! `tree-identity.v1`: which content makes up one version of a repository's
+//! work.
 //!
-//! A term belongs here only when two or more tools must mean exactly the same
-//! thing by it. This crate defines terms; it never executes anything, reads a
-//! repository, stores state, or decides whether a claim is true.
+//! The identity is the Git tree of every tracked and untracked non-ignored
+//! path, minus the namespaces of generated tool state frozen into the version,
+//! plus the tool configuration it forces in. [`TreeIdentityAlgorithm::plan`]
+//! returns the procedure as data, and each tool runs the git steps with its own
+//! runner. This crate never executes anything, reads a repository, stores
+//! state, or decides whether a claim is true.
 //!
-//! # Ontology and algorithm versions are different things
+//! # Where the meaning comes from
 //!
-//! [`ONTOLOGY_VERSION`] names the meaning of the concepts. A
-//! [`TreeIdentityAlgorithm`] names one exact procedure for computing a term.
-//! An artifact records both, so a reader years later can interpret it under the
-//! rules that existed when it was written rather than the rules that exist now.
+//! Tree identity is defined in `faija-ontology.v1` (`docs/ontology-v1.md`).
+//! `faija-ontology.v2` replaced v1 as the ontology and keeps `tree-identity.v1`
+//! as a contract; it is the only part of v1 still in use. An artifact records
+//! the algorithm's [`id`](TreeIdentityAlgorithm::id), so a reader years later
+//! recomputes the identity under the rules that applied when it was written.
 
 #![forbid(unsafe_code)]
 
-pub mod allocation;
-pub mod attestation;
-pub mod discharge;
-pub mod execution;
-pub mod knowledge;
-
-pub use allocation::{Allocation, AllocationState, RoleInstance, ALLOCATION_NAMESPACE};
-pub use attestation::{Attestation, Authentication, TrustRequirement};
-pub use discharge::{DischargeDepth, DischargeRequirement, Predicate};
-pub use execution::{Establishment, EvidenceBinding, ExecutionContextRef, SeparationClaim};
-pub use knowledge::{
-    AssuranceApplicability, AssuranceCase, AssuranceDischarge, AssuranceObligation,
-    AssuranceResult, Claim, ClaimKind, ClaimStatus, ClassificationHistory, Investigation,
-    Reclassification, RegressionWitness, WorkBar, WorkCharacter,
-};
-
 use serde::{Deserialize, Serialize};
-
-/// The ontology these terms belong to. Meanings are immutable within a version.
-///
-/// If `operation != attempt` or `tree identity != repository point` ever stops
-/// holding, that is a new ontology version, not an edit to this one.
-pub const ONTOLOGY_VERSION: &str = "faija-ontology.v1";
 
 /// A versioned procedure for computing repository tree identity.
 ///
@@ -201,8 +184,8 @@ force-included regardless of ignore status."
 }
 
 /// A small, dependency-free digest. Sufficient for pinning a definition in a
-/// test; deliberately *not* the stack's canonical artifact digest, which is
-/// `faija-canonical`'s job and must not be reimplemented here.
+/// test; deliberately *not* a digest for artifacts, which this crate never
+/// computes.
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -243,48 +226,6 @@ impl Step {
             Self::DropNamespaces { .. } => "drop_namespaces",
             Self::ForceAddConfig { .. } => "force_add_config",
             Self::WriteTree => "write_tree",
-        }
-    }
-}
-
-/// What a piece of evidence actually established about the repository.
-///
-/// Token equality implies tree equality; tree equality does **not** imply token
-/// equality, because a repository point also covers HEAD state, the index, the
-/// worktree, untracked paths, in-progress Git operations and conflict state.
-/// Two points can share a tree and differ in HEAD. The variants therefore are
-/// not interchangeable, and a consumer may never upgrade one into the other.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "anchor", rename_all = "snake_case")]
-pub enum EvidenceAnchor {
-    /// A tree OID, plus the algorithm that produced it so a later reader can
-    /// recompute it under the rules that applied at the time.
-    TreeIdentity { algorithm: String, tree: String },
-    /// A Toimija consistency token: strictly stronger than a tree identity.
-    RepositoryPoint { consistency_token: String },
-}
-
-impl EvidenceAnchor {
-    /// Build a tree anchor that records its own algorithm.
-    pub fn tree(algorithm: TreeIdentityAlgorithm, tree: impl Into<String>) -> Self {
-        Self::TreeIdentity {
-            algorithm: algorithm.id().to_string(),
-            tree: tree.into(),
-        }
-    }
-
-    /// True only for an anchor that established the full repository point.
-    /// A tree identity is never sufficient; that is the point of the type.
-    pub fn establishes_repository_point(&self) -> bool {
-        matches!(self, Self::RepositoryPoint { .. })
-    }
-
-    /// The algorithm a tree anchor names, when this build understands it.
-    /// `None` for a repository point, or for an algorithm from the future.
-    pub fn algorithm(&self) -> Option<TreeIdentityAlgorithm> {
-        match self {
-            Self::TreeIdentity { algorithm, .. } => TreeIdentityAlgorithm::from_id(algorithm),
-            Self::RepositoryPoint { .. } => None,
         }
     }
 }
@@ -335,12 +276,7 @@ mod tests {
             Some(TreeIdentityAlgorithm::V1)
         );
         assert_eq!(TreeIdentityAlgorithm::from_id("tree-identity.v2"), None);
-        let future = EvidenceAnchor::TreeIdentity {
-            algorithm: "tree-identity.v99".into(),
-            tree: "deadbeef".into(),
-        };
-        assert_eq!(future.algorithm(), None);
-        assert!(!future.establishes_repository_point());
+        assert_eq!(TreeIdentityAlgorithm::from_id("tree-identity.v99"), None);
     }
 
     #[test]
@@ -380,21 +316,5 @@ mod tests {
             .position(|step| matches!(step, Step::ForceAddConfig { .. }))
             .expect("plan force-adds config");
         assert!(drop_at < config_at, "config re-added before the drop");
-    }
-
-    #[test]
-    fn a_tree_identity_anchor_never_establishes_a_point() {
-        let tree = EvidenceAnchor::tree(
-            TreeIdentityAlgorithm::V1,
-            "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
-        );
-        assert!(!tree.establishes_repository_point());
-        assert_eq!(tree.algorithm(), Some(TreeIdentityAlgorithm::V1));
-
-        let point = EvidenceAnchor::RepositoryPoint {
-            consistency_token: "sha256:abc".into(),
-        };
-        assert!(point.establishes_repository_point());
-        assert_eq!(point.algorithm(), None);
     }
 }

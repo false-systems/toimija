@@ -761,7 +761,7 @@ toimija init               # create .toimija/repo.yaml if missing
 output goes to stdout.
 
 `toimija --version` names the build as well as the version number:
-`toimija 0.1.1 (a1b2c3d)`, the short commit the binary was built from, with
+`toimija 0.2.0 (a1b2c3d)`, the short commit the binary was built from, with
 `, dirty` when the code built (`src/`, `vendor/`, `build.rs`, the Cargo
 manifest and lock) differed from that commit. `build.rs` reads it with git at
 build time; a build without git or a repository says `unknown commit`.

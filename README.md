@@ -89,6 +89,28 @@ those packets, and a `toimija refresh` holds only until the old watcher's next
 change. `verify` says so when it meets one. `toimija --version` names the commit
 a binary was built from.
 
+**Upgrading to 0.2.0.** Every build of `main` from June to October 2026 called
+itself 0.1.1, so 0.2.0 is the first number that sets a build apart from them.
+What breaks:
+
+- Eleven commands are gone: `adopt`, `snippet`, `handoff`, `current`,
+  `audit-plan`, `gates`, `plugins`, `verify-work`, `close-work`, `explain-work`
+  and `correlate-pr`, with `run --cycle*` and `run --require-work`. Sixteen
+  remain; `toimija --help` lists them.
+- The packet is `toimija-context.v3`. v2 dropped the `relevance` block, and v3
+  renames the top-level `sauma` key to `seal`. `verify` checks the schema
+  first, so a v1 or v2 packet is refused before its token is read (exit 1):
+
+  ```
+  invalid_packet: the packet is `toimija-context.v2`, which an earlier toimija wrote; this toimija reads `toimija-context.v3`. Run `toimija refresh` to replace it
+  ```
+
+  `toimija refresh` replaces it.
+- The consistency token is `toimija-consistency-v3` and a repository point's id
+  is `rpoint_v3_…`, derived from its tree. Ids and tokens of earlier versions
+  are not comparable with these.
+- Restart live `toimija run` sessions after installing, as above.
+
 Set it up in a repository:
 
 ```bash
@@ -271,8 +293,10 @@ hex digits, derived from the repository and the token alone) and earlier tokens
 They are never recomputed or relabelled, and a comparison across versions says
 **not comparable**, never "equal" or "different":
 
-- `verify` on a packet from an earlier toimija reports `not_comparable`, and
-  `toimija refresh` replaces the packet;
+- `verify` checks a packet's schema before its token, so a packet from an
+  earlier toimija (`toimija-context.v1` or `.v2`) is `invalid_packet`, never
+  `not_comparable`; `toimija refresh` replaces it. Only a current-schema packet
+  carrying an earlier token reaches `not_comparable`;
 - snapshot leases name their token's version (`token_algorithm`). One
   written earlier names none, and none is claimed for it.
 

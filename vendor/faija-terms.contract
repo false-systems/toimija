@@ -12,7 +12,7 @@
 #
 # Refresh with `scripts/vendor-faija-terms.sh <faija-checkout> <revision>`,
 # never by editing the crate in place.
-faija-tag = v0.1.1
-faija-revision = 1016c8ff60544f22c14ef0e99d4f8ae66246d6b6
-tree-digest = sha256:4ebc2d6796e46b0b50c0946d8e89317fd64f41557b71774eb706fba443fa9be0
-files = 7
+faija-tag = v0.1.2
+faija-revision = c0a16b62ae80270d6ef66ddb96259eb556fa97d9
+tree-digest = sha256:36f202dbdb5c4d8a5d9808a589a700a81dbd469304721accbc4ce6bc0e88e8e8
+files = 2
