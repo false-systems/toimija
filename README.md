@@ -165,7 +165,9 @@ prompt. Codex opens and waits for your first message: no acknowledgement turn
 is requested. Codex adds that setting to its own developer instructions
 (skills, permissions, collaboration mode), so the slot carries only the packet
 and the briefing; a `developer_instructions` set in your own Codex config is
-replaced for that session. The first task still has the full context. Explicit `agents.codex` prompt
+replaced for that session. One you pass yourself (`-c developer_instructions=…`)
+is kept: the launch is then not idle, and the packet goes in the first
+message, so Codex starts a turn (`run` says so). The first task still has the full context. Explicit `agents.codex` prompt
 configuration retains its configured delivery. Subcommands such as `codex exec`
 and `codex resume` retain prompt delivery; only interactive launches wait.
 

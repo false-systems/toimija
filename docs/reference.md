@@ -128,7 +128,9 @@ the setting to its own developer instructions (skills, permissions,
 collaboration mode), so the slot carries only the packet and the briefing;
 `codex debug prompt-input` with the same options shows the result offline. A
 `developer_instructions` set in your own Codex config is replaced for that
-session.
+session. One passed on the command line (`-c developer_instructions=…`) is
+kept: the launch is then not idle, the packet goes in the first message, and
+`run` says so on stderr.
 Explicit tasks keep positional delivery, and an `agents.codex` configuration keeps its
 declared prompt style. Subcommands such as `codex exec` and `codex resume`
 retain prompt delivery rather than being inspected as interactive launches.
