@@ -158,6 +158,34 @@ fn write_path_list(output: &mut String, items: &[std::path::PathBuf], empty: &st
     }
 }
 
+/// A working-tree list of the repository's work, as the counts are: the
+/// generated paths among `items` (Toimija's own files, which Git lists where
+/// `init` has not run, and `.teko/`, `.sykli/`) are left out of the list and
+/// counted in one line after it. The JSON lists every path.
+fn write_work_changes(output: &mut String, items: &[ChangedFile]) {
+    let work: Vec<ChangedFile> = crate::git::work_files(items).cloned().collect();
+    write_changed_list(output, &work, "none");
+    write_generated_line(output, items.len() - work.len());
+}
+
+/// [`write_work_changes`] for a list of paths.
+fn write_work_paths(output: &mut String, items: &[std::path::PathBuf]) {
+    let work: Vec<std::path::PathBuf> = crate::git::work_paths(items).cloned().collect();
+    write_path_list(output, &work, "none");
+    write_generated_line(output, items.len() - work.len());
+}
+
+fn write_generated_line(output: &mut String, generated: usize) {
+    if generated > 0 {
+        writeln!(
+            output,
+            "- {generated} generated, not counted: Toimija's own files, `.teko/`, `.sykli/` \
+             (the JSON lists them)"
+        )
+        .unwrap();
+    }
+}
+
 fn write_changed_list(output: &mut String, items: &[ChangedFile], empty: &str) {
     if items.is_empty() {
         writeln!(output, "- {empty}").unwrap();
@@ -375,25 +403,43 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     .unwrap();
     writeln!(&mut output, "- merge-base: {}", merge_base_label(packet)).unwrap();
     writeln!(&mut output, "- dirty: {}", packet.git.dirty).unwrap();
-    writeln!(&mut output, "- staged: {}", packet.git.staged_files.len()).unwrap();
-    writeln!(
-        &mut output,
-        "- unstaged: {}",
-        packet.git.unstaged_files.len()
-    )
-    .unwrap();
-    writeln!(
-        &mut output,
-        "- untracked: {}",
-        packet.git.untracked_files.len()
-    )
-    .unwrap();
-    writeln!(
-        &mut output,
-        "- conflicts: {}",
-        packet.git.conflicted_files.len()
-    )
-    .unwrap();
+    // The counts are the repository's work, as `dirty` is; generated paths
+    // (Toimija's own, `.teko/`, `.sykli/`) are counted apart.
+    let git = &packet.git;
+    let counts = [
+        (
+            "staged",
+            crate::git::work_files(&git.staged_files).count(),
+            git.staged_files.len(),
+        ),
+        (
+            "unstaged",
+            crate::git::work_files(&git.unstaged_files).count(),
+            git.unstaged_files.len(),
+        ),
+        (
+            "untracked",
+            crate::git::work_paths(&git.untracked_files).count(),
+            git.untracked_files.len(),
+        ),
+        (
+            "conflicts",
+            crate::git::work_paths(&git.conflicted_files).count(),
+            git.conflicted_files.len(),
+        ),
+    ];
+    for (label, work, all) in counts {
+        let generated = all - work;
+        if generated == 0 {
+            writeln!(&mut output, "- {label}: {work}").unwrap();
+        } else {
+            writeln!(
+                &mut output,
+                "- {label}: {work} (+{generated} generated, not counted)"
+            )
+            .unwrap();
+        }
+    }
 
     write_h2(&mut output, "Git state");
     writeln!(
@@ -644,13 +690,13 @@ fn write_recent_commits(output: &mut String, packet: &ContextPacket) {
 fn write_worktree_breakdown(output: &mut String, packet: &ContextPacket) {
     write_h2(output, "Working tree");
     write_h3(output, "Staged");
-    write_changed_list(output, &packet.git.staged_files, "none");
+    write_work_changes(output, &packet.git.staged_files);
     write_h3(output, "Unstaged");
-    write_changed_list(output, &packet.git.unstaged_files, "none");
+    write_work_changes(output, &packet.git.unstaged_files);
     write_h3(output, "Untracked");
-    write_path_list(output, &packet.git.untracked_files, "none");
+    write_work_paths(output, &packet.git.untracked_files);
     write_h3(output, "Conflicts");
-    write_path_list(output, &packet.git.conflicted_files, "none");
+    write_work_paths(output, &packet.git.conflicted_files);
 }
 
 /// The changed surface, labelled with the source it was derived from so the
@@ -688,13 +734,13 @@ fn write_diff_focus(output: &mut String, packet: &ContextPacket) {
     write_h3(output, "Committed since base");
     write_changed_list(output, &packet.git.branch_files, "none");
     write_h3(output, "Staged");
-    write_changed_list(output, &packet.git.staged_files, "none");
+    write_work_changes(output, &packet.git.staged_files);
     write_h3(output, "Unstaged");
-    write_changed_list(output, &packet.git.unstaged_files, "none");
+    write_work_changes(output, &packet.git.unstaged_files);
     write_h3(output, "Untracked");
-    write_path_list(output, &packet.git.untracked_files, "none");
+    write_work_paths(output, &packet.git.untracked_files);
     write_h3(output, "Conflicts");
-    write_path_list(output, &packet.git.conflicted_files, "none");
+    write_work_paths(output, &packet.git.conflicted_files);
 }
 
 fn status_label(status: &ChangeStatus) -> &'static str {
@@ -989,6 +1035,49 @@ mod tests {
         // The fixture has no commits.
         let rendered = render_context_markdown(&packet(), 4000);
         assert!(rendered.contains("## Recent commits\n- none"));
+    }
+
+    /// The Markdown counts and lists are the repository's work, as `dirty`
+    /// is: Toimija's own files (listed by Git where `init` has not run) and
+    /// `.teko/` and `.sykli/` are counted apart, never beside a `dirty: false`
+    /// as if they were work. The JSON keeps every path Git reported.
+    #[test]
+    fn generated_paths_are_counted_apart_from_the_work() {
+        let mut packet = packet();
+        packet.git.untracked_files = vec![
+            PathBuf::from(".sykli/receipt.json"),
+            PathBuf::from(".toimija/current.json"),
+            PathBuf::from(".toimija/sessions/1-1/session.json"),
+        ];
+        packet.git.unstaged_files = vec![ChangedFile {
+            path: PathBuf::from(".toimija/repo.yaml"),
+            original_path: None,
+            similarity: None,
+            status: ChangeStatus::Modified,
+            index_entry: None,
+        }];
+        packet.git.dirty = true;
+        for for_diff in [false, true] {
+            packet.for_diff = for_diff;
+            let rendered = render_context_markdown(&packet, 8000);
+            assert!(
+                rendered.contains("- untracked: 0 (+3 generated, not counted)\n"),
+                "{rendered}"
+            );
+            assert!(rendered.contains("- unstaged: 1\n"), "{rendered}");
+            let untracked = rendered.split("### Untracked\n").nth(1).unwrap();
+            let untracked = untracked.split("###").next().unwrap();
+            assert_eq!(
+                untracked,
+                "- none\n- 3 generated, not counted: Toimija's own files, `.teko/`, `.sykli/` \
+                 (the JSON lists them)\n",
+                "{rendered}"
+            );
+            assert!(
+                rendered.contains("- modified .toimija/repo.yaml\n"),
+                "{rendered}"
+            );
+        }
     }
 
     #[test]

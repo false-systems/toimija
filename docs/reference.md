@@ -469,9 +469,11 @@ toimija run: session summary
 The worktree line counts the repository's work. Toimija's own files are never
 counted, even where Git lists them (a repository without `toimija init` has no
 `.toimija/.gitignore`), and neither are `.teko/` and `.sykli/`: the paths
-`dirty` and the token leave out. The packet treats them the same way: they
-stay in its file lists, as Git reported them, but raise no warning and are in
-neither the changed surface nor Read first.
+`dirty` and the token leave out. The packet treats them the same way: the JSON
+keeps them in its file lists, as Git reported them, and the Markdown counts
+them apart (`- untracked: 0 (+9 generated, not counted)`) and names them in one
+line under each list. They raise no warning and are in neither the changed
+surface nor Read first.
 
 ## Verify before read — the packet is a claim, not a hope
 

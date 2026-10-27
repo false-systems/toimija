@@ -381,6 +381,20 @@ fn toimijas_own_files_are_not_the_repositorys_work() {
             .all(|warning| !warning.starts_with("Untracked files exist")),
         "{value:#}"
     );
+    // The Markdown counts them apart, beside `dirty: false`.
+    let markdown = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let markdown = String::from_utf8(markdown).unwrap();
+    assert!(markdown.contains("- dirty: false\n"), "{markdown}");
+    assert!(markdown.contains("- untracked: 0 (+"), "{markdown}");
+    assert!(!markdown.contains("- .toimija/current.json\n"), "{markdown}");
 
     fs::write(temp.path().join("notes.txt"), "the user's\n").unwrap();
     fs::write(
