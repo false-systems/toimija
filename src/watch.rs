@@ -328,32 +328,48 @@ impl Repository {
     /// Swallow the rest of an event burst: keep receiving until the channel is
     /// quiet for a full debounce window, so one logical change yields one
     /// refresh. Returns the strongest change the burst carried. Backend errors
-    /// inside the burst keep their warning — rescan-required is precisely the
-    /// error that means events were lost.
+    /// inside the burst are answered as outside it ([`Self::answer_watcher_error`]):
+    /// rescan-required is precisely the error that means events were lost.
     fn drain_burst(&self, rx: &mpsc::Receiver<notify::Result<Event>>, first: Change) -> Change {
         let mut change = first;
         while let Ok(result) = rx.recv_timeout(DEBOUNCE) {
             match result {
                 Ok(event) => change = change.max(self.classify_event(&event)),
-                Err(error) => self.warn_watcher_error(&error),
+                Err(error) => change = change.max(self.answer_watcher_error(&error)),
             }
         }
         change
     }
 
-    /// Warn about a backend error unless it is scoped entirely to ignored
-    /// directories: a build deleting files under `_build`/`target` mid-scan is
-    /// churn the watch has promised not to react to, not a packet-freshness
-    /// problem. Polling can also race children that vanish mid-walk; those
-    /// path-scoped `NotFound` errors are quiet unless the watched root itself
-    /// is gone. A pathless error says nothing about where it happened, so it
-    /// stays visible.
-    fn warn_watcher_error(&self, error: &notify::Error) {
-        if !self.error_is_ignorable(error) {
-            eprintln!("toimija: file watcher error (packet may be stale): {error}");
+    /// What a backend error asks for. Quiet when it is scoped entirely to
+    /// Toimija's own paths, or is a polling race with a child that vanished
+    /// mid-walk while the root still exists. An error scoped entirely to
+    /// build-named directories is answered as an event there is, with the
+    /// cheap check ([`Change::Build`]): a build deleting files under `_build`
+    /// or `target` mid-scan is churn, not news, but a tracked file under a
+    /// build name (`lib/deps/x.ex`) is source, and the check's `git status`
+    /// and content token show its change. Anything else warns, since events
+    /// may have been lost; a pathless error says nothing about where, so it
+    /// warns too. The safety net re-checks either way.
+    fn answer_watcher_error(&self, error: &notify::Error) -> Change {
+        if self.error_is_ignorable(error) {
+            return Change::Ignored;
         }
+        let under_build_names = !error.paths.is_empty()
+            && error.paths.iter().all(|path| {
+                self.relative(path)
+                    .is_some_and(|relative| is_ignored(relative) || is_build_output(relative))
+            });
+        if under_build_names {
+            return Change::Build;
+        }
+        eprintln!("toimija: file watcher error (packet may be stale): {error}");
+        Change::Ignored
     }
 
+    /// Whether a backend error is no news at all: scoped entirely to
+    /// Toimija's own paths, or a `NotFound` polling race while the watched
+    /// root still exists.
     fn error_is_ignorable(&self, error: &notify::Error) -> bool {
         if error.paths.is_empty() {
             return false;
@@ -365,10 +381,10 @@ impl Repository {
         ) {
             return self.root.try_exists().unwrap_or(false);
         }
-        error.paths.iter().all(|path| {
-            self.relative(path)
-                .is_some_and(|relative| is_ignored(relative) || is_build_output(relative))
-        })
+        error
+            .paths
+            .iter()
+            .all(|path| self.relative(path).is_some_and(is_ignored))
     }
 }
 
@@ -991,9 +1007,10 @@ impl Session {
                         }
                     },
                     // A watcher-backend error (dropped or rescan-required
-                    // events): surface it, since the packet may now be stale,
-                    // then keep going. The safety net re-checks.
-                    Ok(Err(error)) => self.repo.warn_watcher_error(&error),
+                    // events): under build names, the cheap check; elsewhere
+                    // a warning, since the packet may now be stale. Then keep
+                    // going. The safety net re-checks.
+                    Ok(Err(error)) => asked = self.repo.answer_watcher_error(&error),
                     // Woke to re-check `stop`.
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     // Watcher dropped its sender — nothing more will arrive.
@@ -2418,9 +2435,28 @@ mod tests {
     #[test]
     fn errors_scoped_to_ignored_dirs_stay_quiet_but_others_surface() {
         let repo = repo_at("/repo");
-        let build_churn = notify::Error::generic("walkdir error scanning")
-            .add_path(PathBuf::from("/repo/_build/lib/vartio_core/priv"));
-        assert!(repo.error_is_ignorable(&build_churn));
+        let own = notify::Error::generic("walkdir error scanning")
+            .add_path(PathBuf::from("/repo/.toimija/sessions/1-1/current.json"));
+        assert!(repo.error_is_ignorable(&own));
+        assert_eq!(repo.answer_watcher_error(&own), Change::Ignored);
+
+        // Under a build name, at any depth, is never silenced outright: a
+        // tracked file there (`lib/deps/x.ex`, `src/target/mod.rs`) is
+        // source. It is answered as an event there is, with the cheap check,
+        // whose `git status` and content token show a tracked change, and
+        // without a warning for untracked build churn.
+        for build in [
+            "/repo/_build/lib/vartio_core/priv",
+            "/repo/lib/deps/x.ex",
+            "/repo/src/target/mod.rs",
+        ] {
+            let error =
+                notify::Error::generic("walkdir error scanning").add_path(PathBuf::from(build));
+            assert!(!repo.error_is_ignorable(&error), "{build}");
+            assert_eq!(repo.answer_watcher_error(&error), Change::Build, "{build}");
+        }
+        let source = notify::Error::generic("rescan").add_path(PathBuf::from("/repo/src/main.rs"));
+        assert_eq!(repo.answer_watcher_error(&source), Change::Ignored);
 
         // A pathless error says nothing about where it happened.
         let pathless = notify::Error::generic("backend failure");
