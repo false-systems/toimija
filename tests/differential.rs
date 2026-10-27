@@ -28,7 +28,7 @@ use common::git_available;
 use common::scenarios::{self, HERMETIC_GIT_ENV};
 
 /// Keys whose values differ between two runs of one binary on one state.
-const MASKED_KEYS: [&str; 11] = [
+const MASKED_KEYS: [&str; 12] = [
     "artifact_id",
     "captured_at",
     "generated_at",
@@ -39,6 +39,7 @@ const MASKED_KEYS: [&str; 11] = [
     "started_at",
     "last_seen_at",
     "pid",
+    "pid_start",
     "closed_at",
 ];
 
