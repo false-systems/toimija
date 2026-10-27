@@ -335,7 +335,9 @@ whose process is gone.
 A packet combines:
 
 - branch, HEAD, upstream, ahead/behind (against the upstream, else
-  `origin/<default>`, from local refs only), merge-base, and recent commits;
+  `origin/<default>`, or the one remote's default when none is named `origin`;
+  from local refs only, and not counted in a shallow repository), merge-base,
+  and recent commits;
 - staged, unstaged, untracked, renamed, and conflicted paths;
 - unsafe Git operation state;
 - the committed branch surface;

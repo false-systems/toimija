@@ -629,8 +629,13 @@ The packet includes:
   the token and the point id say it is unchanged; the file lists themselves
   are what `git status` reported
 - ahead / behind: commits HEAD has that its upstream lacks and the reverse, counted
-  from local refs (no fetch); without an upstream, against `origin/<default>`;
-  `git.ahead_behind_ref` names which
+  from local refs (no fetch); without an upstream, against `origin/<default>`,
+  or, with no `origin` and exactly one other remote, that remote's default
+  branch, which is then the base too; `git.ahead_behind_ref` names which. In a
+  shallow repository Git counts only the history it has, and a cut can hide the
+  commits both sides share, so the counts are left null there and the line
+  says `unknown — the repository is shallow` while `ahead_behind_ref` still
+  names the ref
 - staged / unstaged / untracked files
 - rename/copy origin paths and similarity when Git reports them, plus conflict
   index stages (mode and object ID)
