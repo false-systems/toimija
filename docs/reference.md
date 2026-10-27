@@ -317,8 +317,10 @@ still hold its values. Toimija reads an empty handshake value as unset; other
 readers should too.
 
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
-agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
-auto-closes on exit. The marker is what `toimija sessions` reads (below).
+when that process started (`pid_start`: Linux and macOS, an opaque token
+compared only for equality, so a reused pid is not taken for the session),
+agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that
+`run` auto-closes on exit. The marker is what `toimija sessions` reads (below).
 The entry branch and HEAD remain fixed in later packets; if current Git state
 moves, mandatory Markdown renders a `Session drift` block and JSON retains both
 the entry baseline and current `git` state.

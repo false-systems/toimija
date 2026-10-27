@@ -397,8 +397,11 @@ overlap warnings for branch, worktree, intent, and scope. These are awareness
 signals, not locks or assignments. JSON also exposes `pid_check` (`alive`,
 `dead`, or `unknown`), the process probe separately from heartbeat age. A
 `stale` session with a `dead` PID is no longer running under that PID; a
-`stale` session with an `alive` or `unknown` PID is still uncertain. PID reuse
-can keep an obsolete session uncertain. Listing never rewrites markers.
+`stale` session with an `alive` or `unknown` PID is still uncertain. The marker
+records when its process started (`pid_start`, Linux and macOS), so a PID handed
+on to another process reads `dead`. On other systems, and for markers written
+without it, PID reuse can keep an obsolete session uncertain. Listing never
+rewrites markers.
 Outside a repository, `toimija sessions` lists the sessions opened outside
 any repository, and says so.
 
