@@ -684,7 +684,12 @@ names its schema in `schema` (and again in `seal.schema`):
   coupling, risk and their history coverage).
 - `verify` reads a packet under its own schema's rules only: one an earlier
   toimija wrote (`toimija-context.v2` or `.v1`) is `invalid_packet`, with a
-  message naming its schema and `toimija refresh`, which replaces it.
+  message naming its schema and `toimija refresh`, which replaces it. A
+  `toimija run` started before the install keeps its own code, and its watcher
+  rewrites its session's packets in the old schema a moment after each change,
+  so for a packet that briefs a live session the message says so: a refresh
+  holds only until that next change, and the way out is to restart the session
+  under the installed toimija. Restart live sessions after installing.
 - Consumers must ignore unknown fields and tolerate unknown provenance edge
   kinds.
 - Unix paths are JSON strings when valid UTF-8 and `{ "bytes_hex": "..." }`

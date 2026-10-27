@@ -2230,8 +2230,17 @@ fn verify_status(
 ) -> VerifyStatus {
     match load_stored_packet(packet_path) {
         StoredPacket::Ready { packet, raw } => {
-            if let Some(message) = schema_refusal(&packet.schema) {
-                return VerifyStatus::InvalidPacket { message };
+            if packet.schema != context::CONTEXT_SCHEMA {
+                // Asked only of a packet that is refused anyway: whether the
+                // session it briefs still runs, under an older toimija.
+                let live_session = packet.session.as_ref().map(|session| session.id.as_str());
+                let live_session = live_session.filter(|id| {
+                    sessions::named_session(runner, &live.repo_root, id)
+                        == sessions::NamedSession::Live
+                });
+                if let Some(message) = schema_refusal(&packet.schema, live_session) {
+                    return VerifyStatus::InvalidPacket { message };
+                }
             }
             match crate::consistency::comparability(&packet.consistency.algorithm) {
                 None => {}
@@ -2472,17 +2481,32 @@ enum StoredPacket {
 /// Why a packet of `schema` is not read here, if it is not. A packet is read
 /// under its own schema's rules: one an earlier toimija wrote (the
 /// `toimija-context.v2` seal sat under `sauma`, say) is refused with the way
-/// out, a refresh, which replaces it; one this toimija does not know at all is
-/// refused as such.
-fn schema_refusal(schema: &str) -> Option<String> {
+/// out; one this toimija does not know at all is refused as such.
+///
+/// The way out depends on who writes the packet. An older `toimija run` keeps
+/// its own code after a newer toimija is installed, and its watcher rewrites
+/// its session's packets in the old schema a moment after every change. So
+/// for a packet that briefs a live session (`live_session`), a refresh holds
+/// only until then, and the way out is to restart the session; otherwise a
+/// refresh replaces the packet for good.
+fn schema_refusal(schema: &str, live_session: Option<&str>) -> Option<String> {
     let current = context::CONTEXT_SCHEMA;
     if schema == current {
         None
     } else if context::EARLIER_CONTEXT_SCHEMAS.contains(&schema) {
-        Some(format!(
-            "the packet is `{schema}`, which an earlier toimija wrote; this toimija reads \
-             `{current}`. Run `toimija refresh` to replace it"
-        ))
+        Some(match live_session {
+            Some(session) => format!(
+                "the packet is `{schema}`: an older toimija is still watching session \
+                 {session} and writes its packets in that schema; this toimija reads \
+                 `{current}`. `toimija refresh` replaces the packet only until its next \
+                 change, so restart the session under the installed toimija (end it, and \
+                 launch it again with `toimija run`)"
+            ),
+            None => format!(
+                "the packet is `{schema}`, which an earlier toimija wrote; this toimija reads \
+                 `{current}`. Run `toimija refresh` to replace it"
+            ),
+        })
     } else {
         Some(format!(
             "the packet is `{schema}`, which this toimija does not read; it reads `{current}`"

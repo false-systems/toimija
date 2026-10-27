@@ -81,6 +81,14 @@ cd toimija
 cargo install --path .
 ```
 
+**Upgrading.** After installing a new toimija, restart live `toimija run`
+sessions. A running `toimija run` keeps the code it started with, and its
+watcher keeps writing its session's packets as that version did. Across a
+packet schema change (`toimija-context.v2` to `.v3`), the new `verify` refuses
+those packets, and a `toimija refresh` holds only until the old watcher's next
+change. `verify` says so when it meets one. `toimija --version` names the commit
+a binary was built from.
+
 Set it up in a repository:
 
 ```bash

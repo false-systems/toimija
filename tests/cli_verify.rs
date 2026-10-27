@@ -766,3 +766,60 @@ fn an_agent_whose_run_was_killed_can_refresh_its_way_out() {
         .assert()
         .success();
 }
+
+/// An older `toimija run` keeps its own code after a newer toimija is
+/// installed: its watcher rewrites the session's packets in the old schema a
+/// moment after every change, so a refresh holds only until then. A packet of
+/// an earlier schema that briefs a live session says so, and that the way out
+/// is to restart the session under the installed toimija.
+#[test]
+fn an_earlier_schema_packet_of_a_live_session_says_to_restart_it() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path()).arg("refresh").assert().success();
+    let id = "100-1";
+    active_session(temp.path(), id);
+    let path = temp.path().join(".toimija/current.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // The packet as an older toimija's watcher writes it for its session.
+    let seal = value.as_object_mut().unwrap().remove("seal").unwrap();
+    value["schema"] = serde_json::json!("toimija-context.v2");
+    value["sauma"] = seal;
+    value["sauma"]["schema"] = serde_json::json!("toimija-context.v2");
+    value["session"] = serde_json::json!({ "id": id, "intent": null, "scope": [] });
+    fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let output = toimija(temp.path())
+        .args(["verify", "--json"])
+        .env_remove("TOIMIJA_SESSION")
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["status"], "invalid_packet", "{report}");
+    let message = report["message"].as_str().unwrap();
+    for said in [
+        "toimija-context.v2",
+        "an older toimija is still watching session 100-1",
+        "until its next change",
+        "restart the session",
+    ] {
+        assert!(message.contains(said), "{said:?} in {message}");
+    }
+    let stderr = toimija(temp.path())
+        .arg("verify")
+        .env_remove("TOIMIJA_SESSION")
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(stderr).unwrap();
+    assert!(stderr.contains("restart the session"), "{stderr}");
+}
