@@ -169,6 +169,7 @@ impl RepoConfig {
             })?;
         config.validate_stewardship(&path)?;
         config.validate_agents(&path)?;
+        config.validate_gate(&path)?;
         info!(event = "toimija.config.loaded", path = %path.display());
         Ok(config)
     }
@@ -246,6 +247,22 @@ impl RepoConfig {
             }
         }
         Ok(())
+    }
+
+    /// A blank `validation.gate` command would be named as the gate: an empty
+    /// line for the agent to run. `true`, `false` or a command, nothing else.
+    fn validate_gate(&self, path: &Path) -> Result<(), ToimijaError> {
+        match &self.validation.gate {
+            GateSetting::Command(command) if command.trim().is_empty() => {
+                Err(ToimijaError::InvalidValidation {
+                    path: path.to_path_buf(),
+                    message: "validation.gate is blank: give the gate command, or `true` for \
+                              the standard gate, or `false` for none"
+                        .to_string(),
+                })
+            }
+            _ => Ok(()),
+        }
     }
 }
 

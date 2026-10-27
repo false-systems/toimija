@@ -137,15 +137,19 @@ fn declared_gate(repo_root: &Path, setting: &GateSetting) -> (Option<DeclaredGat
         event = "toimija.validation.sykli_gate",
         contract = SYKLI_CONTRACT
     );
-    let mut notes = vec![format!(
-        "The repository declares its gate in {SYKLI_CONTRACT}; run it as written. It writes \
-         .sykli/receipt.json and checks it against the contract."
-    )];
-    if matches!(setting, GateSetting::Command(_)) {
-        notes.push(
+    let declared =
+        format!("The repository declares its gate in {SYKLI_CONTRACT}; run it as written.");
+    // What the standard gate does is known; what a repository's own command
+    // does is not toimija's to say.
+    let mut notes = match setting {
+        GateSetting::Command(_) => vec![
+            declared,
             "The gate command is the one validation.gate names in .toimija/repo.yaml.".to_string(),
-        );
-    }
+        ],
+        GateSetting::Enabled(_) => vec![format!(
+            "{declared} It writes .sykli/receipt.json and checks it against the contract."
+        )],
+    };
     let tasks = match sykli_task_names(&contract) {
         Ok(tasks) => {
             if tasks.is_empty() {

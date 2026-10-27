@@ -564,7 +564,9 @@ with the task names the contract declares (`source: sykli.json`). Nothing is
 inferred beside it. Commands in `.toimija/repo.yaml` add to it, and
 `replace_inferred: true` drops inferred commands but keeps the gate. Only
 `validation.gate` changes the gate: `gate: false` names none, and a string
-names that command instead (for example `mise exec -- sykli …`).
+names that command instead (for example `mise exec -- sykli …`); a blank string
+is refused when the config loads. Only the standard gate is said to write
+`.sykli/receipt.json`: what a command of your own writes is not toimija's to say.
 
 ## Boundaries
 
