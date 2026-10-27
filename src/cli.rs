@@ -2319,6 +2319,7 @@ fn verify_status(
                             return VerifyStatus::StalePacket {
                                 packet_token,
                                 current_token,
+                                refs_only: true,
                             };
                         }
                     }
@@ -2347,6 +2348,7 @@ fn verify_status(
                 } => VerifyStatus::StalePacket {
                     packet_token,
                     current_token,
+                    refs_only: false,
                 },
                 Verdict::NotComparable(algorithm) => VerifyStatus::NotComparable {
                     packet_algorithm: algorithm,
@@ -2563,6 +2565,11 @@ fn load_stored_packet(path: &std::path::Path) -> StoredPacket {
     }
 }
 
+/// Why a packet is stale when the consistency token over HEAD, the index and
+/// the working tree still matches: only the facts read from other refs moved.
+const REFS_ONLY: &str = "only the ref facts changed (upstream, base, ahead/behind: a fetch or \
+                         a push moved a ref); HEAD, the index and the working tree did not change";
+
 #[derive(serde::Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum VerifyStatus {
@@ -2591,6 +2598,12 @@ enum VerifyStatus {
     StalePacket {
         packet_token: String,
         current_token: String,
+        /// Only a ref moved (a fetch, a push, an upstream set): the
+        /// consistency token over HEAD, the index and the working tree still
+        /// matches, and the refresh token over the ref surface does not. Said
+        /// in the message, so the agent knows its tree held still.
+        #[serde(skip)]
+        refs_only: bool,
     },
     SealDigestMismatch {
         expected: String,
@@ -2622,14 +2635,14 @@ impl VerifyStatus {
                         serde_json::Value::String(CONSISTENCY_ALGORITHM.to_string())
                     });
                 }
-                VerifyStatus::StalePacket { .. } => {
-                    map.insert(
-                        "message".to_string(),
-                        serde_json::Value::String(
-                            "The repository state changed after the selected packet was generated."
-                                .to_string(),
-                        ),
-                    );
+                VerifyStatus::StalePacket { refs_only, .. } => {
+                    let message = if *refs_only {
+                        format!("The selected packet is stale: {REFS_ONLY}.")
+                    } else {
+                        "The repository state changed after the selected packet was generated."
+                            .to_string()
+                    };
+                    map.insert("message".to_string(), serde_json::Value::String(message));
                 }
                 VerifyStatus::MissingConsistency => {
                     map.insert(
@@ -2686,6 +2699,9 @@ impl VerifyStatus {
             VerifyStatus::UnsupportedConsistencyAlgorithm { algorithm } => {
                 format!("unsupported_consistency_algorithm: {algorithm}")
             }
+            VerifyStatus::StalePacket {
+                refs_only: true, ..
+            } => format!("stale_packet: {REFS_ONLY}; run `toimija refresh`"),
             VerifyStatus::StalePacket { .. } => {
                 "stale_packet: repository state changed after the selected packet was generated"
                     .to_string()

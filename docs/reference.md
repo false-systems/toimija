@@ -715,7 +715,9 @@ refusal to trust the packet, with one of these statuses: `missing_packet`,
 `invalid_packet`, `missing_consistency`, `not_comparable`,
 `unsupported_consistency_algorithm`, `stale_packet`, `session_not_live`,
 `seal_digest_mismatch`, `unsafe_git_operation`, `unverifiable_repository`,
-`io_error`.
+`io_error`. A `stale_packet` whose consistency token still matches says so in
+its message: only the ref facts changed (upstream, base, ahead/behind, after a
+fetch or a push), and HEAD, the index and the working tree did not.
 
 ## Commands
 
