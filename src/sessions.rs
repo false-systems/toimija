@@ -45,7 +45,9 @@ pub enum PidCheck {
     /// The process exists: `kill -0` succeeded, or failed with EPERM
     /// (it is alive under another user, just not signalable by us).
     Alive,
-    /// The process is provably gone: the probe reported ESRCH.
+    /// The process is provably gone: the probe reported ESRCH, or the pid is
+    /// held by a process that started at another time than the one the
+    /// marker recorded (a reused pid).
     Dead,
     /// The probe gave no certain answer: it failed to spawn, or failed
     /// with unrecognized diagnostics. Never treated as dead.
@@ -128,7 +130,7 @@ pub fn report(
     let mut sessions = Vec::new();
     let scan = read_markers(repo_root)?;
     for (_dir, marker) in scan.markers {
-        let pid_check = check_pid(runner, repo_root, marker.pid);
+        let pid_check = check_marker(runner, repo_root, &marker);
         let liveness = liveness(&marker, now, pid_check, stale_after_secs);
         debug!(
             event = "toimija.session.liveness_checked",
@@ -329,7 +331,7 @@ pub(crate) fn reap_plan(
     let mut kept = scan.unreadable.len();
     let mut unknown_probes = 0;
     for (dir, marker) in scan.markers {
-        let pid_check = check_pid(runner, repo_root, marker.pid);
+        let pid_check = check_marker(runner, repo_root, &marker);
         if pid_check == PidCheck::Unknown {
             unknown_probes += 1;
         }
@@ -364,9 +366,10 @@ pub(crate) fn reap_plan(
 /// from under a running watcher. So a stale marker is prunable only when its
 /// pid is *provably* gone (`PidCheck::Dead`): an EPERM answer means a live
 /// session under another user, and an `Unknown` probe proves nothing — both
-/// keep the directory. That inherits the pid-recycling caveat in the safe
-/// direction: a dead session whose pid was recycled by any live process reads
-/// `Alive` and is kept, and retention resumes only once that pid exits.
+/// keep the directory. A pid recycled by another process reads `Dead` when the
+/// marker recorded its own process start (`check_marker`); without that record
+/// the caveat holds in the safe direction: the recycled pid reads `Alive`, the
+/// session is kept, and retention resumes only once that pid exits.
 /// `Closed` is an explicit end-of-life record and ages out regardless of the
 /// pid verdict, which by then may point at a recycled pid.
 pub fn prunable(
@@ -429,7 +432,7 @@ pub fn named_session(runner: &dyn CommandRunner, repo_root: &Path, id: &str) -> 
     }
     match marker.status {
         SessionStatus::Closed => NamedSession::Closed,
-        SessionStatus::Active if check_pid(runner, repo_root, marker.pid) == PidCheck::Dead => {
+        SessionStatus::Active if check_marker(runner, repo_root, &marker) == PidCheck::Dead => {
             NamedSession::Ended
         }
         SessionStatus::Active => NamedSession::Live,
@@ -442,14 +445,115 @@ pub fn named_session(runner: &dyn CommandRunner, repo_root: &Path, id: &str) -> 
 pub fn process_gone(cwd: &Path, marker: &SessionMarker) -> bool {
     marker.status == SessionStatus::Active
         && marker.pid != std::process::id()
-        && check_pid(&crate::command::ProcessCommandRunner, cwd, marker.pid) == PidCheck::Dead
+        && check_marker(&crate::command::ProcessCommandRunner, cwd, marker) == PidCheck::Dead
+}
+
+/// Whether a marker's own process is alive: its pid probed with `kill -0`,
+/// then, when the marker recorded when that process started, the start of the
+/// process holding the pid now. A pid outlives its process and is handed to
+/// another; a live pid that started at another time is that other process, so
+/// the session's own is provably gone (`Dead`), whatever `kill -0` answered.
+fn check_marker(runner: &dyn CommandRunner, cwd: &Path, marker: &SessionMarker) -> PidCheck {
+    same_process(check_pid(runner, cwd, marker.pid), marker.pid_start, || {
+        process_start(marker.pid)
+    })
+}
+
+/// The probe's verdict, unless the pid is held by a process that started at
+/// another time than the one recorded. Pure, so the decision is unit-tested
+/// without real processes. Only two known, different starts prove another
+/// process; a start that cannot be read leaves the probe's verdict as it was.
+fn same_process(
+    probed: PidCheck,
+    recorded: Option<u64>,
+    current: impl FnOnce() -> Option<u64>,
+) -> PidCheck {
+    if probed == PidCheck::Dead {
+        return probed;
+    }
+    match (recorded, recorded.and_then(|_| current())) {
+        (Some(recorded), Some(now)) if recorded != now => PidCheck::Dead,
+        _ => probed,
+    }
+}
+
+/// When process `pid` started, as the operating system records it, read
+/// without starting a process: an opaque token, compared only for equality
+/// with one read on the same machine. `None` where it cannot be read (no such
+/// process, or a platform without a reader).
+///
+/// - Linux: `starttime` from `/proc/<pid>/stat`, clock ticks after boot.
+/// - macOS: `kp_proc.p_starttime` from `sysctl(KERN_PROC_PID)`, in
+///   microseconds since the epoch. The sysctl answers for any user's process.
+pub fn process_start(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        proc_stat_start(&stat)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_process_start(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Field 22 of `/proc/<pid>/stat`, `starttime`. Field 2, the command name, is
+/// in parentheses and may itself hold spaces and parentheses, so the fields
+/// are counted from the last `)`: field 3 is the first after it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn proc_stat_start(stat: &str) -> Option<u64> {
+    let after_name = &stat[stat.rfind(')')? + 1..];
+    after_name.split_whitespace().nth(22 - 3)?.parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_start(pid: u32) -> Option<u64> {
+    // `struct kinfo_proc` opens with `kp_proc.p_un`, a union whose
+    // `__p_starttime` is a `struct timeval` (`tv_sec: i64`, `tv_usec: i32`).
+    // libc does not declare the struct, so the answer is read as bytes; the
+    // whole struct is 648 bytes, and an absent pid answers with none.
+    let mut mib = [
+        libc::CTL_KERN,
+        libc::KERN_PROC,
+        libc::KERN_PROC_PID,
+        libc::c_int::try_from(pid).ok()?,
+    ];
+    let mut buffer = [0u8; 1024];
+    let mut size = buffer.len();
+    // SAFETY: `mib` names four levels; `buffer` is writable for `size` bytes,
+    // and the kernel writes at most `size` bytes and stores the count in it.
+    let status = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            4,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if status != 0 || size < 16 {
+        return None;
+    }
+    let seconds = i64::from_ne_bytes(buffer[0..8].try_into().ok()?);
+    let micros = i32::from_ne_bytes(buffer[8..12].try_into().ok()?);
+    u64::try_from(seconds)
+        .ok()?
+        .checked_mul(1_000_000)?
+        .checked_add(u64::try_from(micros).ok()?)
 }
 
 /// Best-effort process liveness via `kill -0 <pid>`. Routed through the runner
 /// so it is mockable in tests. `LC_ALL=C` pins the probe's diagnostics to the
 /// untranslated strerror text so classification does not depend on the host
-/// locale. Best-effort only: a recycled pid can still mislead — awareness, not
-/// authority — but the answer is honest about what it proved (see [`PidCheck`]).
+/// locale. Alone, a recycled pid can mislead it — awareness, not authority —
+/// which [`check_marker`] corrects where the marker recorded its process start;
+/// the answer is honest about what it proved (see [`PidCheck`]).
 fn check_pid(runner: &dyn CommandRunner, cwd: &Path, pid: u32) -> PidCheck {
     let pid = pid.to_string();
     let result = runner.run_with_env(
@@ -765,6 +869,7 @@ mod tests {
         SessionMarker {
             id: id.to_string(),
             pid: 4242,
+            pid_start: None,
             agent: vec!["codex".to_string()],
             worktree: "/repo".to_string(),
             branch: Some("feat/x".to_string()),
@@ -868,6 +973,63 @@ mod tests {
     #[test]
     fn probe_exit_zero_is_alive() {
         assert_eq!(classify_kill_probe(probe(0, "")), PidCheck::Alive);
+    }
+
+    #[test]
+    fn only_two_known_different_starts_prove_another_process() {
+        use PidCheck::{Alive, Dead, Unknown};
+        let unread = || -> Option<u64> { panic!("nothing recorded, nothing to read") };
+        // No recorded start (an older marker): the probe decides, as before.
+        assert_eq!(same_process(Alive, None, unread), Alive);
+        // The same start: the session's own process.
+        assert_eq!(same_process(Alive, Some(7), || Some(7)), Alive);
+        // Another start: the pid was handed on; EPERM and an unanswered
+        // probe are overruled too, since the start was read.
+        assert_eq!(same_process(Alive, Some(7), || Some(8)), Dead);
+        assert_eq!(same_process(Unknown, Some(7), || Some(8)), Dead);
+        // A start that cannot be read proves nothing either way.
+        assert_eq!(same_process(Alive, Some(7), || None), Alive);
+        assert_eq!(same_process(Unknown, Some(7), || None), Unknown);
+        // Dead stays dead without reading anything.
+        assert_eq!(same_process(Dead, Some(7), unread), Dead);
+    }
+
+    #[test]
+    fn proc_stat_start_counts_fields_after_the_command_name() {
+        // Field 22 is `starttime`; a command name with spaces and parentheses
+        // must not shift the count.
+        let fields: Vec<String> = (3..=30).map(|field| field.to_string()).collect();
+        let stat = format!("4242 (a (b) c) {}\n", fields.join(" "));
+        assert_eq!(proc_stat_start(&stat), Some(22));
+        assert_eq!(proc_stat_start("4242 (sh) R 1 2"), None);
+        assert_eq!(proc_stat_start("no name"), None);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_process_start_is_stable_and_a_later_process_starts_later() {
+        let own = process_start(std::process::id()).expect("own start");
+        assert_eq!(process_start(std::process::id()), Some(own));
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let later = process_start(child.id());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(later.expect("child start") >= own);
+        // A pid above any pid limit has no process.
+        assert_eq!(process_start(2_000_000_000), None);
+        // On macOS the token is microseconds since the epoch: this process
+        // started within the last day, which checks the struct is read right.
+        #[cfg(target_os = "macos")]
+        {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64;
+            assert!(own <= now && now - own < 86_400_000_000, "{own} vs {now}");
+        }
     }
 
     #[test]
@@ -1068,6 +1230,7 @@ mod tests {
             marker: SessionMarker {
                 id: id.to_string(),
                 pid: 1,
+                pid_start: None,
                 agent: vec![agent.to_string()],
                 worktree: "/repo".to_string(),
                 branch: Some(branch.to_string()),

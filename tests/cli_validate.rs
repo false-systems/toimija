@@ -365,3 +365,43 @@ fn repo_config_can_name_its_own_gate_command_or_opt_out() {
     assert!(plan["gate"].is_null(), "{plan}");
     assert_eq!(plan["source"], "inferred");
 }
+
+#[test]
+fn an_overridden_gate_is_not_said_to_write_the_receipt() {
+    if !git_available() {
+        return;
+    }
+    // What a command of the repository's own writes is not toimija's to know:
+    // only the standard gate is said to write `.sykli/receipt.json`.
+    let temp = tempfile::tempdir().unwrap();
+    rust_repo_with_contract(temp.path(), "validation:\n  gate: \"make gate\"\n");
+    let plan = plan_json(temp.path());
+    assert_eq!(plan["gate"]["command"], "make gate");
+    let notes = plan["notes"].to_string();
+    assert!(notes.contains("validation.gate"), "{notes}");
+    assert!(!notes.contains("receipt"), "{notes}");
+
+    let temp = tempfile::tempdir().unwrap();
+    rust_repo_with_contract(temp.path(), "repo:\n  name: demo\n");
+    let notes = plan_json(temp.path())["notes"].to_string();
+    assert!(notes.contains(".sykli/receipt.json"), "{notes}");
+}
+
+#[test]
+fn a_blank_gate_command_is_refused_when_the_config_loads() {
+    if !git_available() {
+        return;
+    }
+    // A blank command would be named as the gate, an empty bullet to run.
+    for blank in ["\"\"", "\"   \""] {
+        let temp = tempfile::tempdir().unwrap();
+        rust_repo_with_contract(temp.path(), &format!("validation:\n  gate: {blank}\n"));
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args(["validate", "--plan"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("validation.gate"));
+    }
+}

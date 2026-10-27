@@ -78,6 +78,17 @@ fn basename(program: &str) -> &str {
         .unwrap_or(program)
 }
 
+/// How an interactive Codex launch with no task starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexStart {
+    /// It waits for the first task, the packet in `developer_instructions`.
+    Idle,
+    /// The user's own arguments set `developer_instructions`. Toimija's `-c`
+    /// would come after theirs and replace it, so the packet goes in the
+    /// first message instead, and their value stays.
+    OwnInstructions,
+}
+
 /// An idle Codex TUI needs context, not a user message that starts a model turn.
 /// Other agents retain their configured prompt delivery.
 pub fn idle_codex(
@@ -86,26 +97,49 @@ pub fn idle_codex(
     has_task: bool,
     configured: &BTreeMap<String, AgentPromptConfig>,
 ) -> bool {
+    codex_start(program, rest, has_task, configured) == Some(CodexStart::Idle)
+}
+
+/// How a built-in Codex launch with no task starts; `None` for anything else,
+/// which keeps its configured prompt delivery.
+pub fn codex_start(
+    program: &str,
+    rest: &[String],
+    has_task: bool,
+    configured: &BTreeMap<String, AgentPromptConfig>,
+) -> Option<CodexStart> {
     if basename(program) != "codex" || has_task || configured.contains_key("codex") {
-        return false;
+        return None;
     }
     // Only interactive launches wait idle. A subcommand such as `codex exec`
     // or `codex resume` keeps its positional prompt.
+    let mut start = CodexStart::Idle;
     let mut args = rest.iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--" | "-h" | "--help" | "-V" | "--version" => return false,
+            "--" | "-h" | "--help" | "-V" | "--version" => return None,
             // `-i/--image` takes one or more files, as Codex's parser does: every
             // value up to the next flag is an image, not a subcommand.
             "-i" | "--image" => {
-                if args.next().is_none() {
-                    return false;
-                }
+                args.next()?;
                 while args.next_if(|value| !value.starts_with('-')).is_some() {}
             }
-            "-c"
-            | "--config"
-            | "-m"
+            "-c" | "--config" => {
+                if sets_developer_instructions(args.next()?) {
+                    start = CodexStart::OwnInstructions;
+                }
+            }
+            // The value joined to the flag: `--config=k=v`, `-ck=v`, `-c=k=v`.
+            value
+                if value
+                    .strip_prefix("--config=")
+                    .or_else(|| value.strip_prefix("-c"))
+                    .map(|rest| rest.strip_prefix('=').unwrap_or(rest))
+                    .is_some_and(sets_developer_instructions) =>
+            {
+                start = CodexStart::OwnInstructions;
+            }
+            "-m"
             | "--model"
             | "-p"
             | "--profile"
@@ -121,15 +155,21 @@ pub fn idle_codex(
             | "--ask-for-approval"
             | "--remote"
             | "--remote-auth-token-env" => {
-                if args.next().is_none() {
-                    return false;
-                }
+                args.next()?;
             }
             value if value.starts_with('-') => {}
-            _ => return false,
+            _ => return None,
         }
     }
-    true
+    Some(start)
+}
+
+/// Whether a Codex `-c` value sets `developer_instructions`. Codex splits the
+/// value at its first `=` and trims the key.
+fn sets_developer_instructions(value: &str) -> bool {
+    value
+        .split_once('=')
+        .is_some_and(|(key, _)| key.trim() == "developer_instructions")
 }
 
 pub fn launch_args(
@@ -144,7 +184,8 @@ pub fn launch_args(
         // (skills, permissions, collaboration mode), checked against the
         // offline `codex debug prompt-input` of 0.161.0: the slot carries only
         // toimija's packet and briefing. It does replace a `developer_instructions`
-        // set in the user's Codex config for this session.
+        // set in the user's Codex config for this session; one set on the
+        // command line keeps the launch from being idle (`CodexStart`).
         return Ok(vec![
             "-c".into(),
             format!("developer_instructions={}", toml_string(&prompt)?),
@@ -206,7 +247,9 @@ pub const ALERT_HEADING: &str = "## Before anything else (from the launcher)";
 pub const ALERT_CAP_BYTES: usize = 1024;
 
 /// The alerts that fit in [`ALERT_CAP_BYTES`] in total, the last one cut at a
-/// character boundary, and how many bytes did not fit.
+/// character boundary, and how many bytes did not fit. The alerts kept are a
+/// prefix of those sent: after the first cut nothing more is kept, so a later
+/// alert never fills the bytes an earlier one could not.
 pub fn cap_alerts(alerts: &[String]) -> (Vec<String>, usize) {
     let mut room = ALERT_CAP_BYTES;
     let mut kept = Vec::new();
@@ -225,7 +268,7 @@ pub fn cap_alerts(alerts: &[String]) -> (Vec<String>, usize) {
             kept.push(alert[..end].to_string());
         }
         cut += alert.len() - end;
-        room -= end;
+        room = 0;
     }
     (kept, cut)
 }
@@ -413,6 +456,54 @@ mod tests {
             .unwrap(),
             vec!["-c", "developer_instructions=\"packet\\nbriefing\""]
         );
+    }
+
+    #[test]
+    fn a_users_own_developer_instructions_keep_the_packet_out_of_that_slot() {
+        // Toimija's `-c` would come after the user's and replace it. So a launch
+        // that sets the slot itself is not an idle one: its value stays, and
+        // the packet travels as the first message, in every form Codex reads.
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        for own in [
+            args(&["-c", "developer_instructions=\"mine\""]),
+            args(&["--config", "developer_instructions=mine"]),
+            args(&["--config=developer_instructions=mine"]),
+            args(&["-cdeveloper_instructions=mine"]),
+            args(&["-m", "o3", "-c", " developer_instructions = 'mine'"]),
+        ] {
+            assert!(!idle_codex("codex", &own, false, &no_config()), "{own:?}");
+            assert_eq!(
+                launch_args("codex", &own, "packet".into(), false, &no_config()).unwrap(),
+                vec!["packet"],
+                "{own:?}"
+            );
+        }
+        // Other settings, and a key that only starts the same way, stay idle.
+        for other in [
+            args(&["-c", "model=o3"]),
+            args(&["-c", "developer_instructions_file=x"]),
+            args(&["--config=model=o3"]),
+        ] {
+            assert!(
+                idle_codex("codex", &other, false, &no_config()),
+                "{other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_alert_leaves_no_room_for_a_later_one() {
+        // The second alert cannot fit one character of `€` (3 bytes) in the
+        // byte left, so it is cut whole; the third must not take that byte.
+        // The alerts kept are always a prefix of what the launcher sent.
+        let alerts = vec![
+            "A".repeat(ALERT_CAP_BYTES - 1),
+            "€€ second".into(),
+            "X third".into(),
+        ];
+        let (kept, cut) = cap_alerts(&alerts);
+        assert_eq!(kept, vec!["A".repeat(ALERT_CAP_BYTES - 1)]);
+        assert_eq!(cut, "€€ second".len() + "X third".len());
     }
 
     #[test]

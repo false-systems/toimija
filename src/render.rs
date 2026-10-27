@@ -571,6 +571,12 @@ fn ahead_behind_label(git: &crate::git::GitState) -> String {
             };
             format!("{ahead} ahead, {behind} behind {against} ({kind})")
         }
+        // A ref named but not counted: only a shallow repository leaves them so.
+        (None, None, Some(against)) => {
+            format!(
+                "unknown — the repository is shallow; Git cannot count against {against} past the cut"
+            )
+        }
         _ => "unknown — no upstream and no remote default branch".to_string(),
     }
 }

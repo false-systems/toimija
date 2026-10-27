@@ -1074,9 +1074,12 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
                 "toimija run: delivery: Codex session instructions; waiting for your first task"
             );
         }
-        Some(_) => eprintln!(
-            "toimija run: delivery: launch prompt with the packet inlined for `{program}`"
-        ),
+        Some(_) => {
+            eprintln!(
+                "toimija run: delivery: launch prompt with the packet inlined for `{program}`"
+            );
+            say_own_codex_instructions_kept(program, rest, &args, &repo_config.agents);
+        }
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
             let items = undelivered(true, &args);
@@ -1587,7 +1590,10 @@ fn run_outside_repo(
                 "toimija run: delivery: Codex session instructions; waiting for your first task"
             );
         }
-        Some(_) => eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`"),
+        Some(_) => {
+            eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`");
+            say_own_codex_instructions_kept(program, rest, &args, &agents);
+        }
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
             // No packet outside a repository, so only what the caller passed
@@ -1684,6 +1690,24 @@ fn run_outside_repo(
     }
     let status = launched.with_context(|| format!("failed to launch `{program}`"))?;
     Ok(wrapped_exit_code(status))
+}
+
+/// Say why a Codex launch with no task starts a turn: the user's own
+/// `developer_instructions` holds the slot an idle launch would fill.
+fn say_own_codex_instructions_kept(
+    program: &str,
+    rest: &[String],
+    args: &RunArgs,
+    agents: &std::collections::BTreeMap<String, crate::config::AgentPromptConfig>,
+) {
+    use crate::adapters::agents::{CodexStart, codex_start};
+    if codex_start(program, rest, args.task.is_some(), agents) == Some(CodexStart::OwnInstructions)
+    {
+        eprintln!(
+            "toimija run: your own `developer_instructions` is kept; the packet goes in the \
+             first message instead, so Codex starts a turn"
+        );
+    }
 }
 
 /// Finish a composed launch prompt: the briefing at the end, after the packet
@@ -2295,6 +2319,7 @@ fn verify_status(
                             return VerifyStatus::StalePacket {
                                 packet_token,
                                 current_token,
+                                refs_only: true,
                             };
                         }
                     }
@@ -2323,6 +2348,7 @@ fn verify_status(
                 } => VerifyStatus::StalePacket {
                     packet_token,
                     current_token,
+                    refs_only: false,
                 },
                 Verdict::NotComparable(algorithm) => VerifyStatus::NotComparable {
                     packet_algorithm: algorithm,
@@ -2539,6 +2565,11 @@ fn load_stored_packet(path: &std::path::Path) -> StoredPacket {
     }
 }
 
+/// Why a packet is stale when the consistency token over HEAD, the index and
+/// the working tree still matches: only the facts read from other refs moved.
+const REFS_ONLY: &str = "only the ref facts changed (upstream, base, ahead/behind: a fetch or \
+                         a push moved a ref); HEAD, the index and the working tree did not change";
+
 #[derive(serde::Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum VerifyStatus {
@@ -2567,6 +2598,12 @@ enum VerifyStatus {
     StalePacket {
         packet_token: String,
         current_token: String,
+        /// Only a ref moved (a fetch, a push, an upstream set): the
+        /// consistency token over HEAD, the index and the working tree still
+        /// matches, and the refresh token over the ref surface does not. Said
+        /// in the message, so the agent knows its tree held still.
+        #[serde(skip)]
+        refs_only: bool,
     },
     SealDigestMismatch {
         expected: String,
@@ -2598,14 +2635,14 @@ impl VerifyStatus {
                         serde_json::Value::String(CONSISTENCY_ALGORITHM.to_string())
                     });
                 }
-                VerifyStatus::StalePacket { .. } => {
-                    map.insert(
-                        "message".to_string(),
-                        serde_json::Value::String(
-                            "The repository state changed after the selected packet was generated."
-                                .to_string(),
-                        ),
-                    );
+                VerifyStatus::StalePacket { refs_only, .. } => {
+                    let message = if *refs_only {
+                        format!("The selected packet is stale: {REFS_ONLY}.")
+                    } else {
+                        "The repository state changed after the selected packet was generated."
+                            .to_string()
+                    };
+                    map.insert("message".to_string(), serde_json::Value::String(message));
                 }
                 VerifyStatus::MissingConsistency => {
                     map.insert(
@@ -2662,6 +2699,9 @@ impl VerifyStatus {
             VerifyStatus::UnsupportedConsistencyAlgorithm { algorithm } => {
                 format!("unsupported_consistency_algorithm: {algorithm}")
             }
+            VerifyStatus::StalePacket {
+                refs_only: true, ..
+            } => format!("stale_packet: {REFS_ONLY}; run `toimija refresh`"),
             VerifyStatus::StalePacket { .. } => {
                 "stale_packet: repository state changed after the selected packet was generated"
                     .to_string()

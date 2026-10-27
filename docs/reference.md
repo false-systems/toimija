@@ -128,7 +128,9 @@ the setting to its own developer instructions (skills, permissions,
 collaboration mode), so the slot carries only the packet and the briefing;
 `codex debug prompt-input` with the same options shows the result offline. A
 `developer_instructions` set in your own Codex config is replaced for that
-session.
+session. One passed on the command line (`-c developer_instructions=…`) is
+kept: the launch is then not idle, the packet goes in the first message, and
+`run` says so on stderr.
 Explicit tasks keep positional delivery, and an `agents.codex` configuration keeps its
 declared prompt style. Subcommands such as `codex exec` and `codex resume`
 retain prompt delivery rather than being inspected as interactive launches.
@@ -315,8 +317,10 @@ still hold its values. Toimija reads an empty handshake value as unset; other
 readers should too.
 
 Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
-agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that `run`
-auto-closes on exit. The marker is what `toimija sessions` reads (below).
+when that process started (`pid_start`: Linux and macOS, an opaque token
+compared only for equality, so a reused pid is not taken for the session),
+agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that
+`run` auto-closes on exit. The marker is what `toimija sessions` reads (below).
 The entry branch and HEAD remain fixed in later packets; if current Git state
 moves, mandatory Markdown renders a `Session drift` block and JSON retains both
 the entry baseline and current `git` state.
@@ -625,8 +629,13 @@ The packet includes:
   the token and the point id say it is unchanged; the file lists themselves
   are what `git status` reported
 - ahead / behind: commits HEAD has that its upstream lacks and the reverse, counted
-  from local refs (no fetch); without an upstream, against `origin/<default>`;
-  `git.ahead_behind_ref` names which
+  from local refs (no fetch); without an upstream, against `origin/<default>`,
+  or, with no `origin` and exactly one other remote, that remote's default
+  branch, which is then the base too; `git.ahead_behind_ref` names which. In a
+  shallow repository Git counts only the history it has, and a cut can hide the
+  commits both sides share, so the counts are left null there and the line
+  says `unknown — the repository is shallow` while `ahead_behind_ref` still
+  names the ref
 - staged / unstaged / untracked files
 - rename/copy origin paths and similarity when Git reports them, plus conflict
   index stages (mode and object ID)
@@ -706,7 +715,9 @@ refusal to trust the packet, with one of these statuses: `missing_packet`,
 `invalid_packet`, `missing_consistency`, `not_comparable`,
 `unsupported_consistency_algorithm`, `stale_packet`, `session_not_live`,
 `seal_digest_mismatch`, `unsafe_git_operation`, `unverifiable_repository`,
-`io_error`.
+`io_error`. A `stale_packet` whose consistency token still matches says so in
+its message: only the ref facts changed (upstream, base, ahead/behind, after a
+fetch or a push), and HEAD, the index and the working tree did not.
 
 ## Commands
 
@@ -1082,7 +1093,7 @@ boundaries:
 
 `context.read_first` adds repo-specific files to the Read first section when they exist.
 `context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
-Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible. It never removes the gate a `sykli.json` declares: `validation.gate: false` does, and `validation.gate: "<command>"` names that command for the gate instead (a repository that runs sykli through `mise exec`, say).
+Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible. It never removes the gate a `sykli.json` declares: `validation.gate: false` does, and `validation.gate: "<command>"` names that command for the gate instead (a repository that runs sykli through `mise exec`, say). A blank `validation.gate` is refused when the config loads, like a malformed `agents:` entry.
 Stewardship values are optional and default to the values above. Retention and
 history limits must be greater than zero; invalid values are refused and
 reported by `doctor` instead of being silently clamped. `auto_sweep: false`

@@ -918,6 +918,7 @@ mod tests {
         SessionMarker {
             id: id.to_string(),
             pid: 1,
+            pid_start: None,
             agent: vec!["codex".to_string()],
             worktree: "/repo".to_string(),
             branch: Some("main".to_string()),

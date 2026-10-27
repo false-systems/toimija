@@ -82,6 +82,14 @@ pub enum SessionStatus {
 pub struct SessionMarker {
     pub id: String,
     pub pid: u32,
+    /// When `pid` started, as the operating system records it: an opaque
+    /// token, compared only for equality with what the same machine reads for
+    /// that pid later (`crate::sessions::process_start`). A pid outlives its
+    /// process; a live pid that started at another time is another process.
+    /// `None` where the start cannot be read, and in markers written before
+    /// the field existed: their pid alone decides, as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_start: Option<u64>,
     pub agent: Vec<String>,
     /// Absolute path of the worktree the session runs in. Distinguishes sessions
     /// that share a repo but check out separate worktrees — the preferred
@@ -207,6 +215,7 @@ impl Session {
         let marker = SessionMarker {
             id: id.clone(),
             pid,
+            pid_start: crate::sessions::process_start(pid),
             agent: agent.to_vec(),
             worktree: worktree.display().to_string(),
             branch: None,

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -20,13 +20,16 @@ pub struct GitState {
     pub upstream: Option<String>,
     /// Commits on HEAD that `ahead_behind_ref` lacks, and the reverse. Counted
     /// from local refs only, never fetched, so they are as fresh as the last
-    /// fetch. `None` when there is nothing to count against.
+    /// fetch. `None` when there is nothing to count against, and in a shallow
+    /// repository, where Git cannot count past the cut; `ahead_behind_ref`
+    /// then still names the ref.
     #[serde(default)]
     pub ahead: Option<u32>,
     #[serde(default)]
     pub behind: Option<u32>,
     /// What `ahead` and `behind` are counted against: the upstream, or, with
-    /// none (or one that is gone), the remote default branch (`origin/<default>`).
+    /// none (or one that is gone), the remote default branch: `origin/<default>`,
+    /// or that of the one remote there is when none is named `origin`.
     #[serde(default)]
     pub ahead_behind_ref: Option<String>,
     pub base: Option<String>,
@@ -552,7 +555,8 @@ fn read_ref_facts(
     shallow: Option<bool>,
 ) -> RefFacts {
     let head_oid = parsed.head_oid.as_deref();
-    let base = discover_base(runner, repo_root);
+    let discovered = discover_base(runner, repo_root);
+    let base = discovered.as_ref().map(|base| base.name.clone());
     let merge_base = if head_oid.is_some() {
         base.as_deref().and_then(|base| {
             run_git_ok(runner, repo_root, &["merge-base", "HEAD", base])
@@ -605,12 +609,9 @@ fn read_ref_facts(
     let base_counted = if upstream_counted(parsed) {
         None
     } else {
-        match (
-            head_oid,
-            base.as_deref().filter(|base| base.starts_with("origin/")),
-        ) {
-            (Some(_), Some(base)) => {
-                count_ahead_behind(runner, repo_root, base).map(|counts| (counts, base.to_string()))
+        match (head_oid, discovered.filter(|base| base.remote)) {
+            (Some(_), Some(Base { name, .. })) => {
+                count_ahead_behind(runner, repo_root, &name).map(|counts| (counts, name))
             }
             _ => None,
         }
@@ -672,6 +673,11 @@ fn assemble(status: Status, refs: RefFacts) -> Collected {
             None => (None, None),
         },
     };
+    // A shallow repository has only part of its history, and Git counts only
+    // what it has: a cut can hide the commits both sides share, which are
+    // then counted as one side's (`+2 -1` for one commit ahead). The counts
+    // are left unknown there; the ref they would be counted against is named.
+    let ahead_behind = ahead_behind.filter(|_| !refs.shallow);
     if parsed.upstream.is_none() {
         warnings.push(match &ahead_behind_ref {
             Some(base) => format!("No upstream detected. Ahead/behind are counted against {base}."),
@@ -679,7 +685,10 @@ fn assemble(status: Status, refs: RefFacts) -> Collected {
         });
     }
     if refs.shallow {
-        warnings.push("Shallow repository. Merge-base may be incomplete.".to_string());
+        warnings.push(
+            "Shallow repository. Merge-base may be incomplete; ahead/behind are not counted."
+                .to_string(),
+        );
     }
     let detached = parsed.detached || (parsed.branch.is_none() && parsed.head_oid.is_some());
     if detached {
@@ -764,7 +773,15 @@ fn parse_ahead_behind(text: &str) -> Option<(u32, u32)> {
     ))
 }
 
-fn discover_base(runner: &impl CommandRunner, repo_root: &Path) -> Option<String> {
+/// The branch the branch surface compares against, and whether it is a
+/// remote-tracking branch (`<remote>/<branch>`) rather than a local one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Base {
+    name: String,
+    remote: bool,
+}
+
+fn discover_base(runner: &impl CommandRunner, repo_root: &Path) -> Option<Base> {
     // Branch surface compares against the integration trunk, not the branch's
     // push/pull upstream. A pushed feature branch commonly tracks
     // origin/<feature>, which would make merge-base collapse to HEAD.
@@ -781,14 +798,77 @@ fn discover_base(runner: &impl CommandRunner, repo_root: &Path) -> Option<String
     .map(|text| text.trim().to_string())
     .filter(|text| !text.is_empty())
     {
-        return Some(default_remote);
+        return Some(Base {
+            name: default_remote,
+            remote: true,
+        });
     }
-    for candidate in ["origin/main", "origin/master", "main", "master"] {
+    // No `origin/HEAD`: one read names every remote's `HEAD`, `main` and
+    // `master`, so a remote not named `origin` is found too.
+    if let Some(name) = run_git_ok(
+        runner,
+        repo_root,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(symref)",
+            "refs/remotes/*/HEAD",
+            "refs/remotes/*/main",
+            "refs/remotes/*/master",
+        ],
+    )
+    .and_then(|listing| remote_default_branch(&listing))
+    {
+        return Some(Base { name, remote: true });
+    }
+    for candidate in ["main", "master"] {
         if run_git_ok(runner, repo_root, &["rev-parse", "--verify", candidate]).is_some() {
-            return Some(candidate.to_string());
+            return Some(Base {
+                name: candidate.to_string(),
+                remote: false,
+            });
         }
     }
     None
+}
+
+/// The remote default branch in a `for-each-ref` listing of remotes' `HEAD`,
+/// `main` and `master` (`<refname> <symref target>` per line): `origin/main`,
+/// then `origin/master`; with no `origin` among them and exactly one other
+/// remote, what its `HEAD` points at, then its `main`, then its `master`.
+/// Toimija never picks between two remotes that are not `origin`. The `*` of
+/// the listing's patterns does not cross a `/`, so a remote whose name holds
+/// one is not listed.
+fn remote_default_branch(listing: &str) -> Option<String> {
+    let mut remotes: BTreeMap<&str, [Option<String>; 3]> = BTreeMap::new();
+    for line in listing.lines() {
+        let (refname, target) = line.split_once(' ').unwrap_or((line, ""));
+        let Some(short) = refname.strip_prefix("refs/remotes/") else {
+            continue;
+        };
+        for (slot, branch) in ["HEAD", "main", "master"].into_iter().enumerate() {
+            let Some(remote) = short.strip_suffix(branch).and_then(|r| r.strip_suffix('/')) else {
+                continue;
+            };
+            let name = if branch == "HEAD" {
+                match target.strip_prefix("refs/remotes/") {
+                    Some(target) => target.to_string(),
+                    None => continue,
+                }
+            } else {
+                short.to_string()
+            };
+            remotes.entry(remote).or_default()[slot] = Some(name);
+        }
+    }
+    let [_, main, master] = remotes.get("origin").cloned().unwrap_or_default();
+    if let Some(name) = main.or(master) {
+        return Some(name);
+    }
+    if remotes.len() != 1 {
+        return None;
+    }
+    let [head, main, master] = remotes.into_values().next()?;
+    head.or(main).or(master)
 }
 
 fn run_git_required_bytes(
@@ -1379,13 +1459,34 @@ R094\tsrc/old.rs\tsrc/renamed.rs
         );
     }
 
+    const REMOTE_DEFAULTS: [&str; 5] = [
+        "for-each-ref",
+        "--format=%(refname) %(symref)",
+        "refs/remotes/*/HEAD",
+        "refs/remotes/*/main",
+        "refs/remotes/*/master",
+    ];
+
+    fn remote(name: &str) -> Option<Base> {
+        Some(Base {
+            name: name.to_string(),
+            remote: true,
+        })
+    }
+
     #[test]
     fn base_discovery_ignores_feature_upstream_and_prefers_trunk() {
-        let runner = FakeRunner::default()
-            .with(&["rev-parse", "--verify", "origin/main"], 0, "abc\n")
-            .with(&["rev-parse", "--verify", "origin/feature"], 0, "def\n");
-        let base = discover_base(&runner, Path::new("."));
-        assert_eq!(base.as_deref(), Some("origin/main"));
+        // Without `origin/HEAD`, `origin/main` is the trunk; a feature branch
+        // the upstream tracks is not listed, so it cannot be picked.
+        let runner = FakeRunner::default().with(
+            &REMOTE_DEFAULTS,
+            0,
+            "refs/remotes/origin/main \nrefs/remotes/upstream/HEAD refs/remotes/upstream/dev\n",
+        );
+        assert_eq!(
+            discover_base(&runner, Path::new(".")),
+            remote("origin/main")
+        );
     }
 
     #[test]
@@ -1400,18 +1501,55 @@ R094\tsrc/old.rs\tsrc/renamed.rs
             0,
             "origin/trunk\n",
         );
-        let base = discover_base(&runner, Path::new("."));
-        assert_eq!(base.as_deref(), Some("origin/trunk"));
+        assert_eq!(
+            discover_base(&runner, Path::new(".")),
+            remote("origin/trunk")
+        );
     }
 
     #[test]
     fn base_discovery_falls_back_to_common_branch_names() {
-        let runner = FakeRunner::default()
-            .with(&["rev-parse", "--verify", "origin/main"], 1, "")
-            .with(&["rev-parse", "--verify", "origin/master"], 1, "")
-            .with(&["rev-parse", "--verify", "main"], 0, "abc\n");
-        let base = discover_base(&runner, Path::new("."));
-        assert_eq!(base.as_deref(), Some("main"));
+        let runner = FakeRunner::default().with(&REMOTE_DEFAULTS, 0, "").with(
+            &["rev-parse", "--verify", "main"],
+            0,
+            "abc\n",
+        );
+        assert_eq!(
+            discover_base(&runner, Path::new(".")),
+            Some(Base {
+                name: "main".to_string(),
+                remote: false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_single_remote_not_named_origin_names_the_default_branch() {
+        // Its `HEAD` first, then `main`, then `master`.
+        for (listing, expected) in [
+            (
+                "refs/remotes/upstream/HEAD refs/remotes/upstream/trunk\nrefs/remotes/upstream/main \n",
+                Some("upstream/trunk"),
+            ),
+            (
+                "refs/remotes/fork/master \nrefs/remotes/fork/main \n",
+                Some("fork/main"),
+            ),
+            // `origin` first, whatever else is there.
+            (
+                "refs/remotes/origin/master \nrefs/remotes/upstream/HEAD refs/remotes/upstream/main\n",
+                Some("origin/master"),
+            ),
+            // Two remotes, neither `origin`: not toimija's to choose.
+            ("refs/remotes/a/main \nrefs/remotes/b/main \n", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                remote_default_branch(listing).as_deref(),
+                expected,
+                "{listing:?}"
+            );
+        }
     }
 
     #[test]

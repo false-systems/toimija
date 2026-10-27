@@ -165,7 +165,9 @@ prompt. Codex opens and waits for your first message: no acknowledgement turn
 is requested. Codex adds that setting to its own developer instructions
 (skills, permissions, collaboration mode), so the slot carries only the packet
 and the briefing; a `developer_instructions` set in your own Codex config is
-replaced for that session. The first task still has the full context. Explicit `agents.codex` prompt
+replaced for that session. One you pass yourself (`-c developer_instructions=…`)
+is kept: the launch is then not idle, and the packet goes in the first
+message, so Codex starts a turn (`run` says so). The first task still has the full context. Explicit `agents.codex` prompt
 configuration retains its configured delivery. Subcommands such as `codex exec`
 and `codex resume` retain prompt delivery; only interactive launches wait.
 
@@ -333,7 +335,9 @@ whose process is gone.
 A packet combines:
 
 - branch, HEAD, upstream, ahead/behind (against the upstream, else
-  `origin/<default>`, from local refs only), merge-base, and recent commits;
+  `origin/<default>`, or the one remote's default when none is named `origin`;
+  from local refs only, and not counted in a shallow repository), merge-base,
+  and recent commits;
 - staged, unstaged, untracked, renamed, and conflicted paths;
 - unsafe Git operation state;
 - the committed branch surface;
@@ -395,8 +399,11 @@ overlap warnings for branch, worktree, intent, and scope. These are awareness
 signals, not locks or assignments. JSON also exposes `pid_check` (`alive`,
 `dead`, or `unknown`), the process probe separately from heartbeat age. A
 `stale` session with a `dead` PID is no longer running under that PID; a
-`stale` session with an `alive` or `unknown` PID is still uncertain. PID reuse
-can keep an obsolete session uncertain. Listing never rewrites markers.
+`stale` session with an `alive` or `unknown` PID is still uncertain. The marker
+records when its process started (`pid_start`, Linux and macOS), so a PID handed
+on to another process reads `dead`. On other systems, and for markers written
+without it, PID reuse can keep an obsolete session uncertain. Listing never
+rewrites markers.
 Outside a repository, `toimija sessions` lists the sessions opened outside
 any repository, and says so.
 
@@ -562,7 +569,9 @@ with the task names the contract declares (`source: sykli.json`). Nothing is
 inferred beside it. Commands in `.toimija/repo.yaml` add to it, and
 `replace_inferred: true` drops inferred commands but keeps the gate. Only
 `validation.gate` changes the gate: `gate: false` names none, and a string
-names that command instead (for example `mise exec -- sykli …`).
+names that command instead (for example `mise exec -- sykli …`); a blank string
+is refused when the config loads. Only the standard gate is said to write
+`.sykli/receipt.json`: what a command of your own writes is not toimija's to say.
 
 ## Boundaries
 

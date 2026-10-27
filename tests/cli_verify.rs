@@ -823,3 +823,95 @@ fn an_earlier_schema_packet_of_a_live_session_says_to_restart_it() {
     let stderr = String::from_utf8(stderr).unwrap();
     assert!(stderr.contains("restart the session"), "{stderr}");
 }
+
+/// The pid a packet's session ran under now belongs to another process (here,
+/// this test's own, which did not start at time 1). `kill -0` answers for that
+/// process, so only the recorded start time tells the session is over.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn verify_refuses_a_packet_whose_session_pid_now_names_another_process() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    let id = "100-1";
+    let dir = active_session(temp.path(), id);
+    toimija(temp.path())
+        .env("TOIMIJA_SESSION", id)
+        .arg("refresh")
+        .assert()
+        .success();
+    let packet: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(packet["session"]["id"], id, "{}", packet["session"]);
+
+    let mut marker: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("session.json")).unwrap()).unwrap();
+    marker["pid_start"] = 1.into();
+    fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&marker).unwrap(),
+    )
+    .unwrap();
+
+    let assert = toimija(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .args(["verify", "--json"])
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "session_not_live", "{value}");
+    assert_eq!(value["state"], "ended", "{value}");
+}
+
+/// A packet goes stale when only a ref moves: a fetch, a push, an upstream
+/// set. `verify` says so, so an agent knows HEAD and its tree held still and
+/// a refresh is all it needs; a change to the tree is not described that way.
+#[test]
+fn a_packet_stale_from_a_moved_ref_says_the_tree_held_still() {
+    if !git_available() {
+        return;
+    }
+    let held_still = "HEAD, the index and the working tree did not change";
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    run_git(temp.path(), &["branch", "-M", "feature"]);
+    toimija(temp.path()).arg("refresh").assert().success();
+    run_git(
+        temp.path(),
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+
+    let assert = toimija(temp.path())
+        .args(["verify", "--json"])
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "stale_packet");
+    assert!(
+        value["message"].as_str().unwrap().contains(held_still),
+        "{value}"
+    );
+    toimija(temp.path())
+        .arg("verify")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(held_still));
+
+    // A change to the tree is a different staleness.
+    toimija(temp.path()).arg("refresh").assert().success();
+    fs::write(temp.path().join("b.txt"), "new\n").unwrap();
+    let assert = toimija(temp.path())
+        .args(["verify", "--json"])
+        .assert()
+        .failure();
+    let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(value["status"], "stale_packet");
+    assert!(
+        !value["message"].as_str().unwrap().contains(held_still),
+        "{value}"
+    );
+}
