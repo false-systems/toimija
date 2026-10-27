@@ -89,6 +89,22 @@ those packets, and a `toimija refresh` holds only until the old watcher's next
 change. `verify` says so when it meets one. `toimija --version` names the commit
 a binary was built from.
 
+**Upgrading to 0.2.0.** Every build of `main` from June to October 2026 called
+itself 0.1.1, so 0.2.0 is the first number that sets a build apart from them.
+What breaks:
+
+- Eleven commands are gone: `adopt`, `snippet`, `handoff`, `current`,
+  `audit-plan`, `gates`, `plugins`, `verify-work`, `close-work`, `explain-work`
+  and `correlate-pr`, with `run --cycle*` and `run --require-work`. Sixteen
+  remain; `toimija --help` lists them.
+- The packet is `toimija-context.v3`. v2 dropped the `relevance` block, and v3
+  renames the top-level `sauma` key to `seal`. `verify` refuses a v1 or v2
+  packet as `invalid_packet`, and `toimija refresh` replaces it.
+- The consistency token is `toimija-consistency-v3` and a repository point's id
+  is `rpoint_v3_…`, derived from its tree. `verify` reports an older packet's
+  token as `not_comparable`.
+- Restart live `toimija run` sessions after installing, as above.
+
 Set it up in a repository:
 
 ```bash

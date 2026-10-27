@@ -205,7 +205,7 @@ fn every_command_the_source_names_exists() {
 }
 
 /// `--version` names the commit the binary was built from, so two builds of
-/// one version number can be told apart: `toimija 0.1.1 (a1b2c3d)`, with
+/// one version number can be told apart: `toimija 0.2.0 (a1b2c3d)`, with
 /// `, dirty` when the code built differs from that commit.
 #[test]
 fn version_names_the_commit_it_was_built_from() {
