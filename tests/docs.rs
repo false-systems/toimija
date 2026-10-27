@@ -95,10 +95,10 @@ fn sauma_schema_matches_emitted_envelope_fields() {
     );
     assert_eq!(schema["additionalProperties"], false);
 
-    let envelope = toimija::sauma::legacy_envelope_from_canonical(
+    let envelope = toimija::seal::legacy_envelope_from_canonical(
         "handoff-record.v1",
         "{}",
-        vec![toimija::sauma::SaumaProvenance::Token {
+        vec![toimija::seal::Provenance::Token {
             token: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
                 .to_string(),
         }],
@@ -158,14 +158,14 @@ fn sauma_canonical_digest_matches_pinned_vector() {
         "c": "hi"
     });
 
-    let canonical = toimija::sauma::canonical_json(&artifact);
+    let canonical = toimija::seal::canonical_json(&artifact);
     assert_eq!(
         canonical, r#"{"a":{"x":[3,1,2],"y":true},"b":1,"c":"hi"}"#,
         "canonical form must sort object keys at every level, compact, arrays in order"
     );
 
     assert_eq!(
-        toimija::sauma::digest_value(&artifact),
+        toimija::seal::digest_value(&artifact),
         "sha256:adac1485cdabade54a2ab242128ff4ad18618ee9038acdcc6404ea9be057853d",
         "digest must be sha256 over the sorted-key canonical form"
     );

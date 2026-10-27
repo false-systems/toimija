@@ -203,3 +203,124 @@ fn every_command_the_source_names_exists() {
         unknown.join("\n")
     );
 }
+
+/// `--version` names the commit the binary was built from, so two builds of
+/// one version number can be told apart: `toimija 0.1.1 (a1b2c3d)`, with
+/// `, dirty` when the code built differs from that commit.
+#[test]
+fn version_names_the_commit_it_was_built_from() {
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .arg("--version")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let printed = String::from_utf8(output).unwrap();
+    let prefix = format!("toimija {} (", env!("CARGO_PKG_VERSION"));
+    let build = printed
+        .trim_end()
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("{printed:?}"));
+    let commit = build.strip_suffix(", dirty").unwrap_or(build);
+    if commit == "unknown commit" {
+        // Built where git could not name a commit: a source archive.
+        return;
+    }
+    assert!(
+        commit.len() >= 7 && commit.chars().all(|c| c.is_ascii_hexdigit()),
+        "{printed:?}"
+    );
+    // The commit this checkout is at, when the test runs where it was built.
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    if head.status.success() {
+        let head = String::from_utf8(head.stdout).unwrap();
+        assert!(head.starts_with(commit), "{printed:?} is not HEAD {head}");
+    }
+}
+
+/// `build.rs`, included to test the commit it names without a build.
+#[path = "../build.rs"]
+#[allow(dead_code)]
+mod build_script;
+
+mod common;
+
+/// `--version` names the commit of toimija's own repository only. A source
+/// tree unpacked inside some other repository is not that repository's
+/// commit, nor dirty because that repository does not track it: it is an
+/// `unknown commit`. A tree that is its own repository's root names its HEAD,
+/// and watches HEAD's reflog, which moves on every commit even where the
+/// branch's own ref is packed.
+#[test]
+fn a_build_names_only_its_own_repositorys_commit() {
+    if !common::git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let outer = temp.path().join("outer");
+    let package = outer.join("toimija-src");
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    let commit_all = |dir: &std::path::Path, message: &str| {
+        common::run_git(dir, &["add", "-A"]);
+        common::run_git(
+            dir,
+            &[
+                "-c",
+                "user.name=Build Fixture",
+                "-c",
+                "user.email=build@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+        );
+    };
+    std::fs::write(outer.join("outer.txt"), "outer\n").unwrap();
+    common::run_git(&outer, &["init", "-q", "-b", "main", "--", "."]);
+    std::fs::write(package.join("Cargo.toml"), "[package]\n").unwrap();
+    std::fs::write(package.join("src/lib.rs"), "\n").unwrap();
+    commit_all(&outer, "outer");
+
+    // Inside another repository, which even tracks it.
+    let build = build_script::describe(&package);
+    assert_eq!(build.commit, "unknown commit", "{build:?}");
+    assert!(build.watched.is_empty(), "{build:?}");
+
+    // Its own repository's root.
+    common::run_git(&package, &["init", "-q", "-b", "main"]);
+    commit_all(&package, "init");
+    let head = common::git_at(&package)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .unwrap();
+    let head = String::from_utf8(head.stdout).unwrap().trim().to_string();
+    let build = build_script::describe(&package);
+    assert_eq!(build.commit, head, "{build:?}");
+    std::fs::write(package.join("src/lib.rs"), "// edited\n").unwrap();
+    assert_eq!(
+        build_script::describe(&package).commit,
+        format!("{head}, dirty")
+    );
+
+    // With the branch's ref packed, HEAD's reflog is what a commit moves.
+    common::run_git(&package, &["pack-refs", "--all"]);
+    let build = build_script::describe(&package);
+    assert!(
+        build
+            .watched
+            .iter()
+            .any(|path| path.ends_with(".git/logs/HEAD")),
+        "{build:?}"
+    );
+}

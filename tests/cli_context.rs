@@ -78,10 +78,10 @@ fn context_json_is_valid() {
         value["repo"]["name"].as_str(),
         Some(temp.path().file_name().unwrap().to_string_lossy().as_ref())
     );
-    assert_eq!(value["schema"], "toimija-context.v2");
-    assert_eq!(value["sauma"]["schema"], "toimija-context.v2");
+    assert_eq!(value["schema"], "toimija-context.v3");
+    assert_eq!(value["seal"]["schema"], "toimija-context.v3");
     let mut packet: toimija::context::ContextPacket = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(toimija::sauma::verify(&mut packet).unwrap(), None);
+    assert_eq!(toimija::seal::verify(&mut packet).unwrap(), None);
 }
 
 #[test]
@@ -322,5 +322,93 @@ fn context_json_carries_the_repo_identity_ohjaa_reads() {
     assert_eq!(
         value["repo"]["not_roles"],
         serde_json::json!(["inbox", "tracker"])
+    );
+}
+
+/// In a repository without `toimija init`, nothing keeps Git away from
+/// Toimija's own files, so `git status` lists every packet, marker and
+/// history line under `.toimija/`. They are Toimija's, not the repository's
+/// work: the packet still lists them as Git reported them, but they are not
+/// in the changed surface or Read first, raise no warning, and leave the
+/// state clean. `.toimija/repo.yaml` is the repository's own.
+#[test]
+fn toimijas_own_files_are_not_the_repositorys_work() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // No `.toimija/.gitignore`: a run leaves its files visible to Git.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["run", "--intent", "leave files", "--", "true"])
+        .assert()
+        .success();
+    let context = || -> serde_json::Value {
+        let output = Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args(["context", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&output).unwrap()
+    };
+
+    let value = context();
+    let untracked = strings_at(&value, "/git/untracked_files");
+    assert!(
+        untracked.iter().any(|path| path == ".toimija/current.json"),
+        "Git lists Toimija's own files here: {untracked:?}"
+    );
+    assert_eq!(value["git"]["dirty"], false, "{untracked:?}");
+    assert!(
+        strings_at(&value, "/changed_surface").is_empty(),
+        "{value:#}"
+    );
+    assert!(
+        read_first_paths(&value)
+            .iter()
+            .all(|path| !path.starts_with(".toimija/")),
+        "{value:#}"
+    );
+    assert!(
+        strings_at(&value, "/warnings")
+            .iter()
+            .all(|warning| !warning.starts_with("Untracked files exist")),
+        "{value:#}"
+    );
+    // The Markdown counts them apart, beside `dirty: false`.
+    let markdown = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("context")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let markdown = String::from_utf8(markdown).unwrap();
+    assert!(markdown.contains("- dirty: false\n"), "{markdown}");
+    assert!(markdown.contains("- untracked: 0 (+"), "{markdown}");
+    assert!(
+        !markdown.contains("- .toimija/current.json\n"),
+        "{markdown}"
+    );
+
+    fs::write(temp.path().join("notes.txt"), "the user's\n").unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: demo\n",
+    )
+    .unwrap();
+    let value = context();
+    assert_eq!(value["git"]["dirty"], true);
+    assert_eq!(
+        strings_at(&value, "/changed_surface"),
+        [".toimija/repo.yaml", "notes.txt"]
     );
 }

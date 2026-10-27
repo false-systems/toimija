@@ -207,13 +207,13 @@ fn first_link_field(value: &serde_json::Value) -> Option<String> {
         .find_map(|field| link_field(value, field))
 }
 
-fn run_sauma_why(query: &str) -> Result<()> {
+fn run_why(query: &str) -> Result<()> {
     let root = locate_project_root()?;
-    print!("{}", render_sauma_why(&root, query)?);
+    print!("{}", render_why(&root, query)?);
     Ok(())
 }
 
-fn render_sauma_why(root: &Path, query: &str) -> Result<String> {
+fn render_why(root: &Path, query: &str) -> Result<String> {
     let artifacts = scan_artifacts(root)?;
     let roots = chain_roots(&artifacts, query);
     let mut output = String::new();
@@ -227,7 +227,7 @@ fn render_sauma_why(root: &Path, query: &str) -> Result<String> {
         }
     }
     if seen.is_empty() {
-        writeln!(output, "no sauma chain touches {query}")?;
+        writeln!(output, "no sealed chain touches {query}")?;
     }
     Ok(output)
 }
@@ -380,21 +380,31 @@ fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Ok(());
     };
-    let Some(sauma_value) = value.get("sauma").cloned() else {
+    // Toimija's packets carry their envelope under `seal`; other tools'
+    // artifacts (kisko's model calls, say) carry the same envelope under
+    // `sauma`, where each key has its own digest rule.
+    let (envelope, actual) = if let Some(seal) = value.get(toimija::seal::KEY).cloned() {
+        let envelope: Envelope = serde_json::from_value(seal)?;
+        if envelope.envelope != toimija::seal::ENVELOPE_SCHEMA {
+            bail!("unsupported seal envelope `{}`", envelope.envelope);
+        }
+        (envelope, toimija::seal::digest_of(&value))
+    } else if let Some(sauma) = value.get(toimija::seal::SAUMA_KEY).cloned() {
+        let envelope: Envelope = serde_json::from_value(sauma)?;
+        if !toimija::seal::is_supported_envelope(&envelope.envelope) {
+            bail!("unsupported envelope `{}`", envelope.envelope);
+        }
+        (envelope, toimija::seal::digest_under_sauma_key(&value))
+    } else {
         return Ok(());
     };
-    let envelope: Envelope = serde_json::from_value(sauma_value)?;
-    if !toimija::sauma::is_supported_envelope(&envelope.envelope) {
-        bail!("unsupported Sauma envelope `{}`", envelope.envelope);
-    }
     if artifacts
         .iter()
         .any(|artifact| artifact.digest == envelope.digest)
     {
         return Ok(());
     }
-    let actual = toimija::sauma::artifact_digest_value(&value);
-    let metadata_covered = envelope.envelope == toimija::sauma::ENVELOPE_SCHEMA;
+    let metadata_covered = envelope.envelope == toimija::seal::ENVELOPE_SCHEMA;
     let edges: Vec<String> = if metadata_covered {
         envelope
             .provenance
@@ -448,18 +458,20 @@ fn main() -> Result<()> {
                 "It runs rustfmt on staged crates, re-stages, then clippy -D warnings and tests."
             );
         }
-        Some("sauma-why") => {
+        Some("why") => {
             let Some(query) = args.get(2) else {
-                bail!("usage: cargo xtask sauma-why <digest|token|session-id>");
+                bail!("usage: cargo xtask why <digest|token|session-id>");
             };
-            run_sauma_why(query)?;
+            run_why(query)?;
         }
         Some("gate") => run_full_gate()?,
         other => {
             eprintln!("toimija dev tasks:");
             eprintln!("  cargo xtask gate                      run the full gate: fmt --check, clippy -D warnings, tests");
             eprintln!("  cargo xtask install-pre-commit-hook   install the git pre-commit hook");
-            eprintln!("  cargo xtask sauma-why <query>        walk local sauma artifact edges");
+            eprintln!(
+                "  cargo xtask why <query>              walk the local chain of sealed artifacts"
+            );
             // Fail closed: a caller that treats the exit code as a verdict (the
             // harness gate, CI) must never mistake "task not found" for a pass.
             if let Some(arg) = other {
@@ -483,7 +495,7 @@ mod tests {
         if Command::new("git").arg("--version").output().is_err() {
             return;
         }
-        let root = temp_repo("sauma-crosstool");
+        let root = temp_repo("seal-crosstool");
         init_git(&root);
         write_context_packet(&root);
         let packet: serde_json::Value =
@@ -493,7 +505,7 @@ mod tests {
         let model_call = kisko_event(token, false);
         assert_eq!(
             model_call["sauma"]["digest"].as_str().unwrap(),
-            toimija::sauma::artifact_digest_value(&model_call)
+            toimija::seal::digest_under_sauma_key(&model_call)
         );
         fs::create_dir_all(root.join(".toimija/runs")).unwrap();
         fs::write(
@@ -502,8 +514,8 @@ mod tests {
         )
         .unwrap();
 
-        let output = render_sauma_why(&root, token).unwrap();
-        assert!(output.contains("toimija-context.v2"));
+        let output = render_why(&root, token).unwrap();
+        assert!(output.contains("toimija-context.v3"));
         assert!(output.contains("  ← kisko-model-call.v1"));
         assert!(!output.contains("digest mismatch"));
 
@@ -513,8 +525,8 @@ mod tests {
             format!("{}\n", serde_json::to_string(&tampered).unwrap()),
         )
         .unwrap();
-        let output = render_sauma_why(&root, token).unwrap();
-        assert!(output.contains("toimija-context.v2"));
+        let output = render_why(&root, token).unwrap();
+        assert!(output.contains("toimija-context.v3"));
         assert!(output.contains("kisko-model-call.v1"));
         assert!(output.contains("digest mismatch"));
         assert!(!output.contains("  ← kisko-model-call.v1"));
@@ -527,6 +539,14 @@ mod tests {
 
         let error = collect_artifact(&artifact.to_string(), &mut Vec::new()).unwrap_err();
         assert!(error.to_string().contains("v999"));
+
+        // A seal is v2 only: the legacy form was never written under `seal`.
+        let mut sealed = kisko_event(&format!("sha256:{}", "a".repeat(64)), false);
+        let mut envelope = sealed.as_object_mut().unwrap().remove("sauma").unwrap();
+        envelope["envelope"] = json!(toimija::seal::LEGACY_ENVELOPE_SCHEMA);
+        sealed["seal"] = envelope;
+        let error = collect_artifact(&sealed.to_string(), &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("sauma-envelope.v1"), "{error}");
     }
 
     fn temp_repo(name: &str) -> PathBuf {
@@ -560,7 +580,7 @@ mod tests {
     fn write_context_packet(root: &Path) {
         let runner = ProcessCommandRunner;
         let mut packet = toimija::context::build_context_packet(&runner, root, true).unwrap();
-        packet.attach_sauma(None).unwrap();
+        packet.attach_seal(None).unwrap();
         fs::create_dir_all(root.join(".toimija")).unwrap();
         fs::write(
             root.join(".toimija/current.json"),
@@ -599,7 +619,7 @@ mod tests {
             },
             "anchored_at": token
         });
-        let digest = toimija::sauma::artifact_digest_value(&event);
+        let digest = toimija::seal::digest_under_sauma_key(&event);
         event["sauma"]["digest"] = json!(if tamper_digest { "sha256:bad" } else { &digest });
         event
     }

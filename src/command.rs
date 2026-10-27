@@ -70,6 +70,17 @@ fn scrub_git_location_env(command: &mut Command) {
     }
 }
 
+/// A `git` pinned to `cwd`, for the few callers that need a [`Command`] of
+/// their own (stdin, a scratch `GIT_INDEX_FILE`) rather than the runner. The
+/// repo-locating variables it would inherit are removed, as the runner removes
+/// them; a caller sets what it means to on the command, never process-wide.
+pub fn git_command(cwd: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(cwd);
+    scrub_git_location_env(&mut command);
+    command
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessCommandRunner;
 
@@ -150,35 +161,20 @@ mod tests {
         }
     }
 
+    /// The commands built outside the runner are scrubbed the same way. That
+    /// a child git started by toimija with `GIT_DIR` and friends inherited
+    /// still acts on its own directory is shown end to end, with the
+    /// variables set on toimija's own command only, by
+    /// `tests/git_isolation.rs`: setting them process-wide here, even for a
+    /// moment under a lock, reached every fixture git running beside it.
     #[test]
-    fn leaked_git_dir_does_not_redirect_discovery() {
-        // End-to-end: with GIT_DIR pointed at repo B, the runner must still
-        // resolve the repo from `cwd` (repo A). This is the exact phantom-merge
-        // failure mode. Serialized via a lock because it mutates process env.
-        use std::sync::Mutex;
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap();
-
-        let temp = tempfile::tempdir().unwrap();
-        let repo_a = temp.path().join("a");
-        let repo_b = temp.path().join("b");
-        let runner = ProcessCommandRunner;
-        for repo in [&repo_a, &repo_b] {
-            std::fs::create_dir_all(repo).unwrap();
-            runner.run(repo, "git", &["init", "-q"]).unwrap();
+    fn a_git_command_is_pinned_to_its_directory() {
+        let command = git_command(Path::new("/repo"));
+        assert_eq!(command.get_current_dir(), Some(Path::new("/repo")));
+        let mutations: HashMap<&OsStr, Option<&OsStr>> = command.get_envs().collect();
+        for key in GIT_LOCATION_ENV {
+            assert_eq!(mutations.get(OsStr::new(key)), Some(&None), "{key}");
         }
-
-        // SAFETY: guarded by ENV_LOCK; removed before the guard drops.
-        unsafe { std::env::set_var("GIT_DIR", repo_b.join(".git")) };
-        let toplevel = runner
-            .run(&repo_a, "git", &["rev-parse", "--show-toplevel"])
-            .unwrap();
-        unsafe { std::env::remove_var("GIT_DIR") };
-
-        // Resolve symlinks (macOS /var -> /private/var) before comparing.
-        let seen = std::fs::canonicalize(toplevel.stdout_lossy().trim()).unwrap();
-        let want = std::fs::canonicalize(&repo_a).unwrap();
-        assert_eq!(seen, want, "leaked GIT_DIR must not override cwd");
     }
 
     #[cfg(unix)]

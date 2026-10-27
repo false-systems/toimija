@@ -21,10 +21,19 @@ use crate::snapshot;
 use crate::validate;
 use crate::watch;
 
+/// `toimija --version`: the version number and the commit the binary was
+/// built from (`build.rs`), so two builds of one version can be told apart.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("TOIMIJA_BUILD_COMMIT"),
+    ")"
+);
+
 #[derive(Debug, Parser)]
 #[command(
     name = "toimija",
-    version,
+    version = VERSION,
     about = "Git-aware local context compiler for coding agents",
     long_about = "Git-aware local context compiler for coding agents.\n\n\
         Toimija starts from Git's state machine — branch, HEAD, index, merge-base, \
@@ -302,27 +311,138 @@ pub struct RunArgs {
     /// The task for the agent, delivered inside the composed launch prompt of a
     /// known agent (`claude`, `codex`, `gemini`) or one configured under
     /// `agents:` in `.toimija/repo.yaml`. Pass the task here, not as the agent's
-    /// own positional argument. May start with `-`; a blank task is none.
+    /// own positional argument. May start with `-`; text that is one of `run`'s
+    /// own flags is written `--task=<text>`. A blank task is none.
     #[arg(long, allow_hyphen_values = true)]
     pub task: Option<String>,
     /// Background instructions, separate from an assigned task: appended after
     /// the packet (and the task) in a known or configured agent's launch
     /// prompt. An idle Codex launch receives them with its packet as session
     /// instructions, without starting a model turn. An agent toimija does not
-    /// recognise cannot receive them. May start with `-`; a blank briefing is
+    /// recognise cannot receive them. May start with `-`; text that is one of
+    /// `run`'s own flags is written `--briefing=<text>`. A blank briefing is
     /// none.
     #[arg(long, allow_hyphen_values = true)]
     pub briefing: Option<String>,
     /// An urgent line for the agent, the first thing in its launch prompt,
     /// above the contract and the packet (repeatable). For a launcher's flags
     /// and warnings: at most 1024 bytes in total, the rest is cut. Long
-    /// background goes in `--briefing`. May start with `-`; a blank alert is
-    /// none.
+    /// background goes in `--briefing`. May start with `-`; text that is one
+    /// of `run`'s own flags is written `--alert=<text>`. A blank alert is none.
     #[arg(long = "alert", value_name = "TEXT", allow_hyphen_values = true)]
     pub alert: Vec<String>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
+}
+
+/// The options of `run` whose text may start with `-` (a briefing is
+/// Markdown, whose lists do), so clap gives each the next argument whatever
+/// that is.
+const RUN_TEXT_OPTIONS: [&str; 3] = ["--task", "--briefing", "--alert"];
+
+/// Issue #237: `--briefing --task "fix it"` took `--task` as the briefing and
+/// launched a program named `fix it`. When the argument after a spaced
+/// `--task`, `--briefing` or `--alert` is one of `run`'s own flags, or the
+/// `--` before the command, the value was left out, and that is refused as a
+/// usage error before anything runs. The `=` form says the value is intended,
+/// so `--task=--briefing` passes the text `--briefing`. The flags are read from
+/// the command itself, globals included, so a flag added to `run` later is
+/// covered without being listed here. Read from the raw arguments, because
+/// clap gives a value parser the same text for both forms.
+fn missing_run_text(args: &[std::ffi::OsString]) -> Option<clap::Error> {
+    use clap::CommandFactory;
+    let mut top = Cli::command();
+    top.build();
+    let mut rest = args.iter().skip(1).map(|arg| arg.to_str());
+    // Past the global options to the subcommand.
+    loop {
+        match rest.next()? {
+            Some(token) if token.starts_with('-') && token != "--" => {
+                if takes_a_separate_value(&top, token) {
+                    rest.next();
+                }
+            }
+            Some("run") => break,
+            _ => return None,
+        }
+    }
+    let run = top.find_subcommand("run")?;
+    while let Some(token) = rest.next() {
+        match token {
+            // The command begins: what follows is the agent's.
+            None | Some("--") => return None,
+            Some(token) if !token.starts_with('-') => return None,
+            Some(token) if RUN_TEXT_OPTIONS.contains(&token) => match rest.next() {
+                Some(Some(next)) if names_an_option(run, next) => {
+                    let given = if next == "--" {
+                        "the `--` before the command".to_string()
+                    } else {
+                        format!("`{next}`, one of `run`'s own flags,")
+                    };
+                    let message = format!(
+                        "`{token}` is missing its value: {given} is not text. Give `{token}` \
+                         its text, or write `{token}=<text>` for text that looks like a flag.\n"
+                    );
+                    return Some(
+                        clap::Error::raw(clap::error::ErrorKind::InvalidValue, message)
+                            .with_cmd(run),
+                    );
+                }
+                Some(_) => {}
+                None => return None,
+            },
+            Some(token) => {
+                if takes_a_separate_value(run, token) {
+                    rest.next();
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether `token`, an option of `cmd` written without `=`, takes the next
+/// argument as its value (`--intent <why>`, `--log-format <format>`).
+fn takes_a_separate_value(cmd: &clap::Command, token: &str) -> bool {
+    let takes = |arg: &clap::Arg| arg.get_action().takes_values();
+    if let Some(long) = token.strip_prefix("--") {
+        return !long.contains('=')
+            && cmd
+                .get_arguments()
+                .any(|arg| arg.get_long() == Some(long) && takes(arg));
+    }
+    let mut chars = token.chars().skip(1);
+    match (chars.next(), chars.next()) {
+        (Some(short), None) => cmd
+            .get_arguments()
+            .any(|arg| arg.get_short() == Some(short) && takes(arg)),
+        _ => false,
+    }
+}
+
+/// Whether `text` is `--`, or one of `cmd`'s flags as a user would spell it:
+/// `--name`, `--name=value`, or `-x`.
+fn names_an_option(cmd: &clap::Command, text: &str) -> bool {
+    if text == "--" {
+        return true;
+    }
+    if let Some(long) = text.strip_prefix("--") {
+        let name = long.split_once('=').map_or(long, |(name, _)| name);
+        return cmd.get_arguments().any(|arg| {
+            arg.get_long() == Some(name)
+                || arg
+                    .get_all_aliases()
+                    .is_some_and(|aliases| aliases.contains(&name))
+        });
+    }
+    let mut chars = text.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some('-'), Some(short), None) => cmd
+            .get_arguments()
+            .any(|arg| arg.get_short() == Some(short)),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Args)]
@@ -370,7 +490,7 @@ pub struct VerifyArgs {
     /// Emit the verdict as JSON: `{ "status": "verified", "packet_path", "token",
     /// "artifact_digest", ... }`, or on failure a non-`verified` status
     /// (`stale_packet`, `session_not_live`, `missing_packet`, `invalid_packet`,
-    /// `sauma_digest_mismatch`, `unsafe_git_operation`, ...) with its details.
+    /// `seal_digest_mismatch`, `unsafe_git_operation`, ...) with its details.
     /// The exit code is 0 only for `verified`.
     #[arg(long)]
     pub json: bool,
@@ -413,7 +533,11 @@ pub struct ValidateArgs {
 
 impl Cli {
     pub fn parse_args() -> Self {
-        Self::parse()
+        let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        if let Some(refusal) = missing_run_text(&args) {
+            refusal.exit();
+        }
+        Self::parse_from(args)
     }
 }
 
@@ -614,7 +738,7 @@ fn run_context(args: ContextCommandArgs) -> Result<()> {
     let args = args.packet;
     let mut packet = context::build_context_packet(&runner, &cwd, args.for_diff)
         .context("failed to build context packet")?;
-    packet.attach_sauma(None)?;
+    packet.attach_seal(None)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&packet)?);
     } else {
@@ -1742,18 +1866,20 @@ fn render_run_summary(
         );
     }
 
-    // Working tree as the session leaves it.
-    let conflicts = if exit.conflicted_files.is_empty() {
+    // Working tree as the session leaves it: the repository's work, never
+    // Toimija's own files, which Git lists where `init` has not run.
+    let conflicted = git::work_paths(&exit.conflicted_files).count();
+    let conflicts = if conflicted == 0 {
         String::new()
     } else {
-        format!(", {} conflicted", exit.conflicted_files.len())
+        format!(", {conflicted} conflicted")
     };
     let _ = writeln!(
         out,
         "  worktree:  {} staged, {} unstaged, {} untracked{conflicts}",
-        exit.staged_files.len(),
-        exit.unstaged_files.len(),
-        exit.untracked_files.len(),
+        git::work_files(&exit.staged_files).count(),
+        git::work_files(&exit.unstaged_files).count(),
+        git::work_paths(&exit.untracked_files).count(),
     );
 
     let _ = writeln!(
@@ -2104,6 +2230,18 @@ fn verify_status(
 ) -> VerifyStatus {
     match load_stored_packet(packet_path) {
         StoredPacket::Ready { packet, raw } => {
+            if packet.schema != context::CONTEXT_SCHEMA {
+                // Asked only of a packet that is refused anyway: whether the
+                // session it briefs still runs, under an older toimija.
+                let live_session = packet.session.as_ref().map(|session| session.id.as_str());
+                let live_session = live_session.filter(|id| {
+                    sessions::named_session(runner, &live.repo_root, id)
+                        == sessions::NamedSession::Live
+                });
+                if let Some(message) = schema_refusal(&packet.schema, live_session) {
+                    return VerifyStatus::InvalidPacket { message };
+                }
+            }
             match crate::consistency::comparability(&packet.consistency.algorithm) {
                 None => {}
                 Some(Verdict::NotComparable(algorithm)) => {
@@ -2118,14 +2256,14 @@ fn verify_status(
                     };
                 }
             }
-            if packet.sauma.is_none() {
+            if packet.seal.is_none() {
                 return VerifyStatus::InvalidPacket {
-                    message: "packet has no Sauma envelope".to_string(),
+                    message: "packet has no seal".to_string(),
                 };
             }
-            match crate::sauma::verify_value(*raw) {
+            match crate::seal::verify_value(&raw) {
                 Ok(Some((expected, actual))) => {
-                    return VerifyStatus::SaumaDigestMismatch { expected, actual };
+                    return VerifyStatus::SealDigestMismatch { expected, actual };
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -2134,19 +2272,18 @@ fn verify_status(
                     };
                 }
             }
-            let envelope = packet.sauma.as_ref().expect("checked above");
-            if envelope.schema != packet.schema {
+            let seal = packet.seal.as_ref().expect("checked above");
+            if seal.schema != packet.schema {
                 return VerifyStatus::InvalidPacket {
-                    message: "Sauma envelope schema differs from packet schema".to_string(),
+                    message: "seal schema differs from packet schema".to_string(),
                 };
             }
-            if envelope.anchored_at != packet.consistency.token {
+            if seal.anchored_at != packet.consistency.token {
                 return VerifyStatus::InvalidPacket {
-                    message: "Sauma envelope anchor differs from packet consistency token"
-                        .to_string(),
+                    message: "seal anchor differs from packet consistency token".to_string(),
                 };
             }
-            let artifact_digest = packet.sauma.as_ref().map(|sauma| sauma.digest.clone());
+            let artifact_digest = Some(seal.digest.clone());
             let packet_refresh_token = packet.refresh_token.clone();
             let named_session = packet.session.as_ref().map(|session| session.id.clone());
             let stored = packet.consistency;
@@ -2341,6 +2478,42 @@ enum StoredPacket {
     IoError(String),
 }
 
+/// Why a packet of `schema` is not read here, if it is not. A packet is read
+/// under its own schema's rules: one an earlier toimija wrote (the
+/// `toimija-context.v2` seal sat under `sauma`, say) is refused with the way
+/// out; one this toimija does not know at all is refused as such.
+///
+/// The way out depends on who writes the packet. An older `toimija run` keeps
+/// its own code after a newer toimija is installed, and its watcher rewrites
+/// its session's packets in the old schema a moment after every change. So
+/// for a packet that briefs a live session (`live_session`), a refresh holds
+/// only until then, and the way out is to restart the session; otherwise a
+/// refresh replaces the packet for good.
+fn schema_refusal(schema: &str, live_session: Option<&str>) -> Option<String> {
+    let current = context::CONTEXT_SCHEMA;
+    if schema == current {
+        None
+    } else if context::EARLIER_CONTEXT_SCHEMAS.contains(&schema) {
+        Some(match live_session {
+            Some(session) => format!(
+                "the packet is `{schema}`: an older toimija is still watching session \
+                 {session} and writes its packets in that schema; this toimija reads \
+                 `{current}`. `toimija refresh` replaces the packet only until its next \
+                 change, so restart the session under the installed toimija (end it, and \
+                 launch it again with `toimija run`)"
+            ),
+            None => format!(
+                "the packet is `{schema}`, which an earlier toimija wrote; this toimija reads \
+                 `{current}`. Run `toimija refresh` to replace it"
+            ),
+        })
+    } else {
+        Some(format!(
+            "the packet is `{schema}`, which this toimija does not read; it reads `{current}`"
+        ))
+    }
+}
+
 fn load_stored_packet(path: &std::path::Path) -> StoredPacket {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -2395,7 +2568,7 @@ enum VerifyStatus {
         packet_token: String,
         current_token: String,
     },
-    SaumaDigestMismatch {
+    SealDigestMismatch {
         expected: String,
         actual: String,
     },
@@ -2493,8 +2666,8 @@ impl VerifyStatus {
                 "stale_packet: repository state changed after the selected packet was generated"
                     .to_string()
             }
-            VerifyStatus::SaumaDigestMismatch { .. } => {
-                "sauma_digest_mismatch: selected packet was tampered with".to_string()
+            VerifyStatus::SealDigestMismatch { .. } => {
+                "seal_digest_mismatch: selected packet was tampered with".to_string()
             }
             VerifyStatus::SessionNotLive { session, state } => format!(
                 "session_not_live: the packet briefs session {session}, which is {state}; \

@@ -136,7 +136,7 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
     let mut value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
 
-    // Model an older producer that signed the same packet before additive
+    // Model an older producer that sealed the same packet before additive
     // coverage fields existed. Its digest is valid for its raw artifact; a
     // newer reader must not hash defaults introduced by deserialization.
     value["git"]
@@ -144,10 +144,7 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
         .unwrap()
         .remove("branch_diff_coverage");
     value.as_object_mut().unwrap().remove("refresh_token");
-    let mut envelope = value.as_object_mut().unwrap().remove("sauma").unwrap();
-    envelope["envelope"] = serde_json::json!(toimija::sauma::LEGACY_ENVELOPE_SCHEMA);
-    envelope["digest"] = serde_json::Value::String(toimija::sauma::digest_value(&value));
-    value["sauma"] = envelope;
+    value["seal"]["digest"] = serde_json::json!(toimija::seal::digest_of(&value));
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
     toimija(temp.path())
@@ -156,8 +153,12 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
         .success();
 }
 
+/// A seal is `sauma-envelope.v2`, whose digest covers the seal itself. The
+/// legacy v1 form, which covered the body alone, was only ever written under
+/// `toimija-context.v1`'s `sauma` key; under `seal` it is refused, not read
+/// as a body-only seal.
 #[test]
-fn verify_rejects_a_packet_after_its_sauma_envelope_is_removed() {
+fn verify_refuses_a_seal_in_the_legacy_envelope_form() {
     if !git_available() {
         return;
     }
@@ -167,7 +168,80 @@ fn verify_rejects_a_packet_after_its_sauma_envelope_is_removed() {
     let path = temp.path().join(".toimija/current.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    value.as_object_mut().unwrap().remove("sauma");
+    let mut seal = value.as_object_mut().unwrap().remove("seal").unwrap();
+    seal["envelope"] = serde_json::json!(toimija::seal::LEGACY_ENVELOPE_SCHEMA);
+    seal["digest"] = serde_json::json!(toimija::seal::digest_value(&value));
+    value["seal"] = seal;
+    fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let output = toimija(temp.path())
+        .args(["verify", "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["status"], "invalid_packet", "{report}");
+    assert!(
+        report["message"]
+            .as_str()
+            .unwrap()
+            .contains("sauma-envelope.v1"),
+        "{report}"
+    );
+}
+
+/// `toimija-context.v3` renamed the packet's `sauma` key to `seal`. A packet
+/// an earlier toimija wrote is not read under the new rules: verify refuses
+/// it and says to refresh, which replaces it.
+#[test]
+fn verify_refuses_a_packet_of_an_earlier_schema_and_says_to_refresh() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path()).arg("refresh").assert().success();
+    let path = temp.path().join(".toimija/current.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // The packet as `toimija-context.v2` wrote it.
+    let seal = value.as_object_mut().unwrap().remove("seal").unwrap();
+    value["schema"] = serde_json::json!("toimija-context.v2");
+    value["sauma"] = seal;
+    value["sauma"]["schema"] = serde_json::json!("toimija-context.v2");
+    fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let output = toimija(temp.path())
+        .args(["verify", "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["status"], "invalid_packet", "{report}");
+    let message = report["message"].as_str().unwrap();
+    assert!(message.contains("toimija-context.v2"), "{message}");
+    assert!(message.contains("toimija refresh"), "{message}");
+
+    toimija(temp.path()).arg("refresh").assert().success();
+    toimija(temp.path()).arg("verify").assert().success();
+}
+
+#[test]
+fn verify_rejects_a_packet_after_its_seal_is_removed() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path()).arg("refresh").assert().success();
+    let path = temp.path().join(".toimija/current.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("seal");
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
     let output = toimija(temp.path())
@@ -179,7 +253,7 @@ fn verify_rejects_a_packet_after_its_sauma_envelope_is_removed() {
         .clone();
     let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(report["status"], "invalid_packet");
-    assert_eq!(report["message"], "packet has no Sauma envelope");
+    assert_eq!(report["message"], "packet has no seal");
 }
 
 #[test]
@@ -197,18 +271,18 @@ fn verify_rejects_digest_valid_envelopes_bound_to_the_wrong_schema_or_anchor() {
         (
             "schema",
             "other-artifact.v1",
-            "Sauma envelope schema differs from artifact schema",
+            "seal schema differs from packet schema",
         ),
         (
             "anchored_at",
             "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-            "Sauma envelope anchor differs from packet consistency token",
+            "seal anchor differs from packet consistency token",
         ),
     ] {
         let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
-        value["sauma"][field] = serde_json::json!(replacement);
-        let digest = toimija::sauma::artifact_digest_value(&value);
-        value["sauma"]["digest"] = serde_json::json!(digest);
+        value["seal"][field] = serde_json::json!(replacement);
+        let digest = toimija::seal::digest_of(&value);
+        value["seal"]["digest"] = serde_json::json!(digest);
         fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
         let output = toimija(temp.path())
@@ -340,7 +414,7 @@ fn tampered_ambient_packet_fails_even_when_repo_summary_is_valid() {
         &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
     )
     .unwrap();
-    value["sauma"]["digest"] = serde_json::json!(
+    value["seal"]["digest"] = serde_json::json!(
         "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     );
     fs::write(
@@ -357,7 +431,7 @@ fn tampered_ambient_packet_fails_even_when_repo_summary_is_valid() {
         .assert()
         .failure();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
-    assert_eq!(value["status"], "sauma_digest_mismatch");
+    assert_eq!(value["status"], "seal_digest_mismatch");
     assert_eq!(value["packet_path"], session_packet.display().to_string());
 }
 
@@ -398,7 +472,7 @@ fn verify_distinguishes_missing_and_unsupported_consistency() {
 }
 
 #[test]
-fn verify_rejects_a_forged_sauma_digest() {
+fn verify_rejects_a_forged_seal_digest() {
     if !git_available() {
         return;
     }
@@ -408,7 +482,7 @@ fn verify_rejects_a_forged_sauma_digest() {
     let path = temp.path().join(".toimija/current.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    value["sauma"]["digest"] = serde_json::json!(
+    value["seal"]["digest"] = serde_json::json!(
         "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     );
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
@@ -418,7 +492,7 @@ fn verify_rejects_a_forged_sauma_digest() {
         .assert()
         .failure();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
-    assert_eq!(value["status"], "sauma_digest_mismatch");
+    assert_eq!(value["status"], "seal_digest_mismatch");
 }
 
 #[test]
@@ -691,4 +765,61 @@ fn an_agent_whose_run_was_killed_can_refresh_its_way_out() {
         .arg("verify")
         .assert()
         .success();
+}
+
+/// An older `toimija run` keeps its own code after a newer toimija is
+/// installed: its watcher rewrites the session's packets in the old schema a
+/// moment after every change, so a refresh holds only until then. A packet of
+/// an earlier schema that briefs a live session says so, and that the way out
+/// is to restart the session under the installed toimija.
+#[test]
+fn an_earlier_schema_packet_of_a_live_session_says_to_restart_it() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(temp.path());
+    toimija(temp.path()).arg("refresh").assert().success();
+    let id = "100-1";
+    active_session(temp.path(), id);
+    let path = temp.path().join(".toimija/current.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // The packet as an older toimija's watcher writes it for its session.
+    let seal = value.as_object_mut().unwrap().remove("seal").unwrap();
+    value["schema"] = serde_json::json!("toimija-context.v2");
+    value["sauma"] = seal;
+    value["sauma"]["schema"] = serde_json::json!("toimija-context.v2");
+    value["session"] = serde_json::json!({ "id": id, "intent": null, "scope": [] });
+    fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+    let output = toimija(temp.path())
+        .args(["verify", "--json"])
+        .env_remove("TOIMIJA_SESSION")
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["status"], "invalid_packet", "{report}");
+    let message = report["message"].as_str().unwrap();
+    for said in [
+        "toimija-context.v2",
+        "an older toimija is still watching session 100-1",
+        "until its next change",
+        "restart the session",
+    ] {
+        assert!(message.contains(said), "{said:?} in {message}");
+    }
+    let stderr = toimija(temp.path())
+        .arg("verify")
+        .env_remove("TOIMIJA_SESSION")
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(stderr).unwrap();
+    assert!(stderr.contains("restart the session"), "{stderr}");
 }

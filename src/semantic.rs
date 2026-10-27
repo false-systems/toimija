@@ -29,7 +29,7 @@ pub const TREE_ALGORITHM_EXTENSION: &str = "tree_algorithm";
 
 /// The extension naming the version of an envelope's consistency token, which
 /// the protocol carries as a bare string. The token itself stays
-/// `sha256:<hex>`, the shape sauma's envelope schema requires of an anchor; its
+/// `sha256:<hex>`, the shape the seal's envelope schema requires of an anchor; its
 /// hash covers the version name. An envelope without this extension was
 /// written by an earlier toimija, and its token is of an earlier version.
 pub const CONSISTENCY_ALGORITHM_EXTENSION: &str = "consistency_algorithm";

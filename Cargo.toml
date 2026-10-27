@@ -18,11 +18,13 @@ notify = "8.2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-# Vendored, not fetched: sauma is private and publishes nothing, so a git
-# dependency would cost every build a credential. Pinned by
-# `vendor/sauma-canonical.contract`; refresh with the script beside it.
+# Vendored: the canonical crate sauma wrote, for the packet's seal
+# (`src/seal.rs`). Sauma is archived; Toimija keeps this copy as its own.
+# Pinned by `vendor/sauma-canonical.contract`, which a test checks on every
+# run, so an edit to the crate fails the build.
 sauma-canonical = { path = "vendor/sauma-canonical" }
-# Vendored for the same reason: faija owns tree-identity.v1, the identity of a
+# Vendored, not fetched: faija is private, and a git dependency would cost
+# every build a credential. Faija owns tree-identity.v1, the identity of a
 # working State, and Toimija runs its procedure instead of keeping its own.
 # Pinned by `vendor/faija-terms.contract`; refresh with the script beside it.
 faija-terms = { path = "vendor/faija-terms" }

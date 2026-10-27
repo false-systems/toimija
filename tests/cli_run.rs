@@ -765,9 +765,9 @@ fn a_session_that_ends_leaves_no_brief_in_the_repo_packet() {
     .unwrap();
     assert!(json["session"].is_null(), "{}", json["session"]);
     assert!(
-        json["sauma"]["producer"]["run"].is_null(),
+        json["seal"]["producer"]["run"].is_null(),
         "{}",
-        json["sauma"]
+        json["seal"]
     );
     Command::cargo_bin("toimija")
         .unwrap()
@@ -1048,7 +1048,7 @@ fn run_hands_the_child_its_repository_point() {
     let id = point["repository"]["id"].as_str().unwrap();
     assert!(id.starts_with("rpoint_"), "{point}");
     assert!(point["repository"]["tree_oid"].is_string(), "{point}");
-    assert_eq!(packet["schema"], "toimija-context.v2");
+    assert_eq!(packet["schema"], "toimija-context.v3");
     assert_eq!(packet["session"]["execution"]["repository"]["id"], id);
     assert_eq!(
         fs::read_to_string(out.path().join("retired.txt")).unwrap(),
@@ -1599,4 +1599,143 @@ fn run_takes_the_flags_ohjaa_launches_with_and_sessions_reports_what_it_reads() 
     let after: serde_json::Value = serde_json::from_slice(&after.get_output().stdout).unwrap();
     assert_eq!(after["sessions"][0]["id"], id);
     assert_eq!(after["sessions"][0]["liveness"], "closed");
+}
+
+/// Issue #237: `--task`, `--briefing` and `--alert` take text that may start
+/// with `-`, so one whose value was left out used to take the next flag as
+/// its text: `--briefing --task "fix it"` launched a program named `fix it`.
+/// A value that is one of `run`'s own flags (or the `--` separator) is a
+/// missing value: refused before any session opens, and nothing launches.
+#[test]
+fn a_flag_where_a_value_belongs_is_a_missing_value_and_nothing_launches() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let launch = ["--", "sh", "-c", "touch CHILD_RAN"];
+    for (flag, given) in [
+        (
+            &["--briefing", "--task", "fix it"][..],
+            "`--task`, one of `run`'s own flags,",
+        ),
+        (
+            &["--task", "--briefing", "background"],
+            "`--briefing`, one of `run`'s own flags,",
+        ),
+        (&["--alert", "--"], "the `--` before the command"),
+        (
+            &["--briefing", "--scope=src/"],
+            "`--scope=src/`, one of `run`'s own flags,",
+        ),
+        (
+            &["--task", "--for-diff"],
+            "`--for-diff`, one of `run`'s own flags,",
+        ),
+        (&["--briefing", "-q"], "`-q`, one of `run`'s own flags,"),
+    ] {
+        let missing = flag[0];
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args(["run", "--intent", "missing values"])
+            .args(flag)
+            .args(launch)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(format!(
+                "`{missing}` is missing its value: {given} is not text"
+            )));
+        assert!(!temp.path().join("CHILD_RAN").exists(), "{flag:?}");
+        assert!(!temp.path().join(".toimija/sessions").exists(), "{flag:?}");
+    }
+
+    // Text that only starts with a hyphen is still text.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "hyphenated text",
+            "--task",
+            "--- read the notes, then fix it",
+            "--briefing",
+            "- check the receipt first",
+            "--alert",
+            "-- FLAGGED: main is red",
+        ])
+        .args(launch)
+        .assert()
+        .success();
+    assert!(temp.path().join("CHILD_RAN").exists());
+}
+
+/// The session summary counts the work the session leaves behind, never
+/// Toimija's own files: in a repository without `toimija init` its packets,
+/// markers and history are visible to Git, and were counted as untracked.
+#[test]
+fn the_exit_summary_does_not_count_toimijas_own_files() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    for _ in 0..2 {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args([
+                "run",
+                "--intent",
+                "count",
+                "--",
+                "sh",
+                "-c",
+                "touch work.txt",
+            ])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains(
+                "worktree:  0 staged, 0 unstaged, 1 untracked\n",
+            ));
+    }
+}
+
+/// The `=` form says the value is intended: `--task=--briefing` passes the
+/// text `--briefing`, which the spaced form refuses as a missing value. So a
+/// task, briefing or alert that is literally one of `run`'s flags, or `--`,
+/// can still be given.
+#[cfg(unix)]
+#[test]
+fn the_equals_form_passes_any_text_even_a_flags_name() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let stub = prompt_capturing_stub(temp.path(), "claude");
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "literal flags",
+            "--task=--briefing",
+            "--briefing=--task",
+            "--alert=--",
+            "--",
+        ])
+        .arg(&stub)
+        .assert()
+        .success();
+    let prompt = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    assert!(prompt.contains("Task: --briefing"), "{prompt}");
+    assert!(prompt.trim_end().ends_with("--task"), "{prompt}");
+    let alerts = prompt
+        .split("Your toimija session packet is below.")
+        .next()
+        .unwrap();
+    assert!(alerts.lines().any(|line| line == "--"), "{prompt}");
 }
