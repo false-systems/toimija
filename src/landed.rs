@@ -28,15 +28,17 @@ use tracing::info;
 
 use crate::command::CommandRunner;
 use crate::error::ToimijaError;
-use crate::git::run_git_ok;
+use crate::git::{self, run_git_ok};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LandedStatus {
     /// Every touched path's change is proven present in `base`, or HEAD is
-    /// `base` or behind it: every commit on HEAD is reachable from `base`.
+    /// `base` or behind it (every commit on HEAD is reachable from `base`) with
+    /// no uncommitted work beyond Toimija's own files.
     Landed,
-    /// Every touched path's change is proven still absent.
+    /// Every touched path's change is proven still absent, or HEAD is in
+    /// `base` but the worktree holds work that is in no commit.
     NotLanded,
     /// Touched paths split cleanly into reflected and not — none ambiguous.
     Partial,
@@ -162,21 +164,59 @@ pub fn assess_landing(
     };
 
     // HEAD at its base, or behind it: every commit on HEAD is reachable from
-    // the base, so nothing it holds can be missing there. Ancestry is proof
-    // in this direction. HEAD's short oid is the unique prefix git printed for
-    // it, so the merge-base starting with it is HEAD itself, with no git
-    // process to ask.
+    // the base, so nothing committed can be missing there. Ancestry is proof
+    // in this direction, for commits only: work not yet committed is in no
+    // commit, so a worktree with any (Toimija's own files aside) is not
+    // landed. A fresh branch off the base, its agent not yet committing, must
+    // never read as landed: that is the dangerous direction for cleanup.
+    // HEAD's short oid is the unique prefix git printed for it, so the
+    // merge-base starting with it is HEAD itself, with no git process to ask;
+    // the worktree costs one `git status`.
     if head
         .as_deref()
         .is_some_and(|short| merge_base.starts_with(short))
     {
         info!(event = "toimija.landed.head_in_base", base);
+        let (status, reason) = match git::token_state_at(runner, repo_root, None) {
+            Ok(state) => {
+                let uncommitted = git::work_files(&state.staged_files)
+                    .map(|file| &file.path)
+                    .chain(git::work_files(&state.unstaged_files).map(|file| &file.path))
+                    .chain(git::work_paths(&state.untracked_files))
+                    .chain(git::work_paths(&state.conflicted_files))
+                    .collect::<BTreeSet<_>>()
+                    .len();
+                if uncommitted == 0 {
+                    (
+                        LandedStatus::Landed,
+                        format!(
+                            "HEAD is in `{base}`: every commit on it is reachable from `{base}`"
+                        ),
+                    )
+                } else {
+                    (
+                        LandedStatus::NotLanded,
+                        format!(
+                            "uncommitted work: HEAD is in `{base}`, but {uncommitted} path(s) in \
+                             the worktree are in no commit, so not in `{base}`"
+                        ),
+                    )
+                }
+            }
+            Err(error) => (
+                LandedStatus::Unknown,
+                format!(
+                    "HEAD is in `{base}`, but the worktree could not be read to tell whether it \
+                     holds uncommitted work: {error}"
+                ),
+            ),
+        };
         return LandedReport {
             base: base.to_string(),
             branch,
             head,
-            status: LandedStatus::Landed,
-            reason: format!("HEAD is in `{base}`: every commit on it is reachable from `{base}`"),
+            status,
+            reason,
             touched: 0,
             reflected: 0,
             differing: Vec::new(),
