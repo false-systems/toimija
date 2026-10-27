@@ -311,74 +311,113 @@ pub struct RunArgs {
     /// The task for the agent, delivered inside the composed launch prompt of a
     /// known agent (`claude`, `codex`, `gemini`) or one configured under
     /// `agents:` in `.toimija/repo.yaml`. Pass the task here, not as the agent's
-    /// own positional argument. May start with `-`, but may not be one of
-    /// `run`'s own flags; a blank task is none.
-    #[arg(long, allow_hyphen_values = true, value_parser = RunText)]
+    /// own positional argument. May start with `-`; text that is one of `run`'s
+    /// own flags is written `--task=<text>`. A blank task is none.
+    #[arg(long, allow_hyphen_values = true)]
     pub task: Option<String>,
     /// Background instructions, separate from an assigned task: appended after
     /// the packet (and the task) in a known or configured agent's launch
     /// prompt. An idle Codex launch receives them with its packet as session
     /// instructions, without starting a model turn. An agent toimija does not
-    /// recognise cannot receive them. May start with `-`, but may not be one
-    /// of `run`'s own flags; a blank briefing is none.
-    #[arg(long, allow_hyphen_values = true, value_parser = RunText)]
+    /// recognise cannot receive them. May start with `-`; text that is one of
+    /// `run`'s own flags is written `--briefing=<text>`. A blank briefing is
+    /// none.
+    #[arg(long, allow_hyphen_values = true)]
     pub briefing: Option<String>,
     /// An urgent line for the agent, the first thing in its launch prompt,
     /// above the contract and the packet (repeatable). For a launcher's flags
     /// and warnings: at most 1024 bytes in total, the rest is cut. Long
-    /// background goes in `--briefing`. May start with `-`, but may not be
-    /// one of `run`'s own flags; a blank alert is none.
-    #[arg(
-        long = "alert",
-        value_name = "TEXT",
-        allow_hyphen_values = true,
-        value_parser = RunText
-    )]
+    /// background goes in `--briefing`. May start with `-`; text that is one
+    /// of `run`'s own flags is written `--alert=<text>`. A blank alert is none.
+    #[arg(long = "alert", value_name = "TEXT", allow_hyphen_values = true)]
     pub alert: Vec<String>,
     /// The agent command to run, after `--` (e.g. `-- claude ...`).
     #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
     pub command: Vec<String>,
 }
 
-/// The text `--task`, `--briefing` and `--alert` take. It may start with `-`
-/// (a briefing is Markdown, whose lists do), so clap gives it the next
-/// argument whatever that is. When that argument is one of `run`'s own flags,
-/// or the `--` before the command, the value was left out: issue #237, where
-/// `--briefing --task "fix it"` took `--task` as the briefing and launched a
-/// program named `fix it`. That is refused as a usage error, before a session
-/// opens. The flags are read from the command clap is parsing, so a flag added
-/// to `run` later is covered without being listed here.
-#[derive(Debug, Clone, Copy)]
-struct RunText;
+/// The options of `run` whose text may start with `-` (a briefing is
+/// Markdown, whose lists do), so clap gives each the next argument whatever
+/// that is.
+const RUN_TEXT_OPTIONS: [&str; 3] = ["--task", "--briefing", "--alert"];
 
-impl clap::builder::TypedValueParser for RunText {
-    type Value = String;
-
-    fn parse_ref(
-        &self,
-        cmd: &clap::Command,
-        arg: Option<&clap::Arg>,
-        value: &std::ffi::OsStr,
-    ) -> Result<String, clap::Error> {
-        let text = clap::builder::StringValueParser::new().parse_ref(cmd, arg, value)?;
-        if names_an_option(cmd, &text) {
-            let flag = arg
-                .and_then(clap::Arg::get_long)
-                .map_or_else(|| "the flag".to_string(), |long| format!("--{long}"));
-            let given = if text == "--" {
-                "the `--` before the command".to_string()
-            } else {
-                format!("`{text}`, one of `run`'s own flags,")
-            };
-            let message = format!(
-                "`{flag}` is missing its value: {given} is not text. Give `{flag}` its \
-                 text, or leave the flag out.\n"
-            );
-            return Err(
-                clap::Error::raw(clap::error::ErrorKind::InvalidValue, message).with_cmd(cmd),
-            );
+/// Issue #237: `--briefing --task "fix it"` took `--task` as the briefing and
+/// launched a program named `fix it`. When the argument after a spaced
+/// `--task`, `--briefing` or `--alert` is one of `run`'s own flags, or the
+/// `--` before the command, the value was left out, and that is refused as a
+/// usage error before anything runs. The `=` form says the value is intended,
+/// so `--task=--briefing` passes the text `--briefing`. The flags are read from
+/// the command itself, globals included, so a flag added to `run` later is
+/// covered without being listed here. Read from the raw arguments, because
+/// clap gives a value parser the same text for both forms.
+fn missing_run_text(args: &[std::ffi::OsString]) -> Option<clap::Error> {
+    use clap::CommandFactory;
+    let mut top = Cli::command();
+    top.build();
+    let mut rest = args.iter().skip(1).map(|arg| arg.to_str());
+    // Past the global options to the subcommand.
+    loop {
+        match rest.next()? {
+            Some(token) if token.starts_with('-') && token != "--" => {
+                if takes_a_separate_value(&top, token) {
+                    rest.next();
+                }
+            }
+            Some("run") => break,
+            _ => return None,
         }
-        Ok(text)
+    }
+    let run = top.find_subcommand("run")?;
+    while let Some(token) = rest.next() {
+        match token {
+            // The command begins: what follows is the agent's.
+            None | Some("--") => return None,
+            Some(token) if !token.starts_with('-') => return None,
+            Some(token) if RUN_TEXT_OPTIONS.contains(&token) => match rest.next() {
+                Some(Some(next)) if names_an_option(run, next) => {
+                    let given = if next == "--" {
+                        "the `--` before the command".to_string()
+                    } else {
+                        format!("`{next}`, one of `run`'s own flags,")
+                    };
+                    let message = format!(
+                        "`{token}` is missing its value: {given} is not text. Give `{token}` \
+                         its text, or write `{token}=<text>` for text that looks like a flag.\n"
+                    );
+                    return Some(
+                        clap::Error::raw(clap::error::ErrorKind::InvalidValue, message)
+                            .with_cmd(run),
+                    );
+                }
+                Some(_) => {}
+                None => return None,
+            },
+            Some(token) => {
+                if takes_a_separate_value(run, token) {
+                    rest.next();
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether `token`, an option of `cmd` written without `=`, takes the next
+/// argument as its value (`--intent <why>`, `--log-format <format>`).
+fn takes_a_separate_value(cmd: &clap::Command, token: &str) -> bool {
+    let takes = |arg: &clap::Arg| arg.get_action().takes_values();
+    if let Some(long) = token.strip_prefix("--") {
+        return !long.contains('=')
+            && cmd
+                .get_arguments()
+                .any(|arg| arg.get_long() == Some(long) && takes(arg));
+    }
+    let mut chars = token.chars().skip(1);
+    match (chars.next(), chars.next()) {
+        (Some(short), None) => cmd
+            .get_arguments()
+            .any(|arg| arg.get_short() == Some(short) && takes(arg)),
+        _ => false,
     }
 }
 
@@ -494,7 +533,11 @@ pub struct ValidateArgs {
 
 impl Cli {
     pub fn parse_args() -> Self {
-        Self::parse()
+        let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        if let Some(refusal) = missing_run_text(&args) {
+            refusal.exit();
+        }
+        Self::parse_from(args)
     }
 }
 

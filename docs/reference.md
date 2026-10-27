@@ -155,10 +155,12 @@ and the task (for `claude`, in the same positional prompt); an idle Codex launch
 gets them after the packet in its session instructions. An agent toimija does
 not recognise has no launch prompt, so it cannot receive them. A blank
 `--briefing`, like a blank `--task`, is none, and both may start with `-`.
-Neither, nor an `--alert`, may be one of `run`'s own flags or the `--` before
-the command: there the value was left out, so `--briefing --task "fix it"` is
-refused as a usage error (exit 2) before a session opens, rather than taking
-`--task` as the briefing and launching a program named `fix it` (issue #237).
+Written with a space, neither, nor an `--alert`, may be followed by one of
+`run`'s own flags or the `--` before the command: there the value was left
+out, so `--briefing --task "fix it"` is refused as a usage error (exit 2) before
+a session opens, rather than taking `--task` as the briefing and launching a
+program named `fix it` (issue #237). The `=` form says the value is intended:
+`--task=--briefing` passes the text `--briefing`.
 
 `--alert <TEXT>` (repeatable) is for the few lines the agent must read first,
 such as a launcher's FLAGGED or WARNING lines. They open the launch prompt

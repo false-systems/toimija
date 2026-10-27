@@ -1701,3 +1701,41 @@ fn the_exit_summary_does_not_count_toimijas_own_files() {
             ));
     }
 }
+
+/// The `=` form says the value is intended: `--task=--briefing` passes the
+/// text `--briefing`, which the spaced form refuses as a missing value. So a
+/// task, briefing or alert that is literally one of `run`'s flags, or `--`,
+/// can still be given.
+#[cfg(unix)]
+#[test]
+fn the_equals_form_passes_any_text_even_a_flags_name() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let stub = prompt_capturing_stub(temp.path(), "claude");
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "literal flags",
+            "--task=--briefing",
+            "--briefing=--task",
+            "--alert=--",
+            "--",
+        ])
+        .arg(&stub)
+        .assert()
+        .success();
+    let prompt = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    assert!(prompt.contains("Task: --briefing"), "{prompt}");
+    assert!(prompt.trim_end().ends_with("--task"), "{prompt}");
+    let alerts = prompt
+        .split("Your toimija session packet is below.")
+        .next()
+        .unwrap();
+    assert!(alerts.lines().any(|line| line == "--"), "{prompt}");
+}
