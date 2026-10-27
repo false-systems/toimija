@@ -835,7 +835,9 @@ fn discover_base(runner: &impl CommandRunner, repo_root: &Path) -> Option<Base> 
 /// `main` and `master` (`<refname> <symref target>` per line): `origin/main`,
 /// then `origin/master`; with no `origin` among them and exactly one other
 /// remote, what its `HEAD` points at, then its `main`, then its `master`.
-/// Toimija never picks between two remotes that are not `origin`.
+/// Toimija never picks between two remotes that are not `origin`. The `*` of
+/// the listing's patterns does not cross a `/`, so a remote whose name holds
+/// one is not listed.
 fn remote_default_branch(listing: &str) -> Option<String> {
     let mut remotes: BTreeMap<&str, [Option<String>; 3]> = BTreeMap::new();
     for line in listing.lines() {
@@ -862,10 +864,11 @@ fn remote_default_branch(listing: &str) -> Option<String> {
     if let Some(name) = main.or(master) {
         return Some(name);
     }
-    match remotes.into_iter().collect::<Vec<_>>().as_slice() {
-        [(_, [head, main, master])] => head.clone().or(main.clone()).or(master.clone()),
-        _ => None,
+    if remotes.len() != 1 {
+        return None;
     }
+    let [head, main, master] = remotes.into_values().next()?;
+    head.or(main).or(master)
 }
 
 fn run_git_required_bytes(
@@ -1532,7 +1535,6 @@ R094\tsrc/old.rs\tsrc/renamed.rs
                 "refs/remotes/fork/master \nrefs/remotes/fork/main \n",
                 Some("fork/main"),
             ),
-            ("refs/remotes/team/dev/master \n", Some("team/dev/master")),
             // `origin` first, whatever else is there.
             (
                 "refs/remotes/origin/master \nrefs/remotes/upstream/HEAD refs/remotes/upstream/main\n",
