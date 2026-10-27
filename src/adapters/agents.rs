@@ -416,6 +416,54 @@ mod tests {
     }
 
     #[test]
+    fn a_users_own_developer_instructions_keep_the_packet_out_of_that_slot() {
+        // Toimija's `-c` would come after the user's and replace it. So a launch
+        // that sets the slot itself is not an idle one: its value stays, and
+        // the packet travels as the first message, in every form Codex reads.
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        for own in [
+            args(&["-c", "developer_instructions=\"mine\""]),
+            args(&["--config", "developer_instructions=mine"]),
+            args(&["--config=developer_instructions=mine"]),
+            args(&["-cdeveloper_instructions=mine"]),
+            args(&["-m", "o3", "-c", " developer_instructions = 'mine'"]),
+        ] {
+            assert!(!idle_codex("codex", &own, false, &no_config()), "{own:?}");
+            assert_eq!(
+                launch_args("codex", &own, "packet".into(), false, &no_config()).unwrap(),
+                vec!["packet"],
+                "{own:?}"
+            );
+        }
+        // Other settings, and a key that only starts the same way, stay idle.
+        for other in [
+            args(&["-c", "model=o3"]),
+            args(&["-c", "developer_instructions_file=x"]),
+            args(&["--config=model=o3"]),
+        ] {
+            assert!(
+                idle_codex("codex", &other, false, &no_config()),
+                "{other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_alert_leaves_no_room_for_a_later_one() {
+        // The second alert cannot fit one character of `€` (3 bytes) in the
+        // byte left, so it is cut whole; the third must not take that byte.
+        // The alerts kept are always a prefix of what the launcher sent.
+        let alerts = vec![
+            "A".repeat(ALERT_CAP_BYTES - 1),
+            "€€ second".into(),
+            "X third".into(),
+        ];
+        let (kept, cut) = cap_alerts(&alerts);
+        assert_eq!(kept, vec!["A".repeat(ALERT_CAP_BYTES - 1)]);
+        assert_eq!(cut, "€€ second".len() + "X third".len());
+    }
+
+    #[test]
     fn values_are_toml_strings_even_with_a_delete_character() {
         // TOML forbids a raw U+007F in a basic string, and Codex takes a `-c`
         // value that fails to parse as a literal: the agent would get the

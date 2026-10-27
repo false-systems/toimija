@@ -678,6 +678,103 @@ fn ahead_and_behind_are_unknown_with_nothing_to_compare_against() {
     );
 }
 
+/// A repository with commits `one` and `two` on `main`, at `root/source`.
+fn source_repo(root: &Path) -> std::path::PathBuf {
+    let source = root.join("source");
+    fs::create_dir_all(&source).unwrap();
+    init_repo(&source);
+    run_git(&source, &["branch", "-M", "main"]);
+    commit_file(&source, "one.txt");
+    commit_file(&source, "two.txt");
+    source
+}
+
+#[test]
+fn a_shallow_repository_leaves_ahead_and_behind_unknown() {
+    if !git_available() {
+        return;
+    }
+    // Git counts only the history a shallow repository has. After a shallow
+    // fetch the upstream's new commit has no parent here, so the commit both
+    // sides share is counted as this branch's: `+2 -1` for one commit ahead.
+    let temp = tempfile::tempdir().unwrap();
+    let source = source_repo(temp.path());
+    let url = format!("file://{}", source.display());
+    run_git(
+        temp.path(),
+        &["clone", "-q", "--depth", "1", &url, "shallow"],
+    );
+    let shallow = temp.path().join("shallow");
+    run_git(
+        &shallow,
+        &["config", "user.email", "toimija@example.invalid"],
+    );
+    run_git(&shallow, &["config", "user.name", "Toimija Test"]);
+    commit_file(&shallow, "mine.txt");
+    commit_file(&source, "theirs.txt");
+    run_git(&shallow, &["fetch", "-q", "--depth", "1"]);
+
+    let packet = context_json(&shallow);
+    assert!(packet["git"]["ahead"].is_null(), "{}", packet["git"]);
+    assert!(packet["git"]["behind"].is_null(), "{}", packet["git"]);
+    assert_eq!(packet["git"]["ahead_behind_ref"], "origin/main");
+    let markdown = context_markdown(&shallow);
+    assert!(
+        markdown.contains("- ahead/behind: unknown — the repository is shallow"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn a_remote_not_named_origin_is_the_base_and_counts_ahead_and_behind() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let source = source_repo(temp.path());
+    // Cloned with its remote named `upstream` (`upstream/HEAD` set), and a
+    // remote added by hand, which has no `HEAD` until asked for one.
+    run_git(
+        temp.path(),
+        &[
+            "clone",
+            "-q",
+            "-o",
+            "upstream",
+            source.to_str().unwrap(),
+            "cloned",
+        ],
+    );
+    let added = temp.path().join("added");
+    fs::create_dir_all(&added).unwrap();
+    init_repo(&added);
+    run_git(&added, &["remote", "add", "fork", source.to_str().unwrap()]);
+    run_git(&added, &["fetch", "-q", "fork"]);
+    run_git(&added, &["checkout", "-q", "-B", "work", "fork/main"]);
+    run_git(&added, &["branch", "--unset-upstream"]);
+
+    for (repo, remote) in [(temp.path().join("cloned"), "upstream"), (added, "fork")] {
+        run_git(&repo, &["config", "user.email", "toimija@example.invalid"]);
+        run_git(&repo, &["config", "user.name", "Toimija Test"]);
+        run_git(&repo, &["checkout", "-q", "-b", "feature"]);
+        commit_file(&repo, "mine.txt");
+        let base = format!("{remote}/main");
+
+        let packet = context_json(&repo);
+        assert_eq!(packet["git"]["base"], base.as_str(), "{}", packet["git"]);
+        assert_eq!(packet["git"]["ahead"], 1, "{}", packet["git"]);
+        assert_eq!(packet["git"]["behind"], 0, "{}", packet["git"]);
+        assert_eq!(packet["git"]["ahead_behind_ref"], base.as_str());
+        let markdown = context_markdown(&repo);
+        assert!(
+            markdown.contains(&format!(
+                "- ahead/behind: 1 ahead, 0 behind {base} (no upstream)"
+            )),
+            "{markdown}"
+        );
+    }
+}
+
 #[test]
 fn init_ignores_the_packet_so_the_first_refresh_leaves_the_tree_clean() {
     if !git_available() {

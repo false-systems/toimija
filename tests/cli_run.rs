@@ -1003,6 +1003,46 @@ fn idle_codex_gets_context_without_a_startup_message() {
     }
 }
 
+/// A user who sets Codex's `developer_instructions` on the command line keeps
+/// it. Toimija's own `-c` would come after it and replace it without a word,
+/// so the packet goes in the first message instead, and `run` says why.
+#[cfg(unix)]
+#[test]
+fn a_users_own_developer_instructions_survive_and_the_packet_goes_first() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let stub = temp.path().join("codex");
+    fs::write(
+        &stub,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > captured-args\nfor last; do :; done\n\
+         printf '%s' \"$last\" > launch-arg\n",
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["run", "--intent", "own slot", "--briefing", "Brief.", "--"])
+        .arg(&stub)
+        .args(["-c", "developer_instructions=\"MINE\""])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("developer_instructions"));
+    let captured = fs::read_to_string(temp.path().join("captured-args")).unwrap();
+    let slots: Vec<&str> = captured
+        .lines()
+        .filter(|line| line.contains("developer_instructions="))
+        .collect();
+    assert_eq!(slots, ["developer_instructions=\"MINE\""], "{captured}");
+    let prompt = fs::read_to_string(temp.path().join("launch-arg")).unwrap();
+    assert!(prompt.contains("# Toimija Context"), "{prompt}");
+    assert!(prompt.ends_with("Brief.\n"), "{prompt}");
+}
+
 /// The facts a wrapped command can read about where it stands: the session's
 /// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
 /// point inside the sealed session packet (`session.execution.repository`),

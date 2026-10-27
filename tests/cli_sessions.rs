@@ -348,3 +348,86 @@ fn a_healthy_scan_reports_available_coverage() {
     assert_eq!(value["sessions"].as_array().unwrap().len(), 0);
     assert_eq!(value["coverage"]["status"], "available");
 }
+
+/// A pid outlives its process: once a killed session's pid is handed to
+/// another process, `kill -0` answers for that one. The marker records when
+/// its own process started, so a live pid that started at another time is not
+/// the session's process, and the session is over.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_live_pid_that_started_at_another_time_is_not_the_sessions_process() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    // This test process is certainly alive, but it did not start at time 1.
+    let pid = std::process::id();
+    let started = now_secs().saturating_sub(5);
+    write_marker(
+        temp.path(),
+        &format!("{started}-{pid}"),
+        &format!(
+            r#"{{
+                "id": "{started}-{pid}",
+                "pid": {pid},
+                "pid_start": 1,
+                "agent": ["claude"],
+                "worktree": "/repo",
+                "branch": "feat/x",
+                "head": null,
+                "intent": "killed long ago",
+                "scope": [],
+                "started_at": {started},
+                "last_seen_at": {started},
+                "status": "active",
+                "closed_at": null,
+                "exit_status": null
+            }}"#
+        ),
+    );
+
+    let value = sessions_json(temp.path());
+    let session = &value["sessions"][0];
+    assert_eq!(session["pid_check"], "dead", "{session}");
+    assert_eq!(session["liveness"], "stale", "{session}");
+}
+
+/// `run` records when its own process started, and its session reads as live
+/// while it runs: the recorded start is the one a later check reads.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_run_records_when_its_process_started_and_reads_as_live() {
+    use std::os::unix::fs::PermissionsExt;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let toimija = assert_cmd::cargo::cargo_bin("toimija");
+    let agent = temp.path().join("agent");
+    fs::write(
+        &agent,
+        format!(
+            "#!/bin/sh\n'{}' sessions --json > during.json\n",
+            toimija.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .args(["run", "--intent", "start time", "--"])
+        .arg(&agent)
+        .assert()
+        .success();
+    let during: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join("during.json")).unwrap())
+            .unwrap();
+    let session = &during["sessions"][0];
+    assert!(session["pid_start"].as_u64().is_some(), "{session}");
+    assert_eq!(session["pid_check"], "alive", "{session}");
+    assert_eq!(session["liveness"], "active", "{session}");
+}
