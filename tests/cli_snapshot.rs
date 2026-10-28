@@ -30,6 +30,38 @@ fn snapshot_tree(path: &Path) -> String {
     value["tree"].as_str().unwrap().to_string()
 }
 
+#[test]
+fn listing_a_damaged_unicode_tree_does_not_panic() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_repo(temp.path());
+    let dir = temp.path().join(".toimija/snapshots");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("damaged.json"),
+        serde_json::json!({
+            "id": "damaged", "tree": "aaaaaa€", "token": "unknown",
+            "pid": 0, "created_at": 0
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["snapshot", "--list"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("tree aaaaaa€ (toimija-legacy)"));
+}
+
 /// `git cat-file` with the redirecting env scrubbed (see tests/common).
 fn git_stdout(path: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")

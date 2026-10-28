@@ -1932,7 +1932,8 @@ fn render_run_summary(
 
 /// Short form of a Git OID for display, robust to already-short or empty input.
 fn short_oid(oid: &str) -> &str {
-    &oid[..oid.len().min(7)]
+    let end = oid.char_indices().nth(7).map_or(oid.len(), |(at, _)| at);
+    &oid[..end]
 }
 
 /// The exit code a transparent wrapper should adopt for a finished child. On

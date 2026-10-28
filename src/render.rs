@@ -671,7 +671,8 @@ fn write_session_drift(output: &mut String, packet: &ContextPacket) {
 }
 
 fn short_oid(oid: &str) -> &str {
-    &oid[..oid.len().min(7)]
+    let end = oid.char_indices().nth(7).map_or(oid.len(), |(at, _)| at);
+    &oid[..end]
 }
 
 /// A short window of recent history (capped), so an agent sees what the branch
