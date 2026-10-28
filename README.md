@@ -432,6 +432,10 @@ layer.
 
 ## Trust and security
 
+Snapshot listings shorten tree identifiers at character boundaries, so a
+damaged local marker containing non-ASCII text cannot crash the listing.
+Displaying a marker does not validate its claimed tree identifier.
+
 The runtime boundary is intentionally narrow:
 
 - no product imports, plugins, or dynamic libraries;
