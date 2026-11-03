@@ -299,7 +299,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         if git_available {
             "git found"
         } else {
-            "git not found"
+            "git not found: install Git; toimija reads everything it reports from it"
         },
     ));
     let repo_root = match git::discover_repo_root(runner, cwd) {
@@ -315,7 +315,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             checks.push(check(
                 "inside git repo",
                 DoctorStatus::Fail,
-                "not a Git repository",
+                "not a Git repository: run doctor inside one, or `git init` here first",
             ));
             return DoctorReport {
                 serious: true,
@@ -358,7 +358,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             DoctorStatus::Ok
         },
         if config.repo.name.trim().is_empty() {
-            "repo name is empty"
+            "repo name is empty: set `repo.name` in .toimija/repo.yaml"
         } else {
             "repo name present"
         },
@@ -371,7 +371,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             DoctorStatus::Ok
         },
         if config.repo.role.trim().is_empty() {
-            "repo role is empty"
+            "repo role is empty: say what this repository is under `repo.role` in .toimija/repo.yaml"
         } else {
             "repo role present"
         },
@@ -384,7 +384,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             DoctorStatus::Ok
         },
         if config.boundaries.is_empty() {
-            "boundaries are empty"
+            "boundaries are empty: list what this repository must not become under `boundaries:` in .toimija/repo.yaml"
         } else {
             "boundaries present"
         },
@@ -409,7 +409,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         } else if kind != RepoKind::Generic {
             "validation can be inferred"
         } else {
-            "validation unknown"
+            "validation unknown: no recognised manifest to infer the commands from; list them under `validation:` in .toimija/repo.yaml"
         },
     ));
     checks.push(packet_ignored_check(runner, &repo_root));
@@ -452,7 +452,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         if has_preflight {
             "agent docs point at the `toimija enter` preflight"
         } else {
-            "no agent doc mentions the `toimija enter` preflight"
+            "no agent doc mentions the `toimija enter` preflight: tell agents in AGENTS.md to run `toimija enter` first"
         },
     ));
 
@@ -472,7 +472,10 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         &if missing_docs.is_empty() {
             "important_docs paths exist".to_string()
         } else {
-            format!("missing on disk: {}", join_paths(&missing_docs))
+            format!(
+                "missing on disk: {}; write them, or drop them from `context.important_docs` in {CONFIG_PATH}",
+                join_paths(&missing_docs)
+            )
         },
     ));
 
@@ -502,7 +505,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
                 format!("boundaries sourced by reference to {CONFIG_PATH}")
             } else {
                 format!(
-                    "{} boundary line(s) missing from agent docs: {}",
+                    "{} boundary line(s) missing from agent docs: {}; copy them into AGENTS.md word for word, or point the docs at {CONFIG_PATH}",
                     unmirrored.len(),
                     unmirrored
                         .iter()
@@ -651,10 +654,10 @@ fn file_check(repo_root: &Path, name: &str, path: &str) -> DoctorCheck {
         } else {
             DoctorStatus::Warning
         },
-        if present {
-            "file present"
+        &if present {
+            "file present".to_string()
         } else {
-            "file missing"
+            format!("file missing: write {path}, the guide every coding agent reads first")
         },
     )
 }
