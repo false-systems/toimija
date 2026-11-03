@@ -44,10 +44,18 @@ impl PromptStyle {
 /// and overrides it, so any harness can receive the packet inlined without
 /// patching this crate. Unknown agents keep the env-var handshake behind an
 /// honest banner.
-const KNOWN_AGENTS: &[(&str, PromptStyle)] = &[
-    ("claude", PromptStyle::Positional),
-    ("codex", PromptStyle::Positional),
-    ("gemini", PromptStyle::Positional),
+/// Each with the flag its prompt follows, or `None` for the final positional
+/// argument.
+const KNOWN_AGENTS: &[(&str, Option<&str>)] = &[
+    ("claude", None),
+    ("codex", None),
+    ("gemini", None),
+    // `pi [options] [--] [@files...] [messages...]`: a message argument is
+    // the initial prompt of an interactive session (pi 1.4.0).
+    ("pi", None),
+    // opencode's one positional argument is the folder to start in; the
+    // initial prompt follows `--prompt` (opencode 2.2.5).
+    ("opencode", Some("--prompt")),
 ];
 
 /// Resolve the delivery style for a program: configured entries win over the
@@ -64,7 +72,11 @@ pub fn prompt_style(
     KNOWN_AGENTS
         .iter()
         .find(|(name, _)| *name == basename(program))
-        .map(|(_, style)| style.clone())
+        .map(|(_, flag)| {
+            flag.map_or(PromptStyle::Positional, |flag| {
+                PromptStyle::Flag(flag.into())
+            })
+        })
 }
 
 pub fn is_known_agent(program: &str, configured: &BTreeMap<String, AgentPromptConfig>) -> bool {
@@ -383,6 +395,15 @@ mod tests {
         assert!(is_known_agent("claude", &no_config()));
         assert!(is_known_agent("/usr/local/bin/codex", &no_config()));
         assert!(is_known_agent("gemini", &no_config()));
+        assert_eq!(
+            prompt_style("/opt/homebrew/bin/pi", &no_config()),
+            Some(PromptStyle::Positional)
+        );
+        assert_eq!(
+            prompt_style("opencode", &no_config()),
+            Some(PromptStyle::Flag("--prompt".into()))
+        );
+        assert!(!is_known_agent("pip", &no_config()));
         assert!(!is_known_agent("sh", &no_config()));
         assert!(!is_known_agent("/usr/bin/claudette", &no_config()));
     }

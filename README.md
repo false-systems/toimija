@@ -171,8 +171,8 @@ message, so Codex starts a turn (`run` says so). The first task still has the fu
 configuration retains its configured delivery. Subcommands such as `codex exec`
 and `codex resume` retain prompt delivery; only interactive launches wait.
 
-Known agents such as `codex`, `claude`, and `gemini` otherwise receive the packet in their
-launch prompt. An `agents:` entry in `.toimija/repo.yaml` teaches `run` how
+Known agents such as `codex`, `claude`, `gemini`, `pi` and `opencode` otherwise receive the
+packet in their launch prompt (opencode after `--prompt`, the others as a positional argument). An `agents:` entry in `.toimija/repo.yaml` teaches `run` how
 any other CLI accepts it — `prompt: positional`, or a flag such as
 `prompt: --message` — so the packet (and `--task`) can be inlined for any
 harness without patching toimija. Other commands receive the session paths
