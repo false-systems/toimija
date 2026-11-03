@@ -139,12 +139,14 @@ retain prompt delivery rather than being inspected as interactive launches.
 `--intent`; `--intent unknown` remains the explicit escape hatch for
 exploratory sessions. For known agents (`claude`, `codex`, `gemini`, `pi`
 and `opencode`, matched by basename: opencode takes the prompt after `--prompt`,
-since its one positional argument is the folder to start in; the others take it
-as a positional argument) — and for any agent
+since its one positional argument is the folder to start in, except `opencode
+run`, which takes it as its message; the others take it as a positional
+argument) — and for any agent
 configured under `agents:` in `.toimija/repo.yaml` (`prompt: positional`, or a
 flag such as `prompt: --message`; configuration wins over the built-ins) —
 the packet is delivered **in the launch prompt
-itself**: `run` appends one argument (after `--prompt` for opencode) carrying the contract framing,
+itself**: `run` appends one argument (after `--prompt` for opencode, but not for
+`opencode run`) carrying the contract framing,
 the entry packet inlined at the session budget, the live packet path, and your
 `--task`. The agent cannot not-see it. Pass the agent's task via `--task`, not
 as the agent's own positional argument. Unknown agents keep the env-var
