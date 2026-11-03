@@ -54,7 +54,9 @@ const KNOWN_AGENTS: &[(&str, Option<&str>)] = &[
     // the initial prompt of an interactive session (pi 1.4.0).
     ("pi", None),
     // opencode's one positional argument is the folder to start in; the
-    // initial prompt follows `--prompt` (opencode 2.2.5).
+    // initial prompt follows `--prompt`, in the TUI and `opencode mini`
+    // (opencode 2.2.5). `opencode run` takes it as its message instead
+    // (`opencode_run`).
     ("opencode", Some("--prompt")),
 ];
 
@@ -203,12 +205,41 @@ pub fn launch_args(
             format!("developer_instructions={}", toml_string(&prompt)?),
         ]);
     }
-    Ok(
-        match prompt_style(program, configured).unwrap_or(PromptStyle::Positional) {
-            PromptStyle::Positional => vec![prompt],
-            PromptStyle::Flag(flag) => vec![flag, prompt],
-        },
-    )
+    let style = match prompt_style(program, configured).unwrap_or(PromptStyle::Positional) {
+        // `opencode run` has no `--prompt`: it takes its message as arguments.
+        PromptStyle::Flag(_) if opencode_run(program, rest, configured) => PromptStyle::Positional,
+        style => style,
+    };
+    Ok(match style {
+        PromptStyle::Positional => vec![prompt],
+        PromptStyle::Flag(flag) => vec![flag, prompt],
+    })
+}
+
+/// Whether a built-in opencode launch is `opencode run`: the first argument
+/// that is neither a flag nor a flag's value names the subcommand, as
+/// opencode reads it (2.2.5). A configured `opencode` keeps its own style.
+fn opencode_run(
+    program: &str,
+    rest: &[String],
+    configured: &BTreeMap<String, AgentPromptConfig>,
+) -> bool {
+    if basename(program) != "opencode" || configured.contains_key("opencode") {
+        return false;
+    }
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--" => return false,
+            // opencode's top-level flags that take a value.
+            "--server" | "--session" | "-s" | "--prompt" => {
+                args.next();
+            }
+            flag if flag.starts_with('-') => {}
+            subcommand => return subcommand == "run",
+        }
+    }
+    false
 }
 
 /// Codex may execute tools in a pre-existing daemon rather than a descendant
@@ -610,6 +641,8 @@ mod tests {
         assert_eq!(args(&["--print-logs", "run", "--model", "a/b"]), message);
         assert_eq!(args(&["--session", "run"]), flag);
         assert_eq!(args(&["-s", "run", "mini"]), flag);
+        // After `--`, `run` is the folder to start in.
+        assert_eq!(args(&["--", "run"]), flag);
         // A configured style still wins, whatever the subcommand.
         let configured = config(&[("opencode", "--prompt")]);
         assert_eq!(
