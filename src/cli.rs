@@ -714,12 +714,24 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
     let report = repo::doctor(&runner, &cwd, mode);
     println!("{}", render::render_doctor_report(&report));
     if report.serious {
-        let reason = if report.strict {
-            "doctor --strict found config or doc drift"
-        } else {
-            "doctor found serious setup failures"
-        };
-        anyhow::bail!("{reason}");
+        // Name what failed, not a cause it may not be: outside a Git
+        // repository nothing drifted.
+        let failed: Vec<&str> = report
+            .checks
+            .iter()
+            .filter(|check| check.status == repo::DoctorStatus::Fail)
+            .map(|check| check.name.as_str())
+            .collect();
+        anyhow::bail!(
+            "toimija doctor{}: {} failed ({}); the report above says why and what to do",
+            if report.strict { " --strict" } else { "" },
+            if failed.len() == 1 {
+                "1 check".to_owned()
+            } else {
+                format!("{} checks", failed.len())
+            },
+            failed.join(", ")
+        );
     }
     Ok(())
 }
