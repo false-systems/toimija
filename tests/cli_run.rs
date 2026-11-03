@@ -1779,3 +1779,70 @@ fn the_equals_form_passes_any_text_even_a_flags_name() {
         .unwrap();
     assert!(alerts.lines().any(|line| line == "--"), "{prompt}");
 }
+
+/// A stub agent named `name` in `dir` that writes every argument it gets,
+/// each ended by a NUL, to `launch-args`.
+#[cfg(unix)]
+fn argv_capturing_stub(dir: &Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let stub = dir.join(name);
+    fs::write(
+        &stub,
+        "#!/bin/sh\nfor arg; do printf '%s\\0' \"$arg\"; done > launch-args\n",
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    stub
+}
+
+/// pi and opencode get the packet and the briefing in their launch prompt,
+/// each the way it takes an initial prompt: pi as a message argument,
+/// opencode after `--prompt` (its one positional argument is the folder to
+/// start in). Under env-var delivery alone neither ever saw the briefing,
+/// and none of their 13 sessions launched through ohjaa read it back.
+#[cfg(unix)]
+#[test]
+fn pi_and_opencode_get_the_packet_in_their_launch_prompt() {
+    if !git_available() {
+        return;
+    }
+    for (name, flag) in [("pi", None), ("opencode", Some("--prompt"))] {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        let stub = argv_capturing_stub(temp.path(), name);
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args([
+                "run",
+                "--intent",
+                "delivery",
+                "--briefing",
+                "Knowledge: read it back.",
+                "--",
+            ])
+            .arg(&stub)
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("env-var only").not());
+        let args = fs::read_to_string(temp.path().join("launch-args")).unwrap();
+        let args: Vec<&str> = args.split_terminator('\0').collect();
+        let prompt = match flag {
+            None => {
+                assert_eq!(args.len(), 1, "{name}: {args:?}");
+                args[0]
+            }
+            Some(flag) => {
+                assert_eq!(args.len(), 2, "{name}: {args:?}");
+                assert_eq!(args[0], flag, "{name}: {args:?}");
+                args[1]
+            }
+        };
+        assert!(
+            prompt.contains("Your toimija session packet is below.")
+                && prompt.contains("# Toimija Context")
+                && prompt.contains("Knowledge: read it back."),
+            "{name}: {prompt}"
+        );
+    }
+}
