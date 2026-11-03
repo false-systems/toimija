@@ -60,6 +60,100 @@ fn write_strict_ready_rust_repo(path: &Path) {
     .unwrap();
 }
 
+/// Every check `doctor --strict` fails says what fixes it, as its closing
+/// line promises ("the report above says why and what to do"). Each place
+/// below fails a different set of checks. A check that fails in one and has
+/// no step here fails this test, and so does a step that never shows.
+#[test]
+fn every_failing_check_says_what_to_do() {
+    if !git_available() {
+        return;
+    }
+    const NEXT_STEPS: &[(&str, &str)] = &[
+        ("inside git repo", "`git init`"),
+        ("toimija config", "`toimija init`"),
+        ("repo name", "`repo.name` in .toimija/repo.yaml"),
+        ("repo role", "`repo.role` in .toimija/repo.yaml"),
+        ("boundaries", "`boundaries:` in .toimija/repo.yaml"),
+        ("validation plan", "`validation:` in .toimija/repo.yaml"),
+        ("packet ignored", "`toimija init` writes"),
+        ("AGENTS.md", "write AGENTS.md"),
+        ("preflight mention", "tell agents in AGENTS.md"),
+        (
+            "important docs",
+            "`context.important_docs` in .toimija/repo.yaml",
+        ),
+        ("boundaries mirrored", "copy them into AGENTS.md"),
+    ];
+    let failing = |dir: &Path| -> Vec<(String, String)> {
+        let out = Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(dir)
+            .args(["doctor", "--strict"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "doctor --strict passed in {dir:?}");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("- fail: "))
+            .map(|rest| {
+                let (name, message) = rest.split_once(" - ").expect("`name - message`");
+                (name.to_owned(), message.to_owned())
+            })
+            .collect()
+    };
+    // Outside any repository.
+    let outside = tempfile::tempdir().unwrap();
+    // A repository toimija has never been set up in.
+    let bare = tempfile::tempdir().unwrap();
+    init_git_repo(bare.path());
+    // A repository as `toimija init` leaves it.
+    let fresh = tempfile::tempdir().unwrap();
+    init_git_repo(fresh.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(fresh.path())
+        .arg("init")
+        .assert()
+        .success();
+    // A set-up repository whose config and docs have drifted: no name, a
+    // boundary the docs do not carry, a doc that is not there, and nothing
+    // telling Git to ignore the packet.
+    let drifted = tempfile::tempdir().unwrap();
+    init_git_repo(drifted.path());
+    write_strict_ready_rust_repo(drifted.path());
+    fs::write(
+        drifted.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: ''\n  role: test fixture\ncontext:\n  important_docs:\n    - docs/missing.md\nvalidation:\n  fast:\n    - cargo test\nboundaries:\n  - Never ship on Fridays.\n",
+    )
+    .unwrap();
+    fs::remove_file(drifted.path().join(".toimija/.gitignore")).unwrap();
+
+    let mut seen = std::collections::BTreeSet::new();
+    for dir in [outside.path(), bare.path(), fresh.path(), drifted.path()] {
+        for (name, message) in failing(dir) {
+            let (_, step) = NEXT_STEPS
+                .iter()
+                .find(|(check, _)| *check == name)
+                .unwrap_or_else(|| panic!("{name} fails ({message:?}) with no step listed here"));
+            assert!(
+                message.contains(step),
+                "{name}: {message:?} does not say {step:?}"
+            );
+            seen.insert(name);
+        }
+    }
+    let unseen: Vec<&str> = NEXT_STEPS
+        .iter()
+        .map(|(check, _)| *check)
+        .filter(|check| !seen.contains(*check))
+        .collect();
+    assert!(
+        unseen.is_empty(),
+        "never failed in these places: {unseen:?}"
+    );
+}
+
 #[test]
 fn doctor_outside_git_repo_reports_failure() {
     let temp = tempfile::tempdir().unwrap();
