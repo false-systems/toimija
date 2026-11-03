@@ -22,7 +22,7 @@ fn write_ready_rust_repo(path: &Path) {
     )
     .unwrap();
     fs::write(path.join("AGENTS.md"), "# Agent guide\n").unwrap();
-    fs::write(path.join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
+    fs::write(path.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
     fs::create_dir_all(path.join(".toimija")).unwrap();
     fs::write(
         path.join(".toimija/repo.yaml"),
@@ -45,7 +45,7 @@ fn write_strict_ready_rust_repo(path: &Path) {
         "# Agent guide\n\nBefore editing, run `toimija context --for-diff`.\n\nStay inside fixture.\n",
     )
     .unwrap();
-    fs::write(path.join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
+    fs::write(path.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
     fs::create_dir_all(path.join(".toimija")).unwrap();
     fs::write(
         path.join(".toimija/repo.yaml"),
@@ -84,6 +84,7 @@ fn every_failing_check_says_what_to_do() {
             "`context.important_docs` in .toimija/repo.yaml",
         ),
         ("boundaries mirrored", "copy them into AGENTS.md"),
+        ("CLAUDE.md", "add `@AGENTS.md`"),
     ];
     let failing = |dir: &Path| -> Vec<(String, String)> {
         let out = Command::cargo_bin("toimija")
@@ -128,6 +129,7 @@ fn every_failing_check_says_what_to_do() {
     )
     .unwrap();
     fs::remove_file(drifted.path().join(".toimija/.gitignore")).unwrap();
+    fs::write(drifted.path().join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
 
     let mut seen = std::collections::BTreeSet::new();
     for dir in [outside.path(), bare.path(), fresh.path(), drifted.path()] {
@@ -194,7 +196,7 @@ fn doctor_ready_rust_repo_succeeds() {
             "ok: validation plan - validation configured",
         ))
         .stdout(predicate::str::contains(
-            "ok: CLAUDE.md - CLAUDE.md references AGENTS.md",
+            "ok: CLAUDE.md - CLAUDE.md imports AGENTS.md",
         ));
 }
 
@@ -385,6 +387,47 @@ fn doctor_strict_escalates_drift_to_failure() {
         .stdout(predicate::str::contains("fail: boundaries mirrored -"));
 }
 
+/// Claude Code reads AGENTS.md by itself only where no CLAUDE.md sits in or
+/// above the folder it starts in. Where one does, it loads AGENTS.md only
+/// through an import: `@AGENTS.md` (or `@./AGENTS.md`) as a word of its own,
+/// on a line or in a sentence, but never in code. A CLAUDE.md that merely
+/// names AGENTS.md leaves Claude without it.
+#[test]
+fn doctor_requires_claude_md_to_import_agents_md() {
+    if !git_available() {
+        return;
+    }
+    for (claude, imports) in [
+        ("@AGENTS.md\n", true),
+        ("# Notes\n\n@./AGENTS.md\n", true),
+        ("Read @AGENTS.md before anything else.\n", true),
+        ("See AGENTS.md.\n", false),
+        ("Follow [`AGENTS.md`](AGENTS.md).\n", false),
+        ("Write `@AGENTS.md` to import it.\n", false),
+        ("```\n@AGENTS.md\n```\n", false),
+        ("~~~md\n@AGENTS.md\n~~~\n", false),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        write_ready_rust_repo(temp.path());
+        fs::write(temp.path().join("CLAUDE.md"), claude).unwrap();
+        let out = Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .arg("doctor")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let expected = if imports {
+            "ok: CLAUDE.md - CLAUDE.md imports AGENTS.md"
+        } else {
+            "warn: CLAUDE.md - CLAUDE.md does not import AGENTS.md, so Claude Code \
+             starts without it: add `@AGENTS.md`"
+        };
+        assert!(stdout.contains(expected), "{claude:?}:\n{stdout}");
+    }
+}
+
 #[test]
 fn doctor_accepts_boundaries_sourced_by_reference() {
     if !git_available() {
@@ -462,7 +505,7 @@ fn doctor_claude_without_agents_reference_is_advisory() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "warn: CLAUDE.md - CLAUDE.md exists but does not reference AGENTS.md",
+            "warn: CLAUDE.md - CLAUDE.md does not import AGENTS.md",
         ));
 }
 
