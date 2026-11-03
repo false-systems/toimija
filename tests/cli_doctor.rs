@@ -639,13 +639,16 @@ fn logs_written_to_a_pipe_carry_no_colour_codes() {
 }
 
 /// On a terminal logs stay coloured for the person reading them, unless
-/// `--no-color` or NO_COLOR says not to. `script` gives the run a terminal:
-/// BSD's on macOS, util-linux's elsewhere.
+/// `--no-color` or a non-empty NO_COLOR says not to (an empty one keeps the
+/// colour, as no-color.org says). `script` gives the run a terminal: BSD's on
+/// macOS, util-linux's elsewhere. Without it the test fails rather than
+/// skipping, so a pass always means it ran.
+#[cfg(unix)]
 #[test]
 fn on_a_terminal_logs_are_coloured_unless_no_color_says_not() {
     let toimija = env!("CARGO_BIN_EXE_toimija");
     let temp = tempfile::tempdir().unwrap();
-    let on_a_terminal = |flags: &[&str], env: &[(&str, &str)]| -> Option<String> {
+    let on_a_terminal = |flags: &[&str], env: &[(&str, &str)]| -> String {
         let args: Vec<&str> = ["doctor", "--strict"]
             .iter()
             .chain(flags)
@@ -663,20 +666,23 @@ fn on_a_terminal_logs_are_coloured_unless_no_color_says_not() {
             .env_remove("NO_COLOR")
             .env_remove("RUST_LOG")
             .envs(env.iter().copied());
-        let output = command.output().ok()?;
-        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        let output = command
+            .output()
+            .expect("`script` gives the run a terminal: install it (util-linux on Linux)");
+        String::from_utf8_lossy(&output.stdout).into_owned()
     };
-    let Some(coloured) = on_a_terminal(&[], &[]) else {
-        eprintln!("skipped: no `script` here to give the run a terminal");
-        return;
-    };
-    assert!(
-        coloured.contains("WARN") && coloured.contains('\u{1b}'),
-        "{coloured:?}"
-    );
+    for coloured in [
+        on_a_terminal(&[], &[]),
+        on_a_terminal(&[], &[("NO_COLOR", "")]),
+    ] {
+        assert!(
+            coloured.contains("WARN") && coloured.contains('\u{1b}'),
+            "{coloured:?}"
+        );
+    }
     for plain in [
-        on_a_terminal(&["--no-color"], &[]).unwrap(),
-        on_a_terminal(&[], &[("NO_COLOR", "1")]).unwrap(),
+        on_a_terminal(&["--no-color"], &[]),
+        on_a_terminal(&[], &[("NO_COLOR", "1")]),
     ] {
         assert!(plain.contains(" WARN toimija::cli: "), "{plain:?}");
         assert!(!plain.contains('\u{1b}'), "{plain:?}");
