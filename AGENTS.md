@@ -19,7 +19,7 @@ These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if t
 
 ## Checks
 
-Before claiming completion: `cargo fmt`, `cargo test`, `cargo clippy --all-targets -- -D warnings`; or the same as `sykli run` (`sykli.json`, cached, with structured failures) or `cargo xtask gate`. A new source or test file goes into the inputs of the tasks in `sykli.json` that read it, then `sykli lock sykli.json`.
+Before claiming completion: `cargo fmt`, `cargo test`, `cargo clippy --all-targets -- -D warnings`; or the same as `sykli run` (`sykli.json`, cached, with structured failures) or `cargo xtask gate`. Every new tracked file goes into the inputs of `test` and `doctor` in `sykli.json`, and of `fmt` and `clippy` if it is code; stage it, then `sykli lock sykli.json`.
 
 Install the pre-commit hook once per clone, and again after changing `xtask`: `cargo xtask install-pre-commit-hook`. It formats the staged crates, then runs clippy and the tests. Update README.md when CLI behaviour changes; when boundaries, validation commands, major docs or structure change, update `.toimija/repo.yaml` too and run `toimija doctor --strict`.
 
