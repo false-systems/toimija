@@ -2929,6 +2929,36 @@ mod tests {
     use crate::git::GitState;
     use std::path::{Path, PathBuf};
 
+    /// `run --help` names the built-in agents twice, in the command's
+    /// description and in `--task`'s: both lists are the table, in its
+    /// order, so neither falls behind when an agent is added.
+    #[test]
+    fn run_help_names_every_builtin_agent() {
+        use clap::CommandFactory;
+        let mut run = Cli::command()
+            .find_subcommand("run")
+            .expect("run is a subcommand")
+            .clone();
+        let help = run.render_long_help().to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let listed = |opening: &str| -> Vec<String> {
+            let start = help
+                .find(opening)
+                .unwrap_or_else(|| panic!("no {opening:?} in: {help}"))
+                + opening.len();
+            let end = start + help[start..].find(')').expect("a closing parenthesis");
+            help[start..end]
+                .split(", ")
+                .map(|name| name.trim_matches('`').to_owned())
+                .collect()
+        };
+        let builtin: Vec<String> = crate::adapters::agents::builtin_agents()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(listed("Known agents ("), builtin);
+        assert_eq!(listed("of a known agent ("), builtin);
+    }
+
     /// Answers the reads `snapshot_tree_and_token` makes, and lets the worktree
     /// move exactly once — when `write-tree` runs, which is the middle of
     /// `materialize` and the widest part of the window.

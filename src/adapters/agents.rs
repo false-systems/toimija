@@ -60,6 +60,11 @@ const KNOWN_AGENTS: &[(&str, Option<&str>)] = &[
     ("opencode", Some("--prompt")),
 ];
 
+/// The built-in agents, in table order: what `toimija run --help` names.
+pub fn builtin_agents() -> impl Iterator<Item = &'static str> {
+    KNOWN_AGENTS.iter().map(|(name, _)| *name)
+}
+
 /// Resolve the delivery style for a program: configured entries win over the
 /// built-in table, both matched by basename.
 pub fn prompt_style(
