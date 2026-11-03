@@ -435,3 +435,68 @@ fn doctor_checks_every_directory_init_ignores() {
             "warn: packet ignored - Git does not ignore .toimija/runs/, .toimija/snapshots/;",
         ));
 }
+
+/// The error a failing doctor ends with names the checks that failed. It
+/// said "found config or doc drift" for every strict failure, even outside a
+/// Git repository, where nothing drifted.
+#[test]
+fn a_failing_doctor_names_the_checks_that_failed() {
+    let temp = tempfile::tempdir().unwrap();
+    for (args, said) in [
+        (
+            &["doctor", "--strict"][..],
+            "toimija doctor --strict: 1 check failed (inside git repo); \
+             the report above says why and what to do\n",
+        ),
+        (
+            &["doctor"][..],
+            "toimija doctor: 1 check failed (inside git repo); \
+             the report above says why and what to do\n",
+        ),
+    ] {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .env_remove("RUST_LOG")
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::ends_with(said))
+            .stderr(predicate::str::contains("drift").not());
+    }
+    if !git_available() {
+        return;
+    }
+    // Drift, and whatever else fails here, is named by its checks.
+    let repo = tempfile::tempdir().unwrap();
+    init_git_repo(repo.path());
+    write_ready_rust_repo(repo.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["doctor", "--strict"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("toimija doctor --strict: "))
+        .stderr(predicate::str::contains(" checks failed ("))
+        .stderr(predicate::str::contains("preflight mention"))
+        .stderr(predicate::str::contains("boundaries mirrored"));
+}
+
+/// Logs go to stderr as plain text when stderr is not a terminal, as for an
+/// agent or CI reading it: no colour codes.
+#[test]
+fn logs_written_to_a_pipe_carry_no_colour_codes() {
+    let temp = tempfile::tempdir().unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env_remove("RUST_LOG")
+        .env_remove("NO_COLOR")
+        .args(["doctor", "--strict"])
+        .assert()
+        .failure()
+        // A log line was written, and it is plain.
+        .stderr(predicate::str::contains(" WARN toimija::cli: "))
+        .stderr(predicate::str::contains("\u{1b}").not());
+}
