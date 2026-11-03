@@ -894,6 +894,9 @@ drift guard — no AI, no semantic comparison. It checks:
   `sessions/`, `history.*`, `runs/`, `snapshots/`), by whatever ignore rules it
   reads (`git check-ignore`)
 - every `context.important_docs` path exists on disk
+- a `CLAUDE.md`, if there is one, imports `AGENTS.md` (`@AGENTS.md` as a word
+  of its own, outside code): where a CLAUDE.md exists, Claude Code loads
+  AGENTS.md only through that import
 - an agent doc still routes work through the `toimija enter` preflight
 - each boundary sentence still appears in the agent docs
   (`AGENTS.md` / `CLAUDE.md` / `important_docs`), matched case- and

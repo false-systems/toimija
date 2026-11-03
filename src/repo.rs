@@ -417,17 +417,19 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
     let claude = repo_root.join("CLAUDE.md");
     if claude.exists() {
         let text = std::fs::read_to_string(&claude).unwrap_or_default();
+        let imports = imports_agents_md(&text);
         checks.push(check(
             "CLAUDE.md",
-            if text.contains("AGENTS.md") {
+            if imports {
                 DoctorStatus::Ok
             } else {
                 DoctorStatus::Warning
             },
-            if text.contains("AGENTS.md") {
-                "CLAUDE.md references AGENTS.md"
+            if imports {
+                "CLAUDE.md imports AGENTS.md"
             } else {
-                "CLAUDE.md exists but does not reference AGENTS.md"
+                "CLAUDE.md does not import AGENTS.md, so Claude Code starts without it: \
+                 add `@AGENTS.md`"
             },
         ));
     } else {
@@ -643,6 +645,31 @@ fn packet_ignored_check(runner: &impl CommandRunner, repo_root: &Path) -> Doctor
             ),
         )
     }
+}
+
+/// Whether a CLAUDE.md imports AGENTS.md, as Claude Code reads imports: an
+/// `@AGENTS.md` or `@./AGENTS.md` word, on its own line or in a sentence,
+/// never inside a code span or a fenced block. Where a CLAUDE.md exists,
+/// that import is the only way Claude Code loads AGENTS.md at start.
+fn imports_agents_md(claude: &str) -> bool {
+    let mut fenced = false;
+    for line in claude.lines() {
+        let line = line.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        // A word in backticks is a code span; whitespace keeps the backticks
+        // on the word, so it never equals the import.
+        if !fenced
+            && line
+                .split_whitespace()
+                .any(|word| word == "@AGENTS.md" || word == "@./AGENTS.md")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn file_check(repo_root: &Path, name: &str, path: &str) -> DoctorCheck {
