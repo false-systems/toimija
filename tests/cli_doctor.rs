@@ -500,3 +500,48 @@ fn logs_written_to_a_pipe_carry_no_colour_codes() {
         .stderr(predicate::str::contains(" WARN toimija::cli: "))
         .stderr(predicate::str::contains("\u{1b}").not());
 }
+
+/// On a terminal logs stay coloured for the person reading them, unless
+/// `--no-color` or NO_COLOR says not to. `script` gives the run a terminal:
+/// BSD's on macOS, util-linux's elsewhere.
+#[test]
+fn on_a_terminal_logs_are_coloured_unless_no_color_says_not() {
+    let toimija = env!("CARGO_BIN_EXE_toimija");
+    let temp = tempfile::tempdir().unwrap();
+    let on_a_terminal = |flags: &[&str], env: &[(&str, &str)]| -> Option<String> {
+        let args: Vec<&str> = ["doctor", "--strict"]
+            .iter()
+            .chain(flags)
+            .copied()
+            .collect();
+        let mut command = std::process::Command::new("script");
+        if cfg!(target_os = "macos") {
+            command.args(["-q", "/dev/null", toimija]).args(&args);
+        } else {
+            let line = format!("'{toimija}' {}", args.join(" "));
+            command.args(["-q", "-e", "-c", &line, "/dev/null"]);
+        }
+        command
+            .current_dir(temp.path())
+            .env_remove("NO_COLOR")
+            .env_remove("RUST_LOG")
+            .envs(env.iter().copied());
+        let output = command.output().ok()?;
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let Some(coloured) = on_a_terminal(&[], &[]) else {
+        eprintln!("skipped: no `script` here to give the run a terminal");
+        return;
+    };
+    assert!(
+        coloured.contains("WARN") && coloured.contains('\u{1b}'),
+        "{coloured:?}"
+    );
+    for plain in [
+        on_a_terminal(&["--no-color"], &[]).unwrap(),
+        on_a_terminal(&[], &[("NO_COLOR", "1")]).unwrap(),
+    ] {
+        assert!(plain.contains(" WARN toimija::cli: "), "{plain:?}");
+        assert!(!plain.contains('\u{1b}'), "{plain:?}");
+    }
+}
