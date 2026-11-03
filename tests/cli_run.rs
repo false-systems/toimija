@@ -1846,3 +1846,42 @@ fn pi_and_opencode_get_the_packet_in_their_launch_prompt() {
         );
     }
 }
+
+/// `opencode run` takes its message as arguments and has no `--prompt`
+/// (opencode 2.2.5), so the packet goes after the person's own arguments as
+/// the message.
+#[cfg(unix)]
+#[test]
+fn opencode_run_gets_the_packet_as_its_message() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let stub = argv_capturing_stub(temp.path(), "opencode");
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--intent",
+            "delivery",
+            "--task",
+            "fix the build",
+            "--",
+        ])
+        .arg(&stub)
+        .args(["run", "--model", "a/b"])
+        .assert()
+        .success();
+    let args = fs::read_to_string(temp.path().join("launch-args")).unwrap();
+    let args: Vec<&str> = args.split_terminator('\0').collect();
+    assert_eq!(args.len(), 4, "{args:?}");
+    assert_eq!(&args[..3], ["run", "--model", "a/b"], "{args:?}");
+    assert!(
+        args[3].contains("Your toimija session packet is below.")
+            && args[3].contains("Task: fix the build"),
+        "{}",
+        args[3]
+    );
+}

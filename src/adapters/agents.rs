@@ -591,6 +591,40 @@ mod tests {
         }
     }
 
+    /// opencode takes an initial prompt three ways (2.2.5): the TUI
+    /// (`opencode [<directory>]`) and `opencode mini` after `--prompt`, and
+    /// `opencode run [<message...>]` as its message, with no `--prompt` at
+    /// all. A flag's value is never read as the subcommand.
+    #[test]
+    fn opencode_run_gets_the_prompt_as_its_message() {
+        let args = |rest: &[&str]| {
+            let rest: Vec<String> = rest.iter().map(|arg| arg.to_string()).collect();
+            launch_args("opencode", &rest, "packet".into(), false, &no_config()).unwrap()
+        };
+        let flag = vec!["--prompt".to_string(), "packet".to_string()];
+        let message = vec!["packet".to_string()];
+        assert_eq!(args(&[]), flag);
+        assert_eq!(args(&["."]), flag);
+        assert_eq!(args(&["mini"]), flag);
+        assert_eq!(args(&["run"]), message);
+        assert_eq!(args(&["--print-logs", "run", "--model", "a/b"]), message);
+        assert_eq!(args(&["--session", "run"]), flag);
+        assert_eq!(args(&["-s", "run", "mini"]), flag);
+        // A configured style still wins, whatever the subcommand.
+        let configured = config(&[("opencode", "--prompt")]);
+        assert_eq!(
+            launch_args(
+                "opencode",
+                &["run".into()],
+                "packet".into(),
+                false,
+                &configured
+            )
+            .unwrap(),
+            flag
+        );
+    }
+
     #[test]
     fn configured_agents_extend_and_override_the_builtin_table() {
         let configured = config(&[("aider", "--message"), ("opencode", "positional")]);
