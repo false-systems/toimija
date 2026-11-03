@@ -76,6 +76,30 @@ pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
 }
 
+impl DoctorReport {
+    /// The line a failing doctor ends with: the checks that failed, by name,
+    /// not a cause they may not share (outside a Git repository nothing
+    /// drifted). The report printed above says why each failed.
+    pub fn failure_summary(&self) -> String {
+        let failed: Vec<&str> = self
+            .checks
+            .iter()
+            .filter(|check| check.status == DoctorStatus::Fail)
+            .map(|check| check.name.as_str())
+            .collect();
+        format!(
+            "toimija doctor{}: {} failed ({}); the report above says why and what to do",
+            if self.strict { " --strict" } else { "" },
+            if failed.len() == 1 {
+                "1 check".to_owned()
+            } else {
+                format!("{} checks", failed.len())
+            },
+            failed.join(", ")
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorCheck {
     pub name: String,
@@ -752,6 +776,30 @@ mod tests {
 
         let scan = detect_secondary_langs(temp.path(), RepoKind::Generic, |_| false);
         assert!(scan.languages.is_empty());
+    }
+
+    #[test]
+    fn a_failing_doctor_names_only_the_checks_that_failed() {
+        let report = |strict| DoctorReport {
+            serious: true,
+            strict,
+            checks: vec![
+                check("git installed", DoctorStatus::Ok, "git found"),
+                check("preflight mention", DoctorStatus::Warning, "none"),
+                check("toimija config", DoctorStatus::Fail, "invalid"),
+                check("packet ignored", DoctorStatus::Fail, "not ignored"),
+            ],
+        };
+        assert_eq!(
+            report(false).failure_summary(),
+            "toimija doctor: 2 checks failed (toimija config, packet ignored); \
+             the report above says why and what to do"
+        );
+        assert_eq!(
+            report(true).failure_summary(),
+            "toimija doctor --strict: 2 checks failed (toimija config, packet ignored); \
+             the report above says why and what to do"
+        );
     }
 
     #[test]

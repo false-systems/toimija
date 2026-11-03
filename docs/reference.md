@@ -769,7 +769,8 @@ toimija init               # create .toimija/repo.yaml if missing
 `--for-diff` and `--budget` tune the packet; `--json` switches the print commands
 (`context`, `enter`, `refresh`) to JSON. Global options: `-v/--verbose`,
 `-q/--quiet`, `--log-format text|json`, `--no-color`. Logs go to stderr; command
-output goes to stdout.
+output goes to stdout. Text logs are coloured only when stderr is a terminal,
+and never with `--no-color` or a non-empty `NO_COLOR`.
 
 `toimija --version` names the build as well as the version number:
 `toimija 0.2.0 (a1b2c3d)`, the short commit the binary was built from, with
@@ -901,6 +902,10 @@ drift guard — no AI, no semantic comparison. It checks:
 ```bash
 toimija doctor --strict
 ```
+
+A failing doctor ends, on stderr, with the checks that failed, by name, such
+as `toimija doctor --strict: 1 check failed (inside git repo); the report above
+says why and what to do`.
 
 ## Did the work land? (`toimija landed`)
 
