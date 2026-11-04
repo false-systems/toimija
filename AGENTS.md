@@ -1,17 +1,14 @@
 # Agent guide
 
-This repo is Toimija, an internal False Systems Rust CLI.
+This repo is Toimija, an internal False Systems Rust CLI: Git-aware local context for agents. It reports facts and refuses to decide.
 
-Read `.toimija/current.md` before reading anything else (under `toimija run` your launch prompt carries your session packet inline and names the live copy — re-read that copy after HEAD, branch, index, or unfamiliar worktree changes, not after your own expected source edits; run `toimija verify` before commit or handoff). To refresh it by hand, `toimija enter --for-diff --budget 4000`. Toimija starts from Git state — branch, HEAD, index, merge-base, staged/unstaged/untracked files — so use the packet, and especially its Git and Branch intent sections, before reading the repo cold. Its Read first list names the important docs first, then the changed files and their companion tests — advisory, path-derived, but use it to read the right files first.
+Read `.toimija/current.md` first. Under `toimija run` your launch prompt carries your session packet and names its live copy: re-read it after HEAD, branch, index or unfamiliar worktree changes (not after your own edits), or refresh it with `toimija enter --for-diff --budget 4000`. Its Git state is the working truth, and its Read first list names what to read. Say why you are here with `toimija intent "<why>"`, and run `toimija verify` before you commit or hand off.
 
-Keep changes small and reviewable. Preserve the v0.0 scope: Git-aware local context compilation, config, repo detection, validation plan rendering, observability, and tests.
-
-Do not add MCP, Tree-sitter, LSP, SCIP, Kythe, Sykli delegation, background daemons, or network calls. (The `watch`/`run` commands are foreground-only and run solely while explicitly invoked.) Other products read Toimija's facts through its CLI and files — `repository-point --json`, `sessions --json`, the packet — never through product imports, plugins, or dynamic libraries.
+Keep changes small and reviewable, within v0.0: Git-aware local context compilation, config, repo detection, validation plan rendering, observability, and tests. Other products read Toimija's facts through its CLI and files (`repository-point --json`, `sessions --json`, the packet), never through imports, plugins or dynamic libraries.
 
 ## Boundaries
 
-These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if
-they drift apart. Edit both together.
+These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if they drift apart. Edit both together.
 
 - Keep v0.0 as one Rust crate.
 - Do not add MCP, LSP, SCIP, Tree-sitter, or Kythe integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.json contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.
@@ -20,73 +17,18 @@ they drift apart. Edit both together.
 - A session outside any Git repository is in scope since 2026-09-26 (issue #225): `run` opens a visible session (marker, heartbeat, handshake; no packet) in the machine-local state directory, never a `.toimija/` folder where the agent works. Workspace context compilation stays out of scope.
 - Toimija reports facts and refuses to decide. No gates, checks, or receipts (Evidence belongs to Sykli), no work providers or plugins, and no dispatch, assignment, or closure of work.
 
-Before claiming completion, run:
+## Checks
 
-```bash
-cargo fmt
-cargo test
-cargo clippy --all-targets -- -D warnings
-```
+Before claiming completion: `cargo fmt`, `cargo test`, `cargo clippy --all-targets -- -D warnings`; or the same as `sykli run` (`sykli.json`, cached, with structured failures) or `cargo xtask gate`. Every new tracked file goes into the inputs of `test` and `doctor` in `sykli.json`, and of `fmt` and `clippy` if it is code; stage it, then `sykli lock sykli.json`.
 
-or equivalently `sykli run` — the same gate as a typed execution contract
-(`sykli.json`; README, "Declared work graph"), with cached task results and
-structured failures — or
-`cargo xtask gate`, the same three checks behind the single entrypoint
-harnesses invoke (guardrails R-R.1).
-
-
-Install the git pre-commit hook once per clone (it lives in `.git/`, which is
-not tracked, so it does not arrive with a fresh checkout):
-
-```bash
-cargo xtask install-pre-commit-hook
-```
-
-The hook runs rustfmt on the staged crates, re-stages the formatted result,
-then runs `cargo clippy --all-targets -- -D warnings` followed by `cargo test`,
-aborting the commit if either fails. It mirrors CI so failures surface locally.
-Re-run the install command after changing `xtask` (the hook is a copied binary
-snapshot).
-
-Update README.md when CLI behavior changes.
-
-If you change repo boundaries, validation commands, major docs, or project
-structure, update `.toimija/repo.yaml` to match, then run `toimija doctor
---strict` — the drift guard fails when the config and the agent docs fall out of
-sync.
+Install the pre-commit hook once per clone, and again after changing `xtask`: `cargo xtask install-pre-commit-hook`. It formats the staged crates, then runs clippy and the tests. Update README.md when CLI behaviour changes; when boundaries, validation commands, major docs or structure change, update `.toimija/repo.yaml` too and run `toimija doctor --strict`.
 
 ## Working with other agents
 
-Several agents may work this repo at once and fast. Coordinate through Git and
-GitHub primitives, not assumptions:
+- Claim an issue before you start (assign it or comment), once you have checked it has no owner and no open PR.
+- Re-orient first: `toimija context`, `git fetch`, `git log --oneline origin/main`, `gh pr list`. Never branch from a stale main.
+- One unit of work, one small PR. To update a branch under review, merge `origin/main` into it; never rebase or force-push it. Merge bottom-up, and delete only leaf branches.
+- After a merge, `git pull && cargo install --path .`: a stale binary lies about the code.
+- Who does what lives in issues, draft PRs and labels. Toimija shows live sibling sessions; it never coordinates them.
 
-- **Claim before you work.** Before starting an issue, assign it to yourself
-  (`gh issue edit <n> --add-assignee @me`) or comment that you are taking it.
-  First check whether it is already assigned or has an open PR — do not
-  duplicate work.
-- **Re-orient before you act.** Run `toimija context`, then
-  `git fetch && git log --oneline origin/main && gh pr list`. Never branch from
-  a stale `main`.
-- **Small, short-lived branches.** One unit of work → one small PR → merge →
-  others pull. Long-lived branches drift and rot.
-- **Rebase on `origin/main` right before opening or merging**, not only at
-  branch creation.
-- **Merge bottom-up; delete only leaf branches.** Never delete a branch another
-  PR is stacked on — it closes the stacked PR.
-- **After any merge, pull and reinstall.** `git pull && cargo install --path .`
-  — a stale local binary lies about the code.
-
-Coordination state — who is doing what right now — lives in issue assignments,
-draft PRs, and labels, not in Git. Toimija reports Git work state and surfaces
-live sibling sessions (see `docs/proposals/0001-sessions-awareness-handoff.md`).
-It still does not *coordinate* agents — no dispatch, no assignment, no
-orchestration. Claiming work stays in GitHub issues, draft PRs, and labels; the
-human remains the orchestrator.
-
-## Languages
-
-Code in this repository is **Rust, or Elixir/Erlang**. Never add Python, Go
-or Node (JavaScript/TypeScript): not for tools, scripts, CI helpers, tests,
-dashboards or glue. A thin shell step in a CI workflow is fine; anything with
-logic is Rust. Existing Python or Node files are debt to be rewritten, not
-precedent to follow.
+Code is Rust or Elixir/Erlang; never add Python, Go or Node.

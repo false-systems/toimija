@@ -76,6 +76,30 @@ pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
 }
 
+impl DoctorReport {
+    /// The line a failing doctor ends with: the checks that failed, by name,
+    /// not a cause they may not share (outside a Git repository nothing
+    /// drifted). The report printed above says why each failed.
+    pub fn failure_summary(&self) -> String {
+        let failed: Vec<&str> = self
+            .checks
+            .iter()
+            .filter(|check| check.status == DoctorStatus::Fail)
+            .map(|check| check.name.as_str())
+            .collect();
+        format!(
+            "toimija doctor{}: {} failed ({}); the report above says why and what to do",
+            if self.strict { " --strict" } else { "" },
+            if failed.len() == 1 {
+                "1 check".to_owned()
+            } else {
+                format!("{} checks", failed.len())
+            },
+            failed.join(", ")
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorCheck {
     pub name: String,
@@ -275,7 +299,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         if git_available {
             "git found"
         } else {
-            "git not found"
+            "git not found: install Git; toimija reads everything it reports from it"
         },
     ));
     let repo_root = match git::discover_repo_root(runner, cwd) {
@@ -291,7 +315,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             checks.push(check(
                 "inside git repo",
                 DoctorStatus::Fail,
-                "not a Git repository",
+                "not a Git repository: run doctor inside one, or `git init` here first",
             ));
             return DoctorReport {
                 serious: true,
@@ -334,7 +358,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             DoctorStatus::Ok
         },
         if config.repo.name.trim().is_empty() {
-            "repo name is empty"
+            "repo name is empty: set `repo.name` in .toimija/repo.yaml"
         } else {
             "repo name present"
         },
@@ -347,7 +371,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             DoctorStatus::Ok
         },
         if config.repo.role.trim().is_empty() {
-            "repo role is empty"
+            "repo role is empty: say what this repository is under `repo.role` in .toimija/repo.yaml"
         } else {
             "repo role present"
         },
@@ -360,7 +384,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             DoctorStatus::Ok
         },
         if config.boundaries.is_empty() {
-            "boundaries are empty"
+            "boundaries are empty: list what this repository must not become under `boundaries:` in .toimija/repo.yaml"
         } else {
             "boundaries present"
         },
@@ -385,7 +409,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         } else if kind != RepoKind::Generic {
             "validation can be inferred"
         } else {
-            "validation unknown"
+            "validation unknown: no recognised manifest to infer the commands from; list them under `validation:` in .toimija/repo.yaml"
         },
     ));
     checks.push(packet_ignored_check(runner, &repo_root));
@@ -393,17 +417,19 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
     let claude = repo_root.join("CLAUDE.md");
     if claude.exists() {
         let text = std::fs::read_to_string(&claude).unwrap_or_default();
+        let imports = imports_agents_md(&text);
         checks.push(check(
             "CLAUDE.md",
-            if text.contains("AGENTS.md") {
+            if imports {
                 DoctorStatus::Ok
             } else {
                 DoctorStatus::Warning
             },
-            if text.contains("AGENTS.md") {
-                "CLAUDE.md references AGENTS.md"
+            if imports {
+                "CLAUDE.md imports AGENTS.md"
             } else {
-                "CLAUDE.md exists but does not reference AGENTS.md"
+                "CLAUDE.md does not import AGENTS.md, so Claude Code starts without it: \
+                 add `@AGENTS.md`"
             },
         ));
     } else {
@@ -428,7 +454,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         if has_preflight {
             "agent docs point at the `toimija enter` preflight"
         } else {
-            "no agent doc mentions the `toimija enter` preflight"
+            "no agent doc mentions the `toimija enter` preflight: tell agents in AGENTS.md to run `toimija enter` first"
         },
     ));
 
@@ -448,7 +474,10 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
         &if missing_docs.is_empty() {
             "important_docs paths exist".to_string()
         } else {
-            format!("missing on disk: {}", join_paths(&missing_docs))
+            format!(
+                "missing on disk: {}; write them, or drop them from `context.important_docs` in {CONFIG_PATH}",
+                join_paths(&missing_docs)
+            )
         },
     ));
 
@@ -478,7 +507,7 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
                 format!("boundaries sourced by reference to {CONFIG_PATH}")
             } else {
                 format!(
-                    "{} boundary line(s) missing from agent docs: {}",
+                    "{} boundary line(s) missing from agent docs: {}; copy them into AGENTS.md word for word, or point the docs at {CONFIG_PATH}",
                     unmirrored.len(),
                     unmirrored
                         .iter()
@@ -618,6 +647,31 @@ fn packet_ignored_check(runner: &impl CommandRunner, repo_root: &Path) -> Doctor
     }
 }
 
+/// Whether a CLAUDE.md imports AGENTS.md, as Claude Code reads imports: an
+/// `@AGENTS.md` or `@./AGENTS.md` word, on its own line or in a sentence,
+/// never inside a code span or a fenced block. Where a CLAUDE.md exists,
+/// that import is the only way Claude Code loads AGENTS.md at start.
+fn imports_agents_md(claude: &str) -> bool {
+    let mut fenced = false;
+    for line in claude.lines() {
+        let line = line.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        // A word in backticks is a code span; whitespace keeps the backticks
+        // on the word, so it never equals the import.
+        if !fenced
+            && line
+                .split_whitespace()
+                .any(|word| word == "@AGENTS.md" || word == "@./AGENTS.md")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn file_check(repo_root: &Path, name: &str, path: &str) -> DoctorCheck {
     let present = repo_root.join(path).exists();
     check(
@@ -627,10 +681,10 @@ fn file_check(repo_root: &Path, name: &str, path: &str) -> DoctorCheck {
         } else {
             DoctorStatus::Warning
         },
-        if present {
-            "file present"
+        &if present {
+            "file present".to_string()
         } else {
-            "file missing"
+            format!("file missing: write {path}, the guide every coding agent reads first")
         },
     )
 }
@@ -752,6 +806,30 @@ mod tests {
 
         let scan = detect_secondary_langs(temp.path(), RepoKind::Generic, |_| false);
         assert!(scan.languages.is_empty());
+    }
+
+    #[test]
+    fn a_failing_doctor_names_only_the_checks_that_failed() {
+        let report = |strict| DoctorReport {
+            serious: true,
+            strict,
+            checks: vec![
+                check("git installed", DoctorStatus::Ok, "git found"),
+                check("preflight mention", DoctorStatus::Warning, "none"),
+                check("toimija config", DoctorStatus::Fail, "invalid"),
+                check("packet ignored", DoctorStatus::Fail, "not ignored"),
+            ],
+        };
+        assert_eq!(
+            report(false).failure_summary(),
+            "toimija doctor: 2 checks failed (toimija config, packet ignored); \
+             the report above says why and what to do"
+        );
+        assert_eq!(
+            report(true).failure_summary(),
+            "toimija doctor --strict: 2 checks failed (toimija config, packet ignored); \
+             the report above says why and what to do"
+        );
     }
 
     #[test]

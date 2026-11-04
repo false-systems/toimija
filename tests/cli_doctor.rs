@@ -22,7 +22,7 @@ fn write_ready_rust_repo(path: &Path) {
     )
     .unwrap();
     fs::write(path.join("AGENTS.md"), "# Agent guide\n").unwrap();
-    fs::write(path.join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
+    fs::write(path.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
     fs::create_dir_all(path.join(".toimija")).unwrap();
     fs::write(
         path.join(".toimija/repo.yaml"),
@@ -45,7 +45,7 @@ fn write_strict_ready_rust_repo(path: &Path) {
         "# Agent guide\n\nBefore editing, run `toimija context --for-diff`.\n\nStay inside fixture.\n",
     )
     .unwrap();
-    fs::write(path.join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
+    fs::write(path.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
     fs::create_dir_all(path.join(".toimija")).unwrap();
     fs::write(
         path.join(".toimija/repo.yaml"),
@@ -58,6 +58,102 @@ fn write_strict_ready_rust_repo(path: &Path) {
         "/current.md\n/current.json\n/sessions/\n/history.jsonl\n/history.lock\n/runs/\n/snapshots/\n",
     )
     .unwrap();
+}
+
+/// Every check `doctor --strict` fails says what fixes it, as its closing
+/// line promises ("the report above says why and what to do"). Each place
+/// below fails a different set of checks. A check that fails in one and has
+/// no step here fails this test, and so does a step that never shows.
+#[test]
+fn every_failing_check_says_what_to_do() {
+    if !git_available() {
+        return;
+    }
+    const NEXT_STEPS: &[(&str, &str)] = &[
+        ("inside git repo", "`git init`"),
+        ("toimija config", "`toimija init`"),
+        ("repo name", "`repo.name` in .toimija/repo.yaml"),
+        ("repo role", "`repo.role` in .toimija/repo.yaml"),
+        ("boundaries", "`boundaries:` in .toimija/repo.yaml"),
+        ("validation plan", "`validation:` in .toimija/repo.yaml"),
+        ("packet ignored", "`toimija init` writes"),
+        ("AGENTS.md", "write AGENTS.md"),
+        ("preflight mention", "tell agents in AGENTS.md"),
+        (
+            "important docs",
+            "`context.important_docs` in .toimija/repo.yaml",
+        ),
+        ("boundaries mirrored", "copy them into AGENTS.md"),
+        ("CLAUDE.md", "add `@AGENTS.md`"),
+    ];
+    let failing = |dir: &Path| -> Vec<(String, String)> {
+        let out = Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(dir)
+            .args(["doctor", "--strict"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "doctor --strict passed in {dir:?}");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("- fail: "))
+            .map(|rest| {
+                let (name, message) = rest.split_once(" - ").expect("`name - message`");
+                (name.to_owned(), message.to_owned())
+            })
+            .collect()
+    };
+    // Outside any repository.
+    let outside = tempfile::tempdir().unwrap();
+    // A repository toimija has never been set up in.
+    let bare = tempfile::tempdir().unwrap();
+    init_git_repo(bare.path());
+    // A repository as `toimija init` leaves it.
+    let fresh = tempfile::tempdir().unwrap();
+    init_git_repo(fresh.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(fresh.path())
+        .arg("init")
+        .assert()
+        .success();
+    // A set-up repository whose config and docs have drifted: no name, a
+    // boundary the docs do not carry, a doc that is not there, and nothing
+    // telling Git to ignore the packet.
+    let drifted = tempfile::tempdir().unwrap();
+    init_git_repo(drifted.path());
+    write_strict_ready_rust_repo(drifted.path());
+    fs::write(
+        drifted.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: ''\n  role: test fixture\ncontext:\n  important_docs:\n    - docs/missing.md\nvalidation:\n  fast:\n    - cargo test\nboundaries:\n  - Never ship on Fridays.\n",
+    )
+    .unwrap();
+    fs::remove_file(drifted.path().join(".toimija/.gitignore")).unwrap();
+    fs::write(drifted.path().join("CLAUDE.md"), "See AGENTS.md.\n").unwrap();
+
+    let mut seen = std::collections::BTreeSet::new();
+    for dir in [outside.path(), bare.path(), fresh.path(), drifted.path()] {
+        for (name, message) in failing(dir) {
+            let (_, step) = NEXT_STEPS
+                .iter()
+                .find(|(check, _)| *check == name)
+                .unwrap_or_else(|| panic!("{name} fails ({message:?}) with no step listed here"));
+            assert!(
+                message.contains(step),
+                "{name}: {message:?} does not say {step:?}"
+            );
+            seen.insert(name);
+        }
+    }
+    let unseen: Vec<&str> = NEXT_STEPS
+        .iter()
+        .map(|(check, _)| *check)
+        .filter(|check| !seen.contains(*check))
+        .collect();
+    assert!(
+        unseen.is_empty(),
+        "never failed in these places: {unseen:?}"
+    );
 }
 
 #[test]
@@ -100,7 +196,7 @@ fn doctor_ready_rust_repo_succeeds() {
             "ok: validation plan - validation configured",
         ))
         .stdout(predicate::str::contains(
-            "ok: CLAUDE.md - CLAUDE.md references AGENTS.md",
+            "ok: CLAUDE.md - CLAUDE.md imports AGENTS.md",
         ));
 }
 
@@ -291,6 +387,47 @@ fn doctor_strict_escalates_drift_to_failure() {
         .stdout(predicate::str::contains("fail: boundaries mirrored -"));
 }
 
+/// Claude Code reads AGENTS.md by itself only where no CLAUDE.md sits in or
+/// above the folder it starts in. Where one does, it loads AGENTS.md only
+/// through an import: `@AGENTS.md` (or `@./AGENTS.md`) as a word of its own,
+/// on a line or in a sentence, but never in code. A CLAUDE.md that merely
+/// names AGENTS.md leaves Claude without it.
+#[test]
+fn doctor_requires_claude_md_to_import_agents_md() {
+    if !git_available() {
+        return;
+    }
+    for (claude, imports) in [
+        ("@AGENTS.md\n", true),
+        ("# Notes\n\n@./AGENTS.md\n", true),
+        ("Read @AGENTS.md before anything else.\n", true),
+        ("See AGENTS.md.\n", false),
+        ("Follow [`AGENTS.md`](AGENTS.md).\n", false),
+        ("Write `@AGENTS.md` to import it.\n", false),
+        ("```\n@AGENTS.md\n```\n", false),
+        ("~~~md\n@AGENTS.md\n~~~\n", false),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        write_ready_rust_repo(temp.path());
+        fs::write(temp.path().join("CLAUDE.md"), claude).unwrap();
+        let out = Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .arg("doctor")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let expected = if imports {
+            "ok: CLAUDE.md - CLAUDE.md imports AGENTS.md"
+        } else {
+            "warn: CLAUDE.md - CLAUDE.md does not import AGENTS.md, so Claude Code \
+             starts without it: add `@AGENTS.md`"
+        };
+        assert!(stdout.contains(expected), "{claude:?}:\n{stdout}");
+    }
+}
+
 #[test]
 fn doctor_accepts_boundaries_sourced_by_reference() {
     if !git_available() {
@@ -368,7 +505,7 @@ fn doctor_claude_without_agents_reference_is_advisory() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "warn: CLAUDE.md - CLAUDE.md exists but does not reference AGENTS.md",
+            "warn: CLAUDE.md - CLAUDE.md does not import AGENTS.md",
         ));
 }
 
@@ -434,4 +571,120 @@ fn doctor_checks_every_directory_init_ignores() {
         .stdout(predicate::str::contains(
             "warn: packet ignored - Git does not ignore .toimija/runs/, .toimija/snapshots/;",
         ));
+}
+
+/// The error a failing doctor ends with names the checks that failed. It
+/// said "found config or doc drift" for every strict failure, even outside a
+/// Git repository, where nothing drifted.
+#[test]
+fn a_failing_doctor_names_the_checks_that_failed() {
+    let temp = tempfile::tempdir().unwrap();
+    for (args, said) in [
+        (
+            &["doctor", "--strict"][..],
+            "toimija doctor --strict: 1 check failed (inside git repo); \
+             the report above says why and what to do\n",
+        ),
+        (
+            &["doctor"][..],
+            "toimija doctor: 1 check failed (inside git repo); \
+             the report above says why and what to do\n",
+        ),
+    ] {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .env_remove("RUST_LOG")
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::ends_with(said))
+            .stderr(predicate::str::contains("drift").not());
+    }
+    if !git_available() {
+        return;
+    }
+    // Drift, and whatever else fails here, is named by its checks.
+    let repo = tempfile::tempdir().unwrap();
+    init_git_repo(repo.path());
+    write_ready_rust_repo(repo.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(repo.path())
+        .args(["doctor", "--strict"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("toimija doctor --strict: "))
+        .stderr(predicate::str::contains(" checks failed ("))
+        .stderr(predicate::str::contains("preflight mention"))
+        .stderr(predicate::str::contains("boundaries mirrored"));
+}
+
+/// Logs go to stderr as plain text when stderr is not a terminal, as for an
+/// agent or CI reading it: no colour codes.
+#[test]
+fn logs_written_to_a_pipe_carry_no_colour_codes() {
+    let temp = tempfile::tempdir().unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env_remove("RUST_LOG")
+        .env_remove("NO_COLOR")
+        .args(["doctor", "--strict"])
+        .assert()
+        .failure()
+        // A log line was written, and it is plain.
+        .stderr(predicate::str::contains(" WARN toimija::cli: "))
+        .stderr(predicate::str::contains("\u{1b}").not());
+}
+
+/// On a terminal logs stay coloured for the person reading them, unless
+/// `--no-color` or a non-empty NO_COLOR says not to (an empty one keeps the
+/// colour, as no-color.org says). `script` gives the run a terminal: BSD's on
+/// macOS, util-linux's elsewhere. Without it the test fails rather than
+/// skipping, so a pass always means it ran.
+#[cfg(unix)]
+#[test]
+fn on_a_terminal_logs_are_coloured_unless_no_color_says_not() {
+    let toimija = env!("CARGO_BIN_EXE_toimija");
+    let temp = tempfile::tempdir().unwrap();
+    let on_a_terminal = |flags: &[&str], env: &[(&str, &str)]| -> String {
+        let args: Vec<&str> = ["doctor", "--strict"]
+            .iter()
+            .chain(flags)
+            .copied()
+            .collect();
+        let mut command = std::process::Command::new("script");
+        if cfg!(target_os = "macos") {
+            command.args(["-q", "/dev/null", toimija]).args(&args);
+        } else {
+            let line = format!("'{toimija}' {}", args.join(" "));
+            command.args(["-q", "-e", "-c", &line, "/dev/null"]);
+        }
+        command
+            .current_dir(temp.path())
+            .env_remove("NO_COLOR")
+            .env_remove("RUST_LOG")
+            .envs(env.iter().copied());
+        let output = command
+            .output()
+            .expect("`script` gives the run a terminal: install it (util-linux on Linux)");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    for coloured in [
+        on_a_terminal(&[], &[]),
+        on_a_terminal(&[], &[("NO_COLOR", "")]),
+    ] {
+        assert!(
+            coloured.contains("WARN") && coloured.contains('\u{1b}'),
+            "{coloured:?}"
+        );
+    }
+    for plain in [
+        on_a_terminal(&["--no-color"], &[]),
+        on_a_terminal(&[], &[("NO_COLOR", "1")]),
+    ] {
+        assert!(plain.contains(" WARN toimija::cli: "), "{plain:?}");
+        assert!(!plain.contains('\u{1b}'), "{plain:?}");
+    }
 }

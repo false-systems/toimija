@@ -715,12 +715,7 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
     let report = repo::doctor(&runner, &cwd, mode);
     println!("{}", render::render_doctor_report(&report));
     if report.serious {
-        let reason = if report.strict {
-            "doctor --strict found config or doc drift"
-        } else {
-            "doctor found serious setup failures"
-        };
-        anyhow::bail!("{reason}");
+        anyhow::bail!("{}", report.failure_summary());
     }
     Ok(())
 }

@@ -5,7 +5,7 @@ use toimija::{cli, logging};
 
 fn main() -> ExitCode {
     let cli = cli::Cli::parse_args();
-    logging::init(cli.verbose, cli.quiet, cli.log_format).unwrap_or_else(|error| {
+    logging::init(cli.verbose, cli.quiet, cli.log_format, cli.no_color).unwrap_or_else(|error| {
         eprintln!("failed to initialize logging: {error}");
     });
 

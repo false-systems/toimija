@@ -773,7 +773,8 @@ toimija init               # create .toimija/repo.yaml if missing
 `--for-diff` and `--budget` tune the packet; `--json` switches the print commands
 (`context`, `enter`, `refresh`) to JSON. Global options: `-v/--verbose`,
 `-q/--quiet`, `--log-format text|json`, `--no-color`. Logs go to stderr; command
-output goes to stdout.
+output goes to stdout. Text logs are coloured only when stderr is a terminal,
+and never with `--no-color` or a non-empty `NO_COLOR`.
 
 `toimija --version` names the build as well as the version number:
 `toimija 0.2.0 (a1b2c3d)`, the short commit the binary was built from, with
@@ -897,6 +898,9 @@ drift guard — no AI, no semantic comparison. It checks:
   `sessions/`, `history.*`, `runs/`, `snapshots/`), by whatever ignore rules it
   reads (`git check-ignore`)
 - every `context.important_docs` path exists on disk
+- a `CLAUDE.md`, if there is one, imports `AGENTS.md` (`@AGENTS.md` as a word
+  of its own, outside code): where a CLAUDE.md exists, Claude Code loads
+  AGENTS.md only through that import
 - an agent doc still routes work through the `toimija enter` preflight
 - each boundary sentence still appears in the agent docs
   (`AGENTS.md` / `CLAUDE.md` / `important_docs`), matched case- and
@@ -905,6 +909,10 @@ drift guard — no AI, no semantic comparison. It checks:
 ```bash
 toimija doctor --strict
 ```
+
+A failing doctor ends, on stderr, with the checks that failed, by name, such
+as `toimija doctor --strict: 1 check failed (inside git repo); the report above
+says why and what to do`.
 
 ## Did the work land? (`toimija landed`)
 
