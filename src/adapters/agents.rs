@@ -44,11 +44,26 @@ impl PromptStyle {
 /// and overrides it, so any harness can receive the packet inlined without
 /// patching this crate. Unknown agents keep the env-var handshake behind an
 /// honest banner.
-const KNOWN_AGENTS: &[(&str, PromptStyle)] = &[
-    ("claude", PromptStyle::Positional),
-    ("codex", PromptStyle::Positional),
-    ("gemini", PromptStyle::Positional),
+/// Each with the flag its prompt follows, or `None` for the final positional
+/// argument.
+const KNOWN_AGENTS: &[(&str, Option<&str>)] = &[
+    ("claude", None),
+    ("codex", None),
+    ("gemini", None),
+    // `pi [options] [--] [@files...] [messages...]`: a message argument is
+    // the initial prompt of an interactive session (pi 1.4.0).
+    ("pi", None),
+    // opencode's one positional argument is the folder to start in; the
+    // initial prompt follows `--prompt`, in the TUI and `opencode mini`
+    // (opencode 2.2.5). `opencode run` takes it as its message instead
+    // (`opencode_run`).
+    ("opencode", Some("--prompt")),
 ];
+
+/// The built-in agents, in table order: what `toimija run --help` names.
+pub fn builtin_agents() -> impl Iterator<Item = &'static str> {
+    KNOWN_AGENTS.iter().map(|(name, _)| *name)
+}
 
 /// Resolve the delivery style for a program: configured entries win over the
 /// built-in table, both matched by basename.
@@ -64,7 +79,11 @@ pub fn prompt_style(
     KNOWN_AGENTS
         .iter()
         .find(|(name, _)| *name == basename(program))
-        .map(|(_, style)| style.clone())
+        .map(|(_, flag)| {
+            flag.map_or(PromptStyle::Positional, |flag| {
+                PromptStyle::Flag(flag.into())
+            })
+        })
 }
 
 pub fn is_known_agent(program: &str, configured: &BTreeMap<String, AgentPromptConfig>) -> bool {
@@ -191,12 +210,41 @@ pub fn launch_args(
             format!("developer_instructions={}", toml_string(&prompt)?),
         ]);
     }
-    Ok(
-        match prompt_style(program, configured).unwrap_or(PromptStyle::Positional) {
-            PromptStyle::Positional => vec![prompt],
-            PromptStyle::Flag(flag) => vec![flag, prompt],
-        },
-    )
+    let style = match prompt_style(program, configured).unwrap_or(PromptStyle::Positional) {
+        // `opencode run` has no `--prompt`: it takes its message as arguments.
+        PromptStyle::Flag(_) if opencode_run(program, rest, configured) => PromptStyle::Positional,
+        style => style,
+    };
+    Ok(match style {
+        PromptStyle::Positional => vec![prompt],
+        PromptStyle::Flag(flag) => vec![flag, prompt],
+    })
+}
+
+/// Whether a built-in opencode launch is `opencode run`: the first argument
+/// that is neither a flag nor a flag's value names the subcommand, as
+/// opencode reads it (2.2.5). A configured `opencode` keeps its own style.
+fn opencode_run(
+    program: &str,
+    rest: &[String],
+    configured: &BTreeMap<String, AgentPromptConfig>,
+) -> bool {
+    if basename(program) != "opencode" || configured.contains_key("opencode") {
+        return false;
+    }
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--" => return false,
+            // opencode's top-level flags that take a value.
+            "--server" | "--session" | "-s" | "--prompt" => {
+                args.next();
+            }
+            flag if flag.starts_with('-') => {}
+            subcommand => return subcommand == "run",
+        }
+    }
+    false
 }
 
 /// Codex may execute tools in a pre-existing daemon rather than a descendant
@@ -383,6 +431,15 @@ mod tests {
         assert!(is_known_agent("claude", &no_config()));
         assert!(is_known_agent("/usr/local/bin/codex", &no_config()));
         assert!(is_known_agent("gemini", &no_config()));
+        assert_eq!(
+            prompt_style("/opt/homebrew/bin/pi", &no_config()),
+            Some(PromptStyle::Positional)
+        );
+        assert_eq!(
+            prompt_style("opencode", &no_config()),
+            Some(PromptStyle::Flag("--prompt".into()))
+        );
+        assert!(!is_known_agent("pip", &no_config()));
         assert!(!is_known_agent("sh", &no_config()));
         assert!(!is_known_agent("/usr/bin/claudette", &no_config()));
     }
@@ -568,6 +625,42 @@ mod tests {
             let invalid = [("TOIMIJA_LIVE", OsString::from_vec(vec![0xff]))];
             assert!(shell_env_args("codex", &invalid, &[]).is_err());
         }
+    }
+
+    /// opencode takes an initial prompt three ways (2.2.5): the TUI
+    /// (`opencode [<directory>]`) and `opencode mini` after `--prompt`, and
+    /// `opencode run [<message...>]` as its message, with no `--prompt` at
+    /// all. A flag's value is never read as the subcommand.
+    #[test]
+    fn opencode_run_gets_the_prompt_as_its_message() {
+        let args = |rest: &[&str]| {
+            let rest: Vec<String> = rest.iter().map(|arg| arg.to_string()).collect();
+            launch_args("opencode", &rest, "packet".into(), false, &no_config()).unwrap()
+        };
+        let flag = vec!["--prompt".to_string(), "packet".to_string()];
+        let message = vec!["packet".to_string()];
+        assert_eq!(args(&[]), flag);
+        assert_eq!(args(&["."]), flag);
+        assert_eq!(args(&["mini"]), flag);
+        assert_eq!(args(&["run"]), message);
+        assert_eq!(args(&["--print-logs", "run", "--model", "a/b"]), message);
+        assert_eq!(args(&["--session", "run"]), flag);
+        assert_eq!(args(&["-s", "run", "mini"]), flag);
+        // After `--`, `run` is the folder to start in.
+        assert_eq!(args(&["--", "run"]), flag);
+        // A configured style still wins, whatever the subcommand.
+        let configured = config(&[("opencode", "--prompt")]);
+        assert_eq!(
+            launch_args(
+                "opencode",
+                &["run".into()],
+                "packet".into(),
+                false,
+                &configured
+            )
+            .unwrap(),
+            flag
+        );
     }
 
     #[test]

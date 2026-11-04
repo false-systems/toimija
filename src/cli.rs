@@ -133,8 +133,9 @@ pub enum Command {
     /// `.toimija/sessions/<id>/`, prints the entry packet, keeps it fresh while
     /// the command runs, mirrors `.toimija/current.*`, and exits with the
     /// wrapped command's status (128+signal preserved). `--intent` is required
-    /// (`--intent unknown` remains the explicit escape hatch). Known agents (claude, codex, gemini)
-    /// get the packet inlined in their launch prompt — pass the task via
+    /// (`--intent unknown` remains the explicit escape hatch). Known agents
+    /// (claude, codex, gemini, pi, opencode) and those configured under `agents:`
+    /// in `.toimija/repo.yaml` get the packet inlined in their launch prompt — pass the task via
     /// `--task`; other commands keep the TOIMIJA_* env handshake behind an
     /// honest banner. `--scope` tells sibling sessions what you expect to touch
     /// — advisory, never an assignment.
@@ -309,7 +310,7 @@ pub struct RunArgs {
     #[arg(long = "scope", value_name = "PATH")]
     pub scope: Vec<String>,
     /// The task for the agent, delivered inside the composed launch prompt of a
-    /// known agent (`claude`, `codex`, `gemini`) or one configured under
+    /// known agent (`claude`, `codex`, `gemini`, `pi`, `opencode`) or one configured under
     /// `agents:` in `.toimija/repo.yaml`. Pass the task here, not as the agent's
     /// own positional argument. May start with `-`; text that is one of `run`'s
     /// own flags is written `--task=<text>`. A blank task is none.
@@ -1092,8 +1093,9 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
             record_undelivered(&mut session, items);
         }
     }
-    // The prompt travels where the agent reads it: last positional argument,
-    // or after the flag its `agents:` entry names.
+    // The prompt travels where the agent reads it (`launch_args`): last
+    // positional argument, or after the flag a built-in takes or its `agents:`
+    // entry names.
     let handshake = session.env(&repo_root);
     let child_args =
         match crate::adapters::agents::shell_env_args(program, &handshake, session::RETIRED_ENV)
@@ -2928,6 +2930,36 @@ mod tests {
     use super::*;
     use crate::git::GitState;
     use std::path::{Path, PathBuf};
+
+    /// `run --help` names the built-in agents twice, in the command's
+    /// description and in `--task`'s: both lists are the table, in its
+    /// order, so neither falls behind when an agent is added.
+    #[test]
+    fn run_help_names_every_builtin_agent() {
+        use clap::CommandFactory;
+        let mut run = Cli::command()
+            .find_subcommand("run")
+            .expect("run is a subcommand")
+            .clone();
+        let help = run.render_long_help().to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let listed = |opening: &str| -> Vec<String> {
+            let start = help
+                .find(opening)
+                .unwrap_or_else(|| panic!("no {opening:?} in: {help}"))
+                + opening.len();
+            let end = start + help[start..].find(')').expect("a closing parenthesis");
+            help[start..end]
+                .split(", ")
+                .map(|name| name.trim_matches('`').to_owned())
+                .collect()
+        };
+        let builtin: Vec<String> = crate::adapters::agents::builtin_agents()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(listed("Known agents ("), builtin);
+        assert_eq!(listed("of a known agent ("), builtin);
+    }
 
     /// Answers the reads `snapshot_tree_and_token` makes, and lets the worktree
     /// move exactly once — when `write-tree` runs, which is the middle of
