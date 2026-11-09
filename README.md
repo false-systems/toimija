@@ -196,13 +196,16 @@ and hands the saved terminal to the wrapped command: watcher output, refresh
 warnings, even panic messages land in the log, and the count is summarized
 after the command exits.
 
-Use `--` before harness arguments:
+The agent's name is enough, and what follows it is the agent's own:
 
 ```bash
-toimija run --intent unknown -- codex --help
+toimija run claude
+toimija run --intent "fix #51" claude --model opus
 ```
 
-`--intent` is required; `--intent unknown` is the deliberate escape hatch.
+`--intent` says why the session exists. Without it, sibling sessions see
+`unknown` until the agent runs `toimija intent "<why>"`. A `--` before the
+agent is accepted and not needed.
 
 ## Repository points
 
@@ -489,7 +492,7 @@ failure into an empty, reassuring list.
 
 | Command | Purpose |
 | --- | --- |
-| `run --intent "..." -- <harness>` | Compose context, launch a harness, refresh, and summarize |
+| `run <agent>` | Compose context, launch a harness, refresh, and summarize |
 | `repository-point` | Export the exact current repository point |
 | `enter`, `context`, `refresh`, `watch` | Produce or maintain a live packet |
 | `verify`, `snapshot` | Verify freshness or materialize an immutable Git tree |

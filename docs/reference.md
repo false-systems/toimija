@@ -4,8 +4,8 @@ The complete manual: every command, the packet anatomy, the environment
 handshake, configuration, language support, and output guarantees. For the
 pitch and the 30-second start, read the [README](../README.md).
 
-Instead of running `codex` directly, run `toimija run --intent "<why>" -- codex`.
-Instead of running `claude` directly, run `toimija run --intent "<why>" -- claude`.
+Instead of running `codex` directly, run `toimija run codex`.
+Instead of running `claude` directly, run `toimija run claude`.
 
 Toimija refreshes the repo context, writes `.toimija/current.md` and
 `.toimija/current.json`, starts a watcher, launches the agent — for known
@@ -20,7 +20,7 @@ while the agent works, and exits with the wrapped command's status.
 cargo install --path .          # or grab the release artifact
 cd /path/to/repo
 toimija init                    # once per repo: seed .toimija/repo.yaml and .gitignore
-toimija run --intent "<why>" -- claude   # every time: wrap the agent
+toimija run claude              # every time: start the agent as a session
 ```
 
 ```mermaid
@@ -135,9 +135,10 @@ Explicit tasks keep positional delivery, and an `agents.codex` configuration kee
 declared prompt style. Subcommands such as `codex exec` and `codex resume`
 retain prompt delivery rather than being inspected as interactive launches.
 
-**Wrapped means used** (proposal 0006). `run` refuses to launch without
-`--intent`; `--intent unknown` remains the explicit escape hatch for
-exploratory sessions. For known agents (`claude`, `codex`, `gemini`, `pi`
+**Wrapped means used** (proposal 0006). `--intent` says why a session
+exists; a launch without one is said once and shows as `unknown` to sibling
+sessions until `toimija intent` declares it (proposal 0006 refused such a
+launch; since 2026-11 it does not). For known agents (`claude`, `codex`, `gemini`, `pi`
 and `opencode`, matched by basename: opencode takes the prompt after `--prompt`,
 since its one positional argument is the folder to start in, except `opencode
 run`, which takes it as its message; the others take it as a positional
@@ -199,8 +200,8 @@ sequenceDiagram
     T-->>Y: entry→exit summary · agent's exit code
 ```
 
-Use `--` before the wrapped command when you need to pass flags through
-unambiguously, for example `toimija run --intent unknown -- codex --help`.
+What follows the agent's name is the agent's own, flags included: `toimija
+run codex --help`. A `--` before the agent is accepted and not needed.
 
 Each `run` opens a **session** with its own live packet under
 `.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
@@ -731,7 +732,7 @@ fetch or a push), and HEAD, the index and the working tree did not.
 Ordered by workflow:
 
 ```bash
-toimija run --intent "..." -- codex   # agent entrypoint (intent is required)
+toimija run codex                    # agent entrypoint
 toimija run --intent "..." --task "..." -- claude  # task travels in the launch prompt
 toimija run --intent "..." --scope src/x.rs -- codex  # declare what you'll touch (advisory)
 toimija sessions           # who else is live in this repo (read-only awareness)
@@ -757,7 +758,7 @@ toimija init               # create .toimija/repo.yaml if missing
 
 | Command | What it does |
 |---|---|
-| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. Outside a repository: a session with no packet (see "Outside a repository"). |
+| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` says why (optional); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. Outside a repository: a session with no packet (see "Outside a repository"). |
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` runs the same configured stewardship pass as `clean`; `--outside-repos` (the default outside a repository) lists sessions opened outside any repository. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
 | `handover` | Leave a note for the next agent in this working copy: `--unfinished`, `--next`, `--surprised` (at least one). Writes `.toimija/handover.json`, replacing the one before it, and refreshes the live packet; every packet built here shows it under "Last handover" with when it was written and the branch and HEAD at the time. No session needed. |
