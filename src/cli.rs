@@ -41,7 +41,7 @@ const VERSION: &str = concat!(
         an agent reads before touching the repo, instead of crawling it cold.",
     after_help = "Typical agent workflow:\n  \
         toimija enter --for-diff --budget 4000    # preflight: refresh + print the work packet\n  \
-        toimija run --intent \"fix #51\" -- codex   # wrap an agent in a live session packet\n  \
+        toimija run codex                         # start an agent as a live session\n  \
         toimija sessions                          # who else is working in this repo right now\n  \
         toimija validate --plan                   # print the advisory validation plan\n  \
         toimija -q repository-point --json        # the exact repository point, for tools\n\n\
@@ -132,8 +132,9 @@ pub enum Command {
     /// session: it opens a per-session packet directory under
     /// `.toimija/sessions/<id>/`, prints the entry packet, keeps it fresh while
     /// the command runs, mirrors `.toimija/current.*`, and exits with the
-    /// wrapped command's status (128+signal preserved). `--intent` is required
-    /// (`--intent unknown` remains the explicit escape hatch). Known agents
+    /// wrapped command's status (128+signal preserved). The agent's name is enough:
+    /// `toimija run claude`. `--intent` says why the session exists; without
+    /// it sibling sessions see `unknown` until `toimija intent` says. Known agents
     /// (claude, codex, gemini, pi, opencode) and those configured under `agents:`
     /// in `.toimija/repo.yaml` get the packet inlined in their launch prompt — pass the task via
     /// `--task`; other commands keep the TOIMIJA_* env handshake behind an
@@ -146,7 +147,8 @@ pub enum Command {
     /// `~/.local/state/toimija`), never in the folder, and
     /// `toimija sessions --outside-repos` lists it.
     #[command(
-        after_help = "Examples:\n  toimija run --intent \"fix #51\" --task \"fix the login redirect\" -- claude   # packet + task in the launch prompt\n  \
+        after_help = "Examples:\n  toimija run claude   # a session; say why later with `toimija intent`\n  \
+        toimija run --intent \"fix #51\" --task \"fix the login redirect\" -- claude   # packet + task in the launch prompt\n  \
         toimija run --intent \"fix #51\" --scope src/cli.rs -- codex   # declare intent/scope for siblings\n  \
         toimija run --intent unknown --for-diff --budget 4000 -- sh -c '…'   # tune the packet the child sees\n  \
         cd ~/projects && toimija run --intent \"cross-repo sweep\" --scope ~/projects/a -- claude   # outside a repo: a session, no packet"
@@ -625,14 +627,6 @@ pub fn run(cli: Cli) -> Result<i32> {
             duration_ms = started.elapsed().as_millis() as u64,
             exit_code
         ),
-        // A refusal is the human's conversation, not an operational failure:
-        // log a compact event instead of echoing the whole message as a WARN
-        // right above where the message itself prints.
-        Err(error) if error.downcast_ref::<Refusal>().is_some() => info!(
-            event = "toimija.command.refused",
-            duration_ms = started.elapsed().as_millis() as u64,
-            reason = error.downcast_ref::<Refusal>().map(|r| r.reason)
-        ),
         Err(error) => warn!(
             event = "toimija.command.finish",
             duration_ms = started.elapsed().as_millis() as u64,
@@ -643,60 +637,14 @@ pub fn run(cli: Cli) -> Result<i32> {
     result
 }
 
-/// A usage refusal: toimija deliberately will not proceed without more input
-/// from the human. Distinct from an operational failure — it renders as a
-/// friendly multi-line message (no context chain, no telemetry echo) and
-/// exits 2, the usage-error convention, so scripts can tell "you asked wrong"
-/// from "it broke".
-#[derive(Debug)]
-pub struct Refusal {
-    /// Compact machine label for telemetry (e.g. `missing-intent`).
-    pub reason: &'static str,
-    /// The full human-facing message, already formatted for the terminal.
-    pub message: String,
-}
-
-impl std::fmt::Display for Refusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for Refusal {}
-
-/// Quote a word for display inside a suggested shell command, so a copied
-/// suggestion still parses (`sh -c 'echo hi'`, not `sh -c echo hi`).
-fn shell_word(word: &str) -> String {
-    if !word.is_empty()
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@".contains(c))
-    {
-        word.to_string()
-    } else {
-        format!("'{}'", word.replace('\'', r"'\''"))
-    }
-}
-
-fn refuse_missing_intent(command: &[String]) -> Refusal {
-    let agent = command
-        .iter()
-        .map(|word| shell_word(word))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Refusal {
-        reason: "missing-intent",
-        message: format!(
-            "toimija run: missing --intent — every session declares why it exists.\n\
-             It is shown to sibling sessions (`toimija sessions`) and scored in the exit report.\n\
-             \n\
-             Try:\n\
-             \x20\x20toimija run --intent \"<why>\" -- {agent}\n\
-             \x20\x20toimija run --intent \"<why>\" --task \"<what to do>\" -- {agent}\n\
-             \n\
-             Genuinely can't say yet?\n\
-             \x20\x20toimija run --intent unknown -- {agent}"
-        ),
+/// A session may start without saying why: said once, before the agent has the
+/// terminal, with how to say it. Missing stays missing, never a made-up intent.
+fn say_no_intent(args: &RunArgs) {
+    if args.intent.is_none() {
+        eprintln!(
+            "toimija run: no intent given: sibling sessions see `unknown` until one is declared \
+             (`toimija intent \"<why>\"`, or `--intent` at launch)"
+        );
     }
 }
 
@@ -932,9 +880,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         Err(error) => return Err(error).context("not a Git repository"),
     };
     let repo_root = worktree.root.clone();
-    if args.intent.is_none() {
-        return Err(refuse_missing_intent(&args.command).into());
-    }
+    say_no_intent(&args);
     // Asked to stop before any marker exists: leave without creating one.
     if let Some(number) = termination.requested() {
         eprintln!("toimija run: termination requested before the session opened");
@@ -1525,9 +1471,7 @@ fn run_outside_repo(
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    if args.intent.is_none() {
-        return Err(refuse_missing_intent(&args.command).into());
-    }
+    say_no_intent(&args);
     if args.for_diff || args.budget.is_some() {
         anyhow::bail!(
             "not a Git repository: --for-diff and --budget shape the context packet, and \
@@ -1851,28 +1795,25 @@ fn journal_closed_session(repo_root: &std::path::Path, session: &session::Sessio
 /// built only from toimija-owned state (the session marker); nothing observed
 /// about the agent's behavior or file access.
 struct Consumption {
-    intent: String,
-    intent_source: &'static str,
+    /// The intent and where it was said; `None` when none was ever given.
+    intent: Option<(String, &'static str)>,
     expansions: usize,
 }
 
 fn collect_consumption(session: &session::Session, args: &RunArgs) -> Consumption {
     let marker = session::load_marker(&session.dir).ok();
-    let launch_intent = args.intent.clone().unwrap_or_default();
-    let (intent, intent_source) = match marker.as_ref().and_then(|m| m.intent.clone()) {
-        Some(text) if text == launch_intent => (text, "declared at launch"),
-        Some(text) => (text, "updated mid-session"),
-        None => (launch_intent, "declared at launch"),
+    let said = marker.as_ref().and_then(|m| m.intent.clone());
+    let intent = match (said, args.intent.clone()) {
+        (Some(text), Some(launch)) if text == launch => Some((text, "declared at launch")),
+        (Some(text), Some(_)) => Some((text, "updated mid-session")),
+        (Some(text), None) => Some((text, "declared mid-session")),
+        (None, launch) => launch.map(|text| (text, "declared at launch")),
     };
     let expansions = marker
         .as_ref()
         .map(|m| m.scope.len().saturating_sub(args.scope.len()))
         .unwrap_or(0);
-    Consumption {
-        intent,
-        intent_source,
-        expansions,
-    }
+    Consumption { intent, expansions }
 }
 
 /// Bookend a `run` session: a compact, stderr-bound summary of what the wrapped
@@ -1939,11 +1880,14 @@ fn render_run_summary(
     );
     let _ = writeln!(out, "  refreshed: {refreshes} time(s) while you worked");
 
-    let _ = writeln!(
-        out,
-        "  intent:    \"{}\" ({})",
-        consumption.intent, consumption.intent_source
-    );
+    match &consumption.intent {
+        Some((intent, source)) => {
+            let _ = writeln!(out, "  intent:    \"{intent}\" ({source})");
+        }
+        None => {
+            let _ = writeln!(out, "  intent:    not given");
+        }
+    }
     if consumption.expansions == 0 {
         let _ = writeln!(out, "  expansions: none declared");
     } else {
@@ -3206,8 +3150,7 @@ mod tests {
 
     fn quiet_consumption() -> Consumption {
         Consumption {
-            intent: "test".to_string(),
-            intent_source: "declared at launch",
+            intent: Some(("test".to_string(), "declared at launch")),
             expansions: 0,
         }
     }
@@ -3249,8 +3192,7 @@ mod tests {
         assert!(quiet.contains("expansions: none declared"), "{quiet}");
 
         let busy = Consumption {
-            intent: "widened".to_string(),
-            intent_source: "updated mid-session",
+            intent: Some(("widened".to_string(), "updated mid-session")),
             expansions: 2,
         };
         let out = render_run_summary(&unchanged, &unchanged, 0, &busy);
@@ -3262,31 +3204,6 @@ mod tests {
             out.contains("expansions: 2 scope path(s) declared while working"),
             "{out}"
         );
-    }
-
-    #[test]
-    fn refusal_suggestion_is_copy_pasteable() {
-        let refusal =
-            refuse_missing_intent(&["sh".to_string(), "-c".to_string(), "echo hi".to_string()]);
-        assert_eq!(refusal.reason, "missing-intent");
-        // Multi-word arguments come back shell-quoted so the suggestion parses.
-        assert!(
-            refusal
-                .message
-                .contains("toimija run --intent \"<why>\" -- sh -c 'echo hi'"),
-            "{}",
-            refusal.message
-        );
-        assert!(refusal.message.contains("--intent unknown"));
-    }
-
-    #[test]
-    fn shell_word_quotes_only_when_needed() {
-        assert_eq!(shell_word("codex"), "codex");
-        assert_eq!(shell_word("./bin/agent-2"), "./bin/agent-2");
-        assert_eq!(shell_word("echo hi"), "'echo hi'");
-        assert_eq!(shell_word("it's"), r"'it'\''s'");
-        assert_eq!(shell_word(""), "''");
     }
 
     #[test]

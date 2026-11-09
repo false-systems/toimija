@@ -302,7 +302,7 @@ fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
 }
 
 #[test]
-fn run_refuses_to_launch_without_intent() {
+fn run_launches_without_an_intent_and_says_none_was_given() {
     if !git_available() {
         return;
     }
@@ -312,23 +312,48 @@ fn run_refuses_to_launch_without_intent() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--", "sh", "-c", "touch SHOULD_NOT_RUN"])
+        .args(["run", "--", "sh", "-c", "touch RAN"])
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains(
-            "missing --intent — every session declares why it exists",
-        ))
-        // The suggestion echoes the user's own command back, shell-quoted, so
-        // it can be copied verbatim.
-        .stderr(predicate::str::contains(
-            "toimija run --intent \"<why>\" -- sh -c 'touch SHOULD_NOT_RUN'",
-        ))
-        .stderr(predicate::str::contains("--intent unknown"))
-        // The refusal renders exactly once: no WARN telemetry echo above it.
-        .stderr(predicate::str::contains("toimija.command.finish").not())
-        .stderr(predicate::str::contains("missing --intent").count(1));
-    // Refused before launch: the child never ran, no session opened.
-    assert!(!temp.path().join("SHOULD_NOT_RUN").exists());
+        .success()
+        // Said once, before the agent has the terminal, with how to say it.
+        .stderr(
+            predicate::str::contains(
+                "toimija run: no intent given: sibling sessions see `unknown` until one is \
+                 declared (`toimija intent \"<why>\"`, or `--intent` at launch)",
+            )
+            .count(1),
+        )
+        // Missing is not an empty intent declared at launch.
+        .stderr(predicate::str::contains("intent:    not given"))
+        .stderr(predicate::str::contains("declared at launch").not());
+    assert!(temp.path().join("RAN").exists());
+}
+
+/// The agent is named right after `run`: no `--`, and what follows the
+/// agent is the agent's, even when it looks like one of `run`'s own flags.
+#[test]
+fn run_takes_the_agent_and_its_arguments_without_a_separator() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "sh",
+            "-c",
+            "echo \"got $1 $2\"",
+            "sh",
+            "--intent",
+            "--scope",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("got --intent --scope"));
 }
 
 #[cfg(unix)]
