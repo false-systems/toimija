@@ -28,6 +28,7 @@ pub const IGNORE_RULES: &str = "\
 /sessions/
 /history.jsonl
 /history.lock
+/handover.json
 /runs/
 /snapshots/
 /tmp/

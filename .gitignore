@@ -14,6 +14,9 @@
 .toimija/history.jsonl
 .toimija/history.lock
 
+# The note for the next agent in this working copy — written by `toimija handover`.
+.toimija/handover.json
+
 # Local Teko state.
 .teko/
 

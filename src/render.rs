@@ -130,6 +130,60 @@ fn write_h2(output: &mut String, title: &str) {
     writeln!(output, "\n## {title}").unwrap();
 }
 
+/// The "Last handover" section: when it was written and on what branch and
+/// HEAD, so the reader can see how far the work has moved since, then each
+/// field the agent left.
+fn write_handover(output: &mut String, handover: &crate::session::Handover) {
+    write_h2(output, "Last handover");
+    let at = match (&handover.branch, &handover.head) {
+        (Some(branch), Some(head)) => format!(" on {branch} at {}", short_oid(head)),
+        (Some(branch), None) => format!(" on {branch}"),
+        (None, Some(head)) => format!(" at {}", short_oid(head)),
+        (None, None) => String::new(),
+    };
+    let by = handover
+        .session
+        .as_deref()
+        .map(|id| format!(" by session {id}"))
+        .unwrap_or_default();
+    writeln!(
+        output,
+        "- written: {}{at}{by}",
+        utc_minute(handover.written_at)
+    )
+    .unwrap();
+    for (label, text) in [
+        ("unfinished", &handover.unfinished),
+        ("for the next agent", &handover.next),
+        ("surprised by", &handover.surprised),
+    ] {
+        if let Some(text) = text {
+            writeln!(output, "- {label}: {text}").unwrap();
+        }
+    }
+}
+
+/// Unix seconds as `YYYY-MM-DD HH:MM UTC` (civil-from-days, proleptic
+/// Gregorian), without a date crate.
+fn utc_minute(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let minute_of_day = secs % 86_400 / 60;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        minute_of_day / 60,
+        minute_of_day % 60
+    )
+}
+
 /// A sub-section heading. No leading blank line: the `###` marker itself
 /// distinguishes adjacent sub-blocks (e.g. Staged / Unstaged under Working tree).
 fn write_h3(output: &mut String, title: &str) {
@@ -370,6 +424,12 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
             }
         )
         .unwrap();
+    }
+
+    // What the last agent here left for the next (issue #251), early: it is
+    // the first thing to know on entering.
+    if let Some(handover) = &packet.handover {
+        write_handover(&mut output, handover);
     }
 
     // Proposal 0005: the contract renders on every packet and early.
@@ -778,6 +838,14 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
+    #[test]
+    fn utc_minute_is_the_civil_date_and_time() {
+        assert_eq!(utc_minute(0), "1970-01-01 00:00 UTC");
+        // A leap day, and a time within it (checked against `date -u -r`).
+        assert_eq!(utc_minute(951_782_400), "2000-02-29 00:00 UTC");
+        assert_eq!(utc_minute(1_794_000_000), "2026-11-06 21:20 UTC");
+    }
+
     use crate::config::RepoConfig;
     use crate::context::ContextPacket;
     use crate::git::GitState;
@@ -854,6 +922,7 @@ mod tests {
                 recent_commits: Vec::new(),
             }),
             session: None,
+            handover: None,
             seal: None,
         }
     }

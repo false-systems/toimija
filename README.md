@@ -413,6 +413,18 @@ A wrapped agent can update its own declaration:
 toimija intent "repairing token refresh" --scope src/auth/
 ```
 
+Before finishing, any agent, with or without a session, can leave a handover
+for the next one in this working copy:
+
+```bash
+toimija handover --unfinished "the parser's error tests" --next "the lexer is done; start at src/parse.rs"
+```
+
+It is written to `.toimija/handover.json` (Git-ignored, as `init` arranges),
+replaces the one before it, and every packet built here shows it under "Last
+handover", with when it was written and the branch and HEAD at the time, so the
+next agent reads it on entering. It refreshes the live packet as it writes.
+
 Closed sessions are summarized in `.toimija/history.jsonl`. Stewardship remains
 explicit and bounded:
 
@@ -481,7 +493,7 @@ failure into an empty, reassuring list.
 | `repository-point` | Export the exact current repository point |
 | `enter`, `context`, `refresh`, `watch` | Produce or maintain a live packet |
 | `verify`, `snapshot` | Verify freshness or materialize an immutable Git tree |
-| `sessions`, `intent`, `history` | Observe and record local session continuity |
+| `sessions`, `intent`, `handover`, `history` | Observe and record local session continuity; leave a note for the next agent |
 | `clean` | Reclaim expired Toimija-owned artifacts |
 | `validate --plan` | Render validation commands without executing them |
 | `landed` | Check whether branch content reached a base ref |

@@ -164,6 +164,20 @@ pub enum Command {
         toimija intent \"fix #51\" --scope src/cli.rs --scope tests/cli_run.rs"
     )]
     Intent(IntentArgs),
+    /// Leave a handover for the next agent in this working copy.
+    ///
+    /// Use this before you finish: what is unfinished, what the next agent
+    /// should know, what surprised you. It replaces the handover before it, and
+    /// every packet built here shows it under "Last handover", so the next
+    /// agent reads it on entering (`toimija enter`, `.toimija/current.md`).
+    /// Works with or without a `toimija run` session. Writes one file under
+    /// `.toimija/`, then refreshes the packet; no network.
+    #[command(
+        after_help = "Examples:\n  toimija handover --unfinished \"the parser's error tests\" \
+        --next \"the lexer is done; start at src/parse.rs\"\n  \
+        toimija handover --surprised \"cargo builds go to ~/.cargo-target, not ./target\""
+    )]
+    Handover(HandoverArgs),
     /// List durable records of concluded sessions.
     ///
     /// Use this to see which agents worked in the repo after their live session
@@ -458,6 +472,19 @@ pub struct IntentArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct HandoverArgs {
+    /// What is not done, and where to pick it up.
+    #[arg(long, value_name = "TEXT")]
+    pub unfinished: Option<String>,
+    /// What the next agent should know.
+    #[arg(long, value_name = "TEXT")]
+    pub next: Option<String>,
+    /// What caught you out.
+    #[arg(long, value_name = "TEXT")]
+    pub surprised: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct HistoryArgs {
     /// Emit all valid history records as a JSON array.
     #[arg(long)]
@@ -581,6 +608,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Watch(args) => run_watch(args).map(|()| 0),
         Command::Run(args) => run_run(args),
         Command::Intent(args) => run_intent(args).map(|()| 0),
+        Command::Handover(args) => run_handover(args).map(|()| 0),
         Command::History(args) => run_history(args).map(|()| 0),
         Command::Clean(args) => run_clean(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
@@ -683,6 +711,7 @@ impl Command {
             Command::Watch(_) => "watch",
             Command::Run(_) => "run",
             Command::Intent(_) => "intent",
+            Command::Handover(_) => "handover",
             Command::History(_) => "history",
             Command::Clean(_) => "clean",
             Command::Landed(_) => "landed",
@@ -2849,6 +2878,86 @@ fn run_intent(args: IntentArgs) -> Result<()> {
     );
     if !marker.scope.is_empty() {
         println!("  scope: {}", marker.scope.join(", "));
+    }
+    Ok(())
+}
+
+fn run_handover(args: HandoverArgs) -> Result<()> {
+    let given = |text: Option<String>| {
+        text.map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+    };
+    let (unfinished, next, surprised) = (
+        given(args.unfinished),
+        given(args.next),
+        given(args.surprised),
+    );
+    anyhow::ensure!(
+        unfinished.is_some() || next.is_some() || surprised.is_some(),
+        "say at least one thing for the next agent: --unfinished, --next or --surprised"
+    );
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let worktree = git::discover(&runner, &cwd).context("not a Git repository")?;
+    let repo_root = &worktree.root;
+    // HEAD's id, then its branch: `--abbrev-ref` applies to the arguments
+    // after it. An unborn HEAD answers neither; a detached one names no branch.
+    let (head, branch) = match runner.run(
+        repo_root,
+        "git",
+        &["rev-parse", "HEAD", "--abbrev-ref", "HEAD"],
+    ) {
+        Ok(output) if output.status == 0 => {
+            let text = output.stdout_lossy();
+            let mut lines = text.lines().map(str::trim);
+            let head = lines
+                .next()
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned);
+            let branch = lines
+                .next()
+                .filter(|line| !line.is_empty() && *line != "HEAD")
+                .map(str::to_owned);
+            (head, branch)
+        }
+        _ => (None, None),
+    };
+    let handover = session::Handover {
+        written_at: session::now_secs(),
+        session: session::ambient_session(repo_root).map(|(id, _)| id),
+        branch,
+        head,
+        unfinished,
+        next,
+        surprised,
+    };
+    session::write_handover(repo_root, &handover)?;
+    info!(event = "toimija.handover.written", path = %repo_root.join(session::HANDOVER_FILE).display());
+    println!(
+        "Handover written for the next agent in {}: {}",
+        repo_root.display(),
+        [
+            handover.unfinished.as_ref().map(|_| "unfinished"),
+            handover.next.as_ref().map(|_| "for the next agent"),
+            handover.surprised.as_ref().map(|_| "surprised by"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ")
+    );
+    // The packet the next agent reads first shows it now, not after the
+    // next change; a failure here leaves the handover written, and says so.
+    let args = ContextArgs {
+        json: false,
+        for_diff: false,
+        budget: None,
+    };
+    if let Err(error) = ambient_refresh(&runner, &worktree, &args) {
+        eprintln!(
+            "toimija: the handover is written, but the packet could not be refreshed: {error:#}; \
+             `toimija enter` shows it"
+        );
     }
     Ok(())
 }

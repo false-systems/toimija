@@ -631,7 +631,7 @@ fn packet_ignored_check(runner: &impl CommandRunner, repo_root: &Path) -> Doctor
         check(
             "packet ignored",
             DoctorStatus::Ok,
-            "Git ignores the packet, sessions, history, runs and snapshots",
+            "Git ignores the packet, sessions, history, handover, runs and snapshots",
         )
     } else {
         check(
