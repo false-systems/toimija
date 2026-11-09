@@ -82,7 +82,11 @@
         "xtask/Cargo.toml",
         "xtask/src/main.rs",
         "xtask/tests/fail_closed.rs"
-      ]
+      ],
+      "env": {
+        "CARGO_BUILD_BUILD_DIR": "${worktree_cache}/cargo-build",
+        "CARGO_TARGET_DIR": "${worktree_cache}/cargo-target"
+      }
     },
     {
       "name": "clippy",
@@ -171,7 +175,11 @@
         "xtask/Cargo.toml",
         "xtask/src/main.rs",
         "xtask/tests/fail_closed.rs"
-      ]
+      ],
+      "env": {
+        "CARGO_BUILD_BUILD_DIR": "${worktree_cache}/cargo-build",
+        "CARGO_TARGET_DIR": "${worktree_cache}/cargo-target"
+      }
     },
     {
       "name": "test",
@@ -319,7 +327,11 @@
         "xtask/Cargo.toml",
         "xtask/src/main.rs",
         "xtask/tests/fail_closed.rs"
-      ]
+      ],
+      "env": {
+        "CARGO_BUILD_BUILD_DIR": "${worktree_cache}/cargo-build",
+        "CARGO_TARGET_DIR": "${worktree_cache}/cargo-target"
+      }
     },
     {
       "name": "doctor",
@@ -467,7 +479,11 @@
         "xtask/Cargo.toml",
         "xtask/src/main.rs",
         "xtask/tests/fail_closed.rs"
-      ]
+      ],
+      "env": {
+        "CARGO_BUILD_BUILD_DIR": "${worktree_cache}/cargo-build",
+        "CARGO_TARGET_DIR": "${worktree_cache}/cargo-target"
+      }
     }
   ]
 }
