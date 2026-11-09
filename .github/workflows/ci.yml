@@ -125,7 +125,7 @@ jobs:
       # So install it the way its README documents, pinned to the commit the
       # contract was locked with; move to the Action once a release exists.
       - name: Install sykli
-        run: cargo install --locked --git https://github.com/false-systems/sykli --rev 5a55ae30e68409a80c3c59af32515e7e8e30b702 sykli
+        run: cargo install --locked --git https://github.com/false-systems/sykli --rev 49018290537876467ed0bf7ed8caf8001d3187bf sykli
 
       - name: Run the sykli contract
         run: sykli run
