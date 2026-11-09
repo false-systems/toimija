@@ -305,3 +305,119 @@ fn the_sweep_never_follows_a_committed_symlink_out_of_the_repository() {
         }
     }
 }
+
+/// `toimija handover` leaves a note for the next agent in this working copy
+/// (issue #251): no session needed, shown under "Last handover" in every
+/// packet built here, the live `.toimija/current.md` included at once, and
+/// replaced by the next one.
+#[test]
+fn a_handover_is_shown_to_the_next_agent_on_entering() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path();
+    init_git_repo(repo);
+    let toimija = |args: &[&str]| {
+        let output = Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(repo)
+            .env_remove("TOIMIJA_SESSION")
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    // Nothing to say is refused, and nothing is written.
+    let (ok, _, stderr) = toimija(&["handover", "--next", "  "]);
+    assert!(!ok);
+    assert!(stderr.contains("say at least one thing"), "{stderr}");
+    assert!(!repo.join(".toimija/handover.json").exists());
+
+    let (ok, stdout, stderr) = toimija(&[
+        "handover",
+        "--unfinished",
+        "the parser's error tests",
+        "--next",
+        "the lexer is done; start at src/parse.rs",
+    ]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.contains("Handover written for the next agent in")
+            && stdout.contains(": unfinished, for the next agent"),
+        "{stdout}"
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(repo.join(".toimija/handover.json")).unwrap())
+            .unwrap();
+    let head = String::from_utf8(
+        std::process::Command::new("git")
+            .current_dir(repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(written["head"], head.trim());
+    assert!(written["branch"].is_string(), "{written}");
+    assert!(written.get("session").is_none(), "{written}");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(now.abs_diff(written["written_at"].as_u64().unwrap()) < 60);
+
+    // The live packet shows it now, before anyone refreshes.
+    let shown = |text: &str| {
+        text.contains("## Last handover\n- written: ")
+            && text.contains("- unfinished: the parser's error tests\n")
+            && text.contains("- for the next agent: the lexer is done; start at src/parse.rs\n")
+            && !text.contains("- surprised by:")
+    };
+    let current = fs::read_to_string(repo.join(".toimija/current.md")).unwrap();
+    assert!(shown(&current), "{current}");
+    let (ok, entered, stderr) = toimija(&["enter"]);
+    assert!(ok, "{stderr}");
+    assert!(shown(&entered), "{entered}");
+    // Early: before the workset contract and the Git state.
+    assert!(entered.find("## Last handover") < entered.find("## Workset contract"));
+    let (ok, json, stderr) = toimija(&["context", "--json"]);
+    assert!(ok, "{stderr}");
+    let packet: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        packet["handover"]["next"],
+        "the lexer is done; start at src/parse.rs"
+    );
+
+    // The next handover replaces it whole.
+    let (ok, _, stderr) = toimija(&["handover", "--surprised", "builds go elsewhere"]);
+    assert!(ok, "{stderr}");
+    let (_, entered, _) = toimija(&["enter"]);
+    assert!(
+        entered.contains("- surprised by: builds go elsewhere\n")
+            && !entered.contains("the parser's error tests"),
+        "{entered}"
+    );
+}
+
+/// No handover here: the packet has no such section.
+#[test]
+fn a_packet_without_a_handover_has_no_section_for_it() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("enter")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Last handover").not());
+}

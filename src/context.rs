@@ -59,6 +59,11 @@ pub struct ContextPacket {
     /// repo-level packets. Additive per the packet contract's evolution rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionBlock>,
+    /// What the last agent in this working copy left for the next one
+    /// (`toimija handover`, issue #251), read at refresh time. Additive per the
+    /// packet contract's evolution rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover: Option<crate::session::Handover>,
     /// The packet's seal (`crate::seal`): a `sauma-envelope.v2` over the
     /// serialized packet. `toimija-context.v2` carried it under `sauma`. The
     /// option remains only so an unsealed document can deserialize before the
@@ -182,6 +187,9 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         }
     };
     let repo_kind = repo::detect_repo_kind(&git.repo_root);
+    // What the last agent here left for the next (issue #251): every packet
+    // built in this working copy carries it.
+    let handover = crate::session::read_handover(&git.repo_root);
     let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
     let ignore_rules = effective_ignore_rules(&safe_to_ignore);
     let secondary_scan = repo::detect_secondary_langs(&git.repo_root, repo_kind, |path| {
@@ -267,6 +275,7 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         // (`refresh::refresh_session`), which knows the session directory;
         // packet compilation itself is session-agnostic.
         session: None,
+        handover,
         seal: None,
     };
     debug!(
@@ -611,6 +620,7 @@ mod tests {
             default_budget: Some(4000),
             consistency,
             session: None,
+            handover: None,
             seal: None,
         };
         let json = serde_json::to_string(&packet).unwrap();
@@ -669,6 +679,7 @@ mod tests {
             default_budget: Some(4000),
             consistency: Consistency::fingerprint(&git),
             session: None,
+            handover: None,
             seal: None,
         };
         let mut value = serde_json::to_value(packet).unwrap();
@@ -729,6 +740,7 @@ mod tests {
             for_diff: false,
             default_budget: Some(4000),
             consistency,
+            handover: None,
             session: Some(SessionBlock {
                 id: "100-1".to_string(),
                 intent: None,

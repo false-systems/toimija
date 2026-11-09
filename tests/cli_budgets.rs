@@ -351,3 +351,22 @@ fn a_sandbox_traces_its_own_git() {
         .count();
     assert_eq!(starts, 1);
 }
+
+/// `handover` finds the root, reads HEAD and its branch in one process, then
+/// refreshes the live packet with the worktree it found (issue #251).
+#[test]
+fn handover_costs_the_packet_and_one() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new("dirty");
+    let calls = sandbox.assert_budget(&["handover", "--next", "the lexer is done"], 0, 7);
+    assert_eq!(
+        calls[1],
+        ["rev-parse", "HEAD", "--abbrev-ref", "HEAD"],
+        "{calls:#?}"
+    );
+    let mut packet = verbs(&calls);
+    packet.remove(1);
+    assert_eq!(packet, PACKET, "{calls:#?}");
+}

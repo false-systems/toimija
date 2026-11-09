@@ -523,10 +523,74 @@ pub fn declare_intent(
     Ok(marker)
 }
 
+/// Where a working copy's handover lives: beside its live packet under
+/// `.toimija/`, which repositories keep out of Git (issue #251).
+pub const HANDOVER_FILE: &str = ".toimija/handover.json";
+
+/// What the last agent in this working copy left for the next one (`toimija
+/// handover`), carried into every packet built here so the next agent reads
+/// it on entering. A note, never a claim on work. It needs no session: an
+/// agent started any way can write one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Handover {
+    /// Unix seconds it was written.
+    pub written_at: u64,
+    /// The session that wrote it, when its agent ran under `toimija run`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// Branch and HEAD when it was written, so a reader can see how far the
+    /// work has moved since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// What is not done, and where to pick it up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unfinished: Option<String>,
+    /// What the next agent should know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+    /// What caught the agent out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surprised: Option<String>,
+}
+
+/// Write `handover` as this working copy's, replacing the one before it.
+pub fn write_handover(repo_root: &Path, handover: &Handover) -> Result<()> {
+    let path = repo_root.join(HANDOVER_FILE);
+    let dir = path.parent().expect("the handover file is under .toimija/");
+    crate::owned::ensure_dir(repo_root, dir)?;
+    let json = serde_json::to_string_pretty(handover)?;
+    crate::owned::replace(repo_root, &path, format!("{json}\n").as_bytes())
+        .context("failed to write the handover")
+}
+
+/// The handover left in this working copy, if any. One that exists and
+/// cannot be read is warned about and left out, never fatal: a packet is
+/// still built, and only a missing file is quiet.
+pub fn read_handover(repo_root: &Path) -> Option<Handover> {
+    let path = repo_root.join(HANDOVER_FILE);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            warn!(event = "toimija.handover.unreadable", path = %path.display(), error = %error);
+            return None;
+        }
+    };
+    match serde_json::from_str(&raw) {
+        Ok(handover) => Some(handover),
+        Err(error) => {
+            warn!(event = "toimija.handover.unreadable", path = %path.display(), error = %error);
+            None
+        }
+    }
+}
+
 /// Seconds since the Unix epoch; 0 if the system clock is before the epoch.
 /// The fallback is warned about, not silent — a `0` here becomes a `0-<pid>`
 /// session id and `started_at: 0`, which would otherwise read as mystery data.
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())

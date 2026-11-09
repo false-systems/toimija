@@ -400,9 +400,12 @@ journals an unrecorded closed or stale session before removing its directory.
 Append failure keeps the directory. `toimija history` renders newest first;
 `--json` emits every valid record as an array. Malformed lines are counted and
 skipped. The v1 shape is documented by
-`docs/schemas/history-record.v1.schema.json`. Toimija no longer records
-handoffs (decision D8.4: ohjaa's handover is the one concept), so it writes
-`handoffs` and `handoffs_total`, which v1 requires, empty.
+`docs/schemas/history-record.v1.schema.json`. History records no handoffs, so
+it writes `handoffs` and `handoffs_total`, which v1 requires, empty. The one
+handover concept is now Toimija's own `toimija handover` (issue #251), which
+replaced ohjaa's (decision D8.4 made ohjaa's the one concept; ohjaa no longer
+runs sessions): a note per working copy, shown in the packet, not a history
+record.
 
 ```
 LIVE
@@ -733,6 +736,7 @@ toimija run --intent "..." --task "..." -- claude  # task travels in the launch 
 toimija run --intent "..." --scope src/x.rs -- codex  # declare what you'll touch (advisory)
 toimija sessions           # who else is live in this repo (read-only awareness)
 toimija intent "..."       # wrapped agent declares why it is here (via TOIMIJA_SESSION)
+toimija handover --next "..."  # leave a note for the next agent in this working copy
 toimija history            # durable records of concluded sessions
 toimija clean --dry-run    # preview the unified stewardship sweep
 toimija clean              # reclaim expired owned artifacts
@@ -756,6 +760,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` is required (`--intent unknown` is the escape hatch); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. Outside a repository: a session with no packet (see "Outside a repository"). |
 | `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` runs the same configured stewardship pass as `clean`; `--outside-repos` (the default outside a repository) lists sessions opened outside any repository. |
 | `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
+| `handover` | Leave a note for the next agent in this working copy: `--unfinished`, `--next`, `--surprised` (at least one). Writes `.toimija/handover.json`, replacing the one before it, and refreshes the live packet; every packet built here shows it under "Last handover" with when it was written and the branch and HEAD at the time. No session needed. |
 | `history` | List durable concluded-session records newest first; `--json` emits every valid record. Malformed lines are counted and skipped. |
 | `clean` | Reclaim expired sessions, run transcripts, and exact orphan temp files; `--dry-run` lists candidates without mutation. Explicit cleanup propagates errors. |
 | `enter` | Refresh and print the current packet as agent preflight. |
