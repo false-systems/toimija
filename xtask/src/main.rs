@@ -21,6 +21,7 @@ use anyhow::{bail, Result};
 use devx_pre_commit::{install_self_as_hook, locate_project_root, PreCommitContext};
 use serde::Deserialize;
 
+mod land;
 mod review;
 
 fn run_hook() -> Result<()> {
@@ -467,6 +468,11 @@ fn main() -> Result<()> {
             run_why(query)?;
         }
         Some("gate") => run_full_gate()?,
+        Some("land") => {
+            // 0 landed, 1 refused, 2 could not tell.
+            let code = land::main(&locate_project_root()?, &args[2..]);
+            std::process::exit(i32::from(code));
+        }
         Some("review") => {
             // The exit code is the verdict: 0 may cross, 1 blocking, 2 no review.
             let code = review::main(&locate_project_root()?, &args[2..]);
@@ -480,6 +486,7 @@ fn main() -> Result<()> {
                 "  cargo xtask why <query>              walk the local chain of sealed artifacts"
             );
             eprintln!("  cargo xtask review                    a fresh agent reviews this branch: fine, look or blocking");
+            eprintln!("  cargo xtask land                      put this branch on main when it is proven and reviewed");
             // Fail closed: a caller that treats the exit code as a verdict (the
             // harness gate, CI) must never mistake "task not found" for a pass.
             if let Some(arg) = other {

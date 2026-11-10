@@ -80,6 +80,7 @@
         "vendor/sauma-canonical/src/lib.rs",
         "vendor/sauma-canonical/src/path_codec.rs",
         "xtask/Cargo.toml",
+        "xtask/src/land.rs",
         "xtask/src/main.rs",
         "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"
@@ -174,6 +175,7 @@
         "vendor/sauma-canonical/src/lib.rs",
         "vendor/sauma-canonical/src/path_codec.rs",
         "xtask/Cargo.toml",
+        "xtask/src/land.rs",
         "xtask/src/main.rs",
         "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"
@@ -251,7 +253,6 @@
         "fixtures/elixir_repo/mix.exs",
         "fixtures/rust_repo/Cargo.toml",
         "fixtures/rust_repo/src/lib.rs",
-        "review.json",
         "rust-toolchain.toml",
         "scripts/vendor-faija-terms.sh",
         "scripts/vendor-sauma-canonical.sh",
@@ -328,6 +329,7 @@
         "vendor/sauma-canonical/src/lib.rs",
         "vendor/sauma-canonical/src/path_codec.rs",
         "xtask/Cargo.toml",
+        "xtask/src/land.rs",
         "xtask/src/main.rs",
         "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"
@@ -405,7 +407,6 @@
         "fixtures/elixir_repo/mix.exs",
         "fixtures/rust_repo/Cargo.toml",
         "fixtures/rust_repo/src/lib.rs",
-        "review.json",
         "rust-toolchain.toml",
         "scripts/vendor-faija-terms.sh",
         "scripts/vendor-sauma-canonical.sh",
@@ -482,6 +483,7 @@
         "vendor/sauma-canonical/src/lib.rs",
         "vendor/sauma-canonical/src/path_codec.rs",
         "xtask/Cargo.toml",
+        "xtask/src/land.rs",
         "xtask/src/main.rs",
         "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"

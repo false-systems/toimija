@@ -1,8 +1,7 @@
 //! `cargo xtask review`: a fresh agent reviews this branch and says how
 //! serious what it found is.
 //!
-//! It is the one task of `review.json`, so `sykli run review.json` gives the
-//! review a receipt bound to the tree it read. The reviewer is another agent
+//! The reviewer is another agent
 //! than the one that wrote the branch where one is installed, started with
 //! read-only tools and none of the author's conversation.
 //!
@@ -14,22 +13,24 @@
 //! - 2: no review happened: uncommitted work, no reviewer installed, a
 //!   reviewer that failed, ran out of time or gave no verdict. Never a pass.
 //!
-//! What a review found is kept for the commit's tree in the clone's common
-//! git directory (`toimija/reviews/<tree>.json`), outside every worktree.
+//! What a review found is kept as a git note on the commit's tree
+//! (`refs/notes/toimija/review`), so every worktree of the clone reads it and
+//! `cargo xtask land` can push it. It answers only for the base it was read
+//! against: the same tree on another base is another change.
 
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::{IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// The ref a branch is reviewed against.
-const BASE: &str = "origin/main";
+/// The ref a branch is reviewed against, unless another remote is named.
+pub const BASE: &str = "origin/main";
 /// How long a reviewer may take before it counts as no review.
 const TIME_LIMIT: Duration = Duration::from_secs(20 * 60);
 const SCHEMA: &str = "toimija-review.v1";
@@ -228,21 +229,25 @@ pub type Reviewer<'a> = &'a dyn Fn(Agent, &str, &Path) -> Result<String>;
 
 /// Reviews the commit checked out at `root`, or reuses what this clone keeps
 /// for its tree. Returns `None` when the commit is already in the base.
-pub fn review(root: &Path, installed: &[Agent], reviewer: Reviewer<'_>) -> Result<Option<Record>> {
+pub fn review(
+    root: &Path,
+    base_ref: &str,
+    installed: &[Agent],
+    reviewer: Reviewer<'_>,
+) -> Result<Option<Record>> {
     if !git(root, &["status", "--porcelain"])?.is_empty() {
         bail!("uncommitted or untracked files here: a review is of a commit, so commit first");
     }
     let head = git(root, &["rev-parse", "HEAD"])?;
     let tree = git(root, &["rev-parse", "HEAD^{tree}"])?;
-    let base = git(root, &["merge-base", BASE, "HEAD"])
-        .with_context(|| format!("no common ancestor with {BASE}: fetch it first"))?;
+    let base = git(root, &["merge-base", base_ref, "HEAD"])
+        .with_context(|| format!("no common ancestor with {base_ref}: fetch it first"))?;
     if base == head {
         return Ok(None);
     }
-    let path = record_path(root, &tree)?;
     // A kept review answers only for the change it read: the same tree on
     // another base is another diff.
-    if let Some(kept) = read_record(&path)?.filter(|kept| kept.base == base) {
+    if let Some(kept) = read_record(root, &tree)?.filter(|kept| kept.base == base) {
         return Ok(Some(kept));
     }
     let range = format!("{base}..{head}");
@@ -278,16 +283,15 @@ pub fn review(root: &Path, installed: &[Agent], reviewer: Reviewer<'_>) -> Resul
         at: now(),
         overruled: None,
     };
-    write_record(&path, &record)?;
+    write_record(root, &record)?;
     Ok(Some(record))
 }
 
 /// A person lets a blocking review of this commit's tree cross.
-pub fn overrule(root: &Path, why: &str) -> Result<Record> {
+pub fn overrule(root: &Path, base_ref: &str, why: &str) -> Result<Record> {
     let tree = git(root, &["rev-parse", "HEAD^{tree}"])?;
-    let path = record_path(root, &tree)?;
-    let base = git(root, &["merge-base", BASE, "HEAD"])?;
-    let Some(mut record) = read_record(&path)?.filter(|kept| kept.base == base) else {
+    let base = git(root, &["merge-base", base_ref, "HEAD"])?;
+    let Some(mut record) = read_record(root, &tree)?.filter(|kept| kept.base == base) else {
         bail!("no review is kept for this commit: run `sykli run review.json` first");
     };
     if record.level != Level::Blocking {
@@ -300,7 +304,7 @@ pub fn overrule(root: &Path, why: &str) -> Result<Record> {
         why: why.to_string(),
         at: now(),
     });
-    write_record(&path, &record)?;
+    write_record(root, &record)?;
     Ok(record)
 }
 
@@ -351,49 +355,88 @@ pub fn summary(record: &Record) -> String {
     line
 }
 
-fn record_path(root: &Path, tree: &str) -> Result<PathBuf> {
-    let common = git(
-        root,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    Ok(Path::new(&common)
-        .join("toimija/reviews")
-        .join(format!("{tree}.json")))
-}
+/// Where reviews are kept: one note per tree.
+pub const NOTES: &str = "refs/notes/toimija/review";
 
-fn read_record(path: &Path) -> Result<Option<Record>> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(anyhow!("{}: {error}", path.display())),
-    };
-    let record: Record =
-        serde_json::from_str(&text).with_context(|| format!("{}: not a review", path.display()))?;
+pub fn read_record(root: &Path, tree: &str) -> Result<Option<Record>> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(["notes", "--ref", NOTES, "show", tree])
+        .output()?;
+    if !output.status.success() {
+        // git says "no note found" with exit 1; anything else is an error.
+        let said = String::from_utf8_lossy(&output.stderr);
+        if said.contains("no note found") || said.contains("failed to resolve") {
+            return Ok(None);
+        }
+        bail!("git notes show {tree}: {}", said.trim());
+    }
+    let record: Record = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("the note on {tree} in {NOTES} is not a review"))?;
     if record.schema != SCHEMA {
         bail!(
-            "{}: schema `{}` is not {SCHEMA}",
-            path.display(),
+            "the review of {tree} has schema `{}`, not {SCHEMA}",
             record.schema
+        );
+    }
+    if record.tree != tree {
+        bail!(
+            "the review kept on {tree} is of another tree, {}",
+            record.tree
         );
     }
     Ok(Some(record))
 }
 
-fn write_record(path: &Path, record: &Record) -> Result<()> {
-    let dir = path.parent().context("a review record has a directory")?;
-    fs::create_dir_all(dir)?;
-    let partial = path.with_extension(format!("json.tmp-{}", std::process::id()));
-    fs::write(&partial, serde_json::to_string_pretty(record)? + "\n")?;
-    fs::rename(&partial, path).with_context(|| format!("{}", path.display()))
+fn write_record(root: &Path, record: &Record) -> Result<()> {
+    let text = serde_json::to_string_pretty(record)? + "\n";
+    git_with_input(
+        root,
+        &[
+            "notes",
+            "--ref",
+            NOTES,
+            "add",
+            "-f",
+            "-F",
+            "-",
+            &record.tree,
+        ],
+        &text,
+    )
 }
 
-fn now() -> u64 {
+fn git_with_input(root: &Path, args: &[&str], input: &str) -> Result<()> {
+    let mut child = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .context("git's stdin is piped")?
+        .write_all(input.as_bytes())?;
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        bail!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<String> {
+pub fn git(root: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git").current_dir(root).args(args).output()?;
     if !output.status.success() {
         bail!(
@@ -519,10 +562,15 @@ fn reviewer_command(agent: Agent, last: &Path) -> Command {
     command
 }
 
-/// `cargo xtask review [--overrule <why>]`, returning the exit code.
+/// `cargo xtask review [--remote NAME] [--overrule <why>]`, returning the
+/// exit code.
 pub fn main(root: &Path, args: &[String]) -> u8 {
+    let (base_ref, args) = match args {
+        [flag, remote, rest @ ..] if flag == "--remote" => (format!("{remote}/main"), rest),
+        _ => (BASE.to_string(), args),
+    };
     let outcome = match args {
-        [] => review(root, &installed(), &run_agent).map(|record| match record {
+        [] => review(root, &base_ref, &installed(), &run_agent).map(|record| match record {
             Some(record) => {
                 eprintln!("{}", summary(&record));
                 for finding in &record.findings {
@@ -530,14 +578,14 @@ pub fn main(root: &Path, args: &[String]) -> u8 {
                 }
                 if exit_code(&record) == 1 {
                     eprintln!(
-                        "review: blocking stops the push. Fix it and commit, or a person \
+                        "review: blocking stops the landing. Fix it and commit, or a person \
                          runs `cargo xtask review --overrule \"<why>\"` at a terminal."
                     );
                 }
                 exit_code(&record)
             }
             None => {
-                eprintln!("review: nothing to review: this commit is already in {BASE}");
+                eprintln!("review: nothing to review: this commit is already in {base_ref}");
                 0
             }
         }),
@@ -545,12 +593,14 @@ pub fn main(root: &Path, args: &[String]) -> u8 {
             &|name| std::env::var_os(name).is_some(),
             std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         )
-        .and_then(|()| overrule(root, why))
+        .and_then(|()| overrule(root, &base_ref, why))
         .map(|record| {
             eprintln!("{}", summary(&record));
             0
         }),
-        _ => Err(anyhow!("usage: cargo xtask review [--overrule \"<why>\"]")),
+        _ => Err(anyhow!(
+            "usage: cargo xtask review [--remote NAME] [--overrule \"<why>\"]"
+        )),
     };
     outcome.unwrap_or_else(|error| {
         eprintln!("review: no review happened: {error:#}");
@@ -562,6 +612,7 @@ pub fn main(root: &Path, args: &[String]) -> u8 {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::path::PathBuf;
 
     #[test]
     fn a_reply_without_a_verdict_line_is_no_review() {
@@ -646,18 +697,24 @@ mod tests {
             Ok("- [blocking] new.txt:1: wrong.\nREVIEW: blocking\n".to_string())
         };
 
-        let record = review(&root, &[Agent::Codex], &blocking).unwrap().unwrap();
+        let record = review(&root, BASE, &[Agent::Codex], &blocking)
+            .unwrap()
+            .unwrap();
         assert_eq!(record.level, Level::Blocking);
         assert_eq!(exit_code(&record), 1);
 
         // The same tree is not reviewed twice: the kept record answers.
-        let again = review(&root, &[Agent::Codex], &blocking).unwrap().unwrap();
+        let again = review(&root, BASE, &[Agent::Codex], &blocking)
+            .unwrap()
+            .unwrap();
         assert_eq!(again, record);
         assert_eq!(calls.get(), 1);
 
-        let overruled = overrule(&root, "known and accepted").unwrap();
+        let overruled = overrule(&root, BASE, "known and accepted").unwrap();
         assert_eq!(exit_code(&overruled), 0);
-        let kept = review(&root, &[Agent::Codex], &blocking).unwrap().unwrap();
+        let kept = review(&root, BASE, &[Agent::Codex], &blocking)
+            .unwrap()
+            .unwrap();
         assert_eq!(exit_code(&kept), 0);
         assert_eq!(kept.overruled.unwrap().why, "known and accepted");
     }
@@ -673,14 +730,18 @@ mod tests {
             calls.set(calls.get() + 1);
             Ok("REVIEW: fine\n".to_string())
         };
-        review(&root, &[Agent::Claude], &fine).unwrap().unwrap();
+        review(&root, BASE, &[Agent::Claude], &fine)
+            .unwrap()
+            .unwrap();
         fs::write(root.join("new.txt"), "changed\n").unwrap();
         run_git(&root, &["commit", "-am", "second"]);
-        let second = review(&root, &[Agent::Claude], &fine).unwrap().unwrap();
+        let second = review(&root, BASE, &[Agent::Claude], &fine)
+            .unwrap()
+            .unwrap();
         assert_eq!(calls.get(), 2);
         assert_eq!(second.level, Level::Fine);
         assert!(
-            overrule(&root, "why").is_err(),
+            overrule(&root, BASE, "why").is_err(),
             "fine has nothing to overrule"
         );
     }
@@ -693,14 +754,14 @@ mod tests {
         let root = branch_repo("review-none");
         let silent = |_: Agent, _: &str, _: &Path| Ok("I could not decide.\n".to_string());
 
-        let error = review(&root, &[], &silent).unwrap_err();
+        let error = review(&root, BASE, &[], &silent).unwrap_err();
         assert!(error.to_string().contains("no reviewer"), "{error}");
-        let error = review(&root, &[Agent::Codex], &silent).unwrap_err();
+        let error = review(&root, BASE, &[Agent::Codex], &silent).unwrap_err();
         assert!(error.to_string().contains("no `REVIEW:`"), "{error}");
         // Neither left a record that a later run would take for a review.
         let fine = |_: Agent, _: &str, _: &Path| Ok("REVIEW: fine\n".to_string());
         fs::write(root.join("stray.txt"), "x\n").unwrap();
-        let error = review(&root, &[Agent::Codex], &fine).unwrap_err();
+        let error = review(&root, BASE, &[Agent::Codex], &fine).unwrap_err();
         assert!(error.to_string().contains("commit first"), "{error}");
     }
 
@@ -714,7 +775,7 @@ mod tests {
         let never = |_: Agent, _: &str, _: &Path| -> Result<String> {
             panic!("nothing to review, so no reviewer starts")
         };
-        assert_eq!(review(&root, &[Agent::Codex], &never).unwrap(), None);
+        assert_eq!(review(&root, BASE, &[Agent::Codex], &never).unwrap(), None);
     }
 
     /// A repository whose `origin/main` is its first commit, with one commit
@@ -762,12 +823,16 @@ mod tests {
             calls.set(calls.get() + 1);
             Ok("REVIEW: blocking\n".to_string())
         };
-        review(&root, &[Agent::Codex], &blocking).unwrap().unwrap();
-        overrule(&root, "accepted").unwrap();
+        review(&root, BASE, &[Agent::Codex], &blocking)
+            .unwrap()
+            .unwrap();
+        overrule(&root, BASE, "accepted").unwrap();
 
         // The base moves under the same tree: the change is now another diff.
         run_git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
-        let again = review(&root, &[Agent::Codex], &blocking).unwrap().unwrap();
+        let again = review(&root, BASE, &[Agent::Codex], &blocking)
+            .unwrap()
+            .unwrap();
         assert_eq!(calls.get(), 2);
         assert_eq!(
             again.overruled, None,
