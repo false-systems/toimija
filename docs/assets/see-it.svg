@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" fill="none" role="img" aria-labelledby="t d">
+<title id="t">toimija sessions, then toimija graph</title>
+<desc id="d">One terminal runs an agent as a session with toimija run. In another, toimija sessions lists that session as live, with its branch and intent, and toimija graph shows the branch as proven, not reviewed, with the session working on it, above the main branch, which is proven and reviewed fine.</desc>
+<rect width="1200" height="480" fill="#f1ebdc"/>
+<g stroke="#171715" stroke-width="2"><path d="M40 40H56M48 32V48M1144 440H1160M1152 432V448"/></g>
+<g stroke="#b9b3a5" stroke-width="1"><path d="M64 96H1136M64 132H1136M64 168H1136M64 204H1136M64 240H1136M64 276H1136M64 312H1136M64 348H1136M64 384H1136M64 420H1136M64 456H1136"/></g>
+<rect x="64" y="386" width="6" height="32" fill="#d4aa4e"/>
+<g font-family="'Geist Mono', ui-monospace, Menlo, Consolas, monospace" font-size="20" xml:space="preserve" style="white-space: pre">
+<text x="84" y="86" fill="#57594f"># one terminal:  toimija run --intent "tidy the README" claude</text>
+<text x="84" y="158" fill="#171715" font-weight="600"><tspan fill="#c75b36">$</tspan> toimija sessions</text>
+<text x="84" y="194" fill="#57594f">LIVE</text>
+<text x="84" y="230" fill="#57594f">  claude  1794350046-58479</text>
+<text x="84" y="266" fill="#57594f">    branch: tidy-readme</text>
+<text x="84" y="302" fill="#57594f">    intent: tidy the README</text>
+<text x="84" y="374" fill="#171715" font-weight="600"><tspan fill="#c75b36">$</tspan> toimija graph</text>
+<text x="84" y="410" fill="#171715">* 4191206  tidy-readme  proven    review: none       claude live: "tidy the README"</text>
+<text x="84" y="446" fill="#57594f">* 3588810  origin/main  proven    review: fine</text>
+</g>
+</svg>
