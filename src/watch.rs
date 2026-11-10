@@ -1145,7 +1145,7 @@ struct Check {
 /// A transient refresh failure must not kill live updates: keep watching so
 /// the packet can recover on the next event, the safety net, or resume. But
 /// the agent reads the packet, not this process's stderr, so the failure goes
-/// into the packet itself (issue #229) — once per distinct failure, not on
+/// into the packet itself — once per distinct failure, not on
 /// every retry.
 fn refresh_or_warn(
     runner: &impl CommandRunner,
@@ -2158,8 +2158,8 @@ mod tests {
     fn live_files_are_ignored() {
         assert!(is_ignored_at("/repo", "/repo/.toimija/current.md"));
         assert!(is_ignored_at("/repo", "/repo/.toimija/current.json"));
-        assert!(is_ignored_at("/repo", "/repo/.teko/teko.redb"));
-        // A gate's receipts: generated state the token no longer watches.
+        assert!(is_ignored_at("/repo", "/repo/.teko/state.redb"));
+        // A gate's receipts: generated state the token leaves out.
         assert!(is_ignored_at("/repo", "/repo/.sykli/receipt.json"));
         assert!(is_ignored_at("/repo", "/repo/.sykli/runs/r1/journal"));
         // repo.yaml under .toimija is NOT a live file — changes to it matter.
@@ -2183,7 +2183,7 @@ mod tests {
 
     #[test]
     fn runs_output_is_ignored_but_repo_yaml_is_not() {
-        assert!(is_ignored_at("/repo", "/repo/.toimija/runs/kisko.jsonl"));
+        assert!(is_ignored_at("/repo", "/repo/.toimija/runs/harness.jsonl"));
         assert!(!is_ignored_at("/repo", "/repo/.toimija/repo.yaml"));
     }
 
@@ -2446,7 +2446,7 @@ mod tests {
         // whose `git status` and content token show a tracked change, and
         // without a warning for untracked build churn.
         for build in [
-            "/repo/_build/lib/vartio_core/priv",
+            "/repo/_build/lib/demo_core/priv",
             "/repo/lib/deps/x.ex",
             "/repo/src/target/mod.rs",
         ] {
@@ -2599,8 +2599,8 @@ mod tests {
     #[test]
     fn a_build_dir_below_the_root_costs_one_status_and_a_tracked_file_there_refreshes() {
         // A monorepo's `packages/a/node_modules` churns as a root `target/`
-        // does: a burst there is one `git status` and no refresh, where it
-        // used to be a refresh each. A tracked file under a build name is
+        // does: a burst there is one `git status` and no refresh.
+        // A tracked file under a build name is
         // never ignored: its edit shows in `status`, and an edit to a file
         // already modified there shows in the content the check reads.
         if !git_usable() {

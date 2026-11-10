@@ -1,6 +1,6 @@
-//! The canonical crate Toimija carries is the one sauma wrote.
+//! The canonical crate Toimija carries is byte-identical to its source.
 //!
-//! Sauma owns the envelope, its canonical byte string and every digest over it.
+//! That crate owns the envelope, its canonical byte string and every digest over it.
 //! Toimija holds that implementation under `vendor/` rather than fetching it
 //! from a private repository on every build, so there is still exactly one
 //! implementation — distributed rather than linked.

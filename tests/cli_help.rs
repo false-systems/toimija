@@ -113,8 +113,8 @@ fn context_help_describes_every_flag() {
 #[test]
 fn verify_json_help_describes_the_shape_verify_emits() {
     // `verify --json` emits `{ "status": ..., "packet_path": ... }`; the help
-    // once promised `{ "consistent": bool, "reasons": [...] }`, a shape no
-    // command has ever emitted.
+    // must not promise `{ "consistent": bool, "reasons": [...] }`, a shape no
+    // command emits.
     Command::cargo_bin("toimija")
         .unwrap()
         .args(["verify", "--help"])

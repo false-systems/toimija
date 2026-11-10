@@ -112,7 +112,7 @@ impl SessionView {
 pub struct SessionsReport {
     pub sessions: Vec<SessionView>,
     pub warnings: Vec<Warning>,
-    /// Coverage of the marker scan itself (R10, TA-005): `available` means
+    /// Coverage of the marker scan itself: `available` means
     /// every sibling marker was read; `degraded` means at least one marker is
     /// unreadable or malformed, so the listing may be missing a live sibling.
     pub coverage: Coverage,
@@ -199,7 +199,7 @@ const MARKER_SCAN_SOURCE: &str = "session marker scan (.toimija/sessions/*/sessi
 
 /// The result of scanning `.toimija/sessions/`: the markers that parsed, and a
 /// safe diagnostic for each one that did not. Unreadable is not the same as
-/// absent (R10, TA-005) — a directory without a `session.json` is not a
+/// absent — a directory without a `session.json` is not a
 /// session, but a marker that exists and cannot be read is a blind spot.
 struct MarkerScan {
     markers: Vec<(PathBuf, SessionMarker)>,
@@ -269,11 +269,11 @@ fn read_markers(repo_root: &Path) -> Result<MarkerScan> {
 /// threshold. Pure, so the staleness/active/closed transitions are unit-tested
 /// without touching the OS or the clock.
 ///
-/// The window measures **inactivity**, not lifetime (proposal 0002): a
+/// The window measures **inactivity**, not lifetime: a
 /// day-long session whose watcher keeps stamping `last_seen_at` stays active;
 /// one whose heartbeat froze goes stale within the window even if a recycled
-/// pid looks alive. Markers from before the heartbeat fall back to
-/// `started_at` — exactly the old D2 behavior.
+/// pid looks alive. A marker with no heartbeat falls back to
+/// `started_at`.
 ///
 /// Only a *provably* dead pid downgrades an active marker: a sibling session
 /// under another user (EPERM → `Alive`) and a probe that gave no answer
@@ -384,7 +384,7 @@ pub fn prunable(
         Liveness::Closed => marker.closed_at.unwrap_or(marker.started_at),
         Liveness::Stale if pid != PidCheck::Dead => return false,
         // Retention counts from when the session was last seen alive, not
-        // from its birth (proposal 0002).
+        // from its birth.
         Liveness::Stale => marker.last_seen_at.unwrap_or(marker.started_at),
     };
     now_secs.saturating_sub(reference) > retention_secs
@@ -979,7 +979,7 @@ mod tests {
     fn only_two_known_different_starts_prove_another_process() {
         use PidCheck::{Alive, Dead, Unknown};
         let unread = || -> Option<u64> { panic!("nothing recorded, nothing to read") };
-        // No recorded start (an older marker): the probe decides, as before.
+        // No recorded start (an older marker): the probe decides.
         assert_eq!(same_process(Alive, None, unread), Alive);
         // The same start: the session's own process.
         assert_eq!(same_process(Alive, Some(7), || Some(7)), Alive);
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn probe_eperm_means_alive_under_another_user() {
-        // The #160 bug: a sibling session owned by another user answers EPERM.
+        // A sibling session owned by another user answers EPERM.
         // That is proof of existence, not of death.
         assert_eq!(
             classify_kill_probe(probe(1, "kill: 4242: Operation not permitted")),
@@ -1151,8 +1151,7 @@ mod tests {
 
     #[test]
     fn open_marker_past_threshold_is_stale_even_if_pid_alive() {
-        // No heartbeat recorded (a pre-0002 marker): inactivity falls back to
-        // started_at — exactly the old D2 behavior.
+        // No heartbeat recorded: inactivity falls back to started_at.
         let m = marker("a", SessionStatus::Active, 1_000);
         // now is well past started_at + threshold.
         assert_eq!(
@@ -1168,7 +1167,7 @@ mod tests {
 
     #[test]
     fn long_session_with_a_recent_heartbeat_stays_active() {
-        // The proposal-0002 regression case: a session open for days whose
+        // A session open for days whose
         // watcher keeps stamping last_seen_at is LIVE, not stale.
         let mut m = marker("a", SessionStatus::Active, 1_000);
         let now = 1_000 + 30 * DEFAULT_STALE_AFTER_SECS;

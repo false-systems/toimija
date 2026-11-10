@@ -2,8 +2,8 @@
 //! was compiled from.
 //!
 //! The token is a freshness check, not an identity: it fingerprints what
-//! `git status` lists, and some changes to a State's tree never reach that list
-//! (issue #239). Identity belongs to the repository point, whose id is derived
+//! `git status` lists, and some changes to a State's tree never reach that list.
+//! Identity belongs to the repository point, whose id is derived
 //! from the tree itself (`crate::semantic`).
 
 use std::fs;
@@ -520,10 +520,10 @@ mod tests {
         live.untracked_files
             .push(PathBuf::from(".toimija/sessions/1-1/session.json"));
         live.untracked_files
-            .push(PathBuf::from(".toimija/runs/kisko.jsonl"));
+            .push(PathBuf::from(".toimija/runs/harness.jsonl"));
         live.untracked_files
             .push(PathBuf::from(".toimija/anything/tool-output.json"));
-        live.untracked_files.push(PathBuf::from(".teko/teko.redb"));
+        live.untracked_files.push(PathBuf::from(".teko/state.redb"));
         assert!(matches!(stored.verify(&live), Verdict::Consistent));
     }
 
@@ -596,7 +596,7 @@ mod tests {
             similarity: None,
         });
         live.untracked_files
-            .push(PathBuf::from(".toimija/runs/kisko.jsonl"));
+            .push(PathBuf::from(".toimija/runs/harness.jsonl"));
         assert!(!matches!(stored.verify(&live), Verdict::Consistent));
     }
 
@@ -654,7 +654,7 @@ mod tests {
         let original = metadata(dir.path(), rel);
 
         // A bare touch (mtime moves, bytes identical) must NOT change the
-        // fingerprint — the old mtime basis would have.
+        // fingerprint — a fingerprint over mtimes would.
         let handle = std::fs::OpenOptions::new().write(true).open(&abs).unwrap();
         handle
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1))

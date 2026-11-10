@@ -106,7 +106,7 @@ fn run_preserves_signal_termination_as_128_plus_signal() {
         .code(143);
 }
 
-/// #158: an interrupted run must not leave its session marker `active`.
+/// An interrupted run must not leave its session marker `active`.
 ///
 /// Termination is caught from the moment the marker exists, so toimija survives
 /// the signal, forwards it to any agent it has launched, and still reaches the
@@ -197,9 +197,8 @@ fn interrupted_run_closes_marker(wait_for_agent: bool) {
     );
 }
 
-/// Interrupted during entry/watcher arming — the window that was fatal before
-/// #158: handlers registered only around the agent, so steps 2-4 killed the
-/// wrapper outright.
+/// Interrupted during entry/watcher arming: handlers registered only around
+/// the agent would let steps 2-4 kill the wrapper outright.
 #[test]
 #[cfg(unix)]
 fn an_interrupted_run_still_closes_its_session_marker() {
@@ -294,7 +293,7 @@ fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
         .path();
     let diagnostics = fs::read_to_string(session_dir.join("diagnostics.log")).unwrap();
     // With `.git` gone the stamp moves on every backend, so the refresh fails
-    // and marks the packet itself stale (#229) before any poll could warn.
+    // and marks the packet itself stale before any poll could warn.
     assert!(
         diagnostics.contains("the packet now says it is stale"),
         "{diagnostics}"
@@ -704,7 +703,7 @@ fn run_intent_reaches_the_session_packet() {
     init_git_repo(temp.path());
 
     // A wrapped harness infers intent from the packet, so the launch-time
-    // declaration must land there — not only on the marker (issue #84).
+    // declaration must land there — not only on the marker.
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
@@ -739,7 +738,7 @@ fn run_intent_reaches_the_session_packet() {
     assert!(md.contains("- intent: test drive 2"));
 
     // The repo-level summary mirrors the session packet only while the session
-    // runs (D3). Once it has ended, the repo packet carries no session block:
+    // runs. Once it has ended, the repo packet carries no session block:
     // the next agent must not read a dead session's brief as its own.
     let repo_json: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
@@ -1071,8 +1070,8 @@ fn a_users_own_developer_instructions_survive_and_the_packet_goes_first() {
 /// The facts a wrapped command can read about where it stands: the session's
 /// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
 /// point inside the sealed session packet (`session.execution.repository`),
-/// which Kelpo reads to bind evidence to a session. The worker.v1 result and
-/// context paths are gone with the worker protocol, and cleared even when the
+/// which a reader uses to bind evidence to a session. The worker.v1 result and
+/// context paths are not set, and are cleared even when the
 /// outer environment still carries them.
 #[test]
 fn run_hands_the_child_its_repository_point() {
@@ -1666,9 +1665,9 @@ fn run_takes_the_flags_ohjaa_launches_with_and_sessions_reports_what_it_reads() 
     assert_eq!(after["sessions"][0]["liveness"], "closed");
 }
 
-/// Issue #237: `--task`, `--briefing` and `--alert` take text that may start
-/// with `-`, so one whose value was left out used to take the next flag as
-/// its text: `--briefing --task "fix it"` launched a program named `fix it`.
+/// `--task`, `--briefing` and `--alert` take text that may start
+/// with `-`, so one whose value was left out could take the next flag as
+/// its text: `--briefing --task "fix it"` would launch a program named `fix it`.
 /// A value that is one of `run`'s own flags (or the `--` separator) is a
 /// missing value: refused before any session opens, and nothing launches.
 #[test]

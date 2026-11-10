@@ -337,7 +337,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     if let Some(artifact_id) = &packet.artifact_id {
         writeln!(&mut output, "- artifact-id: {artifact_id}").unwrap();
     }
-    // Proposal 0006: demonstrate, not just assert, that reading the packet is
+    // Demonstrate, not just assert, that reading the packet is
     // cheaper than rediscovery. Honest counts from data already computed.
     writeln!(
         &mut output,
@@ -426,13 +426,13 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         .unwrap();
     }
 
-    // What the last agent here left for the next (issue #251), early: it is
+    // What the last agent here left for the next, early: it is
     // the first thing to know on entering.
     if let Some(handover) = &packet.handover {
         write_handover(&mut output, handover);
     }
 
-    // Proposal 0005: the contract renders on every packet and early.
+    // The contract renders on every packet and early.
     write_workset_contract(&mut output);
 
     write_h2(&mut output, "Git");
@@ -519,7 +519,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     write_str_list(&mut output, &packet.warnings, "none");
 
     write_h2(&mut output, "Configured exclusions");
-    // Proposal 0005 D3: an instruction, not an inventory.
+    // An instruction, not an inventory.
     if !packet.safe_to_ignore.is_empty() {
         writeln!(&mut output, "Do not scan:").unwrap();
     }
@@ -665,7 +665,7 @@ fn write_branch_surface(output: &mut String, packet: &ContextPacket) {
             .unwrap();
             writeln!(output, "- merge-base: {merge_base}").unwrap();
             // A failed branch diff must never read as "0 files changed" —
-            // render the blind spot instead of the count (R10, TA-005).
+            // render the blind spot instead of the count.
             if packet.git.branch_diff_coverage.is_available() {
                 writeln!(
                     output,
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn failed_branch_diff_renders_unknown_not_zero() {
-        // R10 (TA-005): a failed collection must never read as "0 files
+        // A failed collection must never read as "0 files
         // changed" — the blind spot is rendered in place of the count.
         let mut failed = packet();
         failed.git.base = Some("origin/main".to_string());
@@ -963,7 +963,7 @@ mod tests {
 
     #[test]
     fn workset_contract_renders_on_every_packet() {
-        // Proposal 0005 D1: repo-level and per-session packets alike carry the
+        // Repo-level and per-session packets alike carry the
         // contract, and it renders before Git so budget truncation keeps it.
         let repo_level = render_context_markdown(&packet(), 4000);
         assert!(repo_level.contains("## Workset contract"));
@@ -1044,7 +1044,7 @@ mod tests {
             .map(|i| PathBuf::from(format!("src/some/deep/module_{i:02}.rs")))
             .collect();
         // 1000 bytes of headroom past the mandatory Workset contract block,
-        // which renders early by design (proposal 0005) and always survives.
+        // which renders early by design and always survives.
         let rendered = render_context_markdown(&packet, 1600);
         assert!(rendered.contains("Output truncated"));
         assert!(

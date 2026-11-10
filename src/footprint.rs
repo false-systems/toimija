@@ -39,7 +39,7 @@ pub enum ErrorPosture {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SweepReport {
     pub sessions_removed: Vec<String>,
-    /// Session dirs whose removal failed (issue #159: a live writer — e.g. a
+    /// Session dirs whose removal failed (a live writer — e.g. a
     /// sibling's heartbeat tmp file — can contend the directory). Left in
     /// place; the next sweep retries them.
     pub sessions_failed: Vec<String>,
@@ -172,10 +172,10 @@ pub struct HistoryRecord {
     pub last_seen_at: Option<u64>,
     pub end: HistoryEnd,
     pub exit_status: Option<i32>,
-    /// Handoff notes. Toimija no longer records handoffs (decision D8.4:
-    /// ohjaa's handover is the one concept), so it writes these empty; they
-    /// stay because they are required in history-record v1, and records from
-    /// an earlier toimija may still carry notes.
+    /// Handoff notes. Toimija records no handoffs (a handover is a note per
+    /// working copy, not a history record), so it writes these empty; they
+    /// stay because they are required in history-record v1, and a record may
+    /// still carry notes.
     pub handoffs: Vec<String>,
     pub handoffs_total: usize,
     pub recorded_at: u64,
@@ -518,7 +518,7 @@ fn sweep_inner(
                 Some(journal) => journal,
                 None => journal.insert(Journal::open(repo_root)?),
             };
-            // Per-directory best-effort (issue #159): one contended directory
+            // Per-directory best-effort: one contended directory
             // — a sibling's freshly written heartbeat tmp file is enough —
             // must not abort the whole pass. Keep it for the next sweep.
             match reap(
@@ -819,7 +819,7 @@ mod tests {
     use crate::session::SessionStatus;
 
     /// A runner whose `kill -0` probe answers ESRCH — the *certain* dead
-    /// signal. A bare nonzero exit no longer counts as dead (#160), so the
+    /// signal. A bare nonzero exit does not count as dead, so the
     /// mock must speak the real strerror phrase. Implements `run_with_env`
     /// too: the probe pins `LC_ALL=C`, and the trait's default errors on a
     /// non-empty env.
@@ -851,7 +851,7 @@ mod tests {
     }
 
     /// A runner whose probe answers EPERM: the pid *exists* under another
-    /// user. The #160 failure mode — this must never read as dead.
+    /// user. This must never read as dead.
     struct ForeignPidRunner;
 
     impl CommandRunner for ForeignPidRunner {
@@ -879,8 +879,8 @@ mod tests {
         }
     }
 
-    /// A runner whose probe cannot spawn at all — the transient failure that
-    /// used to mark every session dead at once (#160).
+    /// A runner whose probe cannot spawn at all — a transient failure that
+    /// must not mark every session dead at once.
     struct BrokenProbeRunner;
 
     impl CommandRunner for BrokenProbeRunner {
@@ -945,7 +945,7 @@ mod tests {
                 ".toimija/sessions/100-1/session.json",
                 ArtifactClass::SessionDir,
             ),
-            (".toimija/runs/kisko.jsonl", ArtifactClass::RunTranscript),
+            (".toimija/runs/harness.jsonl", ArtifactClass::RunTranscript),
             (
                 ".toimija/snapshots/lease.json",
                 ArtifactClass::SnapshotLease,
@@ -1039,7 +1039,7 @@ mod tests {
         // An ancient stale-looking marker whose pid answers EPERM (live under
         // another user) or whose probe fails outright must survive the sweep:
         // `remove_dir_all` under a running watcher is the disaster `prunable`
-        // exists to prevent (#160).
+        // exists to prevent.
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join(".toimija/sessions/100-1");
         fs::create_dir_all(&dir).unwrap();
@@ -1102,7 +1102,7 @@ mod tests {
         }
         // Deny writes on one dir so remove_dir_all cannot unlink its marker —
         // the same per-directory failure a live writer's fresh heartbeat tmp
-        // file causes (issue #159). The pass must continue, not abort.
+        // file causes. The pass must continue, not abort.
         let contended = temp.path().join(".toimija/sessions/100-1");
         fs::set_permissions(&contended, fs::Permissions::from_mode(0o555)).unwrap();
 

@@ -8,8 +8,7 @@ use tracing::{debug, info};
 use crate::error::ToimijaError;
 
 /// Default UTF-8 byte budget for the Markdown context packet, when repo.yaml
-/// names none. Raised from 4000 for the history-mined relevance layer (#23),
-/// since removed; a real-repo packet now stays well under it.
+/// names none. A real repository's packet stays well under it.
 pub const DEFAULT_BUDGET: usize = 8000;
 pub const CONFIG_PATH: &str = ".toimija/repo.yaml";
 pub const DAY_SECS: u64 = 24 * 60 * 60;
@@ -45,8 +44,8 @@ pub struct RepoConfig {
     pub boundaries: Vec<String>,
 }
 
-/// How a named agent CLI accepts the composed launch prompt (proposal 0006
-/// Part C): `positional`, or a literal flag such as `--message`. Names resolve
+/// How a named agent CLI accepts the composed launch prompt:
+/// `positional`, or a literal flag such as `--message`. Names resolve
 /// by basename at launch; the executable itself is always named by the user
 /// after `--` — configuration describes delivery, never paths.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -340,9 +339,8 @@ pub fn init_repo(repo_root: &Path) -> anyhow::Result<InitReport> {
 mod tests {
     use super::*;
 
-    /// Repositories adopted before gates and runtime providers moved out
-    /// still carry `gates:`, `gate_groups:` and `composition:`. Toimija no
-    /// longer reads them, and must not refuse to load a config because they
+    /// A configuration may carry `gates:`, `gate_groups:` and `composition:`
+    /// sections. Toimija does not read them, and must not refuse to load a config because they
     /// are there.
     #[test]
     fn a_config_with_retired_sections_still_loads() {
@@ -354,7 +352,7 @@ mod tests {
             "repo:\n  name: legacy\n\
              gates:\n  rust-test:\n    program: cargo\n    args: [test]\n\
              gate_groups:\n  full:\n    gates: [rust-test]\n\
-             composition:\n  work: teko\n  require_work: false\n",
+             composition:\n  work: widget\n  require_work: false\n",
         )
         .unwrap();
         let config = RepoConfig::load(temp.path()).unwrap();
