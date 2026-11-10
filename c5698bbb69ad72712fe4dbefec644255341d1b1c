@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "c5698bbb69ad72712fe4dbefec644255341d1b1c",
+  "head": "396ec082977f853d354e6e29c81c68500421834b",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/review.rs:558: Codex inherits configured MCP and connector tools, which `--sandbox read-only` does not restrict, so the supposedly read-only reviewer can still modify external systems."
+    },
+    {
+      "level": "look",
+      "text": "xtask/src/land.rs:102: If sharing notes fails after pushing main, the commit lands without its shared evidence and retrying `land` refuses because main already contains the commit."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794307814,
+  "overruled": null
+}
