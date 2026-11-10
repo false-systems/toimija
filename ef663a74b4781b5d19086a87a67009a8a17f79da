@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "ef663a74b4781b5d19086a87a67009a8a17f79da",
+  "head": "c30e2f56962e5a4fa47705cbf4af7403226d56e7",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/review.rs:617: Claude still loads user and project settings and executes configured hooks, so limiting its tools to Read/Grep/Glob does not prevent shell commands or file changes during a supposedly read-only review."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794317121,
+  "overruled": null
+}
