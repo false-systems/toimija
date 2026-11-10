@@ -23,6 +23,7 @@ Contents:
 - [Snapshots](#snapshots)
 - [The seal](#the-seal)
 - [Sessions](#sessions)
+- [Specs](#specs)
 - [Workspaces](#workspaces)
 - [Validation plans](#validation-plans)
 - [`doctor`](#doctor)
@@ -36,7 +37,7 @@ Contents:
 ## Files
 
 Toimija writes only under `.toimija/` in the repository, plus Git objects and
-refs under `refs/toimija/` for snapshots. Sessions opened outside any
+refs under `refs/toimija/` for snapshots, and the one file `spec new` creates. Sessions opened outside any
 repository live in a state directory on the machine.
 
 ```text
@@ -101,6 +102,7 @@ agent, flags included. A `--` before the agent is accepted and not needed.
 | --- | --- |
 | `--intent <TEXT>` | Why the session exists. Other sessions see it. Without it they see `unknown` until the agent runs `toimija intent`. |
 | `--scope <PATH>` | A path the session expects to touch. Repeatable. Advisory, never a lock. |
+| `--spec <REF>` | The [spec](#specs) the session starts from: a file in the repository, `#123` or a URL. |
 | `--task <TASK>` | The task, delivered in the launch prompt. Pass it here, not as the agent's own argument. |
 | `--briefing <BRIEFING>` | Background instructions, kept apart from the task. They go at the end of the launch prompt. |
 | `--alert <TEXT>` | An urgent line that opens the launch prompt. Repeatable. |
@@ -907,6 +909,126 @@ and changes nothing. `sessions --prune` runs the same pass.
 An automatic pass logs one warning on failure and never fails the command. An
 explicit `clean` reports its errors.
 
+## Specs
+
+A session can start from a spec: the document that says what the work is for.
+A spec is a fact the session declares, like its intent. Toimija records it and
+shows it. It does not check that the work matches the spec.
+
+A spec reference is one of two things:
+
+- **A file in the repository**, such as an architecture decision record. The
+  file must exist when it is given, or the command fails and names it. It is
+  stored relative to the repository root, from whatever folder it is given in.
+- **An issue reference**, written `#123` or as a URL. It is stored exactly as
+  given. Toimija never fetches it.
+
+### Declaring a spec
+
+```bash
+toimija run --spec docs/adr/0001-login-redirect.md claude
+toimija run --spec '#123' --intent "fix the redirect" claude
+toimija intent --spec docs/adr/0001-login-redirect.md
+toimija intent "fix the redirect" --spec '#123'
+```
+
+`run --spec` declares it at launch. A spec file that does not exist stops the
+launch before a session opens. `intent --spec` declares or replaces it while
+the session runs, with or without a new intent text. The reference is kept in
+the session marker as `spec`.
+
+Outside a repository, a spec file is inside the workspace, or inside the
+folder when there is no workspace, and is stored relative to that.
+
+### Where it shows
+
+The session's packet has a `Spec` section, and a file spec is first under
+Read first:
+
+```text
+## Spec
+- file: docs/adr/0001-login-redirect.md
+- title: Login redirect
+- status: proposed
+
+## Read first
+- docs/adr/0001-login-redirect.md (session spec)
+- README.md (important doc)
+```
+
+- **title** is the file's first `# ` heading.
+- **status** is what the file states on a line that begins `Status:`. A file
+  that states none shows `not stated`. Toimija does not guess.
+- A file that can no longer be read shows the reason instead.
+
+For an issue reference the section holds the reference and says that Toimija
+does not read issues:
+
+```text
+## Spec
+- reference: #123
+- an issue reference: toimija does not read issues
+```
+
+In the JSON packet the same facts are `session.spec`, with `reference`,
+`kind` (`file` or `issue`), and `title` and `status` where the file states
+them.
+
+`toimija sessions` shows the reference under the intent:
+
+```text
+LIVE
+  claude  1794334731-84049
+    branch: fix/login-redirect
+    worktree: /work/demo
+    intent: fix the redirect
+    spec: docs/adr/0001-login-redirect.md
+```
+
+`toimija graph` and the workspace packet show it beside the intent, as
+`[spec: docs/adr/0001-login-redirect.md]`. Their JSON carries it as `spec`.
+A session with no spec shows none of this, and its outputs are unchanged.
+
+### `spec new` and `spec list`
+
+```bash
+toimija spec new "Login redirect"
+toimija spec list
+```
+
+`spec new` creates the next numbered spec file and prints its path:
+
+```text
+docs/adr/0001-login-redirect.md
+```
+
+```markdown
+# Login redirect
+
+Status: proposed
+
+## Context
+
+## Decision
+
+## Consequences
+```
+
+- The folder is `specs:` in `.toimija/repo.yaml`, and `docs/adr` when that is
+  not set. It is created when missing.
+- The number has four digits and is one more than the highest number in the
+  folder. The name is the number, then the title in lowercase with hyphens.
+- It writes that one file and nothing else, and never replaces a file.
+
+`spec list` prints each numbered file in the folder with its stated status and
+its title, read from the files:
+
+```text
+docs/adr/0001-login-redirect.md  proposed  Login redirect
+```
+
+Both commands need a repository.
+
 ## Workspaces
 
 A workspace is a folder that holds repositories and is not a repository
@@ -1218,7 +1340,9 @@ and never touches your index or working tree. `--base` defaults to
 | `watch` | Keep the packet current until stopped, in the foreground. |
 | `verify` | Check that a packet still matches the repository. |
 | `sessions` | List the sessions in this repository, with overlap warnings. |
-| `intent "<text>"` | Declare or update this session's intent and scope. |
+| `intent "<text>"` | Declare or update this session's intent, scope and spec. |
+| `spec new "<title>"` | Create the next numbered spec file and print its path. |
+| `spec list` | List the numbered spec files with their status. |
 | `handover` | Leave a note for the next agent in this working copy. |
 | `history` | List the records of concluded sessions. |
 | `clean` | Remove expired sessions, transcripts and temporary files. |
@@ -1308,6 +1432,8 @@ boundaries:
   Retention and history limits must be greater than zero; other values are
   refused and `doctor` reports them. `auto_sweep: false` turns off only the
   automatic pass in `enter` and `run`.
+- **`specs`**: the folder `spec new` and `spec list` use, relative to the
+  repository root. `docs/adr` when not set.
 - **`agents`**: how a command takes a launch prompt: `positional` or a flag.
   Names match the base name of the command. A malformed entry is refused when
   the configuration loads.

@@ -92,6 +92,7 @@ Run these inside a Git repository, in this order:
 toimija init                    # once: write .toimija/repo.yaml, then fill in role and boundaries
 toimija init --workspace        # or, in a folder of repositories: write .toimija/workspace.yaml
 toimija run claude              # start an agent as a session, with the packet in its launch prompt
+toimija run --spec docs/adr/0007-login.md claude   # or start it from a spec: a file here, or an issue reference
 toimija sessions                # see the sessions working in this repository
 toimija graph                   # the branches in progress: proven or not, review level, who is there
 toimija intent "fix the login redirect" --scope src/auth.rs   # a session says why it is here
