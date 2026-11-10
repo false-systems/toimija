@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "18e00190bbf43b79a7e2c0e13de7a1b5430f74f9",
+  "head": "ea3d498d9451384ea6a5e043a7a73aa45fdf1eac",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:124: `--base refs/remotes/origin/main` constructs an invalid decoration filter, causing Git to omit the base and its proof and review when no local branch points there."
+    },
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:167: Unknown proofs and unreadable reviews never populate `warnings`, so missing Sykli or corrupt review data produces exit code 0 instead of the required partial-coverage warning and exit code 4."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794318341,
+  "overruled": null
+}
