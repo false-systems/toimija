@@ -20,6 +20,7 @@ use crate::sessions;
 use crate::snapshot;
 use crate::validate;
 use crate::watch;
+use crate::workspace;
 
 /// `toimija --version`: the version number and the commit the binary was
 /// built from (`build.rs`), so two builds of one version can be told apart.
@@ -74,7 +75,12 @@ pub enum Command {
     ///
     /// Use this once per repo to seed the config. It never overwrites an
     /// existing file. Writes only .toimija/repo.yaml and .toimija/.gitignore.
-    Init,
+    /// With `--workspace`, in a folder that holds repositories and is not one
+    /// itself, it writes .toimija/workspace.yaml instead.
+    #[command(after_help = "Examples:\n  \
+        toimija init               # in a repository: seed .toimija/repo.yaml\n  \
+        toimija init --workspace   # in a folder of repositories: seed .toimija/workspace.yaml")]
+    Init(InitArgs),
     /// Check Toimija setup: git, config, repo kind, and agent docs.
     ///
     /// Use this when setting up a repo or gating CI: it verifies git is
@@ -267,6 +273,15 @@ pub enum Command {
         toimija snapshot --list            # held leases"
     )]
     Snapshot(SnapshotArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// Make this folder a workspace: write .toimija/workspace.yaml, which
+    /// lets `context`, `enter` and `run` work here, outside any repository.
+    /// Refused inside a Git repository and when the file already exists.
+    #[arg(long)]
+    pub workspace: bool,
 }
 
 #[derive(Debug, Args)]
@@ -602,7 +617,7 @@ pub fn run(cli: Cli) -> Result<i32> {
     info!(event = "toimija.command.start");
 
     let result = match cli.command {
-        Command::Init => run_init().map(|()| 0),
+        Command::Init(args) => run_init(args).map(|()| 0),
         Command::Doctor(args) => run_doctor(args).map(|()| 0),
         Command::Context(args) => run_context(args).map(|()| 0),
         Command::Refresh(args) => run_refresh(args).map(|()| 0),
@@ -651,7 +666,7 @@ fn say_no_intent(args: &RunArgs) {
 impl Command {
     fn name(&self) -> &'static str {
         match self {
-            Command::Init => "init",
+            Command::Init(_) => "init",
             Command::Doctor(_) => "doctor",
             Command::Context(_) => "context",
             Command::Refresh(_) => "refresh",
@@ -672,9 +687,24 @@ impl Command {
     }
 }
 
-fn run_init() -> Result<()> {
+fn run_init(args: InitArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
+    if args.workspace {
+        match git::discover_repo_root(&runner, &cwd) {
+            Ok(root) => anyhow::bail!(
+                "{} is inside a Git repository ({}): a workspace is a folder that holds \
+                 repositories. Here, `toimija init` seeds the repository's own config",
+                cwd.display(),
+                root.display()
+            ),
+            Err(crate::error::ToimijaError::NotGitRepo) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let report = workspace::init(&cwd)?;
+        println!("{}", render::render_init_report(&report));
+        return Ok(());
+    }
     let repo_root = git::discover_repo_root(&runner, &cwd).unwrap_or(cwd);
     let report = config::init_repo(&repo_root)?;
     println!("{}", render::render_init_report(&report));
@@ -709,8 +739,14 @@ fn run_context(args: ContextCommandArgs) -> Result<()> {
         return Ok(());
     }
     let args = args.packet;
-    let mut packet = context::build_context_packet(&runner, &cwd, args.for_diff)
-        .context("failed to build context packet")?;
+    let mut packet = match context::build_context_packet(&runner, &cwd, args.for_diff) {
+        Ok(packet) => packet,
+        Err(error) if not_a_repository(&error) => {
+            return print_workspace_packet(&runner, &cwd, &args)
+                .context("failed to build context packet");
+        }
+        Err(error) => return Err(error).context("failed to build context packet"),
+    };
     packet.attach_seal(None)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&packet)?);
@@ -720,6 +756,44 @@ fn run_context(args: ContextCommandArgs) -> Result<()> {
             .or(packet.config_default_budget())
             .unwrap_or(config::DEFAULT_BUDGET);
         println!("{}", render::render_context_markdown(&packet, budget));
+    }
+    Ok(())
+}
+
+/// Whether `error` is Git saying the current directory is in no repository.
+fn not_a_repository(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<crate::error::ToimijaError>(),
+        Some(crate::error::ToimijaError::NotGitRepo)
+    )
+}
+
+/// Outside any repository: print the packet of the workspace the current
+/// directory is in. Built from files, with no git process, and nothing is
+/// written. With no workspace above, the error says how to make one.
+fn print_workspace_packet(
+    runner: &ProcessCommandRunner,
+    cwd: &std::path::Path,
+    args: &ContextArgs,
+) -> Result<()> {
+    let Some(root) = workspace::find(cwd) else {
+        anyhow::bail!(
+            "not a Git repository: run `git init` or move into a repo, or run \
+             `toimija init --workspace` to make this folder a workspace"
+        );
+    };
+    if args.for_diff || args.budget.is_some() {
+        anyhow::bail!(
+            "{} is a workspace, not a Git repository: --for-diff and --budget shape a \
+             repository's packet",
+            root.display()
+        );
+    }
+    let packet = workspace::build(runner, &root)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&packet)?);
+    } else {
+        print!("{}", workspace::render_markdown(&packet));
     }
     Ok(())
 }
@@ -792,7 +866,14 @@ fn run_refresh(args: ContextArgs) -> Result<()> {
 fn run_enter(args: ContextArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let worktree = git::discover(&runner, &cwd).context("not a Git repository")?;
+    let worktree = match git::discover(&runner, &cwd) {
+        Ok(worktree) => worktree,
+        // In a workspace, the packet is printed and nothing is written.
+        Err(crate::error::ToimijaError::NotGitRepo) if workspace::find(&cwd).is_some() => {
+            return print_workspace_packet(&runner, &cwd, &args);
+        }
+        Err(error) => return Err(error).context("not a Git repository"),
+    };
     let repo_root = &worktree.root;
     // Enter is refresh + print: it writes the live packet, then frames it as the
     // work preflight an agent reads on entering the repo.
@@ -1478,6 +1559,18 @@ fn run_outside_repo(
              outside a repository there is none"
         );
     }
+    // In a workspace the launch prompt carries the workspace packet. It is
+    // read before the session opens, so a workspace file that does not parse
+    // stops the launch instead of starting an agent with no context.
+    let runner = ProcessCommandRunner;
+    let workspace_packet = match workspace::find(folder) {
+        Some(root) => Some(
+            workspace::build(&runner, &root)
+                .map(|packet| workspace::render_markdown(&packet))
+                .context("failed to build the workspace packet")?,
+        ),
+        None => None,
+    };
     let state_root = session::outside_root().with_context(|| {
         format!(
             "not a Git repository, and no state directory for a session outside one: set {} \
@@ -1497,14 +1590,24 @@ fn run_outside_repo(
         args.scope.clone(),
     )
     .context("failed to open the toimija session")?;
-    eprintln!(
-        "toimija run: {} is not inside a Git repository — session {} has no context packet; \
-         it is recorded under {} and listed by `toimija sessions --outside-repos`",
-        folder.display(),
-        session.id,
-        state_root.display()
-    );
-    let runner = ProcessCommandRunner;
+    if workspace_packet.is_some() {
+        eprintln!(
+            "toimija run: {} is in a workspace, not a Git repository — session {} gets the \
+             workspace packet; it is recorded under {} and listed by `toimija sessions \
+             --outside-repos`",
+            folder.display(),
+            session.id,
+            state_root.display()
+        );
+    } else {
+        eprintln!(
+            "toimija run: {} is not inside a Git repository — session {} has no context packet; \
+             it is recorded under {} and listed by `toimija sessions --outside-repos`",
+            folder.display(),
+            session.id,
+            state_root.display()
+        );
+    }
     opportunistic_sweep(&runner, &state_root);
 
     // No watcher means no refresh-driven heartbeat: stamp `last_seen_at` on a
@@ -1548,6 +1651,7 @@ fn run_outside_repo(
     let mut composed = crate::adapters::agents::compose_outside_prompt(
         program,
         folder,
+        workspace_packet.as_deref(),
         args.task.as_deref(),
         &agents,
     );
@@ -1561,14 +1665,20 @@ fn run_outside_repo(
             );
         }
         Some(_) => {
-            eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`");
+            if workspace_packet.is_some() {
+                eprintln!(
+                    "toimija run: delivery: launch prompt with the workspace packet inlined for `{program}`"
+                );
+            } else {
+                eprintln!("toimija run: delivery: launch prompt (no packet) for `{program}`");
+            }
             say_own_codex_instructions_kept(program, rest, &args, &agents);
         }
         None => {
             eprintln!("toimija run: delivery: env-var only — not guaranteed for `{program}`");
             // No packet outside a repository, so only what the caller passed
             // can be lost here.
-            let items = undelivered(false, &args);
+            let items = undelivered(workspace_packet.is_some(), &args);
             warn_undelivered(
                 program,
                 "is not a known agent",

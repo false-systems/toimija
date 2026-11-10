@@ -312,6 +312,18 @@ pub fn doctor(runner: &impl CommandRunner, cwd: &Path, mode: DoctorMode) -> Doct
             root
         }
         Err(_) => {
+            // Outside any repository, a workspace is checked as a workspace.
+            if let Some(root) = crate::workspace::find(cwd) {
+                checks.extend(workspace_checks(&root));
+                let serious = checks
+                    .iter()
+                    .any(|check| check.status == DoctorStatus::Fail);
+                return DoctorReport {
+                    serious,
+                    strict,
+                    checks,
+                };
+            }
             checks.push(check(
                 "inside git repo",
                 DoctorStatus::Fail,
@@ -687,6 +699,43 @@ fn file_check(repo_root: &Path, name: &str, path: &str) -> DoctorCheck {
             format!("file missing: write {path}, the guide every coding agent reads first")
         },
     )
+}
+
+/// The checks of a workspace: its file parses, and what it says to read
+/// first exists.
+fn workspace_checks(root: &Path) -> Vec<DoctorCheck> {
+    let file = match crate::workspace::load(root) {
+        Ok(file) => file,
+        Err(error) => {
+            return vec![check(
+                "workspace file",
+                DoctorStatus::Fail,
+                &format!("{error:#}"),
+            )];
+        }
+    };
+    let missing: Vec<String> = file
+        .read_first
+        .iter()
+        .filter(|path| !root.join(path).exists())
+        .map(|path| crate::path_codec::display(path))
+        .collect();
+    vec![
+        check(
+            "workspace file",
+            DoctorStatus::Ok,
+            &format!("{} parses", crate::workspace::WORKSPACE_PATH),
+        ),
+        if missing.is_empty() {
+            check("read first", DoctorStatus::Ok, "read_first paths exist")
+        } else {
+            check(
+                "read first",
+                DoctorStatus::Fail,
+                &format!("read_first paths are missing: {}", missing.join(", ")),
+            )
+        },
+    ]
 }
 
 fn check(name: &str, status: DoctorStatus, message: &str) -> DoctorCheck {

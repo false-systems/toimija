@@ -75,6 +75,7 @@ fn every_subcommand_help_says_when_to_use_it() {
 #[test]
 fn high_traffic_subcommands_carry_examples() {
     for (subcommand, example) in [
+        ("init", "toimija init --workspace"),
         ("enter", "toimija enter --for-diff --budget 4000"),
         ("run", "toimija run --intent"),
         ("sessions", "toimija sessions --prune"),
