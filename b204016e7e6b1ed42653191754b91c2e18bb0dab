@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "b204016e7e6b1ed42653191754b91c2e18bb0dab",
+  "head": "89ac94443db1940f1d7a64def1662a17a44c82ae",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/review.rs:546: A timeout waiting for prompt delivery becomes `Ok(())`, so a reviewer that exits successfully while a child holds stdin open can receive only part of the diff yet have its verdict accepted."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794316954,
+  "overruled": null
+}
