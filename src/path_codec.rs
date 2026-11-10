@@ -1,10 +1,9 @@
 //! How a filesystem path becomes JSON, and back.
 //!
-//! This lives beside the canonical form rather than in either tool, because it
-//! *is* part of it: these encoders sit behind `#[serde(with = ...)]` on sealed
-//! structs, so the bytes they produce are the bytes that get digested. Two
-//! tools that encode a path differently produce different digests for the same
-//! artifact, which is the failure this crate exists to prevent.
+//! This is part of the canonical form: these encoders sit behind
+//! `#[serde(with = ...)]` on sealed structs, so the bytes they produce are the
+//! bytes that get digested. A path encoded another way gives another digest
+//! for the same artifact.
 //!
 //! A valid-UTF-8 path is a plain JSON string. On Unix a path that is not valid
 //! UTF-8 still has to round-trip exactly, so it serializes as

@@ -153,12 +153,11 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
         .success();
 }
 
-/// A seal is `sauma-envelope.v2`, whose digest covers the seal itself. The
-/// v1 form, which covers the body alone, belongs under the `sauma` key
-/// only; under `seal` it is refused, not read
-/// as a body-only seal.
+/// A seal is `toimija-seal.v1` and nothing else. A packet of the current
+/// schema whose seal names another envelope format is refused, with the
+/// name it carries, even when its digest would hold under that format.
 #[test]
-fn verify_refuses_a_seal_in_the_legacy_envelope_form() {
+fn verify_refuses_a_seal_in_another_envelope_format() {
     if !git_available() {
         return;
     }
@@ -169,9 +168,10 @@ fn verify_refuses_a_seal_in_the_legacy_envelope_form() {
     let mut value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     let mut seal = value.as_object_mut().unwrap().remove("seal").unwrap();
-    seal["envelope"] = serde_json::json!(toimija::seal::LEGACY_ENVELOPE_SCHEMA);
-    seal["digest"] = serde_json::json!(toimija::seal::digest_value(&value));
+    seal["envelope"] = serde_json::json!("another-envelope.v2");
+    seal.as_object_mut().unwrap().remove("digest");
     value["seal"] = seal;
+    value["seal"]["digest"] = serde_json::json!(toimija::seal::digest_of(&value));
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
     let output = toimija(temp.path())
@@ -187,12 +187,20 @@ fn verify_refuses_a_seal_in_the_legacy_envelope_form() {
         report["message"]
             .as_str()
             .unwrap()
-            .contains("sauma-envelope.v1"),
+            .contains("another-envelope.v2"),
+        "{report}"
+    );
+    // And it says the way out.
+    assert!(
+        report["message"]
+            .as_str()
+            .unwrap()
+            .contains("toimija refresh"),
         "{report}"
     );
 }
 
-/// A packet of another schema version, with its seal under `sauma`, is not
+/// A packet of another schema version, with its seal under another key, is not
 /// read under this version's rules: verify refuses
 /// it and says to refresh, which replaces it.
 #[test]
@@ -209,8 +217,8 @@ fn verify_refuses_a_packet_of_an_earlier_schema_and_says_to_refresh() {
     // The packet as `toimija-context.v2` wrote it.
     let seal = value.as_object_mut().unwrap().remove("seal").unwrap();
     value["schema"] = serde_json::json!("toimija-context.v2");
-    value["sauma"] = seal;
-    value["sauma"]["schema"] = serde_json::json!("toimija-context.v2");
+    value["envelope"] = seal;
+    value["envelope"]["schema"] = serde_json::json!("toimija-context.v2");
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
     let output = toimija(temp.path())
@@ -788,8 +796,8 @@ fn an_earlier_schema_packet_of_a_live_session_says_to_restart_it() {
     // The packet as an older toimija's watcher writes it for its session.
     let seal = value.as_object_mut().unwrap().remove("seal").unwrap();
     value["schema"] = serde_json::json!("toimija-context.v2");
-    value["sauma"] = seal;
-    value["sauma"]["schema"] = serde_json::json!("toimija-context.v2");
+    value["envelope"] = seal;
+    value["envelope"]["schema"] = serde_json::json!("toimija-context.v2");
     value["session"] = serde_json::json!({ "id": id, "intent": null, "scope": [] });
     fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 

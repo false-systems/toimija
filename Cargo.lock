@@ -635,15 +635,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sauma-canonical"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -853,7 +844,6 @@ dependencies = [
  "libc",
  "notify",
  "predicates",
- "sauma-canonical",
  "serde",
  "serde_json",
  "serde_yaml",

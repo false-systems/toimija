@@ -146,7 +146,6 @@ struct Artifact {
 
 #[derive(Debug, Deserialize)]
 struct Envelope {
-    envelope: String,
     schema: String,
     digest: String,
     provenance: Vec<Provenance>,
@@ -217,7 +216,7 @@ fn run_why(query: &str) -> Result<()> {
 }
 
 fn render_why(root: &Path, query: &str) -> Result<String> {
-    let artifacts = scan_artifacts(root)?;
+    let (artifacts, unread) = scan_artifacts(root)?;
     let roots = chain_roots(&artifacts, query);
     let mut output = String::new();
     let mut seen = HashSet::new();
@@ -231,6 +230,17 @@ fn render_why(root: &Path, query: &str) -> Result<String> {
     }
     if seen.is_empty() {
         writeln!(output, "no sealed chain touches {query}")?;
+    }
+    if !unread.is_empty() {
+        let mut formats = unread.clone();
+        formats.sort();
+        formats.dedup();
+        writeln!(
+            output,
+            "not read: {} sealed file(s) under another seal format ({}); `toimija clean` removes ended sessions' packets",
+            unread.len(),
+            formats.join(", ")
+        )?;
     }
     Ok(output)
 }
@@ -340,7 +350,7 @@ fn touches(artifact: &Artifact, query: &str) -> bool {
         || artifact.edges.iter().any(|edge| edge == query)
 }
 
-fn scan_artifacts(root: &Path) -> Result<Vec<Artifact>> {
+fn scan_artifacts(root: &Path) -> Result<(Vec<Artifact>, Vec<String>)> {
     let mut files = Vec::new();
     push_if_exists(&mut files, root.join(".toimija/current.json"));
     let sessions = root.join(".toimija/sessions");
@@ -350,27 +360,12 @@ fn scan_artifacts(root: &Path) -> Result<Vec<Artifact>> {
             push_if_exists(&mut files, dir.join("current.json"));
         }
     }
-    let runs = root.join(".toimija/runs");
-    if let Ok(entries) = fs::read_dir(&runs) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension() == Some(OsStr::new("jsonl")) {
-                files.push(path);
-            }
-        }
-    }
     let mut artifacts = Vec::new();
+    let mut unread = Vec::new();
     for path in files {
-        let raw = fs::read_to_string(&path)?;
-        if path.extension() == Some(OsStr::new("jsonl")) {
-            for line in raw.lines() {
-                collect_artifact(line, &mut artifacts)?;
-            }
-        } else {
-            collect_artifact(&raw, &mut artifacts)?;
-        }
+        collect_artifact(&fs::read_to_string(&path)?, &mut artifacts, &mut unread)?;
     }
-    Ok(artifacts)
+    Ok((artifacts, unread))
 }
 
 fn push_if_exists(files: &mut Vec<PathBuf>, path: PathBuf) {
@@ -379,44 +374,41 @@ fn push_if_exists(files: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
+/// Adds the sealed artifact in `raw` to `artifacts`. A file sealed under a
+/// format this toimija does not read is named in `unread` and left out: one
+/// such file must not stop a question about the others.
+fn collect_artifact(
+    raw: &str,
+    artifacts: &mut Vec<Artifact>,
+    unread: &mut Vec<String>,
+) -> Result<()> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Ok(());
     };
-    // Toimija's packets carry their envelope under `seal`; other tools'
-    // artifacts (a harness's model calls, say) carry the same envelope under
-    // `sauma`, where each key has its own digest rule.
-    let (envelope, actual) = if let Some(seal) = value.get(toimija::seal::KEY).cloned() {
-        let envelope: Envelope = serde_json::from_value(seal)?;
-        if envelope.envelope != toimija::seal::ENVELOPE_SCHEMA {
-            bail!("unsupported seal envelope `{}`", envelope.envelope);
-        }
-        (envelope, toimija::seal::digest_of(&value))
-    } else if let Some(sauma) = value.get(toimija::seal::SAUMA_KEY).cloned() {
-        let envelope: Envelope = serde_json::from_value(sauma)?;
-        if !toimija::seal::is_supported_envelope(&envelope.envelope) {
-            bail!("unsupported envelope `{}`", envelope.envelope);
-        }
-        (envelope, toimija::seal::digest_under_sauma_key(&value))
-    } else {
+    // A sealed artifact carries its envelope under `seal`.
+    let Some(seal) = value.get(toimija::seal::KEY).cloned() else {
         return Ok(());
     };
+    let format = seal["envelope"].as_str().unwrap_or("unnamed").to_string();
+    if format != toimija::seal::ENVELOPE_SCHEMA {
+        unread.push(format);
+        return Ok(());
+    }
+    let envelope: Envelope = serde_json::from_value(seal)?;
+    let actual = toimija::seal::digest_of(&value);
     if artifacts
         .iter()
         .any(|artifact| artifact.digest == envelope.digest)
     {
         return Ok(());
     }
-    let metadata_covered = envelope.envelope == toimija::seal::ENVELOPE_SCHEMA;
-    let edges: Vec<String> = if metadata_covered {
-        envelope
-            .provenance
-            .into_iter()
-            .filter_map(Provenance::link)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // The digest covers the envelope, so its edges are part of what verified.
+    let metadata_covered = true;
+    let edges: Vec<String> = envelope
+        .provenance
+        .into_iter()
+        .filter_map(Provenance::link)
+        .collect();
     let run = envelope.producer.run;
     let producer = run
         .as_ref()
@@ -506,62 +498,61 @@ mod tests {
     use toimija::command::ProcessCommandRunner;
 
     #[test]
-    fn renders_cross_tool_chain_and_reports_tampering() {
+    fn why_renders_a_sealed_packet_and_reports_tampering() {
         if Command::new("git").arg("--version").output().is_err() {
             return;
         }
-        let root = temp_repo("seal-crosstool");
+        let root = temp_repo("seal-why");
         init_git(&root);
         write_context_packet(&root);
-        let packet: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(root.join(".toimija/current.json")).unwrap())
-                .unwrap();
-        let token = packet["consistency"]["token"].as_str().unwrap();
-        let model_call = model_call_event(token, false);
-        assert_eq!(
-            model_call["sauma"]["digest"].as_str().unwrap(),
-            toimija::seal::digest_under_sauma_key(&model_call)
-        );
-        fs::create_dir_all(root.join(".toimija/runs")).unwrap();
-        fs::write(
-            root.join(".toimija/runs/x.jsonl"),
-            format!("{}\n", serde_json::to_string(&model_call).unwrap()),
-        )
-        .unwrap();
+        let path = root.join(".toimija/current.json");
+        let mut packet: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let token = packet["consistency"]["token"].as_str().unwrap().to_string();
 
-        let output = render_why(&root, token).unwrap();
-        assert!(output.contains("toimija-context.v3"));
-        assert!(output.contains("  ← widget-model-call.v1"));
-        assert!(!output.contains("digest mismatch"));
+        let output = render_why(&root, &token).unwrap();
+        assert!(output.contains("toimija-context.v3"), "{output}");
+        assert!(!output.contains("digest mismatch"), "{output}");
 
-        let tampered = model_call_event(token, true);
-        fs::write(
-            root.join(".toimija/runs/x.jsonl"),
-            format!("{}\n", serde_json::to_string(&tampered).unwrap()),
-        )
-        .unwrap();
-        let output = render_why(&root, token).unwrap();
-        assert!(output.contains("toimija-context.v3"));
-        assert!(output.contains("widget-model-call.v1"));
-        assert!(output.contains("digest mismatch"));
-        assert!(!output.contains("  ← widget-model-call.v1"));
+        // The packet changes after it was sealed.
+        packet["repo"]["name"] = json!("someone else");
+        fs::write(&path, serde_json::to_string_pretty(&packet).unwrap()).unwrap();
+        let output = render_why(&root, &token).unwrap();
+        assert!(output.contains("toimija-context.v3"), "{output}");
+        assert!(output.contains("digest mismatch"), "{output}");
     }
 
     #[test]
-    fn walker_rejects_unknown_envelope_versions() {
-        let mut artifact = model_call_event(&format!("sha256:{}", "a".repeat(64)), false);
-        artifact["sauma"]["envelope"] = json!("sauma-envelope.v999");
+    fn a_file_under_another_seal_format_is_set_aside_and_named_not_read() {
+        let artifact = json!({
+            "schema": "demo.v1",
+            "seal": {
+                "envelope": "another-envelope.v999",
+                "schema": "demo.v1",
+                "digest": "",
+                "provenance": [],
+                "producer": {"tool": "demo", "version": "0.0.0", "run": null},
+                "anchored_at": format!("sha256:{}", "a".repeat(64)),
+            },
+        });
+        let mut artifacts = Vec::new();
+        let mut unread = Vec::new();
+        collect_artifact(&artifact.to_string(), &mut artifacts, &mut unread).unwrap();
+        // It is not taken for a sealed artifact, and it does not stop the walk.
+        assert!(artifacts.is_empty());
+        assert_eq!(unread, ["another-envelope.v999"]);
 
-        let error = collect_artifact(&artifact.to_string(), &mut Vec::new()).unwrap_err();
-        assert!(error.to_string().contains("v999"));
-
-        // A seal is v2 only: the legacy form was never written under `seal`.
-        let mut sealed = model_call_event(&format!("sha256:{}", "a".repeat(64)), false);
-        let mut envelope = sealed.as_object_mut().unwrap().remove("sauma").unwrap();
-        envelope["envelope"] = json!(toimija::seal::LEGACY_ENVELOPE_SCHEMA);
-        sealed["seal"] = envelope;
-        let error = collect_artifact(&sealed.to_string(), &mut Vec::new()).unwrap_err();
-        assert!(error.to_string().contains("sauma-envelope.v1"), "{error}");
+        let root = std::env::temp_dir().join(format!("why-unread-{}", std::process::id()));
+        fs::create_dir_all(root.join(".toimija/sessions/old")).unwrap();
+        fs::write(
+            root.join(".toimija/sessions/old/current.json"),
+            artifact.to_string(),
+        )
+        .unwrap();
+        let output = render_why(&root, "anything").unwrap();
+        assert!(output.contains("not read: 1 sealed file"), "{output}");
+        assert!(output.contains("another-envelope.v999"), "{output}");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     fn temp_repo(name: &str) -> PathBuf {
@@ -602,40 +593,5 @@ mod tests {
             serde_json::to_string_pretty(&packet).unwrap(),
         )
         .unwrap();
-    }
-
-    fn model_call_event(token: &str, tamper_digest: bool) -> serde_json::Value {
-        let mut event = json!({
-            "schema": "widget-model-call.v1",
-            "payload": {
-                "model": "test-model",
-                "request": "review"
-            },
-            "sauma": null
-        });
-        event["sauma"] = json!({
-            "envelope": "sauma-envelope.v2",
-            "schema": "widget-model-call.v1",
-            "digest": "",
-            "provenance": [
-                {
-                    "kind": "context_fragment",
-                    "id": "fragment-1"
-                },
-                {
-                    "kind": "contract",
-                    "ref": "contract-1"
-                }
-            ],
-            "producer": {
-                "tool": "widget",
-                "version": "0.0.0",
-                "run": "call-1"
-            },
-            "anchored_at": token
-        });
-        let digest = toimija::seal::digest_under_sauma_key(&event);
-        event["sauma"]["digest"] = json!(if tamper_digest { "sha256:bad" } else { &digest });
-        event
     }
 }

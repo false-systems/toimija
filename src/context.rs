@@ -64,7 +64,7 @@ pub struct ContextPacket {
     /// packet contract's evolution rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover: Option<crate::session::Handover>,
-    /// The packet's seal (`crate::seal`): a `sauma-envelope.v2` over the
+    /// The packet's seal (`crate::seal`) over the
     /// serialized packet. The
     /// option remains only so an unsealed document can deserialize before the
     /// verification boundary rejects it.

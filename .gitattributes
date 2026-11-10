@@ -1,4 +1,0 @@
-# The vendored crate is a byte-identical copy whose digest a test recomputes
-# (tests/vendored_canonical.rs). No line-ending conversion, so a checkout with
-# core.autocrlf cannot change those bytes.
-/vendor/sauma-canonical/** -text
