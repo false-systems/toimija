@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "a18c93bb8c9c891161338c8b53a3874eeea1b465",
+  "head": "e7be54863e27599083e8f226fc22f8e0ff723ab8",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/land.rs:201: Receipt lookup ignores Sykli’s retained `runs[].receipt.kept.path`, so removing the original worktree or its receipt makes landing refuse despite a verified pass and an available receipt to share."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794317352,
+  "overruled": null
+}
