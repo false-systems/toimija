@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "bfe70685c7ee0c6aac4bf8e23279932b2b4a64f1",
+  "head": "0a7b7dc27f37456f3a2dbfe94643145076c08d7b",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:380 — Sykli’s `unreadable_runs` warnings are discarded, allowing a partial proof history to appear complete and exit 0."
+    },
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:391 — The contract probe inherits Git location variables instead of using `git_command`, so when Sykli is unavailable an inherited `GIT_DIR` can make a gated commit incorrectly display “no gate.”"
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794319092,
+  "overruled": null
+}
