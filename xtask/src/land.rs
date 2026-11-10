@@ -93,11 +93,15 @@ pub fn land(root: &Path, remote: &str, prover: Prover<'_>) -> Result<Outcome> {
     // landing that fails after this step can simply be run again.
     push_notes(root, remote)
         .context("the review and receipt could not be shared; nothing landed")?;
+    // The lease makes the remote refuse unless its main is still the commit
+    // that was checked: the review is of this change against that main only.
+    // It overwrites nothing, since that main is an ancestor of the commit.
     git(
         root,
         &[
             "push",
             "--quiet",
+            &format!("--force-with-lease=refs/heads/main:{target}"),
             remote,
             &format!("{head}:refs/heads/main"),
         ],
@@ -401,6 +405,31 @@ mod tests {
             panic!("it landed unreviewed");
         };
         assert!(why.contains("not reviewed"), "{why}");
+    }
+
+    #[test]
+    fn main_moving_between_the_check_and_the_push_stops_the_landing() {
+        let Some(world) = World::new("land-race") else {
+            return;
+        };
+        fs::write(world.work.join("more.txt"), "more\n").unwrap();
+        world.git(&["add", "-A"]);
+        world.git(&["commit", "-q", "-m", "more"]);
+        world.review("REVIEW: fine\n");
+        // While the checks run, someone lands the branch's first commit.
+        let racing = |root: &Path, _: &str, _: &str| {
+            git(root, &["push", "-q", "origin", "HEAD~1:refs/heads/main"])?;
+            Ok(Proof::Passed { receipt: None })
+        };
+        let moved_to = world.git(&["rev-parse", "HEAD~1"]);
+
+        let error = land(&world.work, "origin", &racing).unwrap_err();
+        assert!(format!("{error:#}").contains("refused"), "{error:#}");
+        assert_eq!(
+            world.remote_main(),
+            moved_to,
+            "main is where the other left it"
+        );
     }
 
     /// A bare `origin.git` whose `main` holds one commit, and a clone of it
