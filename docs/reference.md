@@ -188,9 +188,6 @@ beside the launch prompt. For any other command they are the only one.
 | `TOIMIJA_REPO_LIVE` | Absolute path of the repository-level `current.md`. |
 | `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | Absolute path of the session's repository point (`.toimija/sessions/<id>/semantic-point.json`), rewritten on every refresh. |
 
-`run` removes `FALSE_SYSTEMS_RESULT_PATH` and `FALSE_SYSTEMS_CONTEXT_PATH`
-from the agent's environment.
-
 An agent re-reads `$TOIMIJA_LIVE` after HEAD, the branch or the index change,
 or after worktree changes it did not make. Its own edits need no re-read.
 
@@ -778,8 +775,10 @@ object under tree-identity.v1. Files are then readable at that version with
 ## The seal
 
 Every packet carries a seal under the key `seal`. It answers three questions:
-what is this, what was it built from, and has it changed. The envelope's
-fields are fixed by the JSON schemas in [`docs/schemas/`](schemas/).
+what is this, what was it built from, and has it changed. The envelope format
+is named `toimija-seal.v1`, carried in the seal as `envelope`, and
+[`docs/schemas/toimija-seal.v1.schema.json`](schemas/toimija-seal.v1.schema.json)
+fixes its fields. A seal that names any other format is refused.
 
 - **`digest`**: SHA-256 over the packet's canonical form, which is compact
   JSON with object keys sorted at every level and arrays in order. The digest
@@ -797,7 +796,7 @@ the exact Git state. Joining that chain means writing one JSON block. There is
 no service and no index: files and a reader.
 
 `cargo xtask why <digest|token|session-id>` is a development tool in this
-repository. It verifies the sealed artifacts under `.toimija/`, prints the
+repository. It verifies the sealed packets under `.toimija/`, prints the
 verified links as an indented chain, tolerates unknown provenance kinds, and
 reports a digest mismatch without walking through it.
 

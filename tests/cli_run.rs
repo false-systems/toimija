@@ -924,7 +924,7 @@ fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
         // Codex tools may run in a daemon an earlier session started, whose
         // environment still holds that session's handshake. `set` can only add
         // variables, so what the child loses is set empty for the tools too.
-        let mut cleared = vec!["FALSE_SYSTEMS_RESULT_PATH", "FALSE_SYSTEMS_CONTEXT_PATH"];
+        let mut cleared: Vec<&str> = Vec::new();
         if !in_repo {
             cleared.extend([
                 "TOIMIJA_LIVE_JSON",
@@ -1070,9 +1070,7 @@ fn a_users_own_developer_instructions_survive_and_the_packet_goes_first() {
 /// The facts a wrapped command can read about where it stands: the session's
 /// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
 /// point inside the sealed session packet (`session.execution.repository`),
-/// which a reader uses to bind evidence to a session. The worker.v1 result and
-/// context paths are not set, and are cleared even when the
-/// outer environment still carries them.
+/// which a reader uses to bind evidence to a session.
 #[test]
 fn run_hands_the_child_its_repository_point() {
     if !git_available() {
@@ -1087,9 +1085,6 @@ fn run_hands_the_child_its_repository_point() {
         .unwrap()
         .current_dir(temp.path())
         .env("OUT", out.path())
-        // Stale values from an outer environment must not reach the child.
-        .env("FALSE_SYSTEMS_RESULT_PATH", "/stale/result.json")
-        .env("FALSE_SYSTEMS_CONTEXT_PATH", "/stale/context.json")
         .args([
             "run",
             "--intent",
@@ -1098,8 +1093,7 @@ fn run_hands_the_child_its_repository_point() {
             "sh",
             "-c",
             "cp \"$FALSE_SYSTEMS_REPOSITORY_POINT_PATH\" \"$OUT/point.json\" && \
-             cp \"$TOIMIJA_LIVE_JSON\" \"$OUT/packet.json\" && \
-             printf '%s|%s' \"${FALSE_SYSTEMS_RESULT_PATH-unset}\" \"${FALSE_SYSTEMS_CONTEXT_PATH-unset}\" > \"$OUT/retired.txt\"",
+             cp \"$TOIMIJA_LIVE_JSON\" \"$OUT/packet.json\"",
         ])
         .assert()
         .success();
@@ -1114,10 +1108,6 @@ fn run_hands_the_child_its_repository_point() {
     assert!(point["repository"]["tree_oid"].is_string(), "{point}");
     assert_eq!(packet["schema"], "toimija-context.v3");
     assert_eq!(packet["session"]["execution"]["repository"]["id"], id);
-    assert_eq!(
-        fs::read_to_string(out.path().join("retired.txt")).unwrap(),
-        "unset|unset"
-    );
 }
 
 /// The last check before launch runs after the watcher is armed. If it

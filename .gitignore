@@ -23,7 +23,6 @@
 # Harness run transcripts — generated, never committed. Ignored so
 # a harness writing its own transcript does not invalidate the packet it verified.
 .toimija/runs/
-.toimija/kisko_history
 
 # Snapshot leases — written by `toimija snapshot --lease`.
 .toimija/snapshots/

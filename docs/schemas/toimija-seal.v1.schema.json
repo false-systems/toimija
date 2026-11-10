@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://false.systems/schemas/sauma-envelope.v2.schema.json",
-  "title": "Sauma attestation envelope v2",
-  "description": "A Sauma envelope whose digest covers the complete carrying artifact after removing only sauma.digest. Producer identity is self-declared unless separately authenticated.",
+  "$id": "docs/schemas/toimija-seal.v1.schema.json",
+  "title": "Toimija seal v1",
+  "description": "The envelope a sealed artifact carries under its `seal` key. The digest is sha256 over the canonical form of the complete carrying artifact after removing only seal.digest: compact JSON, object keys sorted lexicographically at every level, arrays in order. Producer identity is self-declared unless separately authenticated.",
   "type": "object",
   "additionalProperties": false,
   "required": ["envelope", "schema", "digest", "provenance", "producer", "anchored_at"],
   "properties": {
-    "envelope": { "const": "sauma-envelope.v2" },
+    "envelope": { "const": "toimija-seal.v1" },
     "schema": { "type": "string", "minLength": 1 },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "provenance": { "type": "array", "items": { "$ref": "#/$defs/provenance" } },
