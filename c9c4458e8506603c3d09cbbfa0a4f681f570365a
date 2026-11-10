@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "c9c4458e8506603c3d09cbbfa0a4f681f570365a",
+  "head": "d018f14edfd9cce568084c23e3b503792d8a909c",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:139: A base supplied as a commit ID can disappear under `--simplify-by-decoration` because it has no included decoration, so using `--base abf372fc0636e85a14b5820c1685f8334c0040b1` in this clone omits the base and its proof entirely."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794319635,
+  "overruled": null
+}
