@@ -146,7 +146,6 @@ struct Artifact {
 
 #[derive(Debug, Deserialize)]
 struct Envelope {
-    envelope: String,
     schema: String,
     digest: String,
     provenance: Vec<Provenance>,
@@ -217,7 +216,7 @@ fn run_why(query: &str) -> Result<()> {
 }
 
 fn render_why(root: &Path, query: &str) -> Result<String> {
-    let artifacts = scan_artifacts(root)?;
+    let (artifacts, unread) = scan_artifacts(root)?;
     let roots = chain_roots(&artifacts, query);
     let mut output = String::new();
     let mut seen = HashSet::new();
@@ -231,6 +230,17 @@ fn render_why(root: &Path, query: &str) -> Result<String> {
     }
     if seen.is_empty() {
         writeln!(output, "no sealed chain touches {query}")?;
+    }
+    if !unread.is_empty() {
+        let mut formats = unread.clone();
+        formats.sort();
+        formats.dedup();
+        writeln!(
+            output,
+            "not read: {} sealed file(s) under another seal format ({}); `toimija clean` removes ended sessions' packets",
+            unread.len(),
+            formats.join(", ")
+        )?;
     }
     Ok(output)
 }
@@ -340,7 +350,7 @@ fn touches(artifact: &Artifact, query: &str) -> bool {
         || artifact.edges.iter().any(|edge| edge == query)
 }
 
-fn scan_artifacts(root: &Path) -> Result<Vec<Artifact>> {
+fn scan_artifacts(root: &Path) -> Result<(Vec<Artifact>, Vec<String>)> {
     let mut files = Vec::new();
     push_if_exists(&mut files, root.join(".toimija/current.json"));
     let sessions = root.join(".toimija/sessions");
@@ -351,10 +361,11 @@ fn scan_artifacts(root: &Path) -> Result<Vec<Artifact>> {
         }
     }
     let mut artifacts = Vec::new();
+    let mut unread = Vec::new();
     for path in files {
-        collect_artifact(&fs::read_to_string(&path)?, &mut artifacts)?;
+        collect_artifact(&fs::read_to_string(&path)?, &mut artifacts, &mut unread)?;
     }
-    Ok(artifacts)
+    Ok((artifacts, unread))
 }
 
 fn push_if_exists(files: &mut Vec<PathBuf>, path: PathBuf) {
@@ -363,7 +374,14 @@ fn push_if_exists(files: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
+/// Adds the sealed artifact in `raw` to `artifacts`. A file sealed under a
+/// format this toimija does not read is named in `unread` and left out: one
+/// such file must not stop a question about the others.
+fn collect_artifact(
+    raw: &str,
+    artifacts: &mut Vec<Artifact>,
+    unread: &mut Vec<String>,
+) -> Result<()> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Ok(());
     };
@@ -371,10 +389,12 @@ fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
     let Some(seal) = value.get(toimija::seal::KEY).cloned() else {
         return Ok(());
     };
-    let envelope: Envelope = serde_json::from_value(seal)?;
-    if envelope.envelope != toimija::seal::ENVELOPE_SCHEMA {
-        bail!("unsupported seal envelope `{}`", envelope.envelope);
+    let format = seal["envelope"].as_str().unwrap_or("unnamed").to_string();
+    if format != toimija::seal::ENVELOPE_SCHEMA {
+        unread.push(format);
+        return Ok(());
     }
+    let envelope: Envelope = serde_json::from_value(seal)?;
     let actual = toimija::seal::digest_of(&value);
     if artifacts
         .iter()
@@ -503,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn walker_rejects_another_envelope_format() {
+    fn a_file_under_another_seal_format_is_set_aside_and_named_not_read() {
         let artifact = json!({
             "schema": "demo.v1",
             "seal": {
@@ -515,11 +535,24 @@ mod tests {
                 "anchored_at": format!("sha256:{}", "a".repeat(64)),
             },
         });
-        let error = collect_artifact(&artifact.to_string(), &mut Vec::new()).unwrap_err();
-        assert!(
-            error.to_string().contains("another-envelope.v999"),
-            "{error}"
-        );
+        let mut artifacts = Vec::new();
+        let mut unread = Vec::new();
+        collect_artifact(&artifact.to_string(), &mut artifacts, &mut unread).unwrap();
+        // It is not taken for a sealed artifact, and it does not stop the walk.
+        assert!(artifacts.is_empty());
+        assert_eq!(unread, ["another-envelope.v999"]);
+
+        let root = std::env::temp_dir().join(format!("why-unread-{}", std::process::id()));
+        fs::create_dir_all(root.join(".toimija/sessions/old")).unwrap();
+        fs::write(
+            root.join(".toimija/sessions/old/current.json"),
+            artifact.to_string(),
+        )
+        .unwrap();
+        let output = render_why(&root, "anything").unwrap();
+        assert!(output.contains("not read: 1 sealed file"), "{output}");
+        assert!(output.contains("another-envelope.v999"), "{output}");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     fn temp_repo(name: &str) -> PathBuf {
