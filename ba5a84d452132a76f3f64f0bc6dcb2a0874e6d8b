@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "ba5a84d452132a76f3f64f0bc6dcb2a0874e6d8b",
+  "head": "97f5bd446935cffe75e88a04dfc02ae0f8e40716",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:362: The Sykli subprocess inherits Git location variables that the graph’s Git reads strip, so an inherited `GIT_DIR` can make proof lookup fail or report another clone’s receipts."
+    },
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:311: `is_dir()` silently treats permission and filesystem errors as missing sessions, allowing an incomplete session listing without a warning or exit code 4."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794319451,
+  "overruled": null
+}
