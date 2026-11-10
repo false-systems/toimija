@@ -198,14 +198,23 @@ pub fn exit_code(record: &Record) -> u8 {
     u8::from(record.level == Level::Blocking && record.overruled.is_none())
 }
 
-pub fn prompt(base: &str, head: &str) -> String {
+/// The most of a diff a reviewer is handed; past it the reviewer reads files.
+const DIFF_LIMIT: usize = 300_000;
+
+pub fn prompt(base: &str, head: &str, log: &str, diff: &str) -> String {
+    let (shown, cut) = match diff.char_indices().nth(DIFF_LIMIT) {
+        Some((at, _)) => (
+            &diff[..at],
+            "\n[The diff is cut here: read the changed files for the rest.]\n",
+        ),
+        None => (diff, ""),
+    };
     format!(
         "You are reviewing a change in this repository. You did not write it.\n\
          \n\
-         The change is every commit in `{base}..{head}`. Read it with \
-         `git diff {base}...{head}` and `git log {base}..{head}`, and read the files it \
-         touches as far as you need to judge it. Change nothing: no edits, no commits, \
-         no pushes.\n\
+         The change is every commit in `{base}..{head}`. Its commits and its diff are \
+         at the end of this message. Read the files it touches as far as you need to \
+         judge it. Change nothing: no edits, no commits, no pushes.\n\
          \n\
          Judge only what would matter to the person who owns this repository:\n\
          - blocking: it is wrong or harmful as written. A bug the change introduces, \
@@ -220,7 +229,10 @@ pub fn prompt(base: &str, head: &str) -> String {
          Reply with one line per finding, each starting with `- [blocking]` or \
          `- [look]`, then the file and line, then one sentence. End with exactly one \
          line: `REVIEW: fine`, `REVIEW: look` or `REVIEW: blocking`. With no findings, \
-         reply with only `REVIEW: fine`.\n"
+         reply with only `REVIEW: fine`.\n\
+         \n\
+         Commits:\n{log}\n\
+         Diff:\n{shown}{cut}"
     )
 }
 
@@ -263,7 +275,10 @@ pub fn review(
     let Some((agent, independent)) = choose(&authors, installed) else {
         bail!("no reviewer is installed: neither `codex` nor `claude` is on PATH");
     };
-    let reply = reviewer(agent, &prompt(&base, &head), root)?;
+    let three_dots = format!("{base}...{head}");
+    let log = git(root, &["log", "--format=%h %s", &range])?;
+    let diff = git(root, &["diff", &three_dots])?;
+    let reply = reviewer(agent, &prompt(&base, &head, &log, &diff), root)?;
     let verdict = parse_verdict(&reply)?;
     if git(root, &["rev-parse", "HEAD^{tree}"])? != tree
         || !git(root, &["status", "--porcelain"])?.is_empty()
@@ -292,7 +307,7 @@ pub fn overrule(root: &Path, base_ref: &str, why: &str) -> Result<Record> {
     let tree = git(root, &["rev-parse", "HEAD^{tree}"])?;
     let base = git(root, &["merge-base", base_ref, "HEAD"])?;
     let Some(mut record) = read_record(root, &tree)?.filter(|kept| kept.base == base) else {
-        bail!("no review is kept for this commit: run `sykli run review.json` first");
+        bail!("no review is kept for this commit: run `cargo xtask review` first");
     };
     if record.level != Level::Blocking {
         bail!(
@@ -545,18 +560,9 @@ fn reviewer_command(agent: Agent, last: &Path) -> Command {
                 .arg("-");
         }
         Agent::Claude => {
-            command.args([
-                "-p",
-                "--tools",
-                "Read,Grep,Glob,Bash",
-                "--allowedTools",
-                "Read",
-                "Grep",
-                "Glob",
-                "Bash(git diff:*)",
-                "Bash(git log:*)",
-                "Bash(git show:*)",
-            ]);
+            // Reading tools only: no shell, no editing tool and no configured
+            // server, whatever the person's own settings allow.
+            command.args(["-p", "--tools", "Read,Grep,Glob", "--strict-mcp-config"]);
         }
     }
     command
@@ -839,6 +845,43 @@ mod tests {
             "an overrule does not follow the tree"
         );
         assert_eq!(exit_code(&again), 1);
+    }
+
+    #[test]
+    fn the_claude_reviewer_has_reading_tools_only() {
+        let command = reviewer_command(Agent::Claude, Path::new("/tmp/last.txt"));
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            ["-p", "--tools", "Read,Grep,Glob", "--strict-mcp-config"]
+        );
+    }
+
+    #[test]
+    fn the_reviewer_is_handed_the_commits_and_the_diff() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = branch_repo("review-prompt");
+        let seen = std::cell::RefCell::new(String::new());
+        let fine = |_: Agent, prompt: &str, _: &Path| {
+            *seen.borrow_mut() = prompt.to_string();
+            Ok("REVIEW: fine\n".to_string())
+        };
+        review(&root, BASE, &[Agent::Claude], &fine)
+            .unwrap()
+            .unwrap();
+        let prompt = seen.borrow();
+        assert!(prompt.contains("+new"), "the diff: {prompt}");
+        assert!(prompt.contains(" change\n"), "the commit subject: {prompt}");
+
+        let long = "x".repeat(DIFF_LIMIT + 10);
+        let cut = super::prompt("a", "b", "", &long);
+        assert!(cut.contains("The diff is cut here"));
+        assert!(cut.len() < long.len() + 3_000);
     }
 
     #[test]
