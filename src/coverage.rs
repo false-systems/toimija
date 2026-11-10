@@ -1,5 +1,5 @@
 //! Collection coverage — the difference between "we looked and found nothing"
-//! and "we could not look" (R10, TA-005).
+//! and "we could not look".
 //!
 //! A [`Coverage`] value is attached at a stage boundary (branch diff, session
 //! scan — later stages such as repository projects,

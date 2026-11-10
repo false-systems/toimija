@@ -77,7 +77,7 @@ impl Plan {
     }
 
     /// Say in the packet that refreshing it failed, so an agent reading it is
-    /// never handed a stale packet that looks fresh (issue #229). The notice
+    /// never handed a stale packet that looks fresh. The notice
     /// heads the Markdown packet this plan writes — the session packet and its
     /// repo-level mirror, or the repo-level packet — above the last good
     /// content, which is kept. It replaces an earlier notice rather than
@@ -290,12 +290,12 @@ fn render_pair(
 
 /// Build the packet and its two renderings. The read-only half of a refresh:
 /// no validation, no network. When `session_dir` is given, the session's
-/// identity (intent, scope — issue #84) is read from its marker and carried
+/// identity (intent, scope) is read from its marker and carried
 /// into the packet before rendering, so `run --intent` reaches a wrapped
 /// harness and `toimija intent` updates propagate on the next refresh.
 /// Best-effort: a missing or unreadable marker yields a packet without the
-/// session block, never a failed refresh — but unreadable ≠ missing (issue
-/// #161): only `NotFound` is quiet; a marker that exists and cannot be read
+/// session block, never a failed refresh — but unreadable ≠ missing:
+/// only `NotFound` is quiet; a marker that exists and cannot be read
 /// is warned about, because the packet it feeds silently loses its session
 /// identity.
 ///

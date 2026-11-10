@@ -1,987 +1,413 @@
 # Toimija reference
 
-The complete manual: every command, the packet anatomy, the environment
-handshake, configuration, language support, and output guarantees. For the
-pitch and the 30-second start, read the [README](../README.md).
+This is the manual: every command, the packet, sessions, configuration and
+the guarantees behind them. For a first look, read the [README](../README.md).
 
-Instead of running `codex` directly, run `toimija run codex`.
-Instead of running `claude` directly, run `toimija run claude`.
+Toimija reports facts about a Git repository and never decides. It reads Git
+state through the Git command line, combines it with what
+`.toimija/repo.yaml` says about the repository, and writes the result where an
+agent can read it. It keeps no index of its own. Snapshots are Git tree
+objects, freshness is a hash of content, and when something cannot be read the
+packet says so.
 
-Toimija refreshes the repo context, writes `.toimija/current.md` and
-`.toimija/current.json`, starts a watcher, launches the agent — for known
-agents with the packet inlined in the launch prompt — keeps the packet fresh
-while the agent works, and exits with the wrapped command's status.
+Contents:
 
-> We do not ask the model to understand the repo first. We ask Git what state the repo is in.
+- [Files](#files)
+- [Setting up a repository](#setting-up-a-repository)
+- [Starting an agent: `run`](#starting-an-agent-run)
+- [How the packet stays current](#how-the-packet-stays-current)
+- [The packet](#the-packet)
+- [Checking freshness: `verify`](#checking-freshness-verify)
+- [Repository points](#repository-points)
+- [tree-identity.v1](#tree-identityv1)
+- [Snapshots](#snapshots)
+- [The seal](#the-seal)
+- [Sessions](#sessions)
+- [Workspaces](#workspaces)
+- [Validation plans](#validation-plans)
+- [`doctor`](#doctor)
+- [`landed`](#landed)
+- [Commands](#commands)
+- [Configuration](#configuration)
+- [Security](#security)
+- [Limits](#limits)
+- [Working on Toimija](#working-on-toimija)
 
-## Toimija in 30 seconds
+## Files
+
+Toimija writes only under `.toimija/` in the repository, plus Git objects and
+refs under `refs/toimija/` for snapshots. Sessions opened outside any
+repository live in a state directory on the machine.
+
+```text
+.toimija/repo.yaml       yours     what the repository is, its boundaries, validation commands
+.toimija/workspace.yaml  yours     in a folder of repositories: what the folder is for and what to read first
+.toimija/.gitignore      Toimija   keeps Git away from the generated files below
+.toimija/current.md      Toimija   the repository-level packet, for a reader with no session
+.toimija/current.json    Toimija   the same packet as JSON
+.toimija/sessions/<id>/  Toimija   one session: its packet, marker, repository point and log
+.toimija/handover.json   Toimija   the note for the next agent in this working copy
+.toimija/history.jsonl   Toimija   one record per concluded session
+.toimija/runs/           harnesses transcripts other tools keep here; `clean` expires them
+.toimija/tmp/            Toimija   staging for atomic writes
+AGENTS.md, CLAUDE.md     yours     Toimija never writes them
+```
+
+Toimija installs nothing on a repository: no Git hook, no agent document, no
+harness setting.
+
+## Setting up a repository
 
 ```bash
-cargo install --path .          # or grab the release artifact
-cd /path/to/repo
-toimija init                    # once per repo: seed .toimija/repo.yaml and .gitignore
-toimija run claude              # every time: start the agent as a session
+toimija init
 ```
 
-```mermaid
-flowchart LR
-    GIT["Git<br/>HEAD · index · history"] -- "plumbing reads" --> T{{"toimija"}}
-    YAML[".toimija/repo.yaml<br/>role · boundaries"] --> T
-    T --> P["the live packet<br/>current.md / current.json"]
-    P -- "verify, then read" --> A["the agent"]
-```
+`init` creates `.toimija/repo.yaml` and `.toimija/.gitignore`, and nothing
+else. It never overwrites an existing file. On a new configuration it prints
+the next steps: fill in `role`, `not` and `boundaries`, and tell your agents
+to run `toimija enter` first or start them with `toimija run`. Only a person
+can say what a repository is for and what it must not become.
 
-## Porcelain for agents
+The generated files are ignored by Git and are not committed.
 
-Git's own manual splits its commands into **plumbing** (stable, machine-facing
-primitives: `rev-parse`, `ls-tree`, `write-tree`) and **porcelain** (the human
-interface built on top: `status`, `log`, `commit`). The porcelain is just one
-client of the object database underneath — anyone can write another.
-
-Toimija is another porcelain, purpose-built for a different client: **an agent,
-not a human at a prompt.** Same pipes, different sink.
-
-That is the whole design move, and it repeats at every layer:
-
-- **Context** is compiled from plumbing reads — no index to keep fresh, Git's
-  state machine *is* the state.
-- **Snapshots** are `write-tree` plus a ref — immutable, content-addressed,
-  garbage-collected by git itself.
-- **Freshness** is a content-based token — the same content-addressing trick
-  git's object model is built on, applied one layer up.
-- **Provenance** (the packet's seal) is passive files plus a reader — the same
-  shape as git itself: no service, no daemon.
-
-Every repo already ships a battle-tested, content-addressed, distributed
-database that every machine and every CI system knows how to replicate: `.git`.
-Toimija refuses to build a second one. The design test for any new need is
-*"does git already store this?"* — before writing a line of infrastructure.
-
-## Why
-
-Every coding agent enters a repo the same way: glob, grep, read, guess. That
-cold crawl is slow, costs tokens, and is wrong the moment the repo moves. Yet
-every repo already ships a database that knows exactly what is going on — Git.
-Toimija reads it once, compiles it into a small packet, keeps that packet
-verifiable against local Git state, and hands it to the agent as a bounded
-starting point instead of a cold crawl.
-
-What you get:
-
-| | |
-|---|---|
-| **A live work packet** | Branch, HEAD, merge-base, changed surface, warnings — refreshed on every relevant change while the agent works. |
-| **A workset contract** | Every packet opens with a normative contract: work from the Changed surface and Read first, exclusions are do-not-scan, and any expansion outside the workset is declared — *expansion is never forbidden; invisible expansion is.* |
-| **Wrapped means used** | Under `run`, using toimija is not voluntary: an explicit intent is required to launch, known agents get the packet **in their launch prompt** (argv — they cannot not-see it), and the exit summary reports what the session actually consumed. |
-| **What to read first** | The repository's configured and important docs, always and first, then the changed files and their companion tests by existence-checked path. Advisory; no history mining, no source parsing. |
-| **Verifiable freshness** | Every packet carries a content-based consistency token; `toimija verify` proves it still matches the repo before anyone trusts it. |
-| **Multi-agent awareness** | Per-session packets, `toimija sessions` presence + overlap warnings, and bounded stewardship. Visibility, never orchestration. |
-| **Chain of custody** | Every packet carries a seal — a canonical digest plus provenance edges — so artifacts across tools verify against the exact repo state they were built from. |
-| **Validation planning** | `validate --plan` prints inferred and configured commands with their provenance — full adapters for Rust/Elixir, a minimum language pack floor for Go/Python/JS-TS/Terraform. A repo with `sykli.json` gets its declared gate instead (`mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json`, `source: sykli.json`). It never runs commands. |
-| **Squash-proof landing checks** | `toimija landed` answers "did this branch land?" by content, where ancestry lies. |
-
-## What Toimija is
-
-Toimija is a Git-aware local context compiler and live entrypoint for coding
-agents.
-
-It combines:
-
-- durable repo meaning from `.toimija/repo.yaml`
-- live Git state
-- language adapter hints
-- validation plans
-
-into:
-
-- `.toimija/current.md` — the readable live packet
-- `.toimija/current.json` — the machine-readable live packet
-
-Agents should work from those files instead of reading the repo cold.
-
-Git is not a save button here. Git is the substrate.
-
-> Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
-
-## The normal workflow
+## Starting an agent: `run`
 
 ```bash
-cd /path/to/repo
-toimija run --intent "fix #51" --task "fix the login redirect" -- codex
+toimija run claude
+toimija run --intent "fix the login redirect" claude --model opus
+toimija run --intent "fix the login redirect" --scope src/auth/ --task "repair the expired-session redirect" -- codex
 ```
 
-```bash
-cd /path/to/repo
-toimija run --intent "explore the failing CI" -- claude
-```
+`run` takes the agent's command. What follows the agent's name belongs to the
+agent, flags included. A `--` before the agent is accepted and not needed.
 
-`run` is the recommended agent entrypoint. It runs `enter`, starts `watch`,
-launches the agent command, stops watching when the agent exits, and returns the
-agent command's exit status (signal termination is preserved too, e.g. SIGTERM →
-143).
+`run` does this:
 
-For the built-in Codex adapter, omitting `--task` (or giving a blank task)
-delivers the packet and optional `--briefing` as per-session
-`developer_instructions`, without a positional message. The TUI waits for
-the first user task without requesting a model acknowledgement. Codex adds
-the setting to its own developer instructions (skills, permissions,
-collaboration mode), so the slot carries only the packet and the briefing;
-`codex debug prompt-input` with the same options shows the result offline. A
-`developer_instructions` set in your own Codex config is replaced for that
-session. One passed on the command line (`-c developer_instructions=…`) is
-kept: the launch is then not idle, the packet goes in the first message, and
-`run` says so on stderr.
-Explicit tasks keep positional delivery, and an `agents.codex` configuration keeps its
-declared prompt style. Subcommands such as `codex exec` and `codex resume`
-retain prompt delivery rather than being inspected as interactive launches.
+1. Finds the repository and reads its Git state.
+2. Writes the repository point for that state.
+3. Opens a session under `.toimija/sessions/<id>/` with its own packet.
+4. Verifies the packet against the repository and starts the agent directly,
+   with no shell in between. It retries one startup race. It refuses to start
+   the agent when the packet is still stale or cannot be verified, or when Git
+   is in the middle of an operation or has conflicts.
+5. Refreshes the packet when the repository changes.
+6. When the agent exits, reads the repository again, prints a summary and
+   exits with the agent's status. An agent ended by a signal is reported the
+   same way: SIGTERM gives 143.
 
-**Wrapped means used** (proposal 0006). `--intent` says why a session
-exists; a launch without one is said once and shows as `unknown` to sibling
-sessions until `toimija intent` declares it (proposal 0006 refused such a
-launch; since 2026-11 it does not). For known agents (`claude`, `codex`, `gemini`, `pi`
-and `opencode`, matched by basename: opencode takes the prompt after `--prompt`,
-since its one positional argument is the folder to start in, except `opencode
-run`, which takes it as its message; the others take it as a positional
-argument) — and for any agent
-configured under `agents:` in `.toimija/repo.yaml` (`prompt: positional`, or a
-flag such as `prompt: --message`; configuration wins over the built-ins) —
-the packet is delivered **in the launch prompt
-itself**: `run` appends one argument (after `--prompt` for opencode, but not for
-`opencode run`) carrying the contract framing,
-the entry packet inlined at the session budget, the live packet path, and your
-`--task`. The agent cannot not-see it. Pass the agent's task via `--task`, not
-as the agent's own positional argument. Unknown agents keep the env-var
-handshake behind an honest banner — `delivery: env-var only — not guaranteed` —
-never a silent degradation. A warning names what the agent was not handed
-(`not delivered: packet, task, briefing`), and the session marker records it
-as `undelivered`, so `sessions --json` shows it after the fact.
+### Options
 
-`--briefing` carries background instructions apart from the task. A known or
-configured agent gets them at the end of its launch prompt, after the packet
-and the task (for `claude`, in the same positional prompt); an idle Codex launch
-gets them after the packet in its session instructions. An agent toimija does
-not recognise has no launch prompt, so it cannot receive them. A blank
-`--briefing`, like a blank `--task`, is none, and both may start with `-`.
-Written with a space, neither, nor an `--alert`, may be followed by one of
-`run`'s own flags or the `--` before the command: there the value was left
-out, so `--briefing --task "fix it"` is refused as a usage error (exit 2) before
-a session opens, rather than taking `--task` as the briefing and launching a
-program named `fix it` (issue #237). The `=` form says the value is intended:
-`--task=--briefing` passes the text `--briefing`.
+| Option | Meaning |
+| --- | --- |
+| `--intent <TEXT>` | Why the session exists. Other sessions see it. Without it they see `unknown` until the agent runs `toimija intent`. |
+| `--scope <PATH>` | A path the session expects to touch. Repeatable. Advisory, never a lock. |
+| `--task <TASK>` | The task, delivered in the launch prompt. Pass it here, not as the agent's own argument. |
+| `--briefing <BRIEFING>` | Background instructions, kept apart from the task. They go at the end of the launch prompt. |
+| `--alert <TEXT>` | An urgent line that opens the launch prompt. Repeatable. |
+| `--for-diff` | Add the diff-focused section to the packet. |
+| `--budget <BUDGET>` | The size cap of the Markdown packet, in bytes. |
 
-`--alert <TEXT>` (repeatable) is for the few lines the agent must read first,
-such as a launcher's FLAGGED or WARNING lines. They open the launch prompt
-(and an idle Codex launch's session instructions) under `## Before anything
-else (from the launcher)`, above the contract and the packet, each with its own
-text. They are capped at 1024 bytes in total: the rest is cut at a character
-boundary, the block says so, and `run` warns on stderr. A blank alert is none.
-An unrecognised agent gets the same `not delivered: alert, …` warning as for
-the packet. Launchers can detect support with `toimija run --help`.
+`--task`, `--briefing` and `--alert` may start with `-`. When the next
+argument is one of `run`'s own flags, or `--`, the value is missing: `run`
+refuses with exit 2 and starts nothing. Write text that is a flag's name with
+`=`, as in `--task=--briefing`. A blank task, briefing or alert counts as
+none.
 
-Launch prompts tell agents to use delivered facts instead of repeating
-discovery. Missing, stale or contradictory facts justify a refresh; unresolved
-task details justify reading the named files. Outside a repository, an unassigned
-session waits for work before invoking discovery or bookkeeping tools. This
-does not waive scope declarations or pre-commit/handoff verification.
+Alerts appear under `## Before anything else (from the launcher)`, above the
+workset contract and the packet. They are capped at 1024 bytes in total. The
+rest is cut at a character boundary, the block says so, and `run` warns on
+stderr. A launcher can detect `--alert` by reading `toimija run --help`.
 
-```mermaid
-sequenceDiagram
-    participant Y as you
-    participant T as toimija run
-    participant A as the agent
+### How the packet reaches the agent
 
-    Y->>T: toimija run --intent "fix #51" -- codex
-    T->>T: compile + verify the packet
-    T->>A: launch — packet inlined in the prompt (known agents) + TOIMIJA_* handshake
-    loop while the agent works
-        T->>T: refresh the packet on every Git change
-    end
-    A-->>T: exit
-    T-->>Y: entry→exit summary · agent's exit code
-```
+For a known agent, `run` adds one argument to the agent's command: the launch
+prompt. It holds the alerts, the workset contract, the packet at the session's
+budget, the path of the live packet, the task and the briefing.
 
-What follows the agent's name is the agent's own, flags included: `toimija
-run codex --help`. A `--` before the agent is accepted and not needed.
+Known agents are `claude`, `codex`, `gemini`, `pi` and `opencode`, matched by
+the base name of the command. `opencode` takes the prompt after `--prompt`,
+because its one positional argument is a folder; `opencode run` takes it as
+its message. The others take it as a positional argument.
 
-Each `run` opens a **session** with its own live packet under
-`.toimija/sessions/<id>/`, so concurrent wrapped agents do not race on a single
-shared file. While the agent works, that session packet stays fresh: every
-relevant filesystem or Git-state change re-runs the refresh after a short
-debounce. After laptop sleep, the resumed watch loop re-proves the session within
-one tick through that same refresh and heartbeat path.
+An `agents:` entry in `.toimija/repo.yaml` tells `run` how any other command
+takes a prompt: `prompt: positional`, or a flag such as `prompt: --message`.
+Configuration wins over the built-in list. It never supplies an executable
+path: the agent is always the command you name.
 
-The watcher finds the repository's git dir and common dir once, and an idle
-tick starts no git process. Work-tree edits arrive as filesystem events: the
-platform-native watcher (FSEvents on macOS, inotify on Linux) is armed first
-and reports `armed (native)` only after a readiness probe is observed.
-Read-only access events (open, read, close without writing) are dropped, so
-the refresh's own reads never re-trigger it. If native cannot arm — the inotify
-watch limit, say — or its probe times out, macOS re-arms and re-proves notify's
-polling backend (`armed (poll fallback)`), and Linux falls back to Git polling
-(`armed (git polling)`): one `git status` per tick, never a recursive scan of
-the tree. The fallback is logged once.
+A command `run` does not know gets the session's paths through environment
+variables only. `run` says so (`delivery: env-var only — not guaranteed`) and
+names what was not delivered (`not delivered: packet, task, briefing`). The
+session marker records the same under `undelivered`, and `sessions --json`
+shows it.
 
-Every 500 ms the watcher also compares the metadata of the Git files a packet
-depends on — HEAD, the index, the operation markers, the refs (files or
-reftable, a linked worktree's own included), packed-refs, config, `shallow`,
-`info/grafts`, `objects/info/alternates`, `info/exclude` and
-`.toimija/repo.yaml` — read with `stat` alone, no git process. A moved ref,
-config, graft or alternates file refreshes the packet; a moved HEAD or index is
-checked first with one `git status`, because other tools rewrite the index
-without changing anything the packet shows. This is how staging, commits,
-branch switches, a fetch that moves the upstream, and a worktree or branch
-added elsewhere reach the packet, also in a linked worktree whose git dir lies
-outside the watched tree. A tracked path is never ignored: events under a
-directory with a build name (`target/`, `_build/`, `deps/`, `node_modules/`),
-at the repository root or deeper (a monorepo's `packages/a/node_modules/`),
-prompt one `git status` instead of a refresh. That check shows a tracked file
-there as modified, and an already-modified one by its content, and refreshes
-for it; untracked build output shows as nothing and costs only the check. Only
-a whole name counts: `src/targeted.rs` is source.
+The launch prompt tells the agent to use the delivered facts instead of
+repeating discovery, to refresh when the facts are missing, stale or
+contradictory, and to read the named files for task details. Scope is still
+declared before work, and `verify` still runs before a commit or a handover.
 
-A refresh reads one `git status`. While that metadata says the refs have not
-moved since the last packet's Git state was read, and `status` finds HEAD and
-the upstream where that read did, the packet's ref-derived facts — the base,
-the merge-base and the branch diff from it, the recent commits, ahead/behind
-counted against the base, `shallow` — are carried from that read rather than
-read again. A ref, HEAD or upstream that moved is read again. `run`'s entry
-gate and its exit refresh read the same way, so `run` costs what `enter` costs
-plus nine git processes however long the agent works: the repository point's
-six, and one `git status` each for the gate, the catch-up and the exit
-(`tests/cli_budgets.rs` pins every command's count).
+### Codex
 
-Once a minute a safety net compares one `git status`, and the changed files'
-contents, with the packet, so what no event and no metadata reported — a
-dropped event — leaves the live packet stale for a minute at most while the
-loop turns. Known slow cases, both rare: a change to a global excludes file
-(`core.excludesFile`) waits for that minute or the next real change, and one
-to global git config the packet shows (`core.abbrev`) for the next refresh
-that reads the refs. And the debounce waits for a
-300 ms gap in events, so steady churn — a long build writing `target/` —
-delays refreshes until it pauses.
+Without `--task`, an interactive Codex launch receives the packet and the
+briefing as per-session `developer_instructions` and no positional message.
+Codex opens and waits for the first message. No model turn is spent on an
+acknowledgement.
 
-When a refresh itself fails — an unparseable `.toimija/repo.yaml`, say — the
-packet cannot be rebuilt, so it says so instead:
-a notice at the top of the Markdown packet names the failure and since when,
-above the last good content, and the next successful refresh replaces it. The
-failure is written, and logged, once per distinct error rather than on every
-retry. A failed refresh is retried at once on the next change, and otherwise
-after half a second, then after a delay that doubles up to the safety net's
-minute. It is
-foreground-only and stops the moment the agent exits — no daemon survives the
-command. The repo-level `.toimija/current.*` is kept too, demoted to a
-last-writer-wins "latest" summary for sessionless readers. It mirrors the
-session block only while the session runs; the exit refresh, which runs after
-the marker closes, writes the repo-level pair without it.
-While a wrapped command runs, `run` re-points its own stdout and stderr at
-`.toimija/sessions/<id>/diagnostics.log` (descriptor-level `dup2`) and hands
-the saved terminal to the child, so nothing this process prints — watcher
-output, refresh warnings, panic messages included — can interleave with the
-harness; `run` reports the captured line count and path after the command
-exits. Standalone `watch`, which owns its terminal, prints those diagnostics
-directly as before.
+- Codex adds this setting to its own developer instructions, so the slot
+  carries only the packet and the briefing.
+- A `developer_instructions` in your own Codex configuration is replaced for
+  that session. One passed on the command line (`-c developer_instructions=…`)
+  is kept. The launch is then not idle: the packet goes in the first message,
+  and `run` says so.
+- With `--task`, or with an `agents.codex` entry, delivery follows the prompt
+  style. `codex exec` and `codex resume` always get the prompt.
 
-So the wrapped agent can *find* its live packet, `run` hands it an environment
-handshake. For known agents this is the backup channel (the packet already
-travels in the launch prompt); for everything else it is the only signal `run`
-injects into the child:
+Codex may run tool commands in a process that is already running and does not
+inherit the terminal's environment. So `run` also passes each handshake
+variable as `-c shell_environment_policy.set.<name>=<value>`. This passes only
+this session's identity and paths. It changes no global Codex configuration,
+inheritance policy or sandbox setting. A variable `run` removes from the
+agent's environment is set to an empty string for Codex tools, because `set`
+can only add. Toimija reads an empty handshake value as unset, and other
+readers should too. A value that is not valid UTF-8 stops the launch.
+
+### Environment handshake
+
+`run` sets these for the agent. For a known agent they are a second channel
+beside the launch prompt. For any other command they are the only one.
 
 | Variable | Meaning |
 | --- | --- |
-| `TOIMIJA_RUN=1` | The agent is under `run`; a watcher is keeping the packet fresh. |
-| `TOIMIJA_SESSION` | This session's id (`<unix-secs>-<pid>`). `toimija intent`, `enter`, and `refresh` use it to find the session. |
-| `TOIMIJA_LIVE` | Absolute path to this session's live `current.md` (authoritative). |
-| `TOIMIJA_LIVE_JSON` | Absolute path to this session's live `current.json`. |
-| `TOIMIJA_CURRENT_MD` | Alias of `TOIMIJA_LIVE`, for harnesses that key on the file name. |
-| `TOIMIJA_CURRENT_JSON` | Alias of `TOIMIJA_LIVE_JSON`. |
-| `TOIMIJA_REPO_ROOT` | Absolute path of the repo root the session runs in. |
-| `TOIMIJA_RUN_ID` | Alias of `TOIMIJA_SESSION`. |
-| `TOIMIJA_REPO_LIVE` | Absolute path to the repo-level `current.md` summary. |
-| `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | Absolute path to this session's current repository point, a false-agent-protocol `RepositoryPointEnvelope` (`.toimija/sessions/<id>/semantic-point.json`), rewritten on every refresh. Its tree is tree-identity.v1, named in `extensions.tree_algorithm`, and its token's version is in `extensions.consistency_algorithm`. |
+| `TOIMIJA_RUN=1` | The agent runs under `run`, and the packet is kept current. |
+| `TOIMIJA_SESSION` | The session's id, `<unix-seconds>-<pid>`. `intent`, `enter` and `refresh` use it to find the session. |
+| `TOIMIJA_RUN_ID` | The same as `TOIMIJA_SESSION`. |
+| `TOIMIJA_LIVE` | Absolute path of the session's live `current.md`. |
+| `TOIMIJA_LIVE_JSON` | Absolute path of the session's live `current.json`. |
+| `TOIMIJA_CURRENT_MD` | The same as `TOIMIJA_LIVE`. |
+| `TOIMIJA_CURRENT_JSON` | The same as `TOIMIJA_LIVE_JSON`. |
+| `TOIMIJA_REPO_ROOT` | Absolute path of the repository root. |
+| `TOIMIJA_REPO_LIVE` | Absolute path of the repository-level `current.md`. |
+| `FALSE_SYSTEMS_REPOSITORY_POINT_PATH` | Absolute path of the session's repository point (`.toimija/sessions/<id>/semantic-point.json`), rewritten on every refresh. |
 
-An agent that honors the handshake re-reads `$TOIMIJA_LIVE` after HEAD, branch,
-index, or unfamiliar worktree changes instead of re-running `enter`; its own
-expected source edits do not require a full re-read. Before commit or handoff,
-`toimija verify` is the freshness boundary.
+`run` removes `FALSE_SYSTEMS_RESULT_PATH` and `FALSE_SYSTEMS_CONTEXT_PATH`
+from the agent's environment.
 
-Codex receives the same generated values as individual
-`-c shell_environment_policy.set.<name>=<value>` arguments, so tool commands
-in its persistent daemon receive this run's identity rather than depending on
-the daemon's startup environment. Values are quoted as TOML-compatible strings;
-unrepresentable non-UTF-8 values fail before launching. No global Codex config,
-inheritance policy or sandbox setting is changed. Other agents retain the
-ordinary environment handshake. Outside repositories, `TOIMIJA_STATE_DIR` is
-also set to the resolved session-state location, so `intent` finds the marker
-even when the daemon started with a different state directory. Each variable
-`run` removes from the agent's environment (`FALSE_SYSTEMS_RESULT_PATH`,
-`FALSE_SYSTEMS_CONTEXT_PATH`, and outside repositories `TOIMIJA_LIVE_JSON`,
-`TOIMIJA_CURRENT_JSON`, `TOIMIJA_REPO_ROOT`, `TOIMIJA_REPO_LIVE`,
-`FALSE_SYSTEMS_REPOSITORY_POINT_PATH`) is set to `""` for Codex tools, because
-`set` can only add variables and a daemon started by an earlier session may
-still hold its values. Toimija reads an empty handshake value as unset; other
-readers should too.
+An agent re-reads `$TOIMIJA_LIVE` after HEAD, the branch or the index change,
+or after worktree changes it did not make. Its own edits need no re-read.
 
-Each session also writes a `.toimija/sessions/<id>/session.json` marker (id, pid,
-when that process started (`pid_start`: Linux and macOS, an opaque token
-compared only for equality, so a reused pid is not taken for the session),
-agent argv, worktree, branch, HEAD, intent, scope, timestamps, status) that
-`run` auto-closes on exit. The marker is what `toimija sessions` reads (below).
-The entry branch and HEAD remain fixed in later packets; if current Git state
-moves, mandatory Markdown renders a `Session drift` block and JSON retains both
-the entry baseline and current `git` state.
+### The terminal
+
+While the agent owns the terminal, `run` points its own stdout and stderr at
+`.toimija/sessions/<id>/diagnostics.log`. Watcher output, refresh warnings and
+panic messages go there and cannot mix with the agent's screen. After the
+agent exits, `run` reports the number of captured lines and the path.
+
+### The session marker
+
+Each session writes `.toimija/sessions/<id>/session.json`: id, pid, when the
+process started (`pid_start`), the agent's command, worktree, branch, HEAD,
+intent, scope, timestamps and status. `run` closes it on exit. `toimija
+sessions` reads it.
+
+The entry branch and HEAD stay fixed in later packets. When Git state moves
+away from them, the Markdown packet shows a `Session drift` block, and the
+JSON keeps both the entry state and the current `git` state.
+
+### The exit summary
+
+```text
+toimija run: session summary
+  branch:    fix/login-redirect
+  worktree:  0 staged, 1 unstaged, 0 untracked
+  scope:     2 file(s) changed on this branch since merge-base
+  refreshed: 0 time(s) while you worked
+  intent:    "fix the login redirect" (declared at launch)
+  expansions: none declared
+```
+
+The summary compares Git state at entry and at exit. A switched branch and a
+moved HEAD are shown as `before → after`. The intent and expansion lines come
+from the session marker, never from watching the agent.
+
+The worktree line counts the repository's own work. Toimija's files are never
+counted, even in a repository where Git lists them, and neither are the other
+generated-state folders (see [Repository points](#repository-points)).
 
 ### Outside a repository
 
+A folder with a workspace file is a [workspace](#workspaces): `run` opens the
+same kind of session there and puts the workspace packet in the launch
+prompt. The rest of this section is about a folder with no workspace file.
+
 In a folder that is not inside a Git repository, `run` opens a session with no
-packet instead of refusing (issue #225). There is no Git context to compile, so
-there is no entry packet, watcher, repository point, or exit summary;
-`--for-diff` and `--budget` are refused. What
-remains is what makes the session visible:
+packet. There is no Git state to read, so there is no packet, watcher,
+repository point or exit summary, and `--for-diff` and `--budget` are refused.
+What remains makes the session visible:
 
-- the marker, under the machine-local state directory — `$TOIMIJA_STATE_DIR`,
-  else `$XDG_STATE_HOME/toimija`, else `~/.local/state/toimija` — at
+- The marker, in the state directory: `$TOIMIJA_STATE_DIR`, else
+  `$XDG_STATE_HOME/toimija`, else `~/.local/state/toimija`. It sits at
   `<state>/.toimija/sessions/<id>/session.json`, with `worktree` set to the
-  folder. Nothing is written in the folder itself;
-- a heartbeat every minute, since no watcher stamps `last_seen_at`;
-- `TOIMIJA_RUN=1`, `TOIMIJA_SESSION`, `TOIMIJA_RUN_ID`, and `TOIMIJA_LIVE` /
-  `TOIMIJA_CURRENT_MD` naming a short note that says why there is no packet.
-  The repository-only variables (`TOIMIJA_LIVE_JSON`, `TOIMIJA_CURRENT_JSON`,
-  `TOIMIJA_REPO_ROOT`, `TOIMIJA_REPO_LIVE`,
-  `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`) are cleared, so values inherited from
-  an outer session cannot leak in;
-- for known agents, a launch prompt that says there is no packet, then the task.
+  folder. Nothing is written in the folder itself.
+- A heartbeat every minute.
+- `TOIMIJA_RUN`, `TOIMIJA_SESSION`, `TOIMIJA_RUN_ID` and `TOIMIJA_STATE_DIR`.
+  `TOIMIJA_LIVE` and `TOIMIJA_CURRENT_MD` name a short note that says why
+  there is no packet. The repository variables are cleared, so values from an
+  outer session cannot leak in.
+- For a known agent, a launch prompt that says there is no packet, then the
+  task. A session with no task waits for work and spends no model calls on
+  discovery.
 
-`toimija sessions --outside-repos` (the default when not inside a repository)
-lists these sessions, and `toimija intent` finds its session there even after
-the agent changes into a repository. Sessions inside the repositories the agent
-touches do not count it as a sibling: its declared scope is how they can know.
+`toimija sessions --outside-repos` lists these sessions. `toimija intent`
+finds its session there even after the agent moves into a repository. Sessions
+inside the repositories the agent touches do not count it as a sibling, so the
+agent should declare its scope.
 
-## Multi-agent sessions
+### After installing a new version
 
-Several agents can work one repo at once without trampling each other's context.
-Each wrapped agent gets its **own** session packet, and `toimija sessions` makes
-the others visible.
+A running `toimija run` keeps the code it started with, and its watcher keeps
+writing packets as that version does. Restart live sessions after installing.
+`toimija --version` names the commit a binary was built from.
 
-Declare why you're here (and optionally what you'll touch) when you launch — it's
-advisory, never an assignment or a lock:
+## How the packet stays current
 
-```bash
-toimija run --intent "add sessions command" --scope src/sessions.rs -- codex
-```
+`watch` and `run` refresh the packet while they run, in the foreground. They
+stop when the command ends. Standalone `watch` prints its diagnostics to its
+own terminal.
 
-The wrapped agent can also speak for itself, mid-session — it finds its own
-marker through the `TOIMIJA_SESSION` handshake:
+**Work-tree edits** arrive as filesystem events: FSEvents on macOS, inotify on
+Linux. The watcher reports `armed (native)` only after it has seen a test
+event. Events that only read a file are dropped, so a refresh never triggers
+itself. When the native watcher cannot start, macOS falls back to polling
+(`armed (poll fallback)`) and Linux to one `git status` per tick (`armed (git
+polling)`), never a recursive scan of the tree. The fallback is logged once.
 
-```bash
-toimija intent "migrating the auth module" --scope src/auth/
-```
+**Git changes** are found without starting a git process. Every 500 ms the
+watcher compares the file metadata of what a packet depends on: HEAD, the
+index, the operation markers, the refs (files or reftable, including a linked
+worktree's own), packed-refs, config, `shallow`, `info/grafts`,
+`objects/info/alternates`, `info/exclude` and `.toimija/repo.yaml`. A moved
+ref, config, graft or alternates file refreshes the packet. A moved HEAD or
+index is checked first with one `git status`, because other tools rewrite the
+index without changing anything the packet shows. This is how staging,
+commits, branch switches and a fetch reach the packet, also in a linked
+worktree.
 
-Launch-time `--intent` belongs to the human; `toimija intent` lets the agent
-declare (or sharpen) it once it actually knows what it is doing. Same rules:
-advisory text on the session marker, never an assignment, never a lock.
+**Build folders.** Events under a directory named `target`, `_build`, `deps`
+or `node_modules`, at any depth, prompt one `git status` instead of a refresh.
+A tracked file there still shows as modified and refreshes the packet.
+Untracked build output costs only the check. Only a whole name counts:
+`src/targeted.rs` is source.
 
-Then, from anywhere in the repo, see who else is live:
+**Cost.** A refresh reads one `git status`. While the refs have not moved, the
+facts derived from them (the base, the merge-base, the branch diff, recent
+commits, ahead and behind) are carried over from the last read. An idle tick
+starts no git process. `run` costs what `enter` costs plus nine git processes,
+however long the agent works. `tests/cli_budgets.rs` pins the number of git
+processes each command starts.
 
-```bash
-toimija sessions          # human listing: LIVE / STALE / CLOSED + warnings
-toimija sessions --json   # same, machine-readable (carries marker-scan coverage)
-toimija sessions --prune  # run the configured stewardship pass
-toimija clean --dry-run   # preview all expired Toimija-owned artifacts
-```
+**Safety net.** Once a minute the watcher compares one `git status`, and the
+changed files' contents, with the packet. A missed event leaves a packet stale
+for a minute at most. Two cases are slow: a change to a global excludes file
+waits for that minute or the next real change, and a change to global Git
+configuration waits for the next refresh that reads the refs. The debounce
+waits for a 300 ms gap in events, so steady churn, such as a long build,
+delays refreshes until it pauses.
 
-Concluded sessions stay visible after their directories are reclaimed:
+**Failed refresh.** When a refresh fails, for example on a `repo.yaml` that
+does not parse, the Markdown packet gets a notice at the top that names the
+failure and since when, above the last good content. The next successful
+refresh removes it. The failure is logged once per distinct error. The refresh
+is retried on the next change, and otherwise after half a second, then after a
+delay that doubles up to one minute.
 
-```bash
-toimija history
-```
+**After sleep.** When the machine wakes, the next tick refreshes the packet
+and the session's heartbeat.
 
-Concluded sessions are distilled into the append-only
-`.toimija/history.jsonl`. `run` records clean teardown immediately; pruning
-journals an unrecorded closed or stale session before removing its directory.
-Append failure keeps the directory. `toimija history` renders newest first;
-`--json` emits every valid record as an array. Malformed lines are counted and
-skipped. The v1 shape is documented by
-`docs/schemas/history-record.v1.schema.json`. History records no handoffs, so
-it writes `handoffs` and `handoffs_total`, which v1 requires, empty. The one
-handover concept is now Toimija's own `toimija handover` (issue #251), which
-replaced ohjaa's (decision D8.4 made ohjaa's the one concept; ohjaa no longer
-runs sessions): a note per working copy, shown in the packet, not a history
-record.
+## The packet
 
-```
-LIVE
-  claude  1782675584-99172
-    branch: feat/sessions-awareness
-    worktree: /Users/yair/projects/toimija
-    intent: add sessions command
-    scope: src/sessions.rs
-    started: 12m ago
-    seen: 8s ago
-    packet: .toimija/sessions/1782675584-99172/current.md
-
-WARNINGS
-  - 2 live sessions on branch feat/sessions-awareness: claude (…), codex (…)
-```
-
-`sessions` is read-only and local: it reports presence, resolves best-effort
-liveness (`active` / `stale` / `closed`), exposes the separate `pid_check`
-(`alive` / `dead` / `unknown`) in JSON, and warns when sessions overlap (same
-branch, same worktree, intersecting declared scope, unknown intent, …).
-Staleness measures **inactivity, not lifetime**: `run`'s watcher stamps a
-`last_seen_at` heartbeat on the marker at every packet refresh, and a session
-is stale when its process is gone or it has shown no activity for 90 minutes —
-so a day-long working session stays `LIVE`, while a frozen one decays honestly
-(see `docs/proposals/0002-heartbeat-staleness.md`). The
-warnings are **descriptive, never prescriptive** — Toimija coordinates
-visibility, not decisions. It never assigns work, signals or kills an agent, or
-touches the network. The human remains the orchestrator. Prefer separate
-worktrees for true isolation: same codebase, separate sessions.
-
-Toimija-owned working artifacts do not accumulate forever. `toimija clean`
-runs one stewardship pass over closed or stale sessions past retention (live
-and unreadable sessions are never touched), old `.toimija/runs/*` transcripts,
-and exact `*.tmp-{pid}-{sequence}` atomic-write leftovers older than one hour.
-Sessions are journaled before deletion; append failure keeps the directory.
-`--dry-run` lists the same candidates without deleting or compacting anything.
-`enter` and `run` invoke that pass at the end of setup when `auto_sweep` is
-enabled; those automatic sweeps log one warning and never fail the command.
-`sessions --prune` remains available and uses the same implementation.
-The pass never enters a symlink: when `.toimija`, `.toimija/sessions`, or
-`.toimija/runs` is anything but a real directory it refuses outright (an
-explicit `clean` fails and says why), and nothing is deleted unless its parent
-resolves inside the repository's own `.toimija/`.
-
-The same holds for everything Toimija writes. Every directory it writes into
-under `.toimija/` must be a real directory, checked from the repository root
-down; files are opened with `O_NOFOLLOW` and replaced by rename, so a symlink
-is refused or replaced, never written through. A committed `.toimija ->
-../elsewhere` makes `enter`, `refresh`, `run`, `init`, `snapshot --lease`, and
-`clean` fail loudly and write nothing. Outside `.toimija/` Toimija writes no
-files at all: AGENTS.md, CLAUDE.md, Git hooks and harness settings stay yours.
-
-When the agent exits, `run` prints a one-glance session summary to stderr —
-diffing the Git state from entry to exit so you see what the session actually
-did (a switched branch, a moved HEAD, the working tree it leaves behind,
-branch scope since the merge-base, refresh count), plus a consumption report
-built purely from toimija-owned state — the session marker, never anything
-observed about the agent — so non-use is visible
-instead of silent:
-
-```
-toimija run: session summary
-  branch:    main → feature/login
-  HEAD:      a1b2c3d → e4f5a6b (moved)
-  worktree:  2 staged, 1 unstaged, 0 untracked
-  scope:     4 file(s) changed on this branch since merge-base
-  refreshed: 12 time(s) while you worked
-  intent:    "add login flow" (declared at launch)
-  expansions: 2 scope path(s) declared while working
-```
-
-The worktree line counts the repository's work. Toimija's own files are never
-counted, even where Git lists them (a repository without `toimija init` has no
-`.toimija/.gitignore`), and neither are `.teko/` and `.sykli/`: the paths
-`dirty` and the token leave out. The packet treats them the same way: the JSON
-keeps them in its file lists, as Git reported them, and the Markdown counts
-them apart (`- untracked: 0 (+9 generated, not counted)`) and names them in one
-line under each list. They raise no warning and are in neither the changed
-surface nor Read first.
-
-## Verify before read — the packet is a claim, not a hope
-
-A context packet is only useful while it still matches the repo. A map an agent
-trusts *after* the territory moved is worse than no map. So Toimija makes
-freshness checkable instead of assumed, in three escalating moves:
-
-```mermaid
-flowchart LR
-    A["agent wants context"] --> V{"toimija verify"}
-    V -- "fresh" --> R["read the packet"]
-    V -- "stale" --> F["refresh"] --> V
-```
-
-1. **Fingerprint.** Every packet embeds a `toimija-consistency-v3` token — a
-   deterministic, content-based fingerprint of what `git status` lists (HEAD,
-   index, unstaged tracked content, untracked content, conflicts, in-flight Git
-   operations). No clocks, no mtimes, no file sizes: same content, same token.
-   It leaves out exactly what faija's tree-identity.v1 leaves out — generated
-   state under `.toimija/`, `.teko/` and `.sykli/`, but not
-   `.toimija/repo.yaml`, which always counts — so refreshes, sessions,
-   snapshots, harness runs and a gate's receipts never invalidate the packet.
-   The token is a freshness check, not an identity: what `git status` does not
-   list, it does not see (README, "Repository points", "Known gaps"). (v2,
-   before KATANA D9, also watched `.sykli/`.)
-2. **Gate.** `toimija verify` (`--json` for machines) verifies the ambient session packet when wrapped by `run`, and the
-   repo-level packet otherwise. `--packet <path>` selects one explicitly. It
-   recomputes the fingerprint against the live repo and exits
-   non-zero, with reasons, when the packet is stale, missing, unsupported,
-   unsafe, or unverifiable. A packet whose token is of an earlier version
-   (`toimija-consistency-v2` or `-v1`) is `not_comparable`: its token keeps the
-   meaning it was written with, so it is neither fresh nor stale, and a refresh
-   replaces it. A harness calls this before *every* packet read:
-   pass → trust the packet; fail → refresh first. `run` performs the same check
-   on its own entry packet before launching the agent. It retries one startup
-   race, then refuses to launch if the packet is still stale, unverifiable, or
-   Git is in an in-progress operation or conflict state.
-3. **Freeze.** When "fresh right now" is not enough — a reader that must see
-   one coherent version while the worktree keeps moving — `toimija snapshot`
-   materializes the working tree (untracked included) as an immutable,
-   content-addressed git tree object. Files are then readable *at that version*
-   via `git cat-file`, and `--lease` pins the snapshot against `git gc` until
-   released. The tree is faija's tree-identity.v1 (`.toimija/`, `.teko/` and
-   `.sykli/` left out, `.toimija/repo.yaml` forced in), computed by the
-   canonical procedure in the vendored `faija-terms`; snapshots, leases,
-   repository points and session packets all carry that one tree and name it
-   (`tree_algorithm`), with the token's version beside the token. The token is
-   read again once the tree is written, so a move the token observes is never
-   paired with the earlier token.
-
-   A tree is identified by its oid, and a repository point by its id, which is
-   derived from the tree: equal point ids mean equal trees, by construction.
-   Equal tokens do not. A token can stay put while the tree changes: an
-   ignored, untracked `.toimija/repo.yaml`; commits inside a submodule or a
-   nested repository; `assume-unchanged` and `skip-worktree` files; edits the
-   stat cache misses (`core.checkStat=minimal`, `core.trustctime=false`);
-   namespace content a sparse checkout keeps out of the cone; and a change
-   undone before the re-read (A → B → A). Each of those gives two point ids,
-   and each stays a blind spot for freshness. A reader that needs one exact
-   State compares tree oids or point ids, never tokens.
-
-   A clean token (`dirty: false`) does not mean `tree == HEAD^{tree}`. A lease
-   marker written before Toimija named its tree algorithm lists as
-   `toimija-legacy`, and one written before it named its token's version lists
-   as `token version unrecorded`: each keeps the meaning it was written with.
-
-The token is a freshness check, not a timestamp and not an identity: verify
-tells you whether what `git status` lists has changed; a snapshot gives you a
-tree that cannot change, and a point gives that tree an id. Either way,
-nothing reads repo state on faith.
-
-## Chain of custody — the seal
-
-Work done by agents should be auditable the way commits are: *what produced
-this, from what state, and does it still verify?* Toimija's packets carry a
-**seal** for exactly this — a small, versioned attestation block under the
-packet's `seal` key. Its envelope format is `sauma-envelope.v2`, a name it keeps
-from sauma, the tool that wrote the sealing code; sauma is archived, and Toimija
-carries that code as its own (`src/seal.rs`, over the vendored canonical crate;
-the design's history is proposal 0003). The digest covers the whole packet, the
-seal included, without the seal's own `digest`:
-
-- **`digest`** — sha256 over the artifact's canonical form: compact JSON with
-  object keys sorted at every level. Canonical means *portable*: any tool, in
-  any language, recomputes the same digest from the same content — a foreign
-  walker can verify an artifact it did not produce.
-- **`provenance`** — typed edges to what the artifact was built from (a git
-  state, a consistency token, another artifact). The edge vocabulary is an
-  **open enumeration**: readers must tolerate kinds they do not know.
-- **`producer` + `anchored_at`** — who wrote it, pinned to which consistency
-  token.
-
-Because every envelope anchors to a consistency token, artifacts from
-*different tools* link into one verifiable chain:
-
-```mermaid
-flowchart RL
-    EV["an agent's event<br/>digest + anchored_at"] -- "anchored to the token" --> PKT["toimija packet<br/>digest + consistency token"] -- "token computed over" --> GITSTATE["the exact Git state"]
-```
-
-That chain reads: *this review was produced against this exact packet, which
-was compiled from this exact repo state* — git-blame for agent decisions.
-Convention first, deliberately: joining the chain means writing one JSON block
-correctly, not importing a library or calling a service. There is no provenance
-daemon, no graph database, no index — passive files plus a reader, the same
-shape as git itself.
-
-`cargo xtask why <digest|token|session-id>` is the in-repo dev walker: it
-verifies the local sealed artifacts (Toimija's packets under `seal`, and other
-tools' artifacts in `.toimija/runs/`, which carry the same envelope under the
-key `sauma`), renders verified token/digest links as an indented chain,
-tolerates unknown provenance edge kinds, and reports digest mismatches without
-walking through them.
-
-## One-time repo setup
-
-```bash
-toimija init            # seed .toimija/repo.yaml (never overwrites)
-```
-
-`init` creates the durable repo manifest, `.toimija/repo.yaml` — fill in
-`role`, `not`, and `boundaries`; only a human can supply the repo's purpose
-and limits. The generated packets (`.toimija/current.*`) belong in
-`.gitignore`; they are not committed.
-
-Agent docs stay yours. Tell agents there to run `toimija enter` first (or
-launch them with `toimija run`, which puts the packet in the launch prompt);
-Toimija installs no preamble, hook or harness setting on the repository.
-
-> repo.yaml gives durable meaning. Git gives live work state. Toimija compiles both into current context.
-
-## Current context
-
-`.toimija/current.md` is the readable live packet. `.toimija/current.json` is the
-machine-readable live packet. Both are regenerated by `refresh`, `enter`, `watch`,
-and `run`, and are git-ignored.
-
-The packet includes:
-
-- an **artifact ID** shared by the Markdown/JSON pair; each file is atomically
-  replaced, and JSON is authoritative if an interrupted refresh leaves IDs that
-  do not match. The bytes are staged in `.toimija/tmp/`, whose own
-  `.gitignore` (`*`) hides it from Git, so a reader that lists untracked files
-  and then stats them (`git add --all`, as `sykli run` does) never meets a temp
-  file the rename is about to take away
-- branch / HEAD / dirty state: `dirty` reads the lists the consistency token
-  reads, filtered as it filters them, so a path under `.toimija/`, `.teko/` or
-  `.sykli/` (other than `.toimija/repo.yaml`) never makes a state dirty while
-  the token and the point id say it is unchanged; the file lists themselves
-  are what `git status` reported
-- ahead / behind: commits HEAD has that its upstream lacks and the reverse, counted
-  from local refs (no fetch); without an upstream, against `origin/<default>`,
-  or, with no `origin` and exactly one other remote, that remote's default
-  branch, which is then the base too; `git.ahead_behind_ref` names which. In a
-  shallow repository Git counts only the history it has, and a cut can hide the
-  commits both sides share, so the counts are left null there and the line
-  says `unknown — the repository is shallow` while `ahead_behind_ref` still
-  names the ref
-- staged / unstaged / untracked files
-- rename/copy origin paths and similarity when Git reports them, plus conflict
-  index stages (mode and object ID)
-- collection **coverage** on the branch diff
-  (`available` / `degraded` / `failed` with a reason and source), so an empty
-  list from a failed collection is never presented as a real observation
-- changed surface
-- read first: configured and important docs (always, first), then changed
-  files and their companion tests
-- validation plan
-- warnings
-- on per-session packets, a **session** block — the session's id, declared
-  intent and scope, freshly read at each refresh (so `run --intent` and
-  `toimija intent` reach wrapped harnesses), the entry branch and HEAD, and,
-  while the session runs, an `execution` context carrying the session's
-  repository point and changed surface (Kelpo reads
-  `session.execution.repository` to bind evidence to a session). An ended
-  session stands at no point: the last packet `run` writes for it, as it exits,
-  has a session block and no `execution`. The point's tree is tree-identity.v1,
-  named in `session.execution.extensions.tree_algorithm`, and its token's
-  version in `session.execution.extensions.consistency_algorithm`; a packet
-  without those names predates them
-- a **consistency** block — a versioned `toimija-consistency-v3` freshness token
-  over HEAD, staged/index state, unstaged tracked state, untracked state,
-  conflict state, and unsafe Git operation state, leaving out what
-  tree-identity.v1 leaves out
-- a **refresh token** over the collected Git state — repository state only,
-  never anything read from the observer's environment, so the same repo yields
-  the same token from any process — used by `verify`, and by `watch` over the
-  part one `git status` reads
-- a **seal** — a local attestation digest and provenance edge set for the
-  packet artifact, under the key `seal`
-
-See **Verify before read** for what the token buys you, **Chain of custody**
-for what the seal buys you, and **Example context output** below for a full
-rendering.
-
-### Packet compatibility
-
-The JSON packet is the machine contract; Markdown is a bounded presentation of
-the same artifact and may omit optional sections to meet its budget. The packet
-names its schema in `schema` (and again in `seal.schema`):
-
-- New optional fields may be added without a schema-version bump.
-- Removing, renaming or changing a field bumps the schema version. The current
-  schema is `toimija-context.v3`.
-- `toimija-context.v3` is v2 with its envelope under the key `seal` instead of
-  `sauma`, and nothing else changed: the envelope inside is the same
-  `sauma-envelope.v2`, with the same fields, and its digest is the same rule
-  over the packet as it now reads. A reader of v2 that reads `sauma.digest`,
-  `sauma.provenance`, `sauma.anchored_at` or `sauma.schema` reads `seal.digest`
-  and so on instead, and checks `schema` for `toimija-context.v3`. A digest
-  recomputed by hand drops `seal.digest`, not `sauma.digest`, before
-  canonicalizing. `toimija verify --json` reports a tampered seal as
-  `seal_digest_mismatch` (was `sauma_digest_mismatch`).
-- `toimija-context.v2` was v1 without its `relevance` block (scope, read order,
-  coupling, risk and their history coverage).
-- `verify` reads a packet under its own schema's rules only: one an earlier
-  toimija wrote (`toimija-context.v2` or `.v1`) is `invalid_packet`, with a
-  message naming its schema and `toimija refresh`, which replaces it. A
-  `toimija run` started before the install keeps its own code, and its watcher
-  rewrites its session's packets in the old schema a moment after each change,
-  so for a packet that briefs a live session the message says so: a refresh
-  holds only until that next change, and the way out is to restart the session
-  under the installed toimija. Restart live sessions after installing.
-- Consumers must ignore unknown fields and tolerate unknown provenance edge
-  kinds.
-- Unix paths are JSON strings when valid UTF-8 and `{ "bytes_hex": "..." }`
-  otherwise. Consumers must accept both forms.
-- Do not materialize additive defaults before verifying the seal's digest;
-  verify the raw JSON value first.
-
-`toimija verify --json` is the verify-before-read gate for machines. Exit 0
-and `"status": "verified"` carry the selected `packet_path`, the consistency
-`algorithm` and `token`, and the `artifact_digest`; any non-zero exit is a
-refusal to trust the packet, with one of these statuses: `missing_packet`,
-`invalid_packet`, `missing_consistency`, `not_comparable`,
-`unsupported_consistency_algorithm`, `stale_packet`, `session_not_live`,
-`seal_digest_mismatch`, `unsafe_git_operation`, `unverifiable_repository`,
-`io_error`. A `stale_packet` whose consistency token still matches says so in
-its message: only the ref facts changed (upstream, base, ahead/behind, after a
-fetch or a push), and HEAD, the index and the working tree did not.
-
-## Commands
-
-Ordered by workflow:
-
-```bash
-toimija run codex                    # agent entrypoint
-toimija run --intent "..." --task "..." -- claude  # task travels in the launch prompt
-toimija run --intent "..." --scope src/x.rs -- codex  # declare what you'll touch (advisory)
-toimija sessions           # who else is live in this repo (read-only awareness)
-toimija intent "..."       # wrapped agent declares why it is here (via TOIMIJA_SESSION)
-toimija handover --next "..."  # leave a note for the next agent in this working copy
-toimija history            # durable records of concluded sessions
-toimija clean --dry-run    # preview the unified stewardship sweep
-toimija clean              # reclaim expired owned artifacts
-toimija enter              # refresh + print the packet as agent preflight
-toimija refresh            # recompute current.md/current.json
-toimija watch              # keep current.* fresh on Git/filesystem changes
-toimija context            # print the packet without wrapping an agent
-toimija context --json
-toimija context --identity --json  # only what repo.yaml says the repo is; one git process
-toimija verify             # does the selected session/repo packet still match?
-toimija verify --json      # machine-readable verify-before-read gate
-toimija snapshot           # freeze the worktree as an immutable git tree (content @ version)
-toimija validate --plan    # print the validation plan; never runs it
-toimija repository-point --json  # the exact current repository point
-toimija doctor             # check Toimija setup
-toimija init               # create .toimija/repo.yaml if missing
-```
-
-| Command | What it does |
-|---|---|
-| `run <cmd>` | Agent entrypoint: enter, watch, launch command, return command status. `--intent` says why (optional); `--task` travels in the composed launch prompt of known agents; `--scope` declares what you'll touch (advisory). Use `--` before child flags. Exit summary includes the consumption report. Outside a repository: a session with no packet (see "Outside a repository"). |
-| `sessions` | List sibling sessions live in this repo (read-only awareness); `--json` for machine output; `--prune` runs the same configured stewardship pass as `clean`; `--outside-repos` (the default outside a repository) lists sessions opened outside any repository. |
-| `intent "<text>"` | Wrapped agent declares/updates its own session's intent (and `--scope` paths) via the `TOIMIJA_SESSION` handshake. Advisory, never a lock. |
-| `handover` | Leave a note for the next agent in this working copy: `--unfinished`, `--next`, `--surprised` (at least one). Writes `.toimija/handover.json`, replacing the one before it, and refreshes the live packet; every packet built here shows it under "Last handover" with when it was written and the branch and HEAD at the time. No session needed. |
-| `history` | List durable concluded-session records newest first; `--json` emits every valid record. Malformed lines are counted and skipped. |
-| `clean` | Reclaim expired sessions, run transcripts, and exact orphan temp files; `--dry-run` lists candidates without mutation. Explicit cleanup propagates errors. |
-| `enter` | Refresh and print the current packet as agent preflight. |
-| `refresh` | Recompute `current.md`/`current.json`. |
-| `watch` | Keep `current.md`/`current.json` fresh on Git/filesystem changes. |
-| `context` | Print the context packet without wrapping an agent. `--identity --json` prints only what the repository says it is — the packet's `repo` object, from `.toimija/repo.yaml`, under schema `toimija-identity.v1` — with one git process, and collects no Git state. |
-| `verify` | Check that the ambient session packet (or repo packet when sessionless) still matches the live repo; `--packet` selects one explicitly. Exits non-zero when not verified — including `session_not_live` when the packet briefs a session that has closed or whose process is gone. A packet whose token is of an earlier version is `not_comparable`: neither fresh nor stale; refresh it. `--json` includes the selected path, digest, and token. |
-| `snapshot` | Materialize the working tree as an immutable git tree object (its tree-identity.v1 tree, content addressed at the current token), so a reader can read files *at a version*. `--lease`/`--release <id>`/`--list` pin a snapshot (a git ref) so `git gc` retains it while held; a lease id is 1-128 ASCII letters, digits, `.`, `-`, or `_`, not starting with `.`, and anything else is refused before anything is touched; `--json` emits the snapshot record, with `tree_algorithm` beside the tree (`algorithm` stays the token's version); a lease records `token_algorithm`, and one taken by an earlier toimija lists as `token version unrecorded`. Refuses in an unsafe git state, and when the worktree moves while the tree is written. |
-| `validate --plan` | Print the validation plan; never runs validation. |
-| `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`, its tree's algorithm in `extensions.tree_algorithm`; `--json` for tools. The token is re-read after the tree is written (one `git status`); a worktree that moved is read afresh after a short pause, up to three times in all, then refused. The point id is `rpoint_v3_` and a SHA-256 over the repository, the token and its version, and the tree and its algorithm: equal ids mean equal trees, by construction. The token, named in `extensions.consistency_algorithm`, is a freshness check and does not see every change to the tree (README, "Repository points", "Known gaps"); `dirty: false` does not mean `tree == HEAD^{tree}`; ids of different versions are not comparable. |
-| `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
-| `landed` | Report whether a branch's work is present in a base ref, by content. |
-| `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` (which keeps Git away from the packet, sessions, history and temp files) if missing. |
-
-`--for-diff` and `--budget` tune the packet; `--json` switches the print commands
-(`context`, `enter`, `refresh`) to JSON. Global options: `-v/--verbose`,
-`-q/--quiet`, `--log-format text|json`, `--no-color`. Logs go to stderr; command
-output goes to stdout. Text logs are coloured only when stderr is a terminal,
-and never with `--no-color` or a non-empty `NO_COLOR`.
-
-`toimija --version` names the build as well as the version number:
-`toimija 0.2.0 (a1b2c3d)`, the short commit the binary was built from, with
-`, dirty` when the code built (`src/`, `vendor/`, `build.rs`, the Cargo
-manifest and lock) differed from that commit. `build.rs` reads it with git at
-build time; a build without git or a repository says `unknown commit`.
-
-## Boundaries / non-goals
-
-The boundaries are the feature: Toimija stays fast, predictable, and safe to
-wrap around anything because of what it refuses to do. They are structural, not
-aspirational — `doctor --strict` fails the build when the config and the agent
-docs drift apart on them.
-
-Toimija does not:
-
-- execute validation or checks of any kind (`validate --plan` only prints the
-  plan; checks and their receipts are Evidence, which sykli owns)
-- decide: assign work, judge completion, or close anything — Toimija reports
-  facts and refuses to decide
-- auto-commit or auto-stash
-- fetch from the network
-- run as a hidden daemon (`watch`/`run` are foreground-only and explicitly invoked)
-- own or edit `AGENTS.md` / `CLAUDE.md`, Git hooks, or harness settings —
-  nothing is installed on the repository
-- observe or police what a wrapped agent reads or does mid-session — delivery
-  is structural at launch, evidence is reported at exit, nothing in between
-- parse code with Tree-sitter
-- use LSP / SCIP / Kythe / MCP in the current workflow
-
-Default posture is advisory: it warns and explains; it does not block humans. The
-one opt-in gate is `doctor --strict`.
-
-## Ownership: `.toimija/` is Toimija's, root files are yours
-
-Toimija should not own agent policy; it should make agent work cheaper by keeping
-a live, repo-aware context layer an agent asks for before it works.
+The packet is one artifact in two forms:
 
 ```text
-.toimija/repo.yaml      owned by you        durable repo meaning (boundary + validation hints)
-.toimija/current.md     owned by Toimija    repo-level live packet / latest summary (regenerated, git-ignored)
-.toimija/current.json   owned by Toimija    repo-level machine-readable packet (regenerated, git-ignored)
-.toimija/sessions/      owned by Toimija    per-session live packets and markers from `run` (regenerated, git-ignored)
-.toimija/runs/          owned by run harnesses  retained transcripts (14 days by default)
-.toimija/history.jsonl  owned by Toimija    bounded durable memory of concluded sessions
-AGENTS.md               owned by you        agent policy — Toimija never writes it
-CLAUDE.md               owned by you        agent policy — Toimija never writes it
+.toimija/current.md                   Markdown, for a reader with no session
+.toimija/current.json                 the same, as JSON
+.toimija/sessions/<id>/current.md     one session's packet
+.toimija/sessions/<id>/current.json
 ```
 
-`toimija init` writes `.toimija/repo.yaml` and `.toimija/.gitignore` and nothing
-else; on a fresh config it prints **Next steps** lines pointing at the identity
-fields you still need to fill and at what your agent docs should say. Agent
-policy files stay human-owned: Toimija never writes them.
+A session's packet is the one its agent trusts. The repository-level pair is a
+summary written by whoever refreshed last. It carries a session block only
+while that session runs.
 
-## Validation
+`enter`, `refresh`, `watch` and `run` write the packet. `context` prints it
+without writing. `--json` prints JSON, `--for-diff` adds a section that lists
+committed, staged, unstaged, untracked and conflicted files apart, and
+`--budget` caps the Markdown.
 
-`toimija validate --plan` prints commands. It never runs them.
+### What it holds
 
-The plan has tiers — `Focused` (derived from the changed surface), `Fast`,
-`Strict`, `Full`, and `Privileged` — drawn from `.toimija/repo.yaml`'s
-`validation` section, or inferred from the repo kind when the config leaves
-them empty. The agent runs the commands itself and reports the exact output.
+- **Repository**: name, role, what it is not, its kind, and other languages
+  found.
+- **Workset contract**: the rule for reading. Work from the changed surface
+  and Read first. Configured exclusions are not scanned. Reading outside the
+  workset is allowed when a concrete dependency needs it, and is declared
+  first with `toimija intent "<why>" --scope <path>`.
+- **Git**: branch, HEAD, upstream, ahead and behind, merge-base, recent
+  commits, and whether an operation such as a merge or rebase is in progress.
+- **Working tree**: staged, unstaged, untracked, renamed and conflicted paths,
+  with rename origins and conflict stages where Git reports them.
+- **Changed surface**: working-tree changes together with the files changed by
+  commits on this branch since the merge-base. A clean tree on a feature
+  branch still reports its diff.
+- **Read first**: see [Read first](#read-first).
+- **Validation plan**: see [Validation plans](#validation-plans).
+- **Coverage** of the branch diff: `available`, `degraded` or `failed`, with a
+  reason. An empty list from a failed read is never shown as an observation.
+- **Warnings**, **configured exclusions** and **boundaries**.
+- **Last handover**: the note the previous agent left.
+- **Session**, in a session's packet: id, intent, scope, the entry branch and
+  HEAD, and while the session runs an `execution` block with the session's
+  repository point. The last packet written as a session exits has no
+  `execution` block.
+- **Consistency token**: a hash of the Git state the packet describes. See
+  [Checking freshness](#checking-freshness-verify).
+- **Refresh token**: a hash of the collected Git state. It uses repository
+  state only, so one repository gives one token from any process.
+- **Seal**: a digest of the packet and where it came from. See
+  [The seal](#the-seal).
+- **Artifact id**, shared by the Markdown and JSON pair. Each file is replaced
+  atomically. When an interrupted refresh leaves two ids, the JSON is right.
 
-Two languages have full adapters (Rust, Elixir: inferred tiers plus the
-focused per-unit heuristics below). Go, Python, JS/TS and Terraform get the
-**minimum language pack** — a data table, not a module: manifest detection
-(`go.mod`, `pyproject.toml`/`setup.py`, `package.json`, a `.tf` file at the
-root), inferred test + lint tiers (`go test ./...`/`go vet ./...`,
-`pytest`/`ruff check .`, `npm test`/`npm run lint`/`npm run typecheck`,
-`terraform fmt -check -recursive`), and companion-test hints (`foo.go` → `foo_test.go`,
-`foo.py` → `test_foo.py` or `tests/test_foo.py`, `foo.ts` →
-`foo.test.ts`/`foo.spec.ts`, existence-checked). Node commands require matching
-string-valued scripts; Python commands require explicit pytest and Ruff
-configuration. Unproven candidates are omitted with a note. Full adapters
-outrank minimum packs in polyglot repos, minimum-pack plans carry the honest
-`minimum language pack` note, and `repo.yaml` validation config beats inference
-everywhere. Adding a language is one `RepoKind` variant plus one table row in
-`src/adapters/pack.rs`; a language gets a dedicated adapter only when it needs
-project-aware behavior such as Rust workspace or Elixir umbrella scoping.
+Ahead and behind are counted from local refs, with no fetch: against the
+upstream, else `origin/<default>`, else the default branch of the only remote.
+`git.ahead_behind_ref` names which. In a shallow repository the counts are
+null and the line says `unknown — the repository is shallow`.
 
-Context packets also report secondary languages found by a manifest-only walk
-bounded to depth 3 and 4096 entries. The walk honors configured exclusions,
-hard-skips `.git` and vendored/build trees, and never follows symlinks. Nested
-manifests of the primary kind are suppressed; every other observation is
-report-only and cannot add validation commands.
+`dirty` reads what the consistency token reads. A path in a generated-state
+folder never makes a state dirty. The JSON file lists still show everything
+`git status` reported. The Markdown counts generated paths apart (`-
+untracked: 0 (+9 generated, not counted)`), and they are in neither the
+changed surface nor Read first.
 
-Other languages are still useful through repository configuration. For example,
-a Java repository can keep its build tool's commands explicit in
-`.toimija/repo.yaml`:
+### Example
 
-```yaml
-validation:
-  fast:
-    - ./gradlew test
-  strict:
-    - ./gradlew check
-  full:
-    - ./gradlew build
-```
-
-Maven repositories can use `./mvnw test`, `./mvnw verify`, and
-`./mvnw package` instead. This keeps validation honest: Toimija renders the
-commands but never runs them. A built-in Java minimum pack, or support for
-another language, should add one data row with its root manifest, test and lint
-commands, source extensions, and existence-checked companion-test templates;
-do not add a language-specific adapter module.
-
-The `Focused (from changed surface)` tier is derived, not configured: for a Rust repo it maps changed `.rs` files to their owning crate (the nearest enclosing `Cargo.toml`) and emits `cargo test -p <crate>` for a fast first pass, deduped per crate and rendered above the authoritative `Fast` tier. For an Elixir umbrella it maps changed `.ex`/`.exs` files to their owning app (`apps/<name>/`) and emits `mix test apps/<name>/test`; a single-app mix repo gets no focused tier, since `mix test` already is the whole run. It is advisory and additive — never a substitute for the full run. When only manifests or docs change, or a change spans more units than the cap, the tier is omitted and the whole-repo command stands.
-
-## `doctor --strict` — the drift guard
-
-Plain `toimija doctor` is advisory: it reports setup gaps as warnings and exits
-`0`. `toimija doctor --strict` escalates every actionable warning to a failure and
-exits non-zero, so a CI step or pre-commit hook can block drift. It is a lexical
-drift guard — no AI, no semantic comparison. It checks:
-
-- `.toimija/repo.yaml` exists and parses
-- `repo.name`, `repo.role`, and `boundaries` are non-empty
-- a validation plan exists (configured or inferable from the repo kind)
-- Git ignores every path `init`'s `.toimija/.gitignore` names (`current.*`,
-  `sessions/`, `history.*`, `runs/`, `snapshots/`), by whatever ignore rules it
-  reads (`git check-ignore`)
-- every `context.important_docs` path exists on disk
-- a `CLAUDE.md`, if there is one, imports `AGENTS.md` (`@AGENTS.md` as a word
-  of its own, outside code): where a CLAUDE.md exists, Claude Code loads
-  AGENTS.md only through that import
-- an agent doc still routes work through the `toimija enter` preflight
-- each boundary sentence still appears in the agent docs
-  (`AGENTS.md` / `CLAUDE.md` / `important_docs`), matched case- and
-  whitespace-insensitively so re-wrapping a line does not trip the gate
-
-```bash
-toimija doctor --strict
-```
-
-A failing doctor ends, on stderr, with the checks that failed, by name, such
-as `toimija doctor --strict: 1 check failed (inside git repo); the report above
-says why and what to do`.
-
-## Did the work land? (`toimija landed`)
-
-"Did my branch land?" is a **content** question, not an ancestry question. Under
-squash merges this matters: a squash-merge synthesizes a fresh commit with no edge
-back to your branch tip, so `git merge-base --is-ancestor <tip> origin/main`
-reports `false` even when every line landed. Patch-id checks (`git cherry`) fail
-too, because squash fuses commits. Only tree/content comparison survives both.
-
-`toimija landed` answers per touched path: is the branch's *own change* to it
-already present in the base ref (default `origin/main`)? For each path it asks git
-whether the branch's change applies cleanly forward onto base (so it is still
-absent → not reflected), reverse-applies (so it is exactly present → reflected), or
-neither — meaning base has diverged on that file. The diverged case is reported as
-**ambiguous**, never silently as landed: a false "landed" is the dangerous
-direction for branch cleanup. A line-containment heuristic (are the lines the
-branch added present, and the lines it removed gone?) rides along as *evidence* on
-the ambiguous entry, but does not decide the verdict.
-
-```bash
-git fetch                         # re-validate against live state first
-toimija landed --base origin/main
-```
-
-```text
-Toimija landed
-
-- base: origin/main
-- branch: feat/doctor-strict-drift-guard (a13296a)
-- status: landed
-- reason: all 7 touched path(s) are reflected in `origin/main`
-- reflected: 7/7
-```
-
-Status is `landed` (every touched path's change is proven present, or HEAD is
-the base or behind it, so every commit on it is reachable from the base, and
-the worktree holds no uncommitted work beyond Toimija's own files), `not
-landed` (all proven absent, or HEAD is in the base but the worktree holds
-uncommitted work, which is in no commit; one `git status` tells), `partially
-landed` (a clean split of reflected and not), `ambiguous` (base diverged on at
-least one path, so landing could not be proven — the paths and their heuristic
-evidence are listed), or `unknown` (no merge-base — unrelated histories or an
-unfetched base — or commits of HEAD's own that change nothing, such as a commit
-and its revert). Away from the base, only commits are compared: work not yet
-committed does not change the verdict. The check runs against a scratch index
-seeded from the base, so it never touches your index or working tree. Useful for
-stacked PRs: after a parent merges via squash, check a child with `toimija landed`
-rather than trusting ancestry.
-
-## Example context output
-
-`toimija context` (and the `.toimija/current.md` written by `refresh`/`enter`)
-renders like this:
+`toimija context` in a small repository with one unstaged change:
 
 ```text
 # Toimija Context
-- compiled-from: 4 changed file(s), 2 recent commit(s) — reading this replaces that discovery
+- compiled-from: 2 changed file(s), 3 recent commit(s) — reading this replaces that discovery
 
 ## Repo
-- name: toimija
-- role: internal CLI that compiles local Git context for coding agents
-- not: platform, dashboard, dispatcher
+- name: demo
+- role: service that signs users in
+- not: (unset — add to .toimija/repo.yaml)
 - kind: Rust
+
+## Languages
+- primary: Rust (Cargo.toml at root)
+- also present: none
+
+## Last handover
+- written: 2026-11-10 14:30 UTC on fix/login-redirect at 0cb97f9
+- for the next agent: the redirect is fixed; tests still to write
 
 ## Workset contract
 Work from this packet's Changed surface and Read first; they are your working
@@ -993,39 +419,37 @@ you are not under a session, state the expansion and its reason in your
 visible output). Expansion is never forbidden; invisible expansion is.
 
 ## Git
-- branch: feat/git-ceramics
-- HEAD: abc123
+- branch: fix/login-redirect
+- HEAD: 9edfc14e60af8fe7a655146568b120f30a63863a
 - detached: false
 - upstream: unavailable
 - ahead/behind: unknown — no upstream and no remote default branch
-- merge-base: origin/main @ def456
+- merge-base: main @ 199d5873d4180dfb0c076ac555e1686e74920b7a
 - dirty: true
 - staged: 0
-- unstaged: 2
-- untracked: 1
+- unstaged: 1
+- untracked: 0
 - conflicts: 0
 
 ## Git state
-Toimija starts from Git's state machine: HEAD, index, working tree, branch, and merge-base.
+Toimija starts from Git’s state machine: HEAD, index, working tree, branch, and merge-base.
 
 ## Branch surface
-- compared against: origin/main
-- merge-base: def456
-- files changed since merge-base: 3
+- compared against: main
+- merge-base: 199d5873d4180dfb0c076ac555e1686e74920b7a
+- files changed since merge-base: 2
 
 ## Read first
 - README.md (important doc)
-- AGENTS.md (important doc)
-- docs/reference.md (important doc)
-- src/git.rs (changed)
-- src/render.rs (changed)
-- tests/git_state.rs (changed)
+- .toimija/repo.yaml (changed)
+- src/auth.rs (changed)
+- tests/auth.rs (matching test heuristic)
 
 ## Validation plan
 - source: inferred
 ### Focused (from changed surface)
 - derived from the changed surface — a fast first pass, not a substitute for the full run
-- cargo test -p toimija
+- cargo test -p demo
 ### Fast
 - cargo test --workspace
 ### Strict
@@ -1040,44 +464,764 @@ Toimija starts from Git's state machine: HEAD, index, working tree, branch, and 
 
 ## Warnings
 - No upstream detected. Branch divergence is unavailable.
-- Untracked files exist. They will not be committed unless added.
+- Validation inferred from Rust repo shape, not proven by Sykli
 - Working tree has unstaged changes.
 
 ## Configured exclusions
-- target/
+- none
 
 ## Changed surface
 - source: branch diff since merge-base
-- 4 files — see Read first
+- 2 files — see Read first
 
 ## Recent commits
-- abc123 feat: make Git state explicit
-- def456 feat: add config-driven context rules
+- 9edfc14 chore: describe the repository
+- 0cb97f9 chore: toimija config
+- 199d587 feat: add login
 
 ## Working tree
 ### Staged
 - none
 ### Unstaged
-- modified src/git.rs
-- modified src/render.rs
+- modified src/auth.rs
 ### Untracked
-- tests/git_state.rs
+- none
 ### Conflicts
 - none
-
 ```
 
-## Config
+### Read first
 
-`.toimija/repo.yaml` is the durable repo manifest. Build and vendor directories (`target`, `_build`, `deps`, `node_modules`, `vendor`) are filtered from the changed surface automatically, matched as a path segment anywhere in the tree (so nested `test_projects/app/target/` is caught too), and so is generated tool state at the root (`.toimija/` other than `repo.yaml`, `.teko/`, `.sykli/`). This is applied live each run — not written into `repo.yaml` — so it tracks the repo as its kind changes. `context.safe_to_ignore` is for your own additional rules on top.
+Read first is a list of files, built from paths. Toimija does not scan the
+repository, read history for it, or parse source code. The order is:
+configured `read_first` paths, important docs, changed files, then tests that
+match a changed file. A path appears once. Configured and important entries
+always appear; changed files and tests fill the rest of the 25-entry cap.
+
+Matching tests are found by path, and only when the file exists:
+
+- **Rust**: `src/foo.rs` points to `tests/foo.rs`, `tests/foo_test.rs`,
+  `src/tests.rs` or `src/foo_test.rs`. `src/foo/bar.rs` points to
+  `tests/foo/bar.rs` and sibling test files. `src/foo/mod.rs` points to
+  `tests/foo.rs` or `tests/foo_test.rs`.
+- **Elixir**: `lib/foo/bar.ex` points to `test/foo/bar_test.exs`. `mix.exs`
+  points to `test/test_helper.exs`.
+- **Go, Python, JavaScript and TypeScript**: `pkg/foo.go` points to
+  `pkg/foo_test.go`; `src/foo.py` to `src/test_foo.py` or
+  `tests/test_foo.py`; `app/foo.ts` to `app/foo.test.ts` or
+  `app/foo.spec.ts`.
+
+A file that is itself a test is never given a test hint.
+
+### Budgets and ordering
+
+The JSON packet is always complete. The Markdown is bounded:
+
+- The budget is an approximate cap in UTF-8 bytes, not tokens.
+- Repository identity, the workset contract, Git state, Read first, the
+  validation plan, warnings, exclusions and the changed-surface summary are
+  mandatory. They are never cut, and they may exceed a very small budget.
+- An optional section is included whole or left out whole. Left-out sections
+  are named under `Budget omissions`, with item counts and where the JSON
+  holds them.
+- A list is capped at 25 entries and ends with `... and N more (truncated)`.
+
+Output is ordered so that packets can be compared:
+
+- Changed files are sorted by path and listed once. Warnings are sorted and
+  listed once.
+- Top-level sections are `##`, blocks inside them are `###`, and a blank line
+  precedes each top-level section.
+- An empty list that is known reads `none`. A value Git could not give reads
+  `unavailable`.
+- Paths are read from Git as bytes. JSON keeps a UTF-8 path as a string and
+  writes any other path as `{ "bytes_hex": "..." }`. Markdown escapes tabs,
+  newlines, control characters, backslashes and invalid bytes, so a file name
+  cannot forge structure.
+
+### Compatibility
+
+The JSON packet is the contract for tools. It names its schema in `schema`,
+and again in `seal.schema`. The schema is `toimija-context.v3`.
+
+- New optional fields may appear without a new schema version.
+- Removing, renaming or changing a field gives a new schema version.
+- A reader ignores fields it does not know, tolerates provenance kinds it does
+  not know, and accepts both path forms.
+- A reader verifies the seal's digest over the raw JSON before it fills in
+  defaults.
+- `verify` reads only its own schema. A packet with another schema is
+  `invalid_packet`, and the message names `toimija refresh`, which replaces
+  it.
+
+## Checking freshness: `verify`
+
+```bash
+toimija verify
+toimija verify --json || toimija refresh
+toimija verify --packet .toimija/current.json --json
+```
+
+A packet is useful only while it matches the repository. Every packet carries
+a consistency token: a hash, by content, of what `git status` lists. That is
+HEAD, the index, changed tracked files, untracked files, conflicts and
+operations in progress. It uses no clocks, modification times or file sizes:
+the same content gives the same token.
+
+`verify` computes the token again from the live repository and compares.
+Under `run` it checks the session's packet; otherwise the repository-level
+one. `--packet` selects a file. Exit 0 means verified. Any other exit means
+the packet is not to be trusted, and the output says why.
+
+With `--json`, a verified packet reports `"status": "verified"`, the
+`packet_path`, the consistency `algorithm` and `token`, and the
+`artifact_digest`. The other statuses are:
+
+| Status | Meaning |
+| --- | --- |
+| `missing_packet` | There is no packet at that path. |
+| `invalid_packet` | The file is not a packet this version reads. |
+| `missing_consistency` | The packet has no consistency block. |
+| `not_comparable` | The token's version is one this version does not compute. The packet is neither fresh nor stale. |
+| `unsupported_consistency_algorithm` | The token names an algorithm Toimija does not know. |
+| `stale_packet` | The repository has changed. When only ref facts moved (upstream, base, ahead and behind), the message says so. |
+| `session_not_live` | The packet briefs a session that has closed or whose process is gone. |
+| `seal_digest_mismatch` | The packet's content does not match its seal. |
+| `unsafe_git_operation` | Git is in the middle of an operation, or has conflicts. |
+| `unverifiable_repository` | The repository's state cannot be read. |
+| `io_error` | The file cannot be read. |
+
+A packet with no seal, or a seal whose schema and anchor do not match the
+packet's schema and token, is refused.
+
+The token is a freshness check, not an identity. What `git status` does not
+list, the token does not see. [Known gaps](#known-gaps) lists the cases.
+
+## Repository points
+
+A repository point names one exact state of a repository: the worktree written
+as a Git tree, with the consistency token beside it.
+
+```bash
+toimija -q repository-point --json
+```
+
+```json
+{
+  "protocol": { "major": 1, "minor": 0 },
+  "repository": {
+    "id": "rpoint_v3_48f8052f7b046d137d2b6cd2d71558bece4706e3877388246e3c805acfad18bd",
+    "repository": "repo_78f24503915d687826f623de5de1cd204958fe7086f56c8b30833d41990cb6ff",
+    "consistency_token": "sha256:36f3ee63d6a14669238371a467f17a8c8ce4d4422e2ef4e3b299996e35e098be",
+    "tree_oid": "e009288e3f8f775b96c883b83a32a243bfc07a09",
+    "branch": "fix/login-redirect",
+    "dirty": true,
+    "captured_at": "2026-11-10T14:30:57.253835Z"
+  },
+  "extensions": {
+    "consistency_algorithm": "toimija-consistency-v3",
+    "tree_algorithm": "tree-identity.v1"
+  }
+}
+```
+
+The output is a
+[`false-agent-protocol`](https://github.com/false-systems/false-agent-protocol)
+v1 `RepositoryPointEnvelope`. Inside a session the same point is at
+`$FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the session's packet carries it as
+`session.execution.repository`.
+
+The tree is [tree-identity.v1](#tree-identityv1): every tracked path and every
+untracked path that is not ignored, without the generated-state folders, and
+with `.toimija/repo.yaml` always included. Snapshots, leases, repository
+points and session packets all carry this one tree and name its algorithm.
+
+### What a point guarantees
+
+**Equal point ids mean equal trees.** The id is `rpoint_v3_` followed by the
+SHA-256 of six fields, each ended by a NUL byte: the marker `rpoint_v3_`, the
+repository ref, the token's version, the token, the tree's algorithm and the
+tree. The reverse does not hold: two points can share a tree and differ in
+HEAD, the index or the branch.
+
+**The token is a freshness check, not an identity.** Equal tokens do not mean
+equal trees. The token leaves out exactly what tree-identity.v1 leaves out, so
+a tool that writes into a generated-state folder moves neither the tree nor
+the token.
+
+**The token is read again after the tree is written.** If it moved, the point
+is read afresh after a short pause, up to three times in all, and then
+refused. A point never pairs a tree with a token from a different moment that
+the token can see.
+
+**`dirty: false` means `git status` reported nothing outside the
+generated-state folders.** It does not mean the tree equals `HEAD^{tree}`.
+Several of the cases below print `dirty: false` with a tree that differs from
+HEAD's.
+
+A reader that needs one exact state compares tree ids or point ids, never
+tokens.
+
+### Known gaps
+
+Each of these changes the tree and not the token.
+`tests/cli_point_identity.rs` has one test for each. Point ids always differ
+between the state before and the state after. Freshness is blind: after the
+change, `verify` still passes the packet and a held point still looks current.
+
+| Change | Point ids | Token |
+| --- | --- | --- |
+| Edit or create an ignored, untracked `.toimija/repo.yaml` | differ | blind |
+| Commit again inside a submodule that is already ahead | differ | blind |
+| Commit inside a nested, untracked repository | differ | blind |
+| Edit a file marked `assume-unchanged` | differ | blind |
+| Edit a file marked `skip-worktree` | differ | blind |
+| A same-size edit with the modification time put back, under `core.checkStat=minimal` and `core.trustctime=false` | differ | blind |
+| One commit in a sparse and in a full checkout | differ | blind |
+| A change made and undone while the tree is written | the point names the tree it wrote | blind |
+
+Three edge cases belong to tree-identity.v1 itself. An ignored
+`.toimija/repo.yaml` outside a sparse cone makes the tree write fail. So does
+a symlinked `.toimija/`. And "not ignored" depends on each machine's global
+ignore file, so one content can have two trees on two machines.
+
+### Versions
+
+Points and tokens carry their version. The token is `toimija-consistency-v3`
+and point ids begin `rpoint_v3_`. A token or id of another version keeps the
+meaning it was written with. Toimija never recomputes or relabels it, and a
+comparison across versions says **not comparable**, never equal or different.
+
+The token has the shape `sha256:<hex>`. Its hash covers the version name, so
+tokens of two versions never coincide.
+
+## tree-identity.v1
+
+Tree identity says which content makes up one version of a repository's work.
+It is how Toimija names an exact state. The rule is written down here and
+implemented in `src/tree_identity.rs`.
+
+**Definition.** The tree identity is the Git tree id of the repository's work
+content: every tracked path and every untracked path that is not ignored,
+without the namespaces of generated tool state that the version fixes, and
+with the tool configuration that the version forces in, whether or not Git
+ignores it.
+
+- **Excluded namespaces.** `.toimija`, `.teko` and `.sykli`: three folders of
+  generated tool state at the repository root.
+- **Forced-in configuration.** `.toimija/repo.yaml`. It is configuration, so
+  it is part of the work.
+
+### The procedure
+
+The steps run in this order against a throwaway index:
+
+| Step | Git operation |
+| --- | --- |
+| Seed from HEAD | `read-tree HEAD`. A failure is tolerated: a repository with no commit has no tracked files. |
+| Overlay the worktree | `add -A -- <excludes>`, with one exclude pathspec for each namespace, such as `:(exclude,top,glob)[.]toimija/**`. |
+| Drop the namespaces | `rm --cached -r -q --ignore-unmatch .toimija .teko .sykli`. This removes namespace content that is tracked. |
+| Force-add the configuration | `add -f -- .toimija/repo.yaml`, only when the file exists in the worktree. |
+| Write the tree | `write-tree`. Its output is the tree identity. |
+
+Any tool can run these steps with plain `git` and get the same tree.
+`tests/tree_identity_conformance.rs` does exactly that.
+
+### Rules
+
+- **Frozen.** The namespaces, the configuration path and the step order are
+  part of the version. Changing one changes every identity already recorded,
+  so it needs a new version. A test, `v1_definition_is_frozen`, pins all
+  three, and an edit to any of them fails the build.
+- **No registration.** The namespaces are not read from configuration.
+  Configuration that changes later must not change what an earlier identity
+  means.
+- **Only real tool state is left out.** A namespace is in the list because a
+  tool writes generated state there. A folder that nothing writes to is
+  ordinary work content, and it moves the identity.
+- **The id is recorded.** Every record that carries a tree names its
+  algorithm, `tree-identity.v1`, beside it.
+- **A tree identity is not the whole state of a repository.** HEAD, the index
+  and an operation in progress are outside it. Two repositories can share a
+  tree and differ in the rest.
+
+## Snapshots
+
+```bash
+toimija snapshot             # write the tree, print its id
+toimija snapshot --lease     # also pin it with a ref
+toimija snapshot --list      # held leases
+toimija snapshot --release <ID>
+```
+
+`verify` says whether a packet is fresh now. A reader that needs one version
+to stay readable while the worktree keeps moving takes a snapshot.
+`snapshot` writes the working tree, untracked files included, as a Git tree
+object under tree-identity.v1. Files are then readable at that version with
+`git cat-file`.
+
+- `--lease` pins the snapshot with a Git ref under `refs/toimija/`, so
+  `git gc` keeps it until `--release`. Under `run` the lease uses the
+  session's id.
+- A lease id is 1 to 128 ASCII letters, digits, `.`, `-` or `_`, and does not
+  start with `.`. Anything else is refused before anything is touched. A lease
+  id is a name, never a path.
+- `--json` prints the record. `tree_algorithm` names the tree's algorithm and
+  `algorithm` the token's version. A lease records `token_algorithm`.
+- A lease marker that names no tree algorithm lists as `toimija-legacy`, and
+  one that names no token version lists as `token version unrecorded`.
+- `snapshot` refuses while Git is in the middle of an operation, and when the
+  worktree moves while the tree is written.
+- The listing shortens tree ids at character boundaries. It displays a marker
+  and does not validate the tree id the marker claims.
+
+## The seal
+
+Every packet carries a seal under the key `seal`. It answers three questions:
+what is this, what was it built from, and has it changed. The envelope's
+fields are fixed by the JSON schemas in [`docs/schemas/`](schemas/).
+
+- **`digest`**: SHA-256 over the packet's canonical form, which is compact
+  JSON with object keys sorted at every level and arrays in order. The digest
+  covers the whole packet, the seal included, without the seal's own `digest`
+  field. Any tool in any language can compute it again.
+- **`provenance`**: typed links to what the packet was built from: a Git
+  state, a consistency token, another artifact. The set of kinds is open, and
+  a reader tolerates kinds it does not know.
+- **`producer`** and **`anchored_at`**: who wrote it, and the consistency
+  token it is pinned to.
+
+Because a seal is anchored to a consistency token, an artifact from another
+tool that names the same token can be tied to the packet, and through it to
+the exact Git state. Joining that chain means writing one JSON block. There is
+no service and no index: files and a reader.
+
+`cargo xtask why <digest|token|session-id>` is a development tool in this
+repository. It verifies the sealed artifacts under `.toimija/`, prints the
+verified links as an indented chain, tolerates unknown provenance kinds, and
+reports a digest mismatch without walking through it.
+
+## Sessions
+
+Each `toimija run` opens its own session with its own packet, so agents in one
+repository do not write over each other's context.
+
+### `sessions`
+
+```bash
+toimija sessions
+toimija sessions --json
+toimija sessions --prune
+toimija sessions --outside-repos
+```
+
+```text
+LIVE
+  claude  1794321108-81405
+    branch: fix/login-redirect
+    worktree: /work/demo
+    intent: fix the login redirect
+    scope: src/auth.rs
+    started: 3s ago
+    seen: 3s ago
+    packet: .toimija/sessions/1794321108-81405/current.md
+```
+
+The listing groups sessions as LIVE, STALE and CLOSED, then prints warnings
+where sessions overlap: the same branch, the same worktree, scopes that
+intersect, an unknown intent. The warnings describe. They are not locks or
+assignments, and Toimija never signals or stops an agent.
+
+- **Stale means inactive, not old.** The watcher stamps `last_seen_at` on the
+  marker at every refresh. A session is stale when its process is gone or it
+  has shown no activity for 90 minutes. A session that works all day stays
+  live.
+- **`pid_check`** in the JSON is the process probe on its own: `alive`, `dead`
+  or `unknown`. A stale session with a dead process is over. One with an alive
+  or unknown process is uncertain.
+- **`pid_start`** records when the process started, on Linux and macOS, so a
+  process id that passed to another program reads `dead`. On other systems a
+  reused id can keep an old session uncertain.
+- Listing is read-only and never rewrites a marker. The JSON also reports how
+  much of the marker scan succeeded.
+- Outside a repository, `sessions` lists the sessions opened outside any
+  repository, and says so.
+
+Separate worktrees give real isolation: the same code, separate sessions.
+
+### `intent`
+
+```bash
+toimija intent "repairing token refresh" --scope src/auth/
+```
+
+A session declares or sharpens why it is there. `intent` finds its session
+through `TOIMIJA_SESSION`. `--scope` adds paths to the declared scope. Both
+are advisory text on the marker.
+
+### `handover`
+
+```bash
+toimija handover --unfinished "the parser's error tests" --next "the lexer is done; start at src/parse.rs"
+toimija handover --surprised "the build writes to a shared folder"
+```
+
+Any agent, with or without a session, leaves a note for the next one in this
+working copy. At least one of `--unfinished`, `--next` and `--surprised` is
+required. The note is written to `.toimija/handover.json` and replaces the one
+before it. Every packet built in this working copy shows it under "Last
+handover", with when it was written and the branch and HEAD at the time.
+`handover` refreshes the live packet as it writes.
+
+### `history`
+
+```bash
+toimija history
+toimija history --json
+```
+
+Concluded sessions are kept as records in `.toimija/history.jsonl`, one JSON
+object per line. `run` records a clean exit at once. Pruning records a closed
+or stale session before it removes the directory, and keeps the directory when
+the record cannot be written. `history` prints the newest first, and `--json`
+prints every valid record as an array. Malformed lines are counted and
+skipped. The record's shape is
+[`docs/schemas/history-record.v1.schema.json`](schemas/history-record.v1.schema.json).
+Its `handoffs` and `handoffs_total` fields are always empty: a handover is a
+note per working copy, not a history record.
+
+### `clean`
+
+```bash
+toimija clean --dry-run
+toimija clean
+```
+
+One pass removes what has expired: closed or stale sessions past retention,
+old transcripts under `.toimija/runs/`, and leftover temporary files of
+Toimija's own atomic writes that are older than one hour. Live sessions and
+unreadable sessions are never touched. `--dry-run` lists the same candidates
+and changes nothing. `sessions --prune` runs the same pass.
+
+`enter` and `run` run this pass at the end of setup when `auto_sweep` is on.
+An automatic pass logs one warning on failure and never fails the command. An
+explicit `clean` reports its errors.
+
+## Workspaces
+
+A workspace is a folder that holds repositories and is not a repository
+itself. It describes itself with one file, `.toimija/workspace.yaml`. In a
+workspace, `context`, `enter` and `run` work from the folder, and the agent
+gets a packet about the folder: its repositories, their branches, who is
+working where, and what was left for the next agent.
+
+### The file
+
+```bash
+toimija init --workspace
+```
+
+`init --workspace` writes `.toimija/workspace.yaml` as a commented template,
+and `.toimija/.gitignore`. It refuses inside a Git repository, where `init`
+seeds the repository's own configuration, and it refuses when the file is
+already there.
+
+```yaml
+role: the services of one product
+read_first:
+  - NOTES.md
+  - docs/architecture.md
+```
+
+- **`role`**: one line that says what the folder is for.
+- **`read_first`**: paths, relative to the folder, that an agent starting
+  here reads first.
+
+Both fields are optional, and an empty file is a workspace. A field Toimija
+does not know is an error that names the field.
+
+### Discovery
+
+Inside a Git repository nothing changes: the repository is nearer, so it
+wins, even when a workspace file sits above it. Outside any repository,
+Toimija walks up from the current directory to the first folder that has
+`.toimija/workspace.yaml`. The nearest one wins. There is no list of
+workspaces anywhere else.
+
+### The packet
+
+`toimija context` in a workspace prints the packet as Markdown, and
+`--json` prints it as JSON with the schema `toimija-workspace.v1`. This is a
+workspace of three repositories with one session in a repository and one in
+the folder itself:
+
+```text
+# Toimija Workspace
+
+## Workspace
+- folder: /work
+- role: the services of one product
+
+## Read first
+- NOTES.md
+- docs/architecture.md (missing)
+
+## Repositories
+- api
+  - role: service that signs users in
+  - branch: main
+  - session: claude (live): fix the expired-session redirect
+  - handover: none
+- web
+  - role: not set
+  - branch: feat/login
+  - sessions: none
+  - handover: the login form is done; the redirect test still fails
+- docs
+  - role: not set
+  - branch: detached at 2e584f3
+  - sessions: none
+  - handover: none
+
+## Sessions in this folder
+- claude (live): plan the release
+
+## Not in this packet
+Uncommitted work and validation are per repository: run `toimija context` inside a repository for them.
+```
+
+What it holds:
+
+- **Workspace**: the folder, its role, and its read-first list. A path that
+  does not exist is marked `(missing)`.
+- **Repositories**: the entries directly inside the folder that have a `.git`
+  directory or a `.git` file. Those with an open session or a waiting
+  handover come first, then the rest by name. For each:
+  - its role, from its own `.toimija/repo.yaml`;
+  - its branch, read from its `HEAD` file. A `.git` file is followed through
+    its `gitdir:` line. A detached HEAD shows as `detached at` and the short
+    commit id. A `HEAD` that cannot be read shows as `unknown`;
+  - its open sessions, live or stale, each with its agent and intent;
+  - the first line of a waiting handover.
+- **Sessions in this folder**: the sessions `run` opened in the workspace
+  folder or a plain folder below it.
+- **Not read**: anything that could not be read, with the reason. This
+  section appears only when there is something to name.
+- **Not in this packet**: one line that says what is left out.
+
+The packet is built by reading files. It starts no git process, however many
+repositories the folder holds. The one git process a command starts here is
+the question every command asks first: is this folder inside a repository?
+
+### Commands in a workspace
+
+| Command | What it does |
+| --- | --- |
+| `init --workspace` | Write `.toimija/workspace.yaml`. |
+| `context` | Print the workspace packet. `--json` prints it as JSON. |
+| `enter` | Print the workspace packet. It writes nothing. |
+| `run <agent>` | Open a session as in any folder outside a repository, with the workspace packet in the launch prompt of a known agent. The session is recorded in the state directory, and nothing is written in the folder. |
+| `sessions` | List the sessions opened outside any repository, on this machine. |
+| `doctor` | Check that the workspace file parses and that its read-first paths exist. |
+
+`--for-diff`, `--budget` and `context --identity` shape a repository's packet
+and are refused in a workspace. The other commands need a repository.
+
+### Limits
+
+- A workspace packet does not show uncommitted work, ahead and behind, or a
+  validation plan. Run `toimija context` inside a repository for those.
+- A repository's role, a session's intent and a handover are each shown as
+  one line of at most 100 characters. The JSON packet carries them whole.
+- Only repositories directly inside the folder are listed. A repository two
+  levels down is not.
+- The branch comes from the `HEAD` file as it is on disk. Toimija does not
+  ask Git to interpret it.
+- The packet is not written to disk, has no seal and is not checked by
+  `verify`. Print it again to get the current state.
+
+## Validation plans
+
+```bash
+toimija validate --plan
+```
+
+`validate --plan` prints commands and where each comes from. It never runs
+them. The agent runs them and reports the output.
+
+The plan has tiers: `Focused`, `Fast`, `Strict`, `Full` and `Privileged`. They
+come from the `validation` section of `.toimija/repo.yaml`, and from the kind
+of repository where the configuration leaves them empty. Configured commands
+are added to the inferred ones, and duplicates are removed without reordering.
+`validation.replace_inferred: true` drops the inferred commands, and the plan
+says so.
+
+**A declared gate.** A repository with a `sykli.json` at its root has declared
+its checks, so the plan is that gate and nothing is inferred beside it:
+
+```bash
+mkdir -p .sykli && sykli run sykli.json --json > .sykli/receipt.json && sykli verify .sykli/receipt.json --contract sykli.json
+```
+
+The plan lists the task names the contract declares, with `source:
+sykli.json`. Commands in `repo.yaml` add to it. `replace_inferred: true` keeps
+the gate. Only `validation.gate` changes it: `gate: false` names no gate, and
+a string names that command instead, for example `mise exec -- sykli …`. A
+blank string is refused when the configuration loads.
+
+**The focused tier** is derived from the changed surface. In a Rust repository
+it maps changed `.rs` files to the crate that owns them and prints `cargo test
+-p <crate>`. In an Elixir umbrella it maps changed files to their app and
+prints `mix test apps/<name>/test`. It is a quick first pass, not a substitute
+for the full run. It is left out when only manifests or documents changed, or
+when the change spans too many crates or apps.
+
+### Languages
+
+| Language | Detected by | Support |
+| --- | --- | --- |
+| Rust | `Cargo.toml` | Full: inferred tiers, focused tier, test hints. |
+| Elixir | `mix.exs` | Full: inferred tiers, focused tier for umbrellas, test hints. |
+| Go | `go.mod` | Minimum: `go test ./...`, `go vet ./...`, test hints. |
+| Python | `pyproject.toml` or `setup.py` | Minimum: `pytest`, `ruff check .`, test hints. Each command needs its tool configured. |
+| JavaScript, TypeScript | `package.json` | Minimum: `npm test`, `npm run lint`, `npm run typecheck`, test hints. Each command needs a matching script. |
+| Terraform | a `.tf` file at the root | Minimum: `terraform fmt -check -recursive`. |
+
+A candidate command that cannot be shown to exist is left out with a note. A
+minimum plan carries the note `minimum language pack`. A full adapter outranks
+a minimum one in a repository with several languages, and configuration
+outranks inference everywhere. Adapters give planning hints and do not parse
+source code.
+
+The packet also reports secondary languages. They are found by a walk for
+manifests that goes three levels deep and reads at most 4096 entries, skips
+`.git`, vendored and build folders and configured exclusions, and follows no
+symlinks. Secondary languages are reported only and add no commands.
+
+Any other language works through configuration:
+
+```yaml
+validation:
+  fast:
+    - ./gradlew test
+  strict:
+    - ./gradlew check
+  full:
+    - ./gradlew build
+```
+
+## `doctor`
+
+```bash
+toimija doctor
+toimija doctor --strict
+```
+
+`doctor` reports setup gaps as warnings and exits 0. `doctor --strict` turns
+every actionable warning into a failure, so a CI step or a pre-commit hook can
+stop drift. The check compares text. It checks that:
+
+- `.toimija/repo.yaml` exists and parses;
+- `repo.name`, `repo.role` and `boundaries` are not empty;
+- there is a validation plan, configured or inferred;
+- Git ignores every generated path that `.toimija/.gitignore` names;
+- every `context.important_docs` path exists;
+- a `CLAUDE.md`, where there is one, imports `AGENTS.md` with `@AGENTS.md`;
+- an agent document sends agents through `toimija enter`;
+- each boundary sentence appears in the agent documents (`AGENTS.md`,
+  `CLAUDE.md` or the important docs), compared without regard to case or
+  line wrapping.
+
+A failing run ends, on stderr, with the names of the checks that failed.
+
+## `landed`
+
+```bash
+git fetch
+toimija landed --base origin/main
+```
+
+```text
+Toimija landed
+
+- base: origin/main
+- branch: feat/doctor-strict-drift-guard (a13296a)
+- status: landed
+- reason: all 7 touched path(s) are reflected in `origin/main`
+- reflected: 7/7
+```
+
+`landed` says whether a branch's work is in a base ref, by content. Ancestry
+cannot answer this after a squash merge: the squash commit has no link to the
+branch tip, and patch ids fail too, because the commits are fused.
+
+For each path the branch touched, `landed` asks Git whether the branch's
+change still applies to the base (not there yet), applies in reverse (there),
+or neither (the base has diverged on that file). The diverged case is reported
+as ambiguous, never as landed. A line comparison is shown as evidence on an
+ambiguous path and does not decide the status.
+
+| Status | Meaning |
+| --- | --- |
+| `landed` | Every touched path's change is in the base, or HEAD is in the base and the worktree holds no uncommitted work. |
+| `not landed` | No change is in the base, or HEAD is in the base and the worktree holds uncommitted work. |
+| `partially landed` | Some paths are in the base and some are not. |
+| `ambiguous` | The base diverged on at least one path. The paths and their evidence are listed. |
+| `unknown` | There is no merge-base, or HEAD's own commits change nothing. |
+
+Away from the base, only commits are compared. The check uses a scratch index
+and never touches your index or working tree. `--base` defaults to
+`origin/main`, and `--json` prints the report as JSON.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` when missing. `--workspace` creates `.toimija/workspace.yaml` in a folder of repositories. |
+| `run <agent>` | Open a session, start the agent with the packet, keep the packet current, exit with the agent's status. |
+| `enter` | Write the packet and print it. This is the first step for an agent that is not under `run`. |
+| `context` | Print the packet without writing it. `--identity --json` prints only what `repo.yaml` says the repository is, under schema `toimija-identity.v1`, with one git process. |
+| `refresh` | Write the packet again. |
+| `watch` | Keep the packet current until stopped, in the foreground. |
+| `verify` | Check that a packet still matches the repository. |
+| `sessions` | List the sessions in this repository, with overlap warnings. |
+| `intent "<text>"` | Declare or update this session's intent and scope. |
+| `handover` | Leave a note for the next agent in this working copy. |
+| `history` | List the records of concluded sessions. |
+| `clean` | Remove expired sessions, transcripts and temporary files. |
+| `validate --plan` | Print the validation plan. |
+| `repository-point` | Print the exact current repository point. |
+| `snapshot` | Write the working tree as a Git tree object, and optionally pin it. |
+| `landed` | Say whether this branch's work is in a base ref, by content. |
+| `doctor` | Check the setup; `--strict` fails on drift. |
+
+`toimija --help` marks `watch`, `run`, `sessions` and `snapshot` as
+experimental. `toimija <command> --help` lists each command's flags with
+examples.
+
+Global options: `-v` and `-vv` for more log detail, `-q` for none,
+`--log-format text|json`, and `--no-color`. Logs go to stderr and command
+output goes to stdout. Text logs are coloured only when stderr is a terminal,
+and never with `--no-color` or a non-empty `NO_COLOR`.
+
+`toimija --version` prints the version and the build: `toimija 0.2.0
+(a1b2c3d)`, the short commit the binary was built from, with `, dirty` when
+the built code differed from that commit. A build without Git or outside a
+repository says `unknown commit`.
+
+Every command finds its worktree with one `git rev-parse`, reads `git status`
+once, and reads nothing its output does not show.
+
+## Configuration
+
+`.toimija/repo.yaml`:
 
 ```yaml
 repo:
-  name: toimija
-  role: internal CLI that compiles local Git context for coding agents
+  name: example
+  role: service that processes customer events
   not:
-    - platform
-    - dashboard
+    - deployment controller
 
 context:
   default_budget: 8000
@@ -1087,15 +1231,17 @@ context:
   read_first:
     - docs/architecture.md
   safe_to_ignore:
-    - target/
-    - _build/
-    - deps/
+    - generated/
 
 validation:
   replace_inferred: false
-  fast: []
-  strict: []
-  full: []
+  fast:
+    - cargo test
+  strict:
+    - cargo fmt --check
+    - cargo clippy --all-targets -- -D warnings
+  full:
+    - cargo test --workspace
   privileged: []
 
 stewardship:
@@ -1104,125 +1250,143 @@ stewardship:
   runs_retention_days: 14
   history_max_records: 500
 
+agents:
+  aider:
+    prompt: --message
+
 boundaries:
-  - Keep the core as a single Rust crate.
-  - Do not add MCP, LSP, SCIP, Tree-sitter, network calls, or background daemons yet.
+  - Do not add network calls.
 ```
 
-`context.read_first` adds repo-specific files to the Read first section when they exist.
-`context.safe_to_ignore` lists directory rules that are omitted from the changed surface and read-first hints. Each rule is matched as a path segment (or contiguous segment sequence) anywhere in the tree, not just at the repo root.
-Configured validation commands are added to the inferred Rust or Elixir tiers by default and duplicate commands are removed without reordering them. Set `validation.replace_inferred: true` only when the repository config intentionally defines the complete plan; the plan source and notes make that replacement visible. It never removes the gate a `sykli.json` declares: `validation.gate: false` does, and `validation.gate: "<command>"` names that command for the gate instead (a repository that runs sykli through `mise exec`, say). A blank `validation.gate` is refused when the config loads, like a malformed `agents:` entry.
-Stewardship values are optional and default to the values above. Retention and
-history limits must be greater than zero; invalid values are refused and
-reported by `doctor` instead of being silently clamped. `auto_sweep: false`
-disables only the best-effort `enter`/`run` hook; explicit `clean` and
-`sessions --prune` still work.
+- **`repo`**: what the repository is and is not. It appears at the top of
+  every packet.
+- **`context.default_budget`**: the Markdown cap in bytes when `--budget` is
+  not given.
+- **`context.important_docs`**: documents every packet lists under Read first.
+  `doctor` checks that they exist.
+- **`context.read_first`**: more files to list under Read first, when they
+  exist.
+- **`context.safe_to_ignore`**: directory rules left out of the changed
+  surface and Read first. A rule matches a path segment, or a run of segments,
+  anywhere in the tree.
+- **`validation`**: see [Validation plans](#validation-plans).
+- **`stewardship`**: what `clean` keeps. The values above are the defaults.
+  Retention and history limits must be greater than zero; other values are
+  refused and `doctor` reports them. `auto_sweep: false` turns off only the
+  automatic pass in `enter` and `run`.
+- **`agents`**: how a command takes a launch prompt: `positional` or a flag.
+  Names match the base name of the command. A malformed entry is refused when
+  the configuration loads.
+- **`boundaries`**: sentences that say what the repository must not become.
+  `doctor --strict` checks that the agent documents repeat them.
 
-## Build from source & development
+Build and vendor folders (`target`, `_build`, `deps`, `node_modules`,
+`vendor`) are left out of the changed surface without configuration, at any
+depth, and so are the generated-state folders at the root.
+
+## Security
+
+- Toimija loads no plugins, product code or dynamic libraries.
+- The repository cannot choose what runs. `agents:` says how a prompt is
+  delivered, and the agent is always the command you name.
+- `run` starts the command directly with its arguments. No shell interprets
+  them.
+- Nothing runs after the command you started ends.
+- Toimija makes no network calls.
+- Nothing is written, appended or deleted through a symlink. Every directory
+  Toimija writes into under `.toimija/` must be a real directory, checked from
+  the repository root down. Files are opened without following links and
+  replaced by rename. A `.toimija` that is a symlink makes `enter`, `refresh`,
+  `run`, `init`, `snapshot --lease` and `clean` fail and write nothing.
+- `clean` deletes nothing unless its parent resolves inside the repository's
+  own `.toimija/`.
+- Packet bytes are staged in `.toimija/tmp/`, which Git ignores, so a tool
+  that lists untracked files never meets a file that is about to be renamed
+  away.
+
+## Limits
+
+Toimija does not:
+
+- run validation or checks, or write their receipts. That is sykli's part;
+- assign, judge, close or dispatch work;
+- call a model provider;
+- apply patches, commit or stash;
+- fetch from the network;
+- observe what an agent reads or does while it works. Delivery happens at
+  launch, the summary at exit, and nothing in between;
+- write `AGENTS.md`, `CLAUDE.md`, Git hooks or harness settings;
+- parse source code, or build an MCP, LSP, SCIP, Kythe or Tree-sitter index;
+- coordinate work across repositories. A [workspace](#workspaces) shows the
+  repositories of one folder and assigns nothing.
+
+Known limits of what it does:
+
+- Git state is read through the Git command line.
+- The primary language comes from a manifest at the repository root.
+- Upstream and merge-base can be unavailable in a shallow, new, detached or
+  local-only repository. The packet says so.
+- Coverage says what Toimija read, not what is certain.
+
+## Working on Toimija
+
+Toimija is one Rust crate. The `xtask` crate holds development commands and is
+not part of an ordinary build.
 
 ```bash
 cargo build
-cargo run -- context        # run locally
-cargo install --path .      # install the binary from this checkout
+cargo run -- context
+cargo install --path .
 ```
 
-Release artifacts are built by GitHub Actions when a `v*` tag is pushed. The
-workflow runs on False Systems ARC/Hetzner ARM64 runners and uploads a Linux
-aarch64 binary as a workflow artifact.
-
-Run the standard gate before claiming completion:
+Before a change is done:
 
 ```bash
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo test -p xtask
 ```
 
-### Pre-commit hook
+`cargo xtask gate` runs the first three. `cargo xtask install-pre-commit-hook`
+installs a Git pre-commit hook, once per clone and again after `xtask`
+changes. The hook formats the staged crates, stages the result, then runs
+clippy and the tests, and blocks the commit when either fails.
 
-A `xtask` crate provides a git pre-commit hook via
-[`devx-pre-commit`](https://docs.rs/devx-pre-commit). It is dev-only and kept out
-of the shipped binary by `default-members = ["."]` in the workspace, so bare
-`cargo build`/`test`/`clippy` and the release build never compile it. Install the
-hook once per clone:
+### Landing without a pull request (a trial)
 
-```bash
-cargo xtask install-pre-commit-hook
-```
+Two development commands in `xtask` try out landing work without a pull
+request. They are not part of the `toimija` binary.
 
-The hook formats the staged Rust crates, re-stages the result, then runs
-`cargo clippy --all-targets -- -D warnings` followed by `cargo test`, blocking the
-commit if either fails — the same gates CI enforces. Re-run the command after
-editing `xtask`.
+- `cargo xtask review` starts a fresh agent on the committed branch, another
+  one than the author where one is installed, with reading tools only. It
+  answers `fine`, `look` or `blocking`. A reviewer that is missing, fails or
+  gives no verdict is no review, never a pass. The verdict is kept as a git
+  note on the commit's tree (`refs/notes/toimija/review`). Only a person at a
+  terminal overrules a blocking review, with `--overrule "<why>"`.
+- `cargo xtask land` pushes the branch to `main` when `origin/main` is an
+  ancestor of the commit, sykli says its tree passed, and the review of that
+  tree against that `main` is not blocking. It shares the review and the
+  sykli receipt as git notes on the tree, then pushes.
 
-## Current limitations
+The `false-agent-protocol` dependency is public and fetched over HTTPS. A tag
+`v*` builds a Linux aarch64 binary in CI.
 
-- Git state is collected through the Git CLI, not Git internals.
-- Merge-base is attempted against the selected base candidate.
-- Validation plans are rendered only; commands are not executed.
-- The primary language uses root marker files (Cargo.toml, mix.exs, go.mod, pyproject.toml/setup.py, package.json); full adapters outrank minimum packs. Secondary markers are reported from the bounded walk but do not affect planning.
-- Context budgets are approximate UTF-8 byte caps, not token counts. Identity,
-  Git state, the workset contract, validation, warnings, exclusions, and the
-  changed-surface summary are mandatory and may exceed a very small budget.
-  Optional sections are included whole or named under `Budget omissions` with
-  exact item counts; the companion JSON packet remains complete.
-- Impact analysis is not yet available.
-- Upstream and merge-base may be unavailable in shallow, unborn, detached, or local-only repos.
+### The sykli contract
 
-## Output stability
+The same checks are declared in `sykli.json`, pinned by `sykli.lock`, and run
+with `sykli run`. A task whose inputs have not changed is served from cache.
 
-Context packets use explicit ordering rules so agents can diff and consume them predictably:
+| Task | Runs | After | Reads |
+| --- | --- | --- | --- |
+| `fmt` | `cargo fmt --check` | | every `.rs` and `Cargo.toml` |
+| `clippy` | `cargo clippy --all-targets -- -D warnings` | `fmt` | the code: `.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/` |
+| `test` | `cargo test` | `fmt` | every tracked file |
+| `xtask-test` | `cargo test -p xtask` | `fmt` | every tracked file |
+| `doctor` | `cargo run --quiet -- doctor --strict` | `test` | every tracked file |
 
-- the changed surface unions working-tree changes (staged, unstaged, untracked) with files changed by commits on this branch since the merge-base, so a clean tree on a feature branch still reports its diff
-- changed files are sorted by path and deduplicated in the changed surface
-- read-first entries are grouped as configured `read_first` paths, important docs, changed files, then matching-test hints; a path appears once, under its first group. Markdown always renders every configured and important entry, and the changed files and tests fill what is left of the 25-entry cap
-- warnings are sorted and deduplicated
-- Markdown output uses a fixed heading hierarchy: top-level sections are `##`, sub-blocks (e.g. Staged/Unstaged under Working tree) are `###`, and a blank line precedes every top-level section
-- every packet carries a normative `Workset contract` section (proposal 0005), rendered early so budget truncation cannot drop it: work from the Changed surface and Read first, treat declared session scope as advisory intent, treat exclusions as do-not-scan, and declare any expansion outside the workset (`toimija intent --scope`) instead of reading invisibly
-- mandatory Markdown sections (`Git`, `Read first`, `Validation plan`, `Warnings`, `Configured exclusions`, and `Changed surface`) are never displaced by optional history or working-tree detail
-- optional Markdown sections are selected atomically; omitted sections are named with exact item counts and the full JSON evidence path/command
-- Markdown list sections are capped at 25 entries with an honest `... and N more (truncated)` line, so a large working tree cannot hide later sections
-- empty values are rendered honestly: `none` for an empty-but-known list, `unavailable` for a value Git could not determine
-- Git paths are read from NUL-delimited byte output. JSON keeps existing UTF-8
-  paths as strings; on Unix, a non-UTF-8 path is encoded as
-  `{ "bytes_hex": "..." }`. Markdown escapes tabs, newlines, control characters,
-  backslashes, and invalid bytes so a filename cannot forge output structure.
-- Markdown and pretty JSON output have exact regression tests
-
-`toimija context --for-diff` adds a diff-focused Markdown section that separates committed files changed since the selected merge-base, staged, unstaged, untracked, and conflicted files.
-
-## Read-first heuristics
-
-Read-first hints are bounded and path-derived. Toimija does not scan the whole repo or parse source code.
-
-Rust:
-
-- changed Rust files are included directly
-- `src/foo.rs` may point to `tests/foo.rs`, `tests/foo_test.rs`, `src/tests.rs`, or `src/foo_test.rs` if present
-- `src/foo/bar.rs` may point to `tests/foo/bar.rs` and nearby sibling test files if present
-- `src/foo/mod.rs` may point to `tests/foo.rs` or `tests/foo_test.rs` if present
-
-Elixir:
-
-- changed Elixir files are included directly
-- `lib/foo/bar.ex` may point to `test/foo/bar_test.exs` if present
-- `mix.exs` may point to `test/test_helper.exs` if present
-
-Minimum language packs (Go, Python, JS/TS) use existence-checked path
-templates: `pkg/foo.go` → `pkg/foo_test.go`; `src/foo.py` → `src/test_foo.py`
-or `tests/test_foo.py`; `app/foo.ts` → `app/foo.test.ts` or `app/foo.spec.ts`.
-Files that are themselves tests (matched by anchored patterns, e.g.
-`*_test.go`) are never hinted at themselves.
-
-## Future drawer
-
-These are intentionally not implemented:
-
-- MCP server
-- Tree-sitter, LSP, SCIP, Kythe
-- Sykli integration beyond this repository's CI
-- checkpoint and worktree management
-- cross-repo / multi-repo coordination
-- dynamic plugins
-- graph database
-- background daemons
+Inputs are exact paths, not patterns. A new tracked file goes into `test`,
+`xtask-test` and `doctor`, and into `fmt` and `clippy` when it is code. Then `git add -A &&
+sykli lock sykli.json` pins the contract again. An input that is not declared
+would be served from cache, so `test` and `doctor` declare every tracked file
+except the contract and its lock.

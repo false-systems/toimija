@@ -353,7 +353,7 @@ fn a_sandbox_traces_its_own_git() {
 }
 
 /// `handover` finds the root, reads HEAD and its branch in one process, then
-/// refreshes the live packet with the worktree it found (issue #251).
+/// refreshes the live packet with the worktree it found.
 #[test]
 fn handover_costs_the_packet_and_one() {
     if !git_available() {

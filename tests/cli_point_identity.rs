@@ -1,9 +1,9 @@
-//! A repository point's id is derived from its tree (KATANA D9, issue #239).
+//! A repository point's id is derived from its tree.
 //!
 //! The id is a digest over the repository, the consistency token, the tree
 //! algorithm and the tree, so two points with one id hold one tree by
 //! construction. The token stays what it can honestly be: a freshness check
-//! over what `git status` lists. Each case in #239 is a change the token does
+//! over what `git status` lists. Each known gap is a change the token does
 //! not see; for every one, the two points must have different ids. Beside each
 //! row stand its controls: the change did move the tree, the token did not see
 //! it (so the row exercises the blind spot it names), and an unchanged
@@ -87,8 +87,8 @@ fn around(root: &Path, change: impl FnOnce()) -> (Point, Point) {
     (before, point(root))
 }
 
-/// One #239 row: the change moved the tree, the token did not see it, `dirty`
-/// is what the issue reported — and the two points have different ids.
+/// One row: the change moved the tree, the token did not see it, `dirty`
+/// is as given — and the two points have different ids.
 fn assert_row(row: &str, (before, after): (Point, Point), dirty: bool) {
     assert_ne!(
         before.tree, after.tree,
@@ -293,8 +293,8 @@ fn row_6_an_edit_the_stat_cache_misses_gets_a_new_point() {
 }
 
 /// Row 7: one commit, in a full checkout and then a sparse one. The sparse
-/// checkout keeps namespace content outside its cone in the tree (faija's
-/// tree-identity.v1 as specified; issue N3a in the #238 review).
+/// checkout keeps namespace content outside its cone in the tree
+/// (tree-identity.v1 as specified).
 #[test]
 fn row_7_a_sparse_and_a_full_checkout_of_one_commit_get_different_points() {
     if !git_available() {
@@ -419,10 +419,10 @@ fn a_change_undone_during_the_write_gets_its_own_point() {
 }
 
 /// sykli writes receipts into a `.sykli/` that git can see, at every step of
-/// the tree write (the #238 review's `sykli-churn.sh`). tree-identity.v1
-/// leaves `.sykli/` out, so the tree holds still — and since the token now
+/// the tree write. tree-identity.v1
+/// leaves `.sykli/` out, so the tree holds still — and since the token
 /// leaves out exactly what the tree leaves out, the token holds still too.
-/// Before, the token saw every receipt, and the point was refused after three
+/// A token that saw every receipt would have the point refused after three
 /// attempts: "the tree and the token would describe different states".
 #[test]
 fn sykli_writing_receipts_never_makes_a_point_refuse() {
@@ -453,7 +453,7 @@ fn sykli_writing_receipts_never_makes_a_point_refuse() {
     );
     assert_eq!(churned["id"], quiet.id);
 
-    // A snapshot has no retry: one receipt during its write used to refuse it.
+    // A snapshot has no retry: one receipt during its write must not refuse it.
     let shim = Shim::new(root, "echo r > .sykli/snap-$n.json", 99, ":");
     let assert = toimija(root)
         .env("PATH", shim.path())
@@ -497,7 +497,7 @@ const TOKEN_VERSION: &str = "toimija-consistency-v3";
 /// Every record that carries a token or a point names its version: the point
 /// envelope and the session packet's execution context in `extensions`, beside
 /// the tree's algorithm; snapshots and leases beside the token. The token
-/// itself stays `sha256:<hex>`, the shape sauma's envelope schema requires of
+/// itself stays `sha256:<hex>`, the shape the seal's envelope schema requires of
 /// the anchor; its hash covers the version name.
 #[test]
 fn points_and_tokens_name_their_version() {
@@ -671,7 +671,7 @@ fn a_lease_from_an_earlier_toimija_lists_its_token_unversioned_and_releases() {
     assert!(!root.join(".toimija/snapshots/old.json").exists());
 }
 
-/// The id is exactly the documented digest (README, "Repository points"),
+/// The id is exactly the documented digest (docs/reference.md, "Repository points"),
 /// recomputed here from the envelope's own fields: `rpoint_v3_` and the
 /// SHA-256 of the marker, the repository, the token's version, the token, the
 /// tree's algorithm and the tree, each ended by a NUL. A reader holding an
