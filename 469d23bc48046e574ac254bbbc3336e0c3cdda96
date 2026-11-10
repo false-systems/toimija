@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "469d23bc48046e574ac254bbbc3336e0c3cdda96",
+  "head": "f906a07c98473c665284fe5fba7b77fbb76360cf",
+  "base": "1fe51fd2c34abfe6072e4013be1f2c06fee90510",
+  "level": "look",
+  "findings": [
+    {
+      "level": "look",
+      "text": "src/seal.rs:159: For a live session launched by the previous binary, `toimija refresh` only temporarily repairs the packet because its watcher writes the old seal format again; the recovery message should tell the user to restart that session."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794342608,
+  "overruled": null
+}
