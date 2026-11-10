@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "d87e75bc8d018ed30d43eda2c6705061eaf5d25b",
+  "head": "cd6aba8a8482f7b4a019a66eebfd1c370a02637e",
+  "base": "1fe51fd2c34abfe6072e4013be1f2c06fee90510",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/main.rs:375: Renaming the accepted envelope makes any retained session packet from the previous version abort every `cargo xtask why` query, including queries about newly refreshed packets, because the scanner reads closed sessions too."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794336145,
+  "overruled": null
+}
