@@ -3,8 +3,10 @@
 //!
 //! - **proof**: what sykli's receipts say of the commit (`sykli status
 //!   --commit`). Toimija asks; it runs no check.
-//! - **review**: the level of the review kept for the commit's tree
-//!   (`refs/notes/toimija/review`), without its findings.
+//! - **review**: the level of the review sykli keeps for the commit's tree
+//!   (`refs/notes/sykli/review`), without its findings. A review answers for
+//!   the base it was read against, so one read against another commit than
+//!   the tip is measured against shows as `stale`.
 //! - **who is there**: the open sessions on that branch, in any worktree of
 //!   the clone, with their intent.
 //!
@@ -21,8 +23,8 @@ use serde::Serialize;
 use crate::command::CommandRunner;
 use crate::sessions::{self, Liveness};
 
-/// Where reviews are kept: one git note per tree.
-const REVIEW_NOTES: &str = "refs/notes/toimija/review";
+/// Where sykli keeps reviews: one git note per tree (`sykli-review.v1`).
+const REVIEW_NOTES: &str = "refs/notes/sykli/review";
 /// The longest intent shown beside a session.
 const INTENT_WIDTH: usize = 60;
 
@@ -51,6 +53,10 @@ pub enum Review {
     Blocking,
     /// Blocking, and a person let it cross.
     Overruled,
+    /// A review is kept for the tree, but it was read against another base
+    /// than the commit this tip is measured against. It says nothing of the
+    /// tip as it stands.
+    Stale,
     None,
     /// A note is there, but it is not a review this view can read.
     Unreadable,
@@ -193,7 +199,21 @@ pub fn build(
                 tip: Tip {
                     commit: sha.to_string(),
                     proof: prover(repo_root, sha),
-                    review: review_of(runner, repo_root, reviews.get(tree)),
+                    review: if base_id.as_deref() == Some(sha) {
+                        // The base is measured against nothing: its review
+                        // is the one it was landed with.
+                        review_of(runner, repo_root, reviews.get(tree), Measured::Base)
+                    } else {
+                        review_of(
+                            runner,
+                            repo_root,
+                            reviews.get(tree),
+                            Measured::Against {
+                                tip: sha,
+                                base: base_id.as_deref(),
+                            },
+                        )
+                    },
                     branches,
                     subject: subject.to_string(),
                     sessions,
@@ -226,7 +246,7 @@ pub fn build(
                     branches: vec![name],
                     subject: subject.to_string(),
                     proof: prover(repo_root, id),
-                    review: review_of(runner, repo_root, reviews.get(tree)),
+                    review: review_of(runner, repo_root, reviews.get(tree), Measured::Base),
                     sessions: Vec::new(),
                 },
             });
@@ -296,7 +316,22 @@ fn reviews(
     }
 }
 
-fn review_of(runner: &dyn CommandRunner, repo_root: &Path, blob: Option<&String>) -> Review {
+/// What a tip's review is held against.
+enum Measured<'a> {
+    /// The base itself: nothing to measure it against.
+    Base,
+    /// A tip, against where it and the base part (their merge base).
+    Against { tip: &'a str, base: Option<&'a str> },
+}
+
+/// The review kept for a tree, read from its note. A tip without a note costs
+/// no git process; one with a note costs two, the note and the merge base.
+fn review_of(
+    runner: &dyn CommandRunner,
+    repo_root: &Path,
+    blob: Option<&String>,
+    measured: Measured<'_>,
+) -> Review {
     let Some(blob) = blob else {
         return Review::None;
     };
@@ -306,7 +341,33 @@ fn review_of(runner: &dyn CommandRunner, repo_root: &Path, blob: Option<&String>
     let Ok(note) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Review::Unreadable;
     };
-    match (note["level"].as_str(), note["overruled"].is_null()) {
+    let level = (note["level"].as_str(), note["overruled"].is_null());
+    if !matches!(level.0, Some("fine" | "look" | "blocking")) {
+        return Review::Unreadable;
+    }
+    if let Measured::Against { tip, base } = measured {
+        // A review answers only for the base it was read against.
+        let Some(read_against) = note["base"].as_str() else {
+            return Review::Unreadable;
+        };
+        // With no base there is nothing the review could have been read
+        // against here. Otherwise git says where the two part: exit 1 is a
+        // known answer (nothing in common), anything else is not an answer.
+        let parts_at = match base {
+            None => None,
+            Some(base) => match runner.run(repo_root, "git", &["merge-base", tip, base]) {
+                Ok(output) if output.status == 0 => {
+                    Some(output.stdout_lossy().trim_end().to_string())
+                }
+                Ok(output) if output.status == 1 => None,
+                Ok(_) | Err(_) => return Review::Unreadable,
+            },
+        };
+        if parts_at.as_deref() != Some(read_against) {
+            return Review::Stale;
+        }
+    }
+    match level {
         (Some("fine"), _) => Review::Fine,
         (Some("look"), _) => Review::Look,
         (Some("blocking"), true) => Review::Blocking,
@@ -533,6 +594,7 @@ fn review_word(review: &Review) -> &'static str {
         Review::Look => "look",
         Review::Blocking => "BLOCKING",
         Review::Overruled => "overruled",
+        Review::Stale => "stale",
         Review::None => "none",
         Review::Unreadable => "unreadable",
     }
@@ -633,10 +695,16 @@ mod tests {
                 ],
             );
         };
-        note(&work_tree, r#"{"level":"look","overruled":null}"#);
+        let base = run(root, &["rev-parse", "origin/main"]);
+        note(
+            &work_tree,
+            &format!(r#"{{"level":"look","base":"{base}","overruled":null}}"#),
+        );
         note(
             &other_tree,
-            r#"{"level":"blocking","overruled":{"why":"accepted","at":1}}"#,
+            &format!(
+                r#"{{"level":"blocking","base":"{base}","overruled":{{"why":"accepted","at":1}}}}"#
+            ),
         );
         let work = run(root, &["rev-parse", "work"]);
         let prover = |_: &Path, commit: &str| {
@@ -682,7 +750,10 @@ mod tests {
                 REVIEW_NOTES,
                 "add",
                 "-m",
-                r#"{"level":"blocking","overruled":null}"#,
+                &format!(
+                    r#"{{"level":"blocking","base":"{}","overruled":null}}"#,
+                    run(root, &["rev-parse", "origin/main"])
+                ),
                 &work_tree,
             ],
         );
@@ -706,6 +777,197 @@ mod tests {
         assert!(text.contains("review: BLOCKING"), "{text}");
         assert!(text.contains("FAILED"), "{text}");
         assert!(text.contains("review: unreadable"), "{text}");
+    }
+
+    /// Reviews are sykli's: one note per tree under its ref, and no other ref
+    /// is read.
+    #[test]
+    fn reviews_are_read_from_syklis_notes_and_from_no_other_ref() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let base = run(root, &["rev-parse", "origin/main"]);
+        let fine = format!(
+            r#"{{"schema":"sykli-review.v1","level":"fine","base":"{base}","overruled":null}}"#
+        );
+        let note = |notes: &str, branch: &str| {
+            let tree = run(root, &["rev-parse", &format!("{branch}^{{tree}}")]);
+            run(root, &["notes", "--ref", notes, "add", "-m", &fine, &tree]);
+        };
+        note("refs/notes/sykli/review", "work");
+        note("refs/notes/toimija/review", "other");
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "work").review, Review::Fine);
+        assert_eq!(tip(&graph, "other").review, Review::None);
+    }
+
+    /// A review answers for the base it was read against. Where the tip is
+    /// now measured against another commit, the review is stale, whatever it
+    /// said, and is never shown as its level.
+    #[test]
+    fn a_review_read_against_another_base_is_stale_never_its_level() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let note = |branch: &str, json: &str| {
+            let tree = run(root, &["rev-parse", &format!("{branch}^{{tree}}")]);
+            run(
+                root,
+                &["notes", "--ref", REVIEW_NOTES, "add", "-m", json, &tree],
+            );
+        };
+        // Read against a commit that is not where `work` and the base part.
+        let elsewhere = run(root, &["rev-parse", "other"]);
+        note(
+            "work",
+            &format!(r#"{{"level":"fine","base":"{elsewhere}","overruled":null}}"#),
+        );
+        note(
+            "other",
+            &format!(
+                r#"{{"level":"blocking","base":"{elsewhere}","overruled":{{"why":"x","at":1}}}}"#
+            ),
+        );
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "work").review, Review::Stale);
+        assert_eq!(tip(&graph, "other").review, Review::Stale);
+        let text = render_text(&graph);
+        assert!(text.contains("review: stale"), "{text}");
+        assert!(!text.contains("review: fine"), "{text}");
+        assert!(!text.contains("overruled"), "{text}");
+        let json = serde_json::to_string(&graph).unwrap();
+        assert!(json.contains(r#""review":"stale""#), "{json}");
+
+        // The base moves on: a review that held for the earlier base is stale.
+        let first = run(root, &["rev-parse", "origin/main"]);
+        let tree = run(root, &["rev-parse", "work^{tree}"]);
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-f",
+                "-m",
+                &format!(r#"{{"level":"fine","base":"{first}","overruled":null}}"#),
+                &tree,
+            ],
+        );
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "work").review, Review::Fine);
+        run(root, &["checkout", "-q", "work"]);
+        run(root, &["merge", "-q", "--no-edit", "other"]);
+        run(root, &["update-ref", "refs/remotes/origin/main", "other"]);
+        let merged_tree = run(root, &["rev-parse", "work^{tree}"]);
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-f",
+                "-m",
+                &format!(r#"{{"level":"fine","base":"{first}","overruled":null}}"#),
+                &merged_tree,
+            ],
+        );
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "work").review, Review::Stale);
+
+        // A note that names no base is not a review this view can place.
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-f",
+                "-m",
+                r#"{"level":"fine","overruled":null}"#,
+                &merged_tree,
+            ],
+        );
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "work").review, Review::Unreadable);
+    }
+
+    /// A git that fails when asked where a tip and the base part.
+    struct NoMergeBase;
+
+    impl CommandRunner for NoMergeBase {
+        fn run(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+        ) -> std::io::Result<crate::command::CommandOutput> {
+            if args.first() == Some(&"merge-base") {
+                return Ok(crate::command::CommandOutput {
+                    status: 128,
+                    stdout: Vec::new(),
+                    stderr: b"fatal: could not read".to_vec(),
+                });
+            }
+            ProcessCommandRunner.run(cwd, program, args)
+        }
+    }
+
+    /// Where the comparison itself cannot be made, the review is not called
+    /// stale: it is unreadable, with the warning that makes the graph partial.
+    /// Two histories with nothing in common are another matter: there the
+    /// answer is known, and the review is stale.
+    #[test]
+    fn a_base_that_cannot_be_compared_is_unreadable_not_stale() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let base = run(root, &["rev-parse", "origin/main"]);
+        let tree = run(root, &["rev-parse", "work^{tree}"]);
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-m",
+                &format!(r#"{{"level":"fine","base":"{base}","overruled":null}}"#),
+                &tree,
+            ],
+        );
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&NoMergeBase, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "work").review, Review::Unreadable);
+        assert!(
+            graph
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("work")),
+            "{:?}",
+            graph.warnings
+        );
+
+        // An orphan branch shares no commit with the base.
+        run(root, &["checkout", "-q", "--orphan", "apart"]);
+        run(root, &["commit", "-q", "--allow-empty", "-m", "apart"]);
+        let apart_tree = run(root, &["rev-parse", "apart^{tree}"]);
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-f",
+                "-m",
+                &format!(r#"{{"level":"fine","base":"{base}","overruled":null}}"#),
+                &apart_tree,
+            ],
+        );
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "apart").review, Review::Stale);
     }
 
     #[test]

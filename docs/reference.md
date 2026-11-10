@@ -1265,9 +1265,14 @@ facts and no detail:
   `sykli status --commit`: `proven`, `FAILED`, `not run`, `no gate` (the commit
   carries no `sykli.json`) or `unknown` (sykli could not be asked). Toimija
   runs no check.
-- **review**: the level of the review kept for the commit's tree as a git note
-  (`refs/notes/toimija/review`): `fine`, `look`, `BLOCKING`, `overruled` (a
-  person let a blocking review cross) or `none`. Findings are not shown.
+- **review**: the level of the review sykli keeps for the commit's tree as a
+  git note (`refs/notes/sykli/review`, written by `sykli review`): `fine`,
+  `look`, `BLOCKING`, `overruled` (a person let a blocking review cross),
+  `stale` or `none`. Findings are not shown. A review answers for the base it
+  was read against. `stale` means a review is kept for the tree, but it was
+  read against another commit than the one where this tip and the base part
+  now, so it says nothing of the tip as it stands. Checking that costs one
+  `git merge-base` for each tip that has a review.
 - **who is there**: the open sessions on that branch in any worktree of the
   clone, live or stale, each with its intent.
 
@@ -1512,21 +1517,29 @@ installs a Git pre-commit hook, once per clone and again after `xtask`
 changes. The hook formats the staged crates, stages the result, then runs
 clippy and the tests, and blocks the commit when either fails.
 
-### Landing without a pull request (a trial)
+### Landing
 
-Two development commands in `xtask` try out landing work without a pull
-request. They are not part of the `toimija` binary.
+Work lands with sykli, in three commands on the committed branch:
 
-- `cargo xtask review` starts a fresh agent on the committed branch, another
-  one than the author where one is installed, with reading tools only. It
-  answers `fine`, `look` or `blocking`. A reviewer that is missing, fails or
+```bash
+sykli run       # prove the commit: run the declared checks, keep the receipt
+sykli review    # a fresh agent reads the change and says fine, look or blocking
+sykli land      # push to main when the commit is proven and reviewed
+```
+
+- `sykli review` starts a fresh agent, another one than the author where one
+  is installed, with reading tools only. A reviewer that is missing, fails or
   gives no verdict is no review, never a pass. The verdict is kept as a git
-  note on the commit's tree (`refs/notes/toimija/review`). Only a person at a
-  terminal overrules a blocking review, with `--overrule "<why>"`.
-- `cargo xtask land` pushes the branch to `main` when `origin/main` is an
-  ancestor of the commit, sykli says its tree passed, and the review of that
-  tree against that `main` is not blocking. It shares the review and the
-  sykli receipt as git notes on the tree, then pushes.
+  note on the commit's tree. Only a person at a terminal overrules a blocking
+  review, with `sykli review --overrule "<why>"`.
+- `sykli land` refuses unless `origin/main`, fetched then, is an ancestor of
+  the commit, its tree has a passing receipt, and the review of that tree
+  against that `main` is not blocking. It shares the receipt and the review
+  as git notes, then pushes. It pushes to `main`, so run it only when the
+  person you work for says so.
+
+`toimija graph` shows where each branch stands on both: its proof and its
+review.
 
 The `false-agent-protocol` dependency is public and fetched over HTTPS. A tag
 `v*` builds a Linux aarch64 binary in CI.
