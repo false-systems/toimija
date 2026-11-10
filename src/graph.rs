@@ -333,12 +333,19 @@ fn present(
 
 /// What sykli says of a commit, asked of the installed sykli.
 pub fn sykli_proof(repo_root: &Path, commit: &str) -> Proof {
-    let output = match std::process::Command::new("sykli")
+    proof_from("sykli", repo_root, commit)
+}
+
+fn proof_from(sykli: &str, repo_root: &Path, commit: &str) -> Proof {
+    let output = match std::process::Command::new(sykli)
         .current_dir(repo_root)
         .args(["status", "--commit", commit, "--json"])
         .output()
     {
         Ok(output) => output,
+        // Without sykli the one thing still known is whether the commit
+        // carries a contract at all: one that does not is gated by nothing.
+        Err(_) if !carries_contract(repo_root, commit) => return Proof::NoGate,
         Err(_) => return Proof::Unknown("sykli is not installed".to_string()),
     };
     let Ok(status) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
@@ -355,6 +362,17 @@ pub fn sykli_proof(repo_root: &Path, commit: &str) -> Proof {
         Some(other) => Proof::Other(other.to_string()),
         None => Proof::Unknown("sykli gave no verdict".to_string()),
     }
+}
+
+fn carries_contract(repo_root: &Path, commit: &str) -> bool {
+    ["sykli.json", "sykli.rs"].iter().any(|contract| {
+        std::process::Command::new("git")
+            .current_dir(repo_root)
+            .args(["cat-file", "-e", &format!("{commit}:{contract}")])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
 }
 
 pub fn render_text(graph: &Graph) -> String {
@@ -682,6 +700,21 @@ mod tests {
         assert!(
             all.contains("the review kept for work could not be read"),
             "{all}"
+        );
+    }
+
+    #[test]
+    fn without_sykli_a_commit_with_no_contract_has_no_gate_and_one_with_it_is_unknown() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let absent = "sykli-that-is-not-installed";
+        assert_eq!(proof_from(absent, root, "work"), Proof::NoGate);
+        fs::write(root.join("sykli.json"), "{}\n").unwrap();
+        run(root, &["add", "-A"]);
+        run(root, &["commit", "-q", "-m", "a gate"]);
+        assert_eq!(
+            proof_from(absent, root, "work"),
+            Proof::Unknown("sykli is not installed".to_string())
         );
     }
 
