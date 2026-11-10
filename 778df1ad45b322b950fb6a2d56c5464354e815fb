@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "778df1ad45b322b950fb6a2d56c5464354e815fb",
+  "head": "ff3135c37c914265a1e2410084b27f5377c0f427",
+  "base": "dd037ecbd887102f01c0ae544fada6c9c0ad88f3",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/cli.rs:3076 — `intent --spec` updates only the marker, which the watcher explicitly ignores, so the live packet’s Spec and Read first can remain absent or show the previous spec indefinitely until an unrelated repository change triggers a refresh."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794343098,
+  "overruled": null
+}
