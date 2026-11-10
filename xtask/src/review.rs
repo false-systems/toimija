@@ -612,9 +612,19 @@ fn reviewer_command(agent: Agent, last: &Path) -> Command {
                 .arg("-");
         }
         Agent::Claude => {
-            // Reading tools only: no shell, no editing tool and no configured
-            // server, whatever the person's own settings allow.
-            command.args(["-p", "--tools", "Read,Grep,Glob", "--strict-mcp-config"]);
+            // Reading tools only: no shell, no editing tool, no configured
+            // server, and none of the person's or the project's settings, so
+            // no hook of theirs runs a command either.
+            command.args([
+                "-p",
+                "--tools",
+                "Read,Grep,Glob",
+                "--strict-mcp-config",
+                "--setting-sources",
+                "",
+                "--settings",
+                r#"{"disableAllHooks":true}"#,
+            ]);
         }
     }
     command
@@ -953,7 +963,16 @@ mod tests {
             .collect();
         assert_eq!(
             args,
-            ["-p", "--tools", "Read,Grep,Glob", "--strict-mcp-config"]
+            [
+                "-p",
+                "--tools",
+                "Read,Grep,Glob",
+                "--strict-mcp-config",
+                "--setting-sources",
+                "",
+                "--settings",
+                r#"{"disableAllHooks":true}"#
+            ]
         );
     }
 
