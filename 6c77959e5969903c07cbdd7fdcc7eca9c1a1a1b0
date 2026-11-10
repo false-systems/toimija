@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "6c77959e5969903c07cbdd7fdcc7eca9c1a1a1b0",
+  "head": "193e944fe25beee61843203b4a4474e5a5fe156b",
+  "base": "1fe51fd2c34abfe6072e4013be1f2c06fee90510",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/spec.rs:224: For a numbered symlink with a non-UTF-8 filename, the containment check uses a lossy replacement path while the subsequent read uses the actual entry path, allowing `spec list` to read and print title/status from outside the repository."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794335877,
+  "overruled": null
+}
