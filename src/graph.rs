@@ -350,8 +350,19 @@ fn review_of(
         let Some(read_against) = note["base"].as_str() else {
             return Review::Unreadable;
         };
-        let parts_at =
-            base.and_then(|base| git(runner, repo_root, &["merge-base", tip, base]).ok());
+        // With no base there is nothing the review could have been read
+        // against here. Otherwise git says where the two part: exit 1 is a
+        // known answer (nothing in common), anything else is not an answer.
+        let parts_at = match base {
+            None => None,
+            Some(base) => match runner.run(repo_root, "git", &["merge-base", tip, base]) {
+                Ok(output) if output.status == 0 => {
+                    Some(output.stdout_lossy().trim_end().to_string())
+                }
+                Ok(output) if output.status == 1 => None,
+                Ok(_) | Err(_) => return Review::Unreadable,
+            },
+        };
         if parts_at.as_deref() != Some(read_against) {
             return Review::Stale;
         }
@@ -881,6 +892,82 @@ mod tests {
         );
         let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
         assert_eq!(tip(&graph, "work").review, Review::Unreadable);
+    }
+
+    /// A git that fails when asked where a tip and the base part.
+    struct NoMergeBase;
+
+    impl CommandRunner for NoMergeBase {
+        fn run(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+        ) -> std::io::Result<crate::command::CommandOutput> {
+            if args.first() == Some(&"merge-base") {
+                return Ok(crate::command::CommandOutput {
+                    status: 128,
+                    stdout: Vec::new(),
+                    stderr: b"fatal: could not read".to_vec(),
+                });
+            }
+            ProcessCommandRunner.run(cwd, program, args)
+        }
+    }
+
+    /// Where the comparison itself cannot be made, the review is not called
+    /// stale: it is unreadable, with the warning that makes the graph partial.
+    /// Two histories with nothing in common are another matter: there the
+    /// answer is known, and the review is stale.
+    #[test]
+    fn a_base_that_cannot_be_compared_is_unreadable_not_stale() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let base = run(root, &["rev-parse", "origin/main"]);
+        let tree = run(root, &["rev-parse", "work^{tree}"]);
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-m",
+                &format!(r#"{{"level":"fine","base":"{base}","overruled":null}}"#),
+                &tree,
+            ],
+        );
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&NoMergeBase, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "work").review, Review::Unreadable);
+        assert!(
+            graph
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("work")),
+            "{:?}",
+            graph.warnings
+        );
+
+        // An orphan branch shares no commit with the base.
+        run(root, &["checkout", "-q", "--orphan", "apart"]);
+        run(root, &["commit", "-q", "--allow-empty", "-m", "apart"]);
+        let apart_tree = run(root, &["rev-parse", "apart^{tree}"]);
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-f",
+                "-m",
+                &format!(r#"{{"level":"fine","base":"{base}","overruled":null}}"#),
+                &apart_tree,
+            ],
+        );
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "apart").review, Review::Stale);
     }
 
     #[test]
