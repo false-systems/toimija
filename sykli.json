@@ -84,9 +84,7 @@
         "tests/symlink_escape.rs",
         "tests/tree_identity_conformance.rs",
         "xtask/Cargo.toml",
-        "xtask/src/land.rs",
         "xtask/src/main.rs",
-        "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"
       ],
       "env": {
@@ -183,9 +181,7 @@
         "tests/symlink_escape.rs",
         "tests/tree_identity_conformance.rs",
         "xtask/Cargo.toml",
-        "xtask/src/land.rs",
         "xtask/src/main.rs",
-        "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"
       ],
       "env": {
@@ -213,7 +209,9 @@
         "README.md",
         "build.rs",
         "docs/assets/loop.svg",
+        "docs/assets/see-it.svg",
         "docs/assets/toimija.svg",
+        "docs/first-loop.md",
         "docs/reference.md",
         "docs/schemas/history-record.v1.schema.json",
         "docs/schemas/toimija-seal.v1.schema.json",
@@ -299,9 +297,7 @@
         "tests/symlink_escape.rs",
         "tests/tree_identity_conformance.rs",
         "xtask/Cargo.toml",
-        "xtask/src/land.rs",
         "xtask/src/main.rs",
-        "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"
       ],
       "env": {
@@ -329,7 +325,9 @@
         "README.md",
         "build.rs",
         "docs/assets/loop.svg",
+        "docs/assets/see-it.svg",
         "docs/assets/toimija.svg",
+        "docs/first-loop.md",
         "docs/reference.md",
         "docs/schemas/history-record.v1.schema.json",
         "docs/schemas/toimija-seal.v1.schema.json",
@@ -415,9 +413,7 @@
         "tests/symlink_escape.rs",
         "tests/tree_identity_conformance.rs",
         "xtask/Cargo.toml",
-        "xtask/src/land.rs",
         "xtask/src/main.rs",
-        "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"
       ],
       "env": {
@@ -445,7 +441,9 @@
         "README.md",
         "build.rs",
         "docs/assets/loop.svg",
+        "docs/assets/see-it.svg",
         "docs/assets/toimija.svg",
+        "docs/first-loop.md",
         "docs/reference.md",
         "docs/schemas/history-record.v1.schema.json",
         "docs/schemas/toimija-seal.v1.schema.json",
@@ -531,9 +529,7 @@
         "tests/symlink_escape.rs",
         "tests/tree_identity_conformance.rs",
         "xtask/Cargo.toml",
-        "xtask/src/land.rs",
         "xtask/src/main.rs",
-        "xtask/src/review.rs",
         "xtask/tests/fail_closed.rs"
       ],
       "env": {

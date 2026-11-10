@@ -242,7 +242,8 @@ pub enum Command {
     ///
     /// Use this to see at a glance which branches are in progress and which
     /// need a person: proof is what sykli's receipts say of the commit, review
-    /// is the level kept for its tree (`refs/notes/toimija/review`), and the
+    /// is the level sykli keeps for its tree (`refs/notes/sykli/review`; `stale`
+    /// when it was read against another base), and the
     /// sessions are the open ones on that branch in any worktree. Read-only:
     /// it runs no check, decides nothing and asks no network.
     #[command(

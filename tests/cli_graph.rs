@@ -123,3 +123,122 @@ fn graph_outside_a_repository_fails() {
         .failure()
         .stderr(predicate::str::contains("not a Git repository"));
 }
+
+/// The git subcommands `toimija graph` starts in `dir`, by Git's own trace.
+fn git_verbs(dir: &Path) -> Vec<String> {
+    let trace = dir.join(".git/graph-trace.json");
+    let _ = fs::remove_file(&trace);
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(dir)
+        .env("GIT_TRACE2_EVENT", &trace)
+        .args(["-q", "graph"])
+        .assert()
+        .success();
+    fs::read_to_string(&trace)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == "start")
+        .filter_map(|event| {
+            event["argv"].as_array().unwrap()[1..]
+                .iter()
+                .filter_map(|arg| arg.as_str())
+                .find(|arg| !arg.starts_with('-'))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// Holding a review against its base costs one `git merge-base` for each tip
+/// that has a review, and nothing for a tip that has none.
+#[test]
+fn the_base_check_costs_one_git_process_per_reviewed_tip_and_none_otherwise() {
+    if !git_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    // A second branch in progress, so there are two tips beside the base.
+    run_git(dir.path(), &["checkout", "-q", "-b", "other", "main"]);
+    fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+    run_git(dir.path(), &["add", "."]);
+    run_git(dir.path(), &["commit", "-q", "-m", "add b"]);
+
+    let merge_bases = |verbs: &[String]| verbs.iter().filter(|verb| *verb == "merge-base").count();
+    let unreviewed = git_verbs(dir.path());
+    assert!(
+        unreviewed.iter().any(|verb| verb == "log"),
+        "{unreviewed:?}"
+    );
+    assert_eq!(merge_bases(&unreviewed), 0, "{unreviewed:?}");
+
+    // One of the two tips gets a review, read against the base.
+    let rev = |spec: &str| {
+        let output = common::git_at(dir.path())
+            .args(["rev-parse", spec])
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let note = format!(
+        r#"{{"schema":"sykli-review.v1","level":"fine","base":"{}","overruled":null}}"#,
+        rev("origin/main")
+    );
+    run_git(
+        dir.path(),
+        &[
+            "notes",
+            "--ref",
+            "refs/notes/sykli/review",
+            "add",
+            "-m",
+            &note,
+            &rev("work^{tree}"),
+        ],
+    );
+    let reviewed = git_verbs(dir.path());
+    assert_eq!(merge_bases(&reviewed), 1, "{reviewed:?}");
+    assert_eq!(
+        reviewed.len(),
+        unreviewed.len() + 3,
+        "a reviewed tip adds the notes list, its note and its merge base: {reviewed:?}"
+    );
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("graph")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("review: fine"));
+    // The base moves on and the branch takes it in. A review of the new tree
+    // that was read against the earlier base is not a review of it as it
+    // stands.
+    run_git(dir.path(), &["checkout", "-q", "work"]);
+    run_git(dir.path(), &["merge", "-q", "--no-edit", "other"]);
+    run_git(
+        dir.path(),
+        &["update-ref", "refs/remotes/origin/main", "other"],
+    );
+    run_git(
+        dir.path(),
+        &[
+            "notes",
+            "--ref",
+            "refs/notes/sykli/review",
+            "add",
+            "-m",
+            &note,
+            &rev("work^{tree}"),
+        ],
+    );
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("graph")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("review: stale"))
+        .stdout(predicate::str::contains("review: fine").not());
+}
