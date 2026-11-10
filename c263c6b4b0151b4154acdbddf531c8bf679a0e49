@@ -1,0 +1,15 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "c263c6b4b0151b4154acdbddf531c8bf679a0e49",
+  "head": "1fe51fd2c34abfe6072e4013be1f2c06fee90510",
+  "base": "144f09f17d4a4156161a30294ee00ec445eccc87",
+  "level": "fine",
+  "findings": [],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794331264,
+  "overruled": null
+}
