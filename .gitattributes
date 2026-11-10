@@ -1,5 +1,4 @@
-# Vendored crates are byte-identical copies whose digests tests recompute
-# (tests/vendored_canonical.rs, tests/vendored_faija_terms.rs). No line-ending
-# conversion, so a checkout with core.autocrlf cannot change those bytes.
+# The vendored crate is a byte-identical copy whose digest a test recomputes
+# (tests/vendored_canonical.rs). No line-ending conversion, so a checkout with
+# core.autocrlf cannot change those bytes.
 /vendor/sauma-canonical/** -text
-/vendor/faija-terms/** -text

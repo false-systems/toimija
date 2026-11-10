@@ -9,11 +9,11 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use faija_terms::TreeIdentityAlgorithm;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::git::{ChangeStatus, ChangedFile, GitState};
+use crate::tree_identity::TreeIdentityAlgorithm;
 
 /// The token Toimija computes now. v3 leaves out exactly what
 /// tree-identity.v1 leaves out ([`LEAVES_OUT_AS`]); v2 watched `.sykli/`, so
@@ -28,7 +28,7 @@ pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v3";
 pub const EARLIER_ALGORITHMS: &[&str] = &["toimija-consistency-v1", "toimija-consistency-v2"];
 
 /// The tree algorithm whose generated namespaces the token leaves out. Pinned
-/// to v1, never `TreeIdentityAlgorithm::CURRENT`: what a v3 token observes is
+/// to v1: what a v3 token observes is
 /// fixed with v3, and a later tree algorithm is a later token version.
 const LEAVES_OUT_AS: TreeIdentityAlgorithm = TreeIdentityAlgorithm::V1;
 
@@ -337,8 +337,8 @@ fn status(status: &ChangeStatus) -> String {
 /// Whether a repo-relative path is generated tool state the token leaves out:
 /// a path under one of tree-identity.v1's frozen namespaces (`.toimija`,
 /// `.teko`, `.sykli`), unless it is configuration v1 forces in
-/// (`.toimija/repo.yaml`). Exactly what the tree leaves out, read from the
-/// vendored faija-terms rather than listed again here ([`LEAVES_OUT_AS`]), so
+/// (`.toimija/repo.yaml`). Exactly what the tree leaves out, read from
+/// `crate::tree_identity` rather than listed again here ([`LEAVES_OUT_AS`]), so
 /// a refresh, a session, a snapshot or a gate's receipt never moves the token
 /// while the tree holds still.
 pub(crate) fn is_generated_output(path: &Path) -> bool {
@@ -527,14 +527,14 @@ mod tests {
         assert!(matches!(stored.verify(&live), Verdict::Consistent));
     }
 
-    /// The token leaves out exactly what faija's tree-identity.v1 leaves out:
+    /// The token leaves out exactly what tree-identity.v1 leaves out:
     /// its frozen namespaces, minus the configuration it forces in. Read from
-    /// the vendored faija-terms, so there is no second list to drift; pinned
-    /// to v1, not `CURRENT`, so a later tree algorithm cannot change what a
+    /// `crate::tree_identity`, so there is no second list to drift; pinned
+    /// to v1, so a later tree algorithm cannot change what a
     /// `toimija-consistency-v3` token means.
     #[test]
     fn the_token_leaves_out_exactly_what_tree_identity_v1_leaves_out() {
-        let v1 = faija_terms::TreeIdentityAlgorithm::V1;
+        let v1 = TreeIdentityAlgorithm::V1;
         assert_eq!(v1.namespaces(), [".toimija", ".teko", ".sykli"]);
         for namespace in v1.namespaces() {
             for path in ["", "receipt.json", "runs/r1/journal"] {

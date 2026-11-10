@@ -23,10 +23,6 @@ serde_yaml = "0.9"
 # Pinned by `vendor/sauma-canonical.contract`, which a test checks on every
 # run, so an edit to the crate fails the build.
 sauma-canonical = { path = "vendor/sauma-canonical" }
-# Vendored, not fetched, so a build needs no credential. Faija owns tree-identity.v1, the identity of a
-# working State, and Toimija runs its procedure instead of keeping its own.
-# Pinned by `vendor/faija-terms.contract`; refresh with the script beside it.
-faija-terms = { path = "vendor/faija-terms" }
 # Toimija hashes for things that are not artifact envelopes — consistency
 # tokens, environment digests, repository points. Those stay here; only the
 # envelope digest is in sauma-canonical.

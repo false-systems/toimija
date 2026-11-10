@@ -19,6 +19,7 @@ Contents:
 - [The packet](#the-packet)
 - [Checking freshness: `verify`](#checking-freshness-verify)
 - [Repository points](#repository-points)
+- [tree-identity.v1](#tree-identityv1)
 - [Snapshots](#snapshots)
 - [The seal](#the-seal)
 - [Sessions](#sessions)
@@ -624,13 +625,10 @@ v1 `RepositoryPointEnvelope`. Inside a session the same point is at
 `$FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the session's packet carries it as
 `session.execution.repository`.
 
-The tree is **tree-identity.v1**, which faija defines: every tracked path and
-every untracked path that is not ignored, without the generated-state folders
-(`.toimija/`, `.sykli/` and the others tree-identity.v1 lists), and with
-`.toimija/repo.yaml` always included. Toimija runs faija's procedure from a
-vendored copy of `faija-terms`, pinned by `vendor/faija-terms.contract`, and
-has no tree algorithm of its own. Snapshots, leases, repository points and
-session packets all carry this one tree and name its algorithm.
+The tree is [tree-identity.v1](#tree-identityv1): every tracked path and every
+untracked path that is not ignored, without the generated-state folders, and
+with `.toimija/repo.yaml` always included. Snapshots, leases, repository
+points and session packets all carry this one tree and name its algorithm.
 
 ### What a point guarantees
 
@@ -690,6 +688,56 @@ comparison across versions says **not comparable**, never equal or different.
 
 The token has the shape `sha256:<hex>`. Its hash covers the version name, so
 tokens of two versions never coincide.
+
+## tree-identity.v1
+
+Tree identity says which content makes up one version of a repository's work.
+It is how Toimija names an exact state. The rule is written down here and
+implemented in `src/tree_identity.rs`.
+
+**Definition.** The tree identity is the Git tree id of the repository's work
+content: every tracked path and every untracked path that is not ignored,
+without the namespaces of generated tool state that the version fixes, and
+with the tool configuration that the version forces in, whether or not Git
+ignores it.
+
+- **Excluded namespaces.** `.toimija`, `.teko` and `.sykli`: three folders of
+  generated tool state at the repository root.
+- **Forced-in configuration.** `.toimija/repo.yaml`. It is configuration, so
+  it is part of the work.
+
+### The procedure
+
+The steps run in this order against a throwaway index:
+
+| Step | Git operation |
+| --- | --- |
+| Seed from HEAD | `read-tree HEAD`. A failure is tolerated: a repository with no commit has no tracked files. |
+| Overlay the worktree | `add -A -- <excludes>`, with one exclude pathspec for each namespace, such as `:(exclude,top,glob)[.]toimija/**`. |
+| Drop the namespaces | `rm --cached -r -q --ignore-unmatch .toimija .teko .sykli`. This removes namespace content that is tracked. |
+| Force-add the configuration | `add -f -- .toimija/repo.yaml`, only when the file exists in the worktree. |
+| Write the tree | `write-tree`. Its output is the tree identity. |
+
+Any tool can run these steps with plain `git` and get the same tree.
+`tests/tree_identity_conformance.rs` does exactly that.
+
+### Rules
+
+- **Frozen.** The namespaces, the configuration path and the step order are
+  part of the version. Changing one changes every identity already recorded,
+  so it needs a new version. A test, `v1_definition_is_frozen`, pins all
+  three, and an edit to any of them fails the build.
+- **No registration.** The namespaces are not read from configuration.
+  Configuration that changes later must not change what an earlier identity
+  means.
+- **Only real tool state is left out.** A namespace is in the list because a
+  tool writes generated state there. A folder that nothing writes to is
+  ordinary work content, and it moves the identity.
+- **The id is recorded.** Every record that carries a tree names its
+  algorithm, `tree-identity.v1`, beside it.
+- **A tree identity is not the whole state of a repository.** HEAD, the index
+  and an operation in progress are outside it. Two repositories can share a
+  tree and differ in the rest.
 
 ## Snapshots
 

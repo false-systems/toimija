@@ -293,8 +293,8 @@ fn row_6_an_edit_the_stat_cache_misses_gets_a_new_point() {
 }
 
 /// Row 7: one commit, in a full checkout and then a sparse one. The sparse
-/// checkout keeps namespace content outside its cone in the tree (faija's
-/// tree-identity.v1 as specified).
+/// checkout keeps namespace content outside its cone in the tree
+/// (tree-identity.v1 as specified).
 #[test]
 fn row_7_a_sparse_and_a_full_checkout_of_one_commit_get_different_points() {
     if !git_available() {

@@ -27,5 +27,6 @@ pub mod semantic;
 pub mod session;
 pub mod sessions;
 pub mod snapshot;
+pub mod tree_identity;
 pub mod validate;
 pub mod watch;
