@@ -194,6 +194,11 @@ pub fn sykli_proof(root: &Path, commit: &str, tree: &str) -> Result<Proof> {
             .filter(|path| path.is_file());
         return Ok(Proof::Passed { receipt });
     }
+    // Only a clone that knows nothing of this tree takes another clone's word:
+    // a failure or a conflict recorded here stands.
+    if !knows_nothing(&verdict) {
+        return Ok(Proof::Not(format!("sykli says {verdict}")));
+    }
     let shared = Command::new("git")
         .current_dir(root)
         .args(["notes", "--ref", RECEIPTS, "show", tree])
@@ -221,16 +226,28 @@ pub fn sykli_proof(root: &Path, commit: &str, tree: &str) -> Result<Proof> {
         )));
     }
     let receipt: serde_json::Value = serde_json::from_slice(&shared.stdout)?;
-    let all_passed = receipt["tasks"].as_array().is_some_and(|tasks| {
-        !tasks.is_empty() && tasks.iter().all(|task| task["outcome"] == "passed")
-    });
-    if all_passed {
+    if receipt_passed(&receipt) {
         Ok(Proof::Passed { receipt: None })
     } else {
         Ok(Proof::Not(
             "the shared receipt verifies, but not every task in it passed".to_string(),
         ))
     }
+}
+
+/// sykli's verdict for a tree it holds no receipt of.
+fn knows_nothing(verdict: &str) -> bool {
+    verdict == "none"
+}
+
+/// Whether every task of a receipt passed, run or reused from sykli's cache.
+fn receipt_passed(receipt: &serde_json::Value) -> bool {
+    receipt["tasks"].as_array().is_some_and(|tasks| {
+        !tasks.is_empty()
+            && tasks
+                .iter()
+                .all(|task| matches!(task["outcome"].as_str(), Some("passed" | "cached")))
+    })
 }
 
 /// `cargo xtask land [--remote NAME]`, returning the exit code.
@@ -269,6 +286,24 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const PASSED: Prover<'static> = &|_, _, _| Ok(Proof::Passed { receipt: None });
+
+    #[test]
+    fn a_shared_receipt_counts_only_where_this_clone_knows_nothing() {
+        assert!(knows_nothing("none"));
+        for recorded in ["failed", "conflict", "passed", "unknown"] {
+            assert!(!knows_nothing(recorded), "{recorded}");
+        }
+    }
+
+    #[test]
+    fn a_receipt_passed_when_every_task_passed_or_was_reused() {
+        let receipt = |outcomes: &[&str]| serde_json::json!({"tasks": outcomes.iter().map(|o| serde_json::json!({"outcome": o})).collect::<Vec<_>>()});
+        assert!(receipt_passed(&receipt(&["passed", "cached"])));
+        assert!(!receipt_passed(&receipt(&["passed", "failed"])));
+        assert!(!receipt_passed(&receipt(&["errored"])));
+        assert!(!receipt_passed(&receipt(&[])), "no task is no proof");
+        assert!(!receipt_passed(&serde_json::json!({})));
+    }
 
     #[test]
     fn a_proven_reviewed_branch_lands_and_its_review_reaches_another_clone() {
