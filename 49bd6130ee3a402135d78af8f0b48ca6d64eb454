@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "49bd6130ee3a402135d78af8f0b48ca6d64eb454",
+  "head": "23a5d2ac9c599ee82c39cebadea6248e10770028",
+  "base": "144f09f17d4a4156161a30294ee00ec445eccc87",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:219 Appending an unnamed base after Git’s graph with a hardcoded `*` places it beneath unrelated commits, falsely depicting ancestry instead of preserving its actual position."
+    },
+    {
+      "level": "look",
+      "text": "src/graph.rs:306 Review levels ignore the note’s recorded base, so `fine` or `overruled` can appear even when `cargo xtask review` considers that review invalid for the current change."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794330916,
+  "overruled": null
+}
