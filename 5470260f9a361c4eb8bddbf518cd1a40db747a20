@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "5470260f9a361c4eb8bddbf518cd1a40db747a20",
+  "head": "c38c5cd2f14ae911396f01b750061895450ddafa",
+  "base": "1fe51fd2c34abfe6072e4013be1f2c06fee90510",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/spec.rs:56: Storing `path_codec::display(relative)` escapes backslashes and control characters, so later reads treat a valid spec path as a different filename and can report it missing or read the wrong file."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794335620,
+  "overruled": null
+}
