@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "86127d15cb173ae3e2dbf23e5517bc326f162856",
+  "head": "ffcfc6b66e6aa2f3ad8f21f9d093fd30ccdbb9e8",
+  "base": "dd037ecbd887102f01c0ae544fada6c9c0ad88f3",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/spec.rs:99: A file supplied as `--spec ./#123` is stored as `#123` and subsequently classified as an issue, so its title, status and Read first entry disappear despite successful file validation."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794342901,
+  "overruled": null
+}
