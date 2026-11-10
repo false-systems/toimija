@@ -82,6 +82,9 @@ cd toimija
 cargo install --path .
 ```
 
+Toimija is not on crates.io yet. Once it is published, `cargo install toimija`
+installs it with Rust 1.98 or newer; until then, use the commands above.
+
 Toimija runs on macOS and Linux.
 
 ## Use
