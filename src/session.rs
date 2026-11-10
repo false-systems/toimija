@@ -112,6 +112,11 @@ pub struct SessionMarker {
     /// session shares a branch with another. Advisory, not an assignment.
     #[serde(default)]
     pub intent: Option<String>,
+    /// The spec the session starts from: a file path relative to the
+    /// repository root, or an issue reference exactly as given. A fact the
+    /// session declares, like `intent`; nothing checks the work against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
     /// Zero or more declared paths the session expects to touch — *what* it might
     /// touch. Advisory only: never a lock, never ownership. Empty renders as
     /// `unknown`.
@@ -221,6 +226,7 @@ impl Session {
             branch: None,
             head: None,
             intent,
+            spec: None,
             scope,
             started_at,
             last_seen_at: Some(started_at),
@@ -240,6 +246,12 @@ impl Session {
         };
         session.write_marker()?;
         Ok(session)
+    }
+
+    /// Record the spec the session starts from, and rewrite the marker.
+    pub fn record_spec(&mut self, spec: Option<String>) -> Result<()> {
+        self.marker.spec = spec;
+        self.write_marker()
     }
 
     /// Record the entry branch and HEAD once they are known after the first
@@ -269,6 +281,7 @@ impl Session {
             Ok(on_disk) if on_disk.id == self.marker.id => {
                 self.marker.intent = on_disk.intent;
                 self.marker.scope = on_disk.scope;
+                self.marker.spec = on_disk.spec;
                 self.marker.last_seen_at = self.marker.last_seen_at.max(on_disk.last_seen_at);
             }
             // Unreadable or replaced: close with what entry knew, and say so.
@@ -478,15 +491,17 @@ pub fn is_valid_session_id(id: &str) -> bool {
     }
 }
 
-/// Update the intent (and append declared scope paths) on an *existing* session
+/// Update the intent or the spec (and append declared scope paths) on an
+/// *existing* session
 /// marker — the session belongs to `run`; this is the wrapped agent reaching
 /// back into its own record via the `TOIMIJA_SESSION` handshake. Advisory data
 /// only: never an assignment, never a lock. Returns the updated marker.
 pub fn declare_intent(
     repo_root: &Path,
     id: &str,
-    intent: String,
+    intent: Option<String>,
     scope: Vec<String>,
+    spec: Option<String>,
 ) -> Result<SessionMarker> {
     anyhow::ensure!(
         is_valid_session_id(id),
@@ -508,7 +523,12 @@ pub fn declare_intent(
         marker.status == SessionStatus::Active,
         "session {id} is closed; intent can only be declared on a live session"
     );
-    marker.intent = Some(intent);
+    if intent.is_some() {
+        marker.intent = intent;
+    }
+    if spec.is_some() {
+        marker.spec = spec;
+    }
     for path in scope {
         if !marker.scope.contains(&path) {
             marker.scope.push(path);
@@ -648,8 +668,9 @@ mod tests {
         let marker = declare_intent(
             temp.path(),
             &session.id,
-            "closing tracker issues".to_string(),
+            Some("closing tracker issues".to_string()),
             vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
+            None,
         )
         .unwrap();
         assert_eq!(marker.intent.as_deref(), Some("closing tracker issues"));
@@ -732,8 +753,14 @@ mod tests {
             Session::open(temp.path(), &["claude".to_string()], None, Vec::new()).unwrap();
         session.close(Some(0)).unwrap();
 
-        let error = declare_intent(temp.path(), &session.id, "too late".to_string(), Vec::new())
-            .unwrap_err();
+        let error = declare_intent(
+            temp.path(),
+            &session.id,
+            Some("too late".to_string()),
+            Vec::new(),
+            None,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("closed"));
     }
 
@@ -750,8 +777,9 @@ mod tests {
         declare_intent(
             temp.path(),
             &session.id,
-            "declared mid-session".to_string(),
+            Some("declared mid-session".to_string()),
             vec!["src/b.rs".to_string()],
+            Some("docs/adr/0001-x.md".to_string()),
         )
         .unwrap();
 
@@ -762,6 +790,7 @@ mod tests {
         assert_eq!(closed.exit_status, Some(3));
         assert_eq!(closed.intent.as_deref(), Some("declared mid-session"));
         assert_eq!(closed.scope, vec!["src/a.rs", "src/b.rs"]);
+        assert_eq!(closed.spec.as_deref(), Some("docs/adr/0001-x.md"));
     }
 
     #[test]

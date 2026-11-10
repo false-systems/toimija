@@ -369,9 +369,29 @@ fn compute_once(
     });
     let mut point = None;
     if let Some(marker) = marker {
+        let spec = marker
+            .spec
+            .as_deref()
+            .map(|reference| crate::spec::describe(repo_root, reference));
+        // A file spec is what the session reads first.
+        if let Some(spec) = spec
+            .as_ref()
+            .filter(|spec| spec.kind == crate::spec::SpecKind::File)
+        {
+            let path = std::path::PathBuf::from(&spec.reference);
+            packet.read_first.retain(|entry| entry.path != path);
+            packet.read_first.insert(
+                0,
+                context::ReadFirstEntry {
+                    path,
+                    reason: crate::spec::READ_FIRST_REASON.to_string(),
+                },
+            );
+        }
         packet.session = Some(context::SessionBlock {
             id: marker.id,
             intent: marker.intent,
+            spec,
             scope: marker.scope,
             execution: None,
             entry_branch: marker.branch,

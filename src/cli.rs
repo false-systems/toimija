@@ -18,6 +18,7 @@ use crate::repo;
 use crate::session;
 use crate::sessions;
 use crate::snapshot;
+use crate::spec;
 use crate::validate;
 use crate::watch;
 use crate::workspace;
@@ -47,8 +48,8 @@ const VERSION: &str = concat!(
         toimija validate --plan                   # print the advisory validation plan\n  \
         toimija -q repository-point --json        # the exact repository point, for tools\n\n\
         Boundaries: Toimija reports facts and refuses to decide. It is local-only: \
-        it writes only under .toimija/ and, for snapshots, Git objects and \
-        refs/toimija/; it never executes validation or gates, starts no daemons, \
+        it writes only under .toimija/, the one file `spec new` creates and, for \
+        snapshots, Git objects and refs/toimija/; it never executes validation or gates, starts no daemons, \
         and makes no network calls of its own."
 )]
 pub struct Cli {
@@ -156,6 +157,7 @@ pub enum Command {
         after_help = "Examples:\n  toimija run claude   # a session; say why later with `toimija intent`\n  \
         toimija run --intent \"fix the redirect\" --task \"fix the login redirect\" -- claude   # packet + task in the launch prompt\n  \
         toimija run --intent \"fix the redirect\" --scope src/cli.rs -- codex   # declare intent/scope for siblings\n  \
+        toimija run --spec docs/adr/0007-login.md claude   # start from a spec: a file here, or `#123`\n  \
         toimija run --intent unknown --for-diff --budget 4000 -- sh -c '…'   # tune the packet the child sees\n  \
         cd ~/projects && toimija run --intent \"cross-repo sweep\" --scope ~/projects/a -- claude   # outside a repo: a session, no packet"
     )]
@@ -169,9 +171,26 @@ pub enum Command {
     /// assignment, never a lock. Writes one marker file; no network.
     #[command(
         after_help = "Examples:\n  toimija intent \"migrating the auth module\"\n  \
-        toimija intent \"fix the redirect\" --scope src/cli.rs --scope tests/cli_run.rs"
+        toimija intent \"fix the redirect\" --scope src/cli.rs --scope tests/cli_run.rs\n  \
+        toimija intent --spec docs/adr/0007-login.md   # say which spec the work follows"
     )]
     Intent(IntentArgs),
+    /// Create or list specs: numbered decision files a session can start from.
+    ///
+    /// Use this to write down a decision before the work (`spec new`), or to
+    /// see which specs the repository has (`spec list`). The folder is `specs:`
+    /// in .toimija/repo.yaml, `docs/adr` when not named. `spec new` writes one
+    /// file there and nothing else; `spec list` reads files only. Start a
+    /// session from one with `toimija run --spec <file> <agent>`.
+    #[command(
+        after_help = "Examples:\n  toimija spec new \"Login redirect\"   # docs/adr/0007-login-redirect.md\n  \
+        toimija spec list\n  \
+        toimija run --spec docs/adr/0007-login-redirect.md claude"
+    )]
+    Spec {
+        #[command(subcommand)]
+        command: SpecCommand,
+    },
     /// Leave a handover for the next agent in this working copy.
     ///
     /// Use this before you finish: what is unfinished, what the next agent
@@ -363,6 +382,13 @@ pub struct RunArgs {
     /// lock. Absence renders as `unknown`.
     #[arg(long = "scope", value_name = "PATH")]
     pub scope: Vec<String>,
+    /// The spec this session starts from: a file in the repository (an ADR,
+    /// say), or an issue reference written `#123` or as a URL. A file must
+    /// exist; the packet shows its title and stated status and lists it first
+    /// under Read first. An issue reference is kept as given and never
+    /// fetched. Advisory only — nothing checks the work against it.
+    #[arg(long, value_name = "REF")]
+    pub spec: Option<String>,
     /// The task for the agent, delivered inside the composed launch prompt of a
     /// known agent (`claude`, `codex`, `gemini`, `pi`, `opencode`) or one configured under
     /// `agents:` in `.toimija/repo.yaml`. Pass the task here, not as the agent's
@@ -503,12 +529,29 @@ fn names_an_option(cmd: &clap::Command, text: &str) -> bool {
 #[derive(Debug, Args)]
 pub struct IntentArgs {
     /// Free-text declaration of why this session is here, shown to siblings by
-    /// `toimija sessions`.
-    pub text: String,
+    /// `toimija sessions`. May be left out when `--spec` is given.
+    #[arg(required_unless_present = "spec")]
+    pub text: Option<String>,
     /// A path this session expects to touch (repeatable, appended to the
     /// declared scope). Advisory only — never a lock.
     #[arg(long = "scope", value_name = "PATH")]
     pub scope: Vec<String>,
+    /// The spec this session works from: a file in the repository, or an
+    /// issue reference written `#123` or as a URL. Advisory only.
+    #[arg(long, value_name = "REF")]
+    pub spec: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SpecCommand {
+    /// Create the next numbered spec file from a short template and print
+    /// its path. Refuses to overwrite.
+    New {
+        /// The title of the spec; the file is named after it.
+        title: String,
+    },
+    /// List the numbered spec files with their stated status.
+    List,
 }
 
 #[derive(Debug, Args)]
@@ -649,6 +692,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Watch(args) => run_watch(args).map(|()| 0),
         Command::Run(args) => run_run(args),
         Command::Intent(args) => run_intent(args).map(|()| 0),
+        Command::Spec { command } => run_spec(command).map(|()| 0),
         Command::Handover(args) => run_handover(args).map(|()| 0),
         Command::History(args) => run_history(args).map(|()| 0),
         Command::Clean(args) => run_clean(args).map(|()| 0),
@@ -699,6 +743,7 @@ impl Command {
             Command::Watch(_) => "watch",
             Command::Run(_) => "run",
             Command::Intent(_) => "intent",
+            Command::Spec { .. } => "spec",
             Command::Handover(_) => "handover",
             Command::History(_) => "history",
             Command::Clean(_) => "clean",
@@ -988,6 +1033,12 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     };
     let repo_root = worktree.root.clone();
     say_no_intent(&args);
+    // Resolved before a session opens: a spec file that is not there stops
+    // the launch.
+    let spec = match &args.spec {
+        Some(given) => Some(spec::resolve(&repo_root, &cwd, given)?),
+        None => None,
+    };
     // Asked to stop before any marker exists: leave without creating one.
     if let Some(number) = termination.requested() {
         eprintln!("toimija run: termination requested before the session opened");
@@ -1009,6 +1060,12 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         args.scope.clone(),
     )
     .context("failed to open the toimija session")?;
+    if spec.is_some()
+        && let Err(error) = session.record_spec(spec)
+    {
+        close_session_after_startup_failure(&repo_root, &mut session);
+        return Err(error).context("failed to record the session's spec");
+    }
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
@@ -1588,6 +1645,15 @@ fn run_outside_repo(
     // In a workspace the launch prompt carries the workspace packet. It is
     // read before the session opens, so a workspace file that does not parse
     // stops the launch instead of starting an agent with no context.
+    // Outside a repository a spec file is inside the workspace, or the
+    // folder when there is none.
+    let spec = match &args.spec {
+        Some(given) => {
+            let base = workspace::find(folder).unwrap_or_else(|| folder.to_path_buf());
+            Some(spec::resolve(&base, folder, given)?)
+        }
+        None => None,
+    };
     let runner = ProcessCommandRunner;
     let workspace_packet = match workspace::find(folder) {
         Some(root) => Some(
@@ -1616,6 +1682,12 @@ fn run_outside_repo(
         args.scope.clone(),
     )
     .context("failed to open the toimija session")?;
+    if spec.is_some()
+        && let Err(error) = session.record_spec(spec.clone())
+    {
+        close_session_after_startup_failure(&state_root, &mut session);
+        return Err(error).context("failed to record the session's spec");
+    }
     if workspace_packet.is_some() {
         eprintln!(
             "toimija run: {} is in a workspace, not a Git repository — session {} gets the \
@@ -1681,6 +1753,9 @@ fn run_outside_repo(
         args.task.as_deref(),
         &agents,
     );
+    if let (Some(prompt), Some(spec)) = (composed.as_mut(), spec.as_deref()) {
+        prompt.push_str(&format!("\nSpec: {spec}\n"));
+    }
     finish_prompt(&mut composed, &args);
     match &composed {
         Some(_)
@@ -2953,6 +3028,44 @@ fn sweep_options(config: &RepoConfig, dry_run: bool) -> footprint::SweepOptions 
     }
 }
 
+/// The folder a spec path must be inside and is stored relative to: the
+/// repository, else the workspace, else the current folder.
+fn spec_base(runner: &ProcessCommandRunner, cwd: &std::path::Path) -> std::path::PathBuf {
+    git::discover_repo_root(runner, cwd)
+        .ok()
+        .or_else(|| workspace::find(cwd))
+        .unwrap_or_else(|| cwd.to_path_buf())
+}
+
+fn run_spec(command: SpecCommand) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let config = RepoConfig::load_optional(&repo_root)?.unwrap_or_default();
+    let folder = spec::folder(config.specs.as_deref())?;
+    match command {
+        SpecCommand::New { title } => {
+            let path = spec::create(&repo_root, &folder, &title)?;
+            println!("{}", crate::path_codec::display(&path));
+        }
+        SpecCommand::List => {
+            let specs = spec::list(&repo_root, &folder)?;
+            if specs.is_empty() {
+                println!("No specs in {}.", crate::path_codec::display(&folder));
+            }
+            for listed in specs {
+                println!(
+                    "{}  {}  {}",
+                    crate::path_codec::display(&listed.path),
+                    listed.status.as_deref().unwrap_or("not stated"),
+                    listed.title.as_deref().unwrap_or("not stated")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run_intent(args: IntentArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
@@ -2964,13 +3077,20 @@ fn run_intent(args: IntentArgs) -> Result<()> {
         )
     })?;
     let repo_root = session_root(&runner, &cwd, &id)?;
-    let marker = session::declare_intent(&repo_root, &id, args.text, args.scope)?;
+    let spec = match &args.spec {
+        Some(given) => Some(spec::resolve(&spec_base(&runner, &cwd), &cwd, given)?),
+        None => None,
+    };
+    let marker = session::declare_intent(&repo_root, &id, args.text, args.scope, spec)?;
     info!(event = "toimija.session.intent_declared", session = %marker.id);
     println!(
         "session {}: intent — {}",
         marker.id,
         marker.intent.as_deref().unwrap_or("unknown")
     );
+    if let Some(spec) = &marker.spec {
+        println!("  spec — {spec}");
+    }
     if !marker.scope.is_empty() {
         println!("  scope: {}", marker.scope.join(", "));
     }

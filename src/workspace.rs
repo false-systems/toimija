@@ -186,6 +186,9 @@ pub struct OpenSession {
     /// `live` or `stale`.
     pub liveness: &'static str,
     pub intent: Option<String>,
+    /// The spec the session starts from, when it declared one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -379,6 +382,7 @@ fn open_session(view: &SessionView) -> Option<OpenSession> {
         agent: view.agent_label().to_string(),
         liveness,
         intent: view.marker.intent.clone(),
+        spec: view.marker.spec.clone(),
     })
 }
 
@@ -543,12 +547,16 @@ fn brief(text: &str) -> String {
 }
 
 fn session_line(session: &OpenSession) -> String {
-    format!(
+    let mut line = format!(
         "{} ({}): {}",
         session.agent,
         session.liveness,
         brief(session.intent.as_deref().unwrap_or("unknown"))
-    )
+    );
+    if let Some(spec) = &session.spec {
+        line.push_str(&format!(" [spec: {spec}]"));
+    }
+    line
 }
 
 #[cfg(test)]

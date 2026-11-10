@@ -424,6 +424,9 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
             }
         )
         .unwrap();
+        if let Some(spec) = &session.spec {
+            write_spec(&mut output, spec);
+        }
     }
 
     // What the last agent here left for the next, early: it is
@@ -582,6 +585,28 @@ fn append_optional_sections(
 /// first, however many there are; the changed files and their tests fill what
 /// is left of the list's cap, so a wide branch cannot push the owner's
 /// "read this first" out of the packet.
+/// The session's spec: for a file, what the file itself states; for an issue
+/// reference, the reference and that it is not read.
+fn write_spec(output: &mut String, spec: &crate::spec::SpecBlock) {
+    write_h2(output, "Spec");
+    match spec.kind {
+        crate::spec::SpecKind::File => {
+            writeln!(output, "- file: {}", spec.reference).unwrap();
+            if let Some(reason) = &spec.unreadable {
+                writeln!(output, "- cannot be read: {reason}").unwrap();
+                return;
+            }
+            let stated = |value: &Option<String>| value.clone().unwrap_or("not stated".to_string());
+            writeln!(output, "- title: {}", stated(&spec.title)).unwrap();
+            writeln!(output, "- status: {}", stated(&spec.status)).unwrap();
+        }
+        crate::spec::SpecKind::Issue => {
+            writeln!(output, "- reference: {}", spec.reference).unwrap();
+            writeln!(output, "- an issue reference: toimija does not read issues").unwrap();
+        }
+    }
+}
+
 fn write_read_first(output: &mut String, packet: &ContextPacket) {
     write_h2(output, "Read first");
     if packet.read_first.is_empty() {
@@ -589,7 +614,9 @@ fn write_read_first(output: &mut String, packet: &ContextPacket) {
         return;
     }
     let configured = |entry: &&crate::context::ReadFirstEntry| {
-        entry.reason == "repo config" || entry.reason == "important doc"
+        entry.reason == "repo config"
+            || entry.reason == "important doc"
+            || entry.reason == crate::spec::READ_FIRST_REASON
     };
     let (owned, derived): (Vec<_>, Vec<_>) = packet.read_first.iter().partition(configured);
     let room = MAX_LIST_SHOWN.saturating_sub(owned.len());
@@ -973,6 +1000,7 @@ mod tests {
         with_session.session = Some(crate::context::SessionBlock {
             id: "100-1".to_string(),
             intent: None,
+            spec: None,
             scope: Vec::new(),
             execution: None,
             entry_branch: None,
@@ -990,6 +1018,7 @@ mod tests {
         packet.session = Some(crate::context::SessionBlock {
             id: "100-1".to_string(),
             intent: Some("test drive 2".to_string()),
+            spec: None,
             scope: vec!["src/a.rs".to_string()],
             execution: None,
             entry_branch: None,
@@ -1010,6 +1039,7 @@ mod tests {
         packet.session = Some(crate::context::SessionBlock {
             id: "100-1".to_string(),
             intent: Some("move safely".to_string()),
+            spec: None,
             scope: Vec::new(),
             execution: None,
             entry_branch: Some("feat/before".to_string()),

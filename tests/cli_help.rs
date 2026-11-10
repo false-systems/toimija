@@ -58,6 +58,7 @@ fn every_subcommand_help_says_when_to_use_it() {
     for subcommand in [
         "init", "doctor", "context", "refresh", "enter", "watch", "run", "intent", "handover",
         "history", "clean", "landed", "graph", "sessions", "validate", "verify", "snapshot",
+        "spec",
     ] {
         Command::cargo_bin("toimija")
             .unwrap()
@@ -79,7 +80,9 @@ fn high_traffic_subcommands_carry_examples() {
         ("enter", "toimija enter --for-diff --budget 4000"),
         ("run", "toimija run --intent"),
         ("sessions", "toimija sessions --prune"),
-        ("intent", "toimija intent"),
+        ("intent", "toimija intent --spec"),
+        ("spec", "toimija spec new"),
+        ("run", "toimija run --spec docs/adr/0007-login.md claude"),
         ("handover", "toimija handover --unfinished"),
         ("history", "toimija history --json"),
         ("clean", "toimija clean --dry-run"),
@@ -97,6 +100,27 @@ fn high_traffic_subcommands_carry_examples() {
             .success()
             .stdout(predicate::str::contains("Examples:").name(subcommand))
             .stdout(predicate::str::contains(example).name(subcommand));
+    }
+}
+
+/// A session can start from a spec: the flag and the subcommands that make
+/// one are described where an agent looks for them.
+#[test]
+fn spec_help_describes_the_flag_and_the_subcommands() {
+    for (args, text) in [
+        (vec!["--help"], "Create or list specs"),
+        (vec!["run", "--help"], "--spec <REF>"),
+        (vec!["intent", "--help"], "--spec <REF>"),
+        (vec!["spec", "--help"], "Create the next numbered spec file"),
+        (vec!["spec", "--help"], "List the numbered spec files"),
+        (vec!["spec", "new", "--help"], "<TITLE>"),
+    ] {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .args(&args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(text));
     }
 }
 

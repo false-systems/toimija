@@ -1,0 +1,340 @@
+//! A spec a session starts from: a file in the repository (an ADR, say) or an
+//! issue reference.
+//!
+//! A spec is a fact the session declares, like its intent. Toimija records
+//! the reference in the session marker and shows it. It reads a file spec for
+//! its title and stated status; it never fetches an issue and never checks
+//! the work against either.
+
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+use anyhow::{Context as _, Result, bail};
+use serde::{Deserialize, Serialize};
+
+/// Where `spec new` and `spec list` look when `.toimija/repo.yaml` names no
+/// `specs:` folder.
+pub const DEFAULT_FOLDER: &str = "docs/adr";
+
+/// The reason a file spec carries in Read first.
+pub const READ_FIRST_REASON: &str = "session spec";
+
+/// Whether `reference` is an issue reference: `#` and digits, or a URL.
+/// Anything else is a path.
+pub fn is_issue(reference: &str) -> bool {
+    let number = reference
+        .strip_prefix('#')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()));
+    number || reference.contains("://")
+}
+
+/// The reference to store for `given`. An issue reference is kept exactly as
+/// given. A path is read relative to `cwd`, must name an existing file inside
+/// `root`, and is stored relative to `root`. Both sides are canonicalized
+/// before the inside check.
+pub fn resolve(root: &Path, cwd: &Path, given: &str) -> Result<String> {
+    if is_issue(given) {
+        return Ok(given.to_string());
+    }
+    let path = cwd.join(given);
+    let Ok(file) = path.canonicalize() else {
+        bail!("spec file {given} does not exist");
+    };
+    if !file.is_file() {
+        bail!("spec {given} is not a file");
+    }
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", root.display()))?;
+    let Ok(relative) = file.strip_prefix(&root) else {
+        bail!(
+            "spec file {given} is outside the repository ({}): a spec is a file in the \
+             repository, `#<number>` or a URL",
+            root.display()
+        );
+    };
+    Ok(crate::path_codec::display(relative))
+}
+
+/// What a packet says about a session's spec.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpecBlock {
+    /// The path relative to the repository root, or the issue reference as
+    /// given.
+    pub reference: String,
+    pub kind: SpecKind,
+    /// The file's first `# ` heading. Absent when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// What the file states on a line beginning `Status:`. Absent when it
+    /// states none: never guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Why the file could not be read, when it could not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreadable: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecKind {
+    File,
+    Issue,
+}
+
+/// Describe the spec `reference` of a session in `root`. A file is read for
+/// its title and status; an issue reference is only repeated.
+pub fn describe(root: &Path, reference: &str) -> SpecBlock {
+    if is_issue(reference) {
+        return SpecBlock {
+            reference: reference.to_string(),
+            kind: SpecKind::Issue,
+            title: None,
+            status: None,
+            unreadable: None,
+        };
+    }
+    let (facts, unreadable) = match fs::read_to_string(root.join(reference)) {
+        Ok(text) => (facts(&text), None),
+        Err(error) => (Facts::default(), Some(error.to_string())),
+    };
+    SpecBlock {
+        reference: reference.to_string(),
+        kind: SpecKind::File,
+        title: facts.title,
+        status: facts.status,
+        unreadable,
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Facts {
+    title: Option<String>,
+    status: Option<String>,
+}
+
+/// The first `# ` heading and the first line beginning `Status:`.
+fn facts(text: &str) -> Facts {
+    let stated = |prefix: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Facts {
+        title: stated("# "),
+        status: stated("Status:"),
+    }
+}
+
+/// The folder specs live in, relative to the repository root. It must stay
+/// inside the repository.
+pub fn folder(configured: Option<&Path>) -> Result<PathBuf> {
+    let folder = configured.unwrap_or(Path::new(DEFAULT_FOLDER));
+    let inside = folder
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)));
+    if !inside || folder.as_os_str().is_empty() {
+        bail!(
+            "`specs:` in .toimija/repo.yaml must be a folder inside the repository, not {}",
+            folder.display()
+        );
+    }
+    Ok(folder.to_path_buf())
+}
+
+/// A spec file in the folder: `<four digits>-<name>.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    /// Relative to the repository root.
+    pub path: PathBuf,
+    pub number: u32,
+    pub title: Option<String>,
+    pub status: Option<String>,
+}
+
+fn number_of(file_name: &str) -> Option<u32> {
+    let (digits, rest) = file_name.split_at_checked(4)?;
+    (digits.bytes().all(|b| b.is_ascii_digit()) && rest.starts_with('-') && rest.ends_with(".md"))
+        .then(|| digits.parse().ok())
+        .flatten()
+}
+
+/// The numbered spec files in `folder` (relative to `root`), by number then
+/// name. A folder that does not exist holds none.
+pub fn list(root: &Path, folder: &Path) -> Result<Vec<Listed>> {
+    let dir = root.join(folder);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", dir.display()));
+        }
+    };
+    let mut specs = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("failed to read {}", dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(number) = number_of(&name) else {
+            continue;
+        };
+        if !entry.path().is_file() {
+            continue;
+        }
+        let facts = fs::read_to_string(entry.path())
+            .map(|text| facts(&text))
+            .with_context(|| format!("failed to read {}", entry.path().display()))?;
+        specs.push(Listed {
+            path: folder.join(&name),
+            number,
+            title: facts.title,
+            status: facts.status,
+        });
+    }
+    specs.sort_by(|a, b| a.number.cmp(&b.number).then_with(|| a.path.cmp(&b.path)));
+    Ok(specs)
+}
+
+/// The file name part made of `title`: lowercase letters and digits, with
+/// every run of anything else as one hyphen.
+fn slug(title: &str) -> String {
+    let mut slug = String::new();
+    for c in title.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
+/// What a new spec holds.
+fn template(title: &str) -> String {
+    format!("# {title}\n\nStatus: proposed\n\n## Context\n\n## Decision\n\n## Consequences\n")
+}
+
+/// Create the next numbered spec for `title` in `folder` and return its path
+/// relative to `root`. The number is one more than the highest there. It
+/// writes that one file and never replaces an existing one.
+pub fn create(root: &Path, folder: &Path, title: &str) -> Result<PathBuf> {
+    use std::io::Write as _;
+    let title = title.trim();
+    let slug = slug(title);
+    if slug.is_empty() {
+        bail!("a spec title needs at least one letter or digit to name its file");
+    }
+    let next = list(root, folder)?
+        .iter()
+        .map(|spec| spec.number)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    if next > 9999 {
+        bail!("{} already holds spec 9999", folder.display());
+    }
+    let relative = folder.join(format!("{next:04}-{slug}.md"));
+    let path = root.join(&relative);
+    let dir = root.join(folder);
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("refusing to overwrite {}", relative.display()))?;
+    file.write_all(template(title).as_bytes())
+        .with_context(|| format!("failed to write {}", relative.display()))?;
+    Ok(relative)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_issue_reference_is_a_number_or_a_url_and_nothing_else() {
+        assert!(is_issue("#123"));
+        assert!(is_issue("https://tracker.example.invalid/issues/7"));
+        assert!(!is_issue("#"));
+        assert!(!is_issue("#12a"));
+        assert!(!is_issue("docs/adr/0001-login.md"));
+        assert!(!is_issue("123"));
+    }
+
+    #[test]
+    fn title_and_status_are_read_only_where_the_file_states_them() {
+        assert_eq!(
+            facts("intro\n# Login redirect\n\nStatus: accepted \n# Second\nStatus: later\n"),
+            Facts {
+                title: Some("Login redirect".to_string()),
+                status: Some("accepted".to_string()),
+            }
+        );
+        assert_eq!(
+            facts("## Status\n\naccepted\nstatus: no\n#NoSpace\n"),
+            Facts::default()
+        );
+        assert_eq!(facts("Status:\n# \n"), Facts::default());
+    }
+
+    #[test]
+    fn a_slug_is_lowercase_with_single_hyphens() {
+        assert_eq!(
+            slug("Rate limit the Login API!"),
+            "rate-limit-the-login-api"
+        );
+        assert_eq!(slug("  --A  b__c--  "), "a-b-c");
+        assert_eq!(slug("!!!"), "");
+    }
+
+    #[test]
+    fn only_four_digit_markdown_files_are_numbered_specs() {
+        assert_eq!(number_of("0007-login.md"), Some(7));
+        assert_eq!(number_of("0007-login.txt"), None);
+        assert_eq!(number_of("007-login.md"), None);
+        assert_eq!(number_of("00071-login.md"), None);
+        assert_eq!(number_of("README.md"), None);
+    }
+
+    #[test]
+    fn create_never_replaces_a_file_and_the_folder_stays_inside() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let folder = Path::new("docs/adr");
+        assert_eq!(
+            create(root, folder, "First").unwrap(),
+            Path::new("docs/adr/0001-first.md")
+        );
+        // A name the numbering cannot see (a directory) is in the way of the
+        // next file: refused, not replaced.
+        fs::create_dir(root.join("docs/adr/0002-second.md")).unwrap();
+        let error = format!("{:#}", create(root, folder, "Second").unwrap_err());
+        assert!(error.contains("refusing to overwrite"), "{error}");
+
+        assert!(super::folder(Some(Path::new("../elsewhere"))).is_err());
+        assert!(super::folder(Some(Path::new("/abs"))).is_err());
+        assert_eq!(super::folder(None).unwrap(), Path::new(DEFAULT_FOLDER));
+    }
+
+    #[test]
+    fn a_path_is_stored_relative_to_the_root_and_must_be_inside_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("docs/spec.md"), "# Spec\n").unwrap();
+        fs::write(temp.path().join("outside.md"), "# Outside\n").unwrap();
+
+        assert_eq!(
+            resolve(&root, &root.join("src"), "../docs/spec.md").unwrap(),
+            "docs/spec.md"
+        );
+        assert_eq!(resolve(&root, &root, "#12").unwrap(), "#12");
+        let missing = resolve(&root, &root, "docs/none.md").unwrap_err();
+        assert!(missing.to_string().contains("docs/none.md"));
+        let outside = resolve(&root, &root, "../outside.md").unwrap_err();
+        assert!(outside.to_string().contains("outside the repository"));
+        assert!(resolve(&root, &root, "docs").is_err());
+    }
+}

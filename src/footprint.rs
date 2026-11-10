@@ -924,6 +924,7 @@ mod tests {
             branch: Some("main".to_string()),
             head: Some("abc".to_string()),
             intent: Some("ship".to_string()),
+            spec: None,
             scope: vec!["src".to_string()],
             started_at: 100,
             last_seen_at: Some(150),

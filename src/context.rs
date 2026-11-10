@@ -80,6 +80,9 @@ pub struct ContextPacket {
 pub struct SessionBlock {
     pub id: String,
     pub intent: Option<String>,
+    /// The spec the session starts from, when it declared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<crate::spec::SpecBlock>,
     pub scope: Vec<String>,
     /// Ephemeral execution context: the session's repository point and changed surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -743,6 +746,7 @@ mod tests {
             session: Some(SessionBlock {
                 id: "100-1".to_string(),
                 intent: None,
+                spec: None,
                 scope: Vec::new(),
                 execution: None,
                 entry_branch: None,

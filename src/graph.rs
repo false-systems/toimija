@@ -61,6 +61,9 @@ pub struct Present {
     pub agent: String,
     pub liveness: &'static str,
     pub intent: Option<String>,
+    /// The spec the session starts from, when it declared one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
     pub worktree: String,
 }
 
@@ -385,6 +388,7 @@ fn present(
                 agent: view.agent_label().to_string(),
                 liveness,
                 intent: view.marker.intent.clone(),
+                spec: view.marker.spec.clone(),
                 worktree: view.marker.worktree.clone(),
             });
         }
@@ -493,6 +497,9 @@ pub fn render_text(graph: &Graph) -> String {
                             let _ = write!(out, ": \"{}\"", shorten(intent));
                         }
                         None => out.push_str(": intent not given"),
+                    }
+                    if let Some(spec) = &session.spec {
+                        let _ = write!(out, " [spec: {spec}]");
                     }
                 }
                 out.truncate(out.trim_end().len());

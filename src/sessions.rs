@@ -813,6 +813,9 @@ pub fn render_text(report: &SessionsReport) -> String {
                 "    intent: {}\n",
                 m.intent.as_deref().unwrap_or("unknown")
             ));
+            if let Some(spec) = &m.spec {
+                out.push_str(&format!("    spec: {spec}\n"));
+            }
             let scope = if m.scope.is_empty() {
                 "unknown".to_string()
             } else {
@@ -875,6 +878,7 @@ mod tests {
             branch: Some("feat/x".to_string()),
             head: None,
             intent: None,
+            spec: None,
             scope: Vec::new(),
             started_at,
             last_seen_at: None,
@@ -1235,6 +1239,7 @@ mod tests {
                 branch: Some(branch.to_string()),
                 head: None,
                 intent: intent.map(str::to_string),
+                spec: None,
                 scope: scope.iter().map(|s| s.to_string()).collect(),
                 started_at: 0,
                 last_seen_at: None,

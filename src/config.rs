@@ -41,6 +41,10 @@ pub struct RepoConfig {
     pub validation: ValidationSection,
     pub stewardship: StewardshipSection,
     pub agents: BTreeMap<String, AgentPromptConfig>,
+    /// The folder `spec new` and `spec list` use, relative to the repository
+    /// root. `docs/adr` when not named.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub specs: Option<PathBuf>,
     pub boundaries: Vec<String>,
 }
 
