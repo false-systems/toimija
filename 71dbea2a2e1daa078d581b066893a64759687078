@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "71dbea2a2e1daa078d581b066893a64759687078",
+  "head": "6c88f018b1ddc23af9e0f09c612ec124d5ced2b6",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/review.rs:490: Writing the prompt synchronously before starting the timeout or draining output can hang indefinitely if the reviewer stalls during startup or fills an output pipe before consuming the prompt."
+    },
+    {
+      "level": "look",
+      "text": "README.md:626: The completion checklist and work graph omit the newly required xtask tests, leaving contributors with instructions that no longer match AGENTS.md and sykli.json."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794308123,
+  "overruled": null
+}
