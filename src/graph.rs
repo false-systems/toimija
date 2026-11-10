@@ -121,7 +121,17 @@ pub fn build(
         "--branches".to_string(),
     ];
     if let Some(base) = &base {
-        log.insert(4, format!("--decorate-refs=refs/remotes/{base}"));
+        // The base under its full ref name, however it was given; a base
+        // that is no ref (a commit id) has no name to show.
+        let full = git(
+            runner,
+            repo_root,
+            &["rev-parse", "--symbolic-full-name", base],
+        )
+        .unwrap_or_default();
+        if !full.is_empty() {
+            log.insert(4, format!("--decorate-refs={full}"));
+        }
         log.push(base.clone());
         // The base's own history is not what is cooking.
         log.push("--not".to_string());
@@ -173,6 +183,25 @@ pub fn build(
             }
         })
         .collect();
+    let lines: Vec<Line> = lines;
+    // A tip whose proof or review could not be read is a gap in the picture.
+    for line in &lines {
+        let Line::Tip { tip, .. } = line else {
+            continue;
+        };
+        if let Proof::Unknown(why) = &tip.proof {
+            let said = format!("proof is unknown: {why}");
+            if !warnings.contains(&said) {
+                warnings.push(said);
+            }
+        }
+        if tip.review == Review::Unreadable {
+            warnings.push(format!(
+                "the review kept for {} could not be read",
+                tip.branches.join(", ")
+            ));
+        }
+    }
     Ok(Graph {
         schema: "toimija-graph.v1",
         base,
@@ -607,6 +636,52 @@ mod tests {
                 .any(|w| w.contains("read only in part")),
             "{:?}",
             graph.warnings
+        );
+    }
+
+    #[test]
+    fn the_base_is_shown_however_it_is_named() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        // No local branch sits on the base, and it is named by its full ref.
+        run(root, &["checkout", "-q", "work"]);
+        run(root, &["branch", "-q", "-D", "main"]);
+        let none = |_: &Path, _: &str| Proof::Passed;
+        for name in ["refs/remotes/origin/main", "origin/main"] {
+            let graph = build(&ProcessCommandRunner, root, name, &none).unwrap();
+            assert_eq!(tip(&graph, "origin/main").proof, Proof::Passed, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_proof_and_an_unreadable_review_are_warnings() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let work_tree = run(root, &["rev-parse", "work^{tree}"]);
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-m",
+                "not json",
+                &work_tree,
+            ],
+        );
+        let unknown = |_: &Path, _: &str| Proof::Unknown("sykli is not installed".to_string());
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &unknown).unwrap();
+        let all = graph.warnings.join("\n");
+        assert!(all.contains("sykli is not installed"), "{all}");
+        assert_eq!(
+            all.matches("sykli is not installed").count(),
+            1,
+            "said once: {all}"
+        );
+        assert!(
+            all.contains("the review kept for work could not be read"),
+            "{all}"
         );
     }
 
