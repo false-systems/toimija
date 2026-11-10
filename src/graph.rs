@@ -121,6 +121,8 @@ pub fn build(
         "log".to_string(),
         "--graph".to_string(),
         "--simplify-by-decoration".to_string(),
+        // Short names, whatever log.decorate says in this clone.
+        "--decorate=short".to_string(),
         "--decorate-refs=refs/heads/".to_string(),
         "--format=%x01%H%x02%T%x02%D%x02%s".to_string(),
         "--branches".to_string(),
@@ -135,7 +137,7 @@ pub fn build(
         )
         .unwrap_or_default();
         if !full.is_empty() {
-            log.insert(4, format!("--decorate-refs={full}"));
+            log.insert(5, format!("--decorate-refs={full}"));
         }
         log.push(base.clone());
         // The base's own history is not what is cooking.
@@ -782,6 +784,17 @@ mod tests {
             "{:?}",
             graph.warnings
         );
+    }
+
+    #[test]
+    fn branch_names_are_short_whatever_git_is_configured_to_print() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        run(root, &["config", "log.decorate", "full"]);
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert_eq!(tip(&graph, "work").subject, "the work");
+        assert_eq!(tip(&graph, "origin/main").subject, "first");
     }
 
     #[test]
