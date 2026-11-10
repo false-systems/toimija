@@ -507,7 +507,7 @@ fn converse(mut command: Command, who: &str, prompt: &str, limit: Duration) -> R
         .take()
         .context("the reviewer's stdin is piped")?;
     let text = prompt.to_string();
-    let writer = std::thread::spawn(move || stdin.write_all(text.as_bytes()));
+    let writer = beside(move || stdin.write_all(text.as_bytes()));
     let reader = drain(
         child
             .stdout
@@ -536,15 +536,14 @@ fn converse(mut command: Command, who: &str, prompt: &str, limit: Duration) -> R
         }
         std::thread::sleep(Duration::from_millis(200));
     };
-    let printed = reader
-        .join()
-        .map_err(|_| anyhow!("reading {who}'s reply panicked"))??;
-    let said = said
-        .join()
-        .map_err(|_| anyhow!("reading {who}'s messages panicked"))??;
+    // The same limit covers reading what it printed: a process it started
+    // may hold the pipes open after it ended.
+    let deadline = started + limit;
+    let printed = by(&reader, deadline, who)?;
+    let said = by(&said, deadline, who)?;
     let handed = writer
-        .join()
-        .map_err(|_| anyhow!("handing {who} its prompt panicked"))?;
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or(Ok(()));
     if !status.success() {
         // What the reviewer said while working is shown only when it failed.
         eprint!("{said}");
@@ -554,11 +553,42 @@ fn converse(mut command: Command, who: &str, prompt: &str, limit: Duration) -> R
     Ok(printed)
 }
 
-fn drain(mut from: impl Read + Send + 'static) -> std::thread::JoinHandle<std::io::Result<String>> {
+/// Runs `work` on a thread of its own and hands back where its result arrives,
+/// so a wait for it can be given up.
+fn beside<T: Send + 'static>(
+    work: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> std::sync::mpsc::Receiver<std::io::Result<T>> {
+    let (done, result) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        // The receiver is gone when the wait was given up: nothing to tell.
+        let _ = done.send(work());
+    });
+    result
+}
+
+fn drain(
+    mut from: impl Read + Send + 'static,
+) -> std::sync::mpsc::Receiver<std::io::Result<String>> {
+    beside(move || {
         let mut text = String::new();
         from.read_to_string(&mut text).map(|_| text)
     })
+}
+
+/// What `beside` work produced, unless it is still going at the deadline.
+fn by<T>(
+    result: &std::sync::mpsc::Receiver<std::io::Result<T>>,
+    deadline: Instant,
+    who: &str,
+) -> Result<T> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    match result.recv_timeout(left) {
+        Ok(done) => Ok(done?),
+        Err(_) => bail!(
+            "{who} ended, but something it started still holds its input or output \
+             at the time limit"
+        ),
+    }
 }
 
 /// The reviewer's command line. It starts as a session of its own: no agent
@@ -885,14 +915,24 @@ mod tests {
     }
 
     #[test]
+    fn a_reviewer_whose_child_keeps_its_output_open_runs_into_the_time_limit() {
+        let mut leaves_child = Command::new("sh");
+        leaves_child.args(["-c", "sleep 4 & exit 0"]);
+        let started = Instant::now();
+        let error = converse(leaves_child, "sh", "", Duration::from_millis(500)).unwrap_err();
+        assert!(error.to_string().contains("still holds"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
     fn a_reviewer_that_never_reads_its_prompt_runs_into_the_time_limit() {
         let mut stalled = Command::new("sh");
-        stalled.args(["-c", "sleep 30"]);
+        stalled.args(["-c", "sleep 4"]);
         let prompt = "x".repeat(2_000_000);
         let started = Instant::now();
         let error = converse(stalled, "sh", &prompt, Duration::from_millis(300)).unwrap_err();
         assert!(error.to_string().contains("did not finish"), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
