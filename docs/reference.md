@@ -1345,12 +1345,29 @@ Before a change is done:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo test -p xtask
 ```
 
-`cargo xtask gate` runs the same three. `cargo xtask install-pre-commit-hook`
+`cargo xtask gate` runs the first three. `cargo xtask install-pre-commit-hook`
 installs a Git pre-commit hook, once per clone and again after `xtask`
 changes. The hook formats the staged crates, stages the result, then runs
 clippy and the tests, and blocks the commit when either fails.
+
+### Landing without a pull request (a trial)
+
+Two development commands in `xtask` try out landing work without a pull
+request. They are not part of the `toimija` binary.
+
+- `cargo xtask review` starts a fresh agent on the committed branch, another
+  one than the author where one is installed, with reading tools only. It
+  answers `fine`, `look` or `blocking`. A reviewer that is missing, fails or
+  gives no verdict is no review, never a pass. The verdict is kept as a git
+  note on the commit's tree (`refs/notes/toimija/review`). Only a person at a
+  terminal overrules a blocking review, with `--overrule "<why>"`.
+- `cargo xtask land` pushes the branch to `main` when `origin/main` is an
+  ancestor of the commit, sykli says its tree passed, and the review of that
+  tree against that `main` is not blocking. It shares the review and the
+  sykli receipt as git notes on the tree, then pushes.
 
 The `false-agent-protocol` dependency is public and fetched over HTTPS. A tag
 `v*` builds a Linux aarch64 binary in CI.
@@ -1365,10 +1382,11 @@ with `sykli run`. A task whose inputs have not changed is served from cache.
 | `fmt` | `cargo fmt --check` | | every `.rs` and `Cargo.toml` |
 | `clippy` | `cargo clippy --all-targets -- -D warnings` | `fmt` | the code: `.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/` |
 | `test` | `cargo test` | `fmt` | every tracked file |
+| `xtask-test` | `cargo test -p xtask` | `fmt` | every tracked file |
 | `doctor` | `cargo run --quiet -- doctor --strict` | `test` | every tracked file |
 
-Inputs are exact paths, not patterns. A new tracked file goes into `test` and
-`doctor`, and into `fmt` and `clippy` when it is code. Then `git add -A &&
+Inputs are exact paths, not patterns. A new tracked file goes into `test`,
+`xtask-test` and `doctor`, and into `fmt` and `clippy` when it is code. Then `git add -A &&
 sykli lock sykli.json` pins the contract again. An input that is not declared
 would be served from cache, so `test` and `doctor` declare every tracked file
 except the contract and its lock.

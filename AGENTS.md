@@ -19,7 +19,9 @@ These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if t
 
 ## Checks
 
-Before claiming completion: `cargo fmt`, `cargo test`, `cargo clippy --all-targets -- -D warnings`; or the same as `sykli run` (`sykli.json`, cached, with structured failures) or `cargo xtask gate`. Every new tracked file goes into the inputs of `test` and `doctor` in `sykli.json`, and of `fmt` and `clippy` if it is code; stage it, then `sykli lock sykli.json`.
+Before claiming completion: `cargo fmt`, `cargo test`, `cargo test -p xtask`, `cargo clippy --all-targets -- -D warnings`; or the same as `sykli run` (`sykli.json`, cached, with structured failures) or `cargo xtask gate`. Every new tracked file goes into the inputs of `test`, `xtask-test` and `doctor` in `sykli.json`, and of `fmt` and `clippy` if it is code; stage it, then `sykli lock sykli.json`.
+
+Landing without a pull request (a trial, in `xtask`): on the committed branch run `cargo xtask review`, then `cargo xtask land`. Review starts a fresh agent, another one than the author where one is installed, which reads `origin/main..HEAD` with read-only tools and says `fine`, `look` or `blocking`. A reviewer that is missing, fails or gives no verdict is no review, never a pass; only a person overrules a blocking one (`cargo xtask review --overrule "<why>"`, at a terminal). Land refuses unless `origin/main` is an ancestor of the commit, sykli says its tree passed and a review of it against that main is not blocking; then it pushes the commit to `main` and shares the review and the receipt as git notes on the tree. Land pushes to `main`, so run it only when the person you work for says so.
 
 Install the pre-commit hook once per clone, and again after changing `xtask`: `cargo xtask install-pre-commit-hook`. It formats the staged crates, then runs clippy and the tests. Update README.md and docs/reference.md when CLI behaviour changes; when boundaries, validation commands, major docs or structure change, update `.toimija/repo.yaml` too and run `toimija doctor --strict`.
 
