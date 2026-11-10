@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "b2fa836127b53f77d1907c14ce3c44959e6f09c8",
+  "head": "fd9ab7b9ca965925ac793a0f55aeb3c69c8900e4",
+  "base": "1fe51fd2c34abfe6072e4013be1f2c06fee90510",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/spec.rs:240: A symlink in the configured spec folder lets `spec new` create files outside the repository because folder validation checks components without canonicalizing the destination."
+    },
+    {
+      "level": "look",
+      "text": "src/refresh.rs:383: The inserted session spec survives `sessionless()` after the session closes, leaving the repository summary’s Read first list pointing to an ended session’s spec."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794335095,
+  "overruled": null
+}
