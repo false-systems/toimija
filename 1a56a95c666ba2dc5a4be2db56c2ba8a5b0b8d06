@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "1a56a95c666ba2dc5a4be2db56c2ba8a5b0b8d06",
+  "head": "9d3a982964fff9fda47be21383f56acf3848a477",
+  "base": "1fe51fd2c34abfe6072e4013be1f2c06fee90510",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/spec.rs:215: `spec list` follows numbered file symlinks without checking their targets, so a link inside `docs/adr` can read and print a title and status from outside the repository."
+    },
+    {
+      "level": "look",
+      "text": "src/render.rs:622: A spec already listed as a changed file retains its derived reason, so this partition places it after configured documents and can omit it at the list cap despite the promise that the spec appears first."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794335378,
+  "overruled": null
+}
