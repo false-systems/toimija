@@ -272,6 +272,10 @@ struct Computed {
 fn sessionless(packet: &ContextPacket, budget_override: Option<usize>) -> Result<(String, String)> {
     let mut packet = packet.clone();
     packet.session = None;
+    // What the session read first because of its spec goes with it.
+    packet
+        .read_first
+        .retain(|entry| entry.reason != crate::spec::READ_FIRST_REASON);
     packet.attach_seal(None)?;
     Ok(render_pair(&packet, budget_override)?)
 }
@@ -379,14 +383,21 @@ fn compute_once(
             .filter(|spec| spec.kind == crate::spec::SpecKind::File)
         {
             let path = std::path::PathBuf::from(&spec.reference);
-            packet.read_first.retain(|entry| entry.path != path);
-            packet.read_first.insert(
-                0,
-                context::ReadFirstEntry {
+            // A path already listed moves to the front and keeps its own
+            // reason; only a path that is new to the list is there because
+            // of the session, and `sessionless` takes exactly those out.
+            let entry = match packet
+                .read_first
+                .iter()
+                .position(|entry| entry.path == path)
+            {
+                Some(at) => packet.read_first.remove(at),
+                None => context::ReadFirstEntry {
                     path,
                     reason: crate::spec::READ_FIRST_REASON.to_string(),
                 },
-            );
+            };
+            packet.read_first.insert(0, entry);
         }
         packet.session = Some(context::SessionBlock {
             id: marker.id,

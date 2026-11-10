@@ -94,9 +94,12 @@ pub fn describe(root: &Path, reference: &str) -> SpecBlock {
             unreadable: None,
         };
     }
-    let (facts, unreadable) = match fs::read_to_string(root.join(reference)) {
+    let read = resolved_inside(root, Path::new(reference))
+        .map_err(|error| format!("{error:#}"))
+        .and_then(|_| fs::read_to_string(root.join(reference)).map_err(|error| error.to_string()));
+    let (facts, unreadable) = match read {
         Ok(text) => (facts(&text), None),
-        Err(error) => (Facts::default(), Some(error.to_string())),
+        Err(reason) => (Facts::default(), Some(reason)),
     };
     SpecBlock {
         reference: reference.to_string(),
@@ -126,6 +129,32 @@ fn facts(text: &str) -> Facts {
         title: stated("# "),
         status: stated("Status:"),
     }
+}
+
+/// `root.join(relative)` with every symlink resolved, refused when that is
+/// outside `root`. Where the path does not exist yet, its deepest existing
+/// folder is what gets resolved, so a symlink above a folder that is still to
+/// be created is caught before anything is created through it.
+fn resolved_inside(root: &Path, relative: &Path) -> Result<PathBuf> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", root.display()))?;
+    let wanted = root.join(relative);
+    let existing = wanted
+        .ancestors()
+        .find(|path| fs::symlink_metadata(path).is_ok())
+        .unwrap_or(&root);
+    let resolved = existing
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", existing.display()))?;
+    if !resolved.starts_with(&root) {
+        bail!(
+            "{} resolves outside the repository ({}): a spec stays inside it",
+            relative.display(),
+            resolved.display()
+        );
+    }
+    Ok(resolved)
 }
 
 /// The folder specs live in, relative to the repository root. It must stay
@@ -165,6 +194,7 @@ fn number_of(file_name: &str) -> Option<u32> {
 /// name. A folder that does not exist holds none.
 pub fn list(root: &Path, folder: &Path) -> Result<Vec<Listed>> {
     let dir = root.join(folder);
+    resolved_inside(root, folder)?;
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -237,7 +267,11 @@ pub fn create(root: &Path, folder: &Path, title: &str) -> Result<PathBuf> {
     let relative = folder.join(format!("{next:04}-{slug}.md"));
     let path = root.join(&relative);
     let dir = root.join(folder);
+    // Checked before the folder is created and again after, so no symlink in
+    // or above it takes the new file out of the repository.
+    resolved_inside(root, folder)?;
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    resolved_inside(root, folder)?;
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -315,6 +349,74 @@ mod tests {
         assert!(super::folder(Some(Path::new("../elsewhere"))).is_err());
         assert!(super::folder(Some(Path::new("/abs"))).is_err());
         assert_eq!(super::folder(None).unwrap(), Path::new(DEFAULT_FOLDER));
+    }
+
+    /// A symlink must not carry a spec out of the repository: not the spec
+    /// folder itself, not a folder above it, and not a file given as a spec.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_never_takes_a_spec_outside_the_repository() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(outside.join("adr")).unwrap();
+        fs::write(
+            outside.join("adr/0003-theirs.md"),
+            "# Theirs\n\nStatus: secret\n",
+        )
+        .unwrap();
+        let listing = || {
+            let mut names: Vec<_> = fs::read_dir(outside.join("adr"))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = listing();
+
+        // The spec folder itself is a symlink out.
+        fs::create_dir_all(root.join("docs")).unwrap();
+        symlink(outside.join("adr"), root.join("docs/adr")).unwrap();
+        let error = format!(
+            "{:#}",
+            create(&root, Path::new("docs/adr"), "Mine").unwrap_err()
+        );
+        assert!(error.contains("outside the repository"), "{error}");
+        let error = format!("{:#}", list(&root, Path::new("docs/adr")).unwrap_err());
+        assert!(error.contains("outside the repository"), "{error}");
+
+        // A folder above it is a symlink out, and the spec folder is not there yet.
+        symlink(&outside, root.join("linked")).unwrap();
+        let error = format!(
+            "{:#}",
+            create(&root, Path::new("linked/new"), "Mine").unwrap_err()
+        );
+        assert!(error.contains("outside the repository"), "{error}");
+        assert!(
+            !outside.join("new").exists(),
+            "a folder was created outside"
+        );
+        assert_eq!(listing(), before, "a file was written outside");
+
+        // A file given as a spec that resolves outside.
+        symlink(
+            outside.join("adr/0003-theirs.md"),
+            root.join("docs/link.md"),
+        )
+        .unwrap();
+        let error = resolve(&root, &root, "docs/link.md").unwrap_err();
+        assert!(
+            error.to_string().contains("outside the repository"),
+            "{error}"
+        );
+        // And one that becomes such a link after it was declared is not read.
+        let block = describe(&root, "docs/link.md");
+        assert_eq!(block.title, None);
+        assert_eq!(block.status, None);
+        assert!(block.unreadable.unwrap().contains("outside the repository"));
     }
 
     #[test]

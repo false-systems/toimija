@@ -230,6 +230,20 @@ fn a_file_spec_is_kept_relative_to_the_root_and_shown_everywhere() {
         packet["read_first"][0],
         serde_json::json!({"path": "docs/adr/0001-login-redirect.md", "reason": "session spec"})
     );
+
+    // Once the session has ended, the repository-level packet is no longer
+    // its packet: it holds no spec, and Read first does not point at one.
+    for name in ["current.md", "current.json"] {
+        let summary = fs::read_to_string(sandbox.repo.join(".toimija").join(name)).unwrap();
+        assert!(
+            !summary.contains("session spec") && !summary.contains("Spec"),
+            "{name}: {summary}"
+        );
+        assert!(
+            !summary.contains("0001-login-redirect"),
+            "{name}: {summary}"
+        );
+    }
 }
 
 #[test]
