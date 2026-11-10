@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "c6bf7147540ae8d4996bcfb170154bac98cee21d",
+  "head": "b18447ffe7fc537b4cf15d2115e76dd9d84271f7",
+  "base": "1fe51fd2c34abfe6072e4013be1f2c06fee90510",
+  "level": "look",
+  "findings": [
+    {
+      "level": "look",
+      "text": "src/spec.rs:274: Concurrent `spec new` calls with different titles can both select the same next number and succeed because `create_new` protects only the full filename, allowing duplicate spec numbers in this shared-agent repository."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794336277,
+  "overruled": null
+}
