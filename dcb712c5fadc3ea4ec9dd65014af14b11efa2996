@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "dcb712c5fadc3ea4ec9dd65014af14b11efa2996",
+  "head": "6ecae8b79be81699e1c0f1236b06cc8bcf2966fe",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "tests/cli_graph.rs:38: Three new tests require exit code 0 without providing Sykli, but its absence makes `graph` exit 4, so `cargo test` fails on clean machines and the required Rust CI job, which does not install Sykli."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794318507,
+  "overruled": null
+}
