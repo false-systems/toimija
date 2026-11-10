@@ -8,7 +8,16 @@ default-members = ["."]
 name = "toimija"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.98"
+description = "Git-aware local context for coding agents: it reports facts and refuses to decide."
 license = "MIT"
+repository = "https://github.com/false-systems/toimija"
+readme = "README.md"
+keywords = ["agents", "git", "context", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+# The package is the source, the build script, the README and the licence: no
+# tests, fixtures, CI files, xtask or agent guides.
+include = ["src/**", "build.rs", "Cargo.toml", "README.md", "LICENSE"]
 default-run = "toimija"
 
 [dependencies]
