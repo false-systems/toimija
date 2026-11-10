@@ -1031,6 +1031,8 @@ and are refused in a workspace. The other commands need a repository.
 
 - A workspace packet does not show uncommitted work, ahead and behind, or a
   validation plan. Run `toimija context` inside a repository for those.
+- A repository's role, a session's intent and a handover are each shown as
+  one line of at most 100 characters. The JSON packet carries them whole.
 - Only repositories directly inside the folder are listed. A repository two
   levels down is not.
 - The branch comes from the `HEAD` file as it is on disk. Toimija does not

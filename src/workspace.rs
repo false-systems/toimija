@@ -492,7 +492,7 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
         } else {
             "not set"
         };
-        writeln!(out, "  - role: {}", or(&repository.role, no_role)).unwrap();
+        writeln!(out, "  - role: {}", brief(&or(&repository.role, no_role))).unwrap();
         writeln!(out, "  - branch: {}", or(&repository.branch, "unknown")).unwrap();
         if repository.sessions.is_empty() {
             writeln!(out, "  - sessions: none").unwrap();
@@ -501,7 +501,9 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
             writeln!(out, "  - session: {}", session_line(session)).unwrap();
         }
         match &repository.handover {
-            Some(handover) => writeln!(out, "  - handover: {}", handover.first_line).unwrap(),
+            Some(handover) => {
+                writeln!(out, "  - handover: {}", brief(&handover.first_line)).unwrap()
+            }
             None => writeln!(out, "  - handover: none").unwrap(),
         }
     }
@@ -526,12 +528,26 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
     out
 }
 
+/// The longest role, intent or handover line shown for one repository. The
+/// JSON packet carries each whole.
+const BRIEF_WIDTH: usize = 100;
+
+/// One line of a repository's entry, short enough that a folder of many
+/// repositories stays a packet an agent reads whole.
+fn brief(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default();
+    match line.char_indices().nth(BRIEF_WIDTH) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line.to_string(),
+    }
+}
+
 fn session_line(session: &OpenSession) -> String {
     format!(
         "{} ({}): {}",
         session.agent,
         session.liveness,
-        session.intent.as_deref().unwrap_or("unknown")
+        brief(session.intent.as_deref().unwrap_or("unknown"))
     )
 }
 
@@ -543,6 +559,20 @@ mod tests {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn a_long_role_intent_or_handover_is_cut_to_one_short_line() {
+        let long = "x".repeat(BRIEF_WIDTH + 40);
+        let cut = brief(&long);
+        assert_eq!(cut.chars().count(), BRIEF_WIDTH + 1);
+        assert!(cut.ends_with('…'));
+        assert_eq!(brief("first line\nsecond line"), "first line");
+        assert_eq!(brief("short"), "short");
+        assert_eq!(
+            brief(&"é".repeat(BRIEF_WIDTH + 5)).chars().count(),
+            BRIEF_WIDTH + 1
+        );
     }
 
     #[test]
