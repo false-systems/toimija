@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "39c49aa9da23dd907ad883def2681bfe91e01122",
+  "head": "a8a2c3d1750bfedb32ac4beb2b2229d7c71741db",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:128 The exclusion leaves already merged branches in the graph: running this command in the repository includes `feat/common-clone-point-fact` and other ancestors of `origin/main` as work in progress."
+    },
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:273 Discarding the session report’s warnings and coverage silently hides unreadable session markers and returns success, violating the repository rule to preserve partial-coverage warnings and exit code 4."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794318122,
+  "overruled": null
+}
