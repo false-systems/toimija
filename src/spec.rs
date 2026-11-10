@@ -63,6 +63,12 @@ pub fn resolve(root: &Path, cwd: &Path, given: &str) -> Result<String> {
     if text.chars().any(char::is_control) {
         bail!("spec file {given:?} has a control character in its name");
     }
+    // The stored path is told from an issue reference by its shape alone.
+    if is_issue(text) {
+        bail!(
+            "spec file {given} is stored as `{text}`, which reads as an issue reference: rename the file"
+        );
+    }
     Ok(text.to_string())
 }
 
@@ -368,6 +374,18 @@ mod tests {
 
     /// A symlink must not carry a spec out of the repository: not the spec
     /// folder itself, not a folder above it, and not a file given as a spec.
+    #[test]
+    fn a_file_whose_stored_path_reads_as_an_issue_reference_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("#123"), "# A file, not an issue\n").unwrap();
+        let error = resolve(root, root, "./#123").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("reads as an issue reference"),
+            "{error:#}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_symlink_never_takes_a_spec_outside_the_repository() {
