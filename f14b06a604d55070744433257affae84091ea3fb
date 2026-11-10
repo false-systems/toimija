@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "f14b06a604d55070744433257affae84091ea3fb",
+  "head": "8fa0841c7608315e8ac23f5a805f6994a07c7fa9",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/land.rs:99: The push does not require remote main to still equal `target`, so a concurrent advance to an intermediate ancestor of `head` can succeed with a review against the wrong base; require the exact fetched target when updating main."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794307969,
+  "overruled": null
+}
