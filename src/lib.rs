@@ -30,3 +30,4 @@ pub mod snapshot;
 pub mod tree_identity;
 pub mod validate;
 pub mod watch;
+pub mod workspace;

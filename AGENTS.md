@@ -14,7 +14,7 @@ These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if t
 - Do not add MCP, LSP, SCIP, Tree-sitter, or Kythe integration yet. Sykli is in scope only as this repo's CI pipeline (the sykli.json contract and its CI job); Sykli delegation inside toimija's own commands stays out of scope.
 - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
 - Agent coordination — per-session live packets and sibling-session awareness — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
-- A session outside any Git repository is in scope: `run` opens a visible session (marker, heartbeat, handshake; no packet) in the machine-local state directory, never a `.toimija/` folder where the agent works. Workspace context compilation stays out of scope.
+- A session outside any Git repository is in scope: `run` opens a visible session (marker, heartbeat, handshake; no packet) in the machine-local state directory, never a `.toimija/` folder where the agent works. A workspace declared by `.toimija/workspace.yaml` is in scope as a read of files only, with no git process, no network, and nothing written outside `init --workspace`.
 - Toimija reports facts and refuses to decide. No gates, checks, or receipts (Evidence belongs to Sykli), no work providers or plugins, and no dispatch, assignment, or closure of work.
 
 ## Checks
