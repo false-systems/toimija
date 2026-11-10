@@ -555,7 +555,15 @@ fn reviewer_command(agent: Agent, last: &Path) -> Command {
     match agent {
         Agent::Codex => {
             command
-                .args(["exec", "--sandbox", "read-only", "--ephemeral", "-o"])
+                .args([
+                    "exec",
+                    "--sandbox",
+                    "read-only",
+                    // No configured server or connector reaches the reviewer.
+                    "--ignore-user-config",
+                    "--ephemeral",
+                    "-o",
+                ])
                 .arg(last)
                 .arg("-");
         }
@@ -845,6 +853,19 @@ mod tests {
             "an overrule does not follow the tree"
         );
         assert_eq!(exit_code(&again), 1);
+    }
+
+    #[test]
+    fn the_codex_reviewer_is_sandboxed_and_loads_no_user_configuration() {
+        let command = reviewer_command(Agent::Codex, Path::new("/tmp/last.txt"));
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args[..4],
+            ["exec", "--sandbox", "read-only", "--ignore-user-config"]
+        );
     }
 
     #[test]

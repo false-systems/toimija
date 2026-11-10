@@ -89,6 +89,10 @@ pub fn land(root: &Path, remote: &str, prover: Prover<'_>) -> Result<Outcome> {
         )
         .context("could not attach the receipt to the tree")?;
     }
+    // The evidence goes first: a commit never reaches main without it, and a
+    // landing that fails after this step can simply be run again.
+    push_notes(root, remote)
+        .context("the review and receipt could not be shared; nothing landed")?;
     git(
         root,
         &[
@@ -99,9 +103,6 @@ pub fn land(root: &Path, remote: &str, prover: Prover<'_>) -> Result<Outcome> {
         ],
     )
     .context("the push to main was refused")?;
-    push_notes(root, remote).with_context(|| {
-        format!("{head} is on {remote}'s main, but its review and receipt were not shared")
-    })?;
     Ok(Outcome::Landed {
         head,
         review: record.level,
