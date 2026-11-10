@@ -20,11 +20,6 @@ use crate::refresh;
 /// Directory, relative to the repo root, holding all per-session state.
 pub const SESSIONS_SUBDIR: &str = ".toimija/sessions";
 
-/// Handshake variables this version does not set: the worker.v1 result and
-/// context paths. `run` clears them for the child, so a
-/// value inherited from an outer session cannot point it at a stale file.
-pub const RETIRED_ENV: &[&str] = &["FALSE_SYSTEMS_RESULT_PATH", "FALSE_SYSTEMS_CONTEXT_PATH"];
-
 /// Handshake variables that only mean something inside a repository. A
 /// session outside one clears them for the child, so values inherited from an
 /// outer session cannot point it at another session's repo or packet.

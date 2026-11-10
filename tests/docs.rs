@@ -3,7 +3,7 @@
 
 const README: &str = include_str!("../README.md");
 const HISTORY_SCHEMA: &str = include_str!("../docs/schemas/history-record.v1.schema.json");
-const SAUMA_SCHEMA: &str = include_str!("../docs/schemas/sauma-envelope.v1.schema.json");
+const SEAL_SCHEMA: &str = include_str!("../docs/schemas/toimija-seal.v1.schema.json");
 
 #[test]
 fn readme_states_the_git_state_thesis() {
@@ -78,32 +78,53 @@ fn history_schema_matches_emitted_record_fields() {
     assert_eq!(emitted_keys, required);
 }
 
+/// A sealed artifact, to see the seal this code writes.
+#[derive(serde::Serialize)]
+struct SealedSample {
+    schema: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seal: Option<toimija::seal::Envelope>,
+}
+
+impl toimija::seal::Sealed for SealedSample {
+    fn seal_mut(&mut self) -> &mut Option<toimija::seal::Envelope> {
+        &mut self.seal
+    }
+}
+
 #[test]
-fn sauma_schema_matches_emitted_envelope_fields() {
+fn seal_schema_matches_the_seal_this_code_writes() {
     use std::collections::BTreeSet;
 
-    let schema: serde_json::Value = serde_json::from_str(SAUMA_SCHEMA).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(SEAL_SCHEMA).unwrap();
     assert_eq!(
         schema["$schema"],
         "https://json-schema.org/draft/2020-12/schema"
     );
-    assert_eq!(
-        schema["$id"],
-        "https://false.systems/schemas/sauma-envelope.v1.schema.json"
-    );
+    assert_eq!(schema["$id"], "docs/schemas/toimija-seal.v1.schema.json");
     assert_eq!(schema["additionalProperties"], false);
 
-    let envelope = toimija::seal::legacy_envelope_from_canonical(
-        "handoff-record.v1",
-        "{}",
+    let mut sample = SealedSample {
+        schema: "demo.v1",
+        seal: None,
+    };
+    toimija::seal::attach(
+        &mut sample,
+        "demo.v1",
         vec![toimija::seal::Provenance::Token {
             token: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
                 .to_string(),
         }],
         "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         Some("100-1".to_string()),
+    )
+    .unwrap();
+    let emitted = serde_json::to_value(sample.seal.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        emitted["envelope"],
+        schema["properties"]["envelope"]["const"]
     );
-    let emitted = serde_json::to_value(envelope).unwrap();
+    assert_eq!(emitted["envelope"], toimija::seal::ENVELOPE_SCHEMA);
     let emitted_keys: BTreeSet<_> = emitted.as_object().unwrap().keys().cloned().collect();
     let property_keys: BTreeSet<_> = schema["properties"]
         .as_object()
@@ -147,7 +168,7 @@ fn sauma_schema_matches_emitted_envelope_fields() {
 /// a foreign walker can recompute. If this vector changes, the schema description
 /// and any cross-tool digest contract change with it — that is the point.
 #[test]
-fn sauma_canonical_digest_matches_pinned_vector() {
+fn canonical_digest_matches_pinned_vector() {
     // Keys deliberately out of lexical order, with a nested object and an array,
     // to prove sorting happens at every level while array order is preserved.
     let artifact = serde_json::json!({

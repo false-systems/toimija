@@ -1231,29 +1231,28 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     // positional argument, or after the flag a built-in takes or its `agents:`
     // entry names.
     let handshake = session.env(&repo_root);
-    let child_args =
-        match crate::adapters::agents::shell_env_args(program, &handshake, session::RETIRED_ENV)
-            .and_then(|mut child_args| {
-                child_args.extend_from_slice(rest);
-                if let Some(prompt) = composed {
-                    child_args.extend(crate::adapters::agents::launch_args(
-                        program,
-                        rest,
-                        prompt,
-                        args.task.is_some(),
-                        &repo_config.agents,
-                    )?);
-                }
-                Ok(child_args)
-            }) {
-            Ok(args) => args,
-            Err(error) => {
-                stop.store(true, Ordering::Relaxed);
-                let _ = watcher.join();
-                close_session_after_startup_failure(&repo_root, &mut session);
-                return Err(error);
+    let child_args = match crate::adapters::agents::shell_env_args(program, &handshake, &[])
+        .and_then(|mut child_args| {
+            child_args.extend_from_slice(rest);
+            if let Some(prompt) = composed {
+                child_args.extend(crate::adapters::agents::launch_args(
+                    program,
+                    rest,
+                    prompt,
+                    args.task.is_some(),
+                    &repo_config.agents,
+                )?);
             }
-        };
+            Ok(child_args)
+        }) {
+        Ok(args) => args,
+        Err(error) => {
+            stop.store(true, Ordering::Relaxed);
+            let _ = watcher.join();
+            close_session_after_startup_failure(&repo_root, &mut session);
+            return Err(error);
+        }
+    };
     eprintln!(
         "toimija run: launching `{program}` (session {}, watching for changes)",
         session.id
@@ -1263,9 +1262,6 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         .args(&child_args)
         .current_dir(&repo_root)
         .envs(handshake);
-    for retired in session::RETIRED_ENV {
-        child.env_remove(retired);
-    }
     // From here the terminal belongs to the wrapped command. Seal this
     // process's own stdout/stderr at the descriptor level onto the session
     // diagnostics log — watcher output, refresh warnings, even panic messages
@@ -1790,11 +1786,7 @@ fn run_outside_repo(
         }
     }
     let handshake = session.env_outside();
-    let cleared: Vec<&str> = session::RETIRED_ENV
-        .iter()
-        .chain(session::REPO_ONLY_ENV)
-        .copied()
-        .collect();
+    let cleared: Vec<&str> = session::REPO_ONLY_ENV.to_vec();
     let child_args = match crate::adapters::agents::shell_env_args(program, &handshake, &cleared)
         .and_then(|mut child_args| {
             child_args.extend_from_slice(rest);

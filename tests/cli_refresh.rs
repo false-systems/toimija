@@ -232,9 +232,7 @@ fn refresh_writes_current_md_and_json() {
         "the Markdown and JSON repo packets must identify the same refresh"
     );
     assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v3");
-    // The packet carries the seal under `seal`, never under `sauma`.
-    assert!(value.get("sauma").is_none(), "{value:#}");
-    assert_eq!(value["seal"]["envelope"], "sauma-envelope.v2");
+    assert_eq!(value["seal"]["envelope"], "toimija-seal.v1");
     assert_eq!(value["seal"]["schema"], "toimija-context.v3");
     assert_eq!(value["seal"]["producer"]["tool"], "toimija");
     assert_eq!(value["seal"]["producer"]["run"], serde_json::Value::Null);

@@ -2,41 +2,72 @@
 //! digest of the packet's canonical form, its provenance, its producer and the
 //! consistency token it is anchored to.
 //!
-//! The envelope, its canonical byte string and every digest over it live in the
-//! vendored canonical crate (`vendor/sauma-canonical`, pinned by
-//! `vendor/sauma-canonical.contract`). Toimija keeps that code as its own. The
-//! envelope format is named `sauma-envelope.v2`.
+//! The envelope format is named `toimija-seal.v1` ([`ENVELOPE_SCHEMA`]), and
+//! `docs/schemas/toimija-seal.v1.schema.json` describes it.
 //!
 //! This module names what a seal's digest covers and supplies Toimija's
-//! producer identity; nothing here hashes. The crate's own `attach` and
-//! `verify_value` read the envelope under the key `sauma`,
-//! so for `seal` the two are done here, with the
-//! crate's [`digest_value`] and the crate's v2 rule: the digest covers the
-//! whole artifact, the envelope included, without the envelope's own `digest`.
+//! producer identity; nothing here hashes. The canonical form and the digest
+//! over it are `crate::canonical`. The digest covers the whole artifact, the
+//! envelope included, without the envelope's own `digest`.
 
-use serde::Serialize;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use sauma_canonical::{
-    ENVELOPE_SCHEMA, LEGACY_ENVELOPE_SCHEMA, SaumaEnvelope as Envelope, SaumaProducer as Producer,
-    SaumaProvenance as Provenance, canonical_json, digest_json, digest_value, is_sha256,
-    is_supported_envelope,
-};
+pub use crate::canonical::{canonical_json, digest_json, digest_value, is_sha256};
+
+/// The name of the envelope format, carried in every seal as `envelope`.
+pub const ENVELOPE_SCHEMA: &str = "toimija-seal.v1";
+
+/// The envelope a sealed artifact carries under [`KEY`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Envelope {
+    /// The envelope format: [`ENVELOPE_SCHEMA`].
+    pub envelope: String,
+    /// The schema of the artifact that carries the seal.
+    pub schema: String,
+    pub digest: String,
+    #[serde(default)]
+    pub provenance: Vec<Provenance>,
+    pub producer: Producer,
+    /// The consistency token the artifact is pinned to.
+    pub anchored_at: String,
+}
+
+/// Who sealed the artifact. Self-declared: nothing here authenticates it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Producer {
+    pub tool: String,
+    pub version: String,
+    pub run: Option<String>,
+}
+
+/// What a sealed artifact was built from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Provenance {
+    Git {
+        oid: String,
+    },
+    Token {
+        token: String,
+    },
+    Artifact {
+        digest: String,
+    },
+    /// Any edge kind this version does not name. Kept last and untagged, so
+    /// an edge of a kind that is new to this reader does not make it refuse
+    /// the whole artifact.
+    #[serde(untagged)]
+    Other(BTreeMap<String, Value>),
+}
 
 /// The producer Toimija stamps on what it seals.
 pub const TOOL: &str = "toimija";
 
 /// The key a sealed artifact carries its envelope under.
 pub const KEY: &str = "seal";
-
-/// The key other tools' artifacts carry the same envelope under. A
-/// walker over the local chain reads both.
-pub const SAUMA_KEY: &str = "sauma";
-
-/// The digest an envelope under [`SAUMA_KEY`] carries, by the crate's rules
-/// for that key: a `sauma-envelope.v2` digest covers the envelope, a v1
-/// digest leaves it out.
-pub use sauma_canonical::artifact_digest_value as digest_under_sauma_key;
 
 /// An artifact that carries a seal under [`KEY`].
 pub trait Sealed: Serialize {
@@ -61,7 +92,7 @@ pub fn digest_of(value: &Value) -> String {
     digest_value(&covered)
 }
 
-/// Seal `artifact` as Toimija: attach a `sauma-envelope.v2` and set its digest.
+/// Seal `artifact` as Toimija: attach an envelope and set its digest.
 pub fn attach<T: Sealed>(
     artifact: &mut T,
     schema: &str,
@@ -118,41 +149,17 @@ pub fn verify_value(value: &Value) -> serde_json::Result<Option<(String, String)
     Ok((actual != seal.digest).then_some((seal.digest, actual)))
 }
 
-/// A seal is `sauma-envelope.v2`. The v1 form, whose digest leaves the
-/// envelope out, belongs under the `sauma` key only.
+/// A seal is [`ENVELOPE_SCHEMA`] and nothing else.
 fn supported(seal: &Envelope) -> serde_json::Result<()> {
     use serde::de::Error as _;
     if seal.envelope == ENVELOPE_SCHEMA {
         Ok(())
     } else {
         Err(serde_json::Error::custom(format!(
-            "unsupported seal envelope `{}`; a seal is `{ENVELOPE_SCHEMA}`",
+            "unsupported seal envelope `{}`; a seal is `{ENVELOPE_SCHEMA}`. Run `toimija refresh` \
+             to replace the packet",
             seal.envelope
         )))
-    }
-}
-
-/// A v1 envelope, for the schema-conformance check in `tests/docs.rs`.
-///
-/// Nothing in Toimija emits v1. This exists because `docs.rs` asserts
-/// that the shape the published `sauma-envelope.v1.schema.json` describes is
-/// the shape this code produces — a check that needs something to produce it.
-/// It is the one place the producer identity is built outside `attach`, for the
-/// same reason: the version has to be Toimija's.
-pub fn legacy_envelope_from_canonical(
-    schema: &str,
-    canonical_json_without_seal: &str,
-    provenance: Vec<Provenance>,
-    anchored_at: &str,
-    run: Option<String>,
-) -> Envelope {
-    Envelope {
-        envelope: LEGACY_ENVELOPE_SCHEMA.to_string(),
-        schema: schema.to_string(),
-        digest: digest_json(canonical_json_without_seal),
-        provenance,
-        producer: producer(run),
-        anchored_at: anchored_at.to_string(),
     }
 }
 
@@ -189,19 +196,16 @@ mod tests {
         let mut sample = sealed();
         let seal = sample.seal.clone().unwrap();
         assert_eq!(seal.producer.tool, "toimija");
-        // Not the canonical crate's version.
         assert_eq!(seal.producer.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(seal.envelope, ENVELOPE_SCHEMA);
         assert!(verify(&mut sample).unwrap().is_none());
         let value = serde_json::to_value(&sample).unwrap();
-        assert!(value.get("sauma").is_none(), "{value}");
         assert!(verify_value(&value).unwrap().is_none());
     }
 
-    /// The digest covers the seal itself, minus its own digest: the crate's
-    /// v2 rule, applied under `seal` rather than `sauma`.
+    /// The digest covers the seal itself, minus its own digest.
     #[test]
-    fn the_digest_is_the_canonical_v2_digest_under_the_seal_key() {
+    fn the_digest_is_the_canonical_digest_of_the_artifact_without_the_seals_digest() {
         let sample = sealed();
         let value = serde_json::to_value(&sample).unwrap();
         let mut without_digest = value.clone();
