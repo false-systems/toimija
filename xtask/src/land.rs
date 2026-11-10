@@ -88,6 +88,10 @@ pub fn land(root: &Path, remote: &str, prover: Prover<'_>) -> Result<Outcome> {
             &["notes", "--ref", RECEIPTS, "add", "-f", "-F", &path, &tree],
         )
         .context("could not attach the receipt to the tree")?;
+    } else if git(root, &["notes", "--ref", RECEIPTS, "show", &tree]).is_err() {
+        // Proven here, but the receipt file is gone and no clone shared one:
+        // main does not move without the proof that travels with it.
+        return refused("proven, but there is no receipt left to share: run `sykli run` again");
     }
     // The evidence goes first: a commit never reaches main without it, and a
     // landing that fails after this step can simply be run again.
@@ -290,7 +294,31 @@ mod tests {
     use crate::review::{overrule, Agent};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    const PASSED: Prover<'static> = &|_, _, _| Ok(Proof::Passed { receipt: None });
+    /// A prover whose proof comes with a receipt file to share.
+    fn passed(world: &World) -> impl Fn(&Path, &str, &str) -> Result<Proof> {
+        let receipt = world.dir.join("receipt.json");
+        fs::write(&receipt, "{\"tasks\":[]}\n").unwrap();
+        move |_: &Path, _: &str, _: &str| {
+            Ok(Proof::Passed {
+                receipt: Some(receipt.clone()),
+            })
+        }
+    }
+
+    #[test]
+    fn a_proof_with_no_receipt_to_share_does_not_land() {
+        let Some(world) = World::new("land-no-receipt") else {
+            return;
+        };
+        world.review("REVIEW: fine\n");
+        let before = world.remote_main();
+        let bare = |_: &Path, _: &str, _: &str| Ok(Proof::Passed { receipt: None });
+        let Outcome::Refused(why) = land(&world.work, "origin", &bare).unwrap() else {
+            panic!("it landed without a receipt");
+        };
+        assert!(why.contains("no receipt"), "{why}");
+        assert_eq!(world.remote_main(), before);
+    }
 
     #[test]
     fn a_shared_receipt_counts_only_where_this_clone_knows_nothing() {
@@ -362,20 +390,20 @@ mod tests {
         };
         let why = refusal(land(&world.work, "origin", &unproven).unwrap());
         assert!(why.contains("not proven"), "{why}");
-        let why = refusal(land(&world.work, "origin", PASSED).unwrap());
+        let why = refusal(land(&world.work, "origin", &passed(&world)).unwrap());
         assert!(why.contains("not reviewed"), "{why}");
         world.review("- [blocking] new.txt:1: wrong.\nREVIEW: blocking\n");
-        let why = refusal(land(&world.work, "origin", PASSED).unwrap());
+        let why = refusal(land(&world.work, "origin", &passed(&world)).unwrap());
         assert!(why.contains("blocking"), "{why}");
         fs::write(world.work.join("stray.txt"), "x\n").unwrap();
-        let why = refusal(land(&world.work, "origin", PASSED).unwrap());
+        let why = refusal(land(&world.work, "origin", &passed(&world)).unwrap());
         assert!(why.contains("commit first"), "{why}");
         fs::remove_file(world.work.join("stray.txt")).unwrap();
         assert_eq!(world.remote_main(), before, "nothing reached main");
 
         overrule(&world.work, "origin/main", "accepted by a person").unwrap();
         assert!(matches!(
-            land(&world.work, "origin", PASSED).unwrap(),
+            land(&world.work, "origin", &passed(&world)).unwrap(),
             Outcome::Landed { .. }
         ));
     }
@@ -394,14 +422,14 @@ mod tests {
         world.git(&["push", "-q", "origin", "HEAD:refs/heads/main"]);
         world.git(&["checkout", "-q", "work"]);
 
-        let Outcome::Refused(why) = land(&world.work, "origin", PASSED).unwrap() else {
+        let Outcome::Refused(why) = land(&world.work, "origin", &passed(&world)).unwrap() else {
             panic!("it landed behind main");
         };
         assert!(why.contains("merge it in"), "{why}");
 
         // Merged up, the tree is new: the old review is not of this change.
         world.git(&["merge", "-q", "--no-edit", "origin/main"]);
-        let Outcome::Refused(why) = land(&world.work, "origin", PASSED).unwrap() else {
+        let Outcome::Refused(why) = land(&world.work, "origin", &passed(&world)).unwrap() else {
             panic!("it landed unreviewed");
         };
         assert!(why.contains("not reviewed"), "{why}");
@@ -419,7 +447,7 @@ mod tests {
         // While the checks run, someone lands the branch's first commit.
         let racing = |root: &Path, _: &str, _: &str| {
             git(root, &["push", "-q", "origin", "HEAD~1:refs/heads/main"])?;
-            Ok(Proof::Passed { receipt: None })
+            passed(&world)(root, "", "")
         };
         let moved_to = world.git(&["rev-parse", "HEAD~1"]);
 
