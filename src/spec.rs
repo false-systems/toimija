@@ -53,7 +53,17 @@ pub fn resolve(root: &Path, cwd: &Path, given: &str) -> Result<String> {
             root.display()
         );
     };
-    Ok(crate::path_codec::display(relative))
+    // Stored as the path itself, never an escaped form of it: the reference is
+    // read back as a path. A marker holds text, and the reference is printed
+    // on one line, so a path that is not UTF-8 or holds a control character
+    // is refused.
+    let Some(text) = relative.to_str() else {
+        bail!("spec file {given} has a name that is not valid UTF-8");
+    };
+    if text.chars().any(char::is_control) {
+        bail!("spec file {given:?} has a control character in its name");
+    }
+    Ok(text.to_string())
 }
 
 /// What a packet says about a session's spec.
@@ -434,6 +444,30 @@ mod tests {
         assert_eq!(block.title, None);
         assert_eq!(block.status, None);
         assert!(block.unreadable.unwrap().contains("outside the repository"));
+    }
+
+    /// The stored reference is the path itself, so what is read later is the
+    /// file that was given: nothing is escaped on the way in.
+    #[cfg(unix)]
+    #[test]
+    fn a_spec_path_is_stored_as_it_is_and_reads_back_the_same_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(root.join("docs")).unwrap();
+        let name = r"docs/back\slash spec.md";
+        fs::write(root.join(name), "# Backslash\n\nStatus: accepted\n").unwrap();
+
+        let stored = resolve(&root, &root, name).unwrap();
+        assert_eq!(stored, name);
+        let block = describe(&root, &stored);
+        assert_eq!(block.unreadable, None);
+        assert_eq!(block.title.as_deref(), Some("Backslash"));
+
+        // A name that would break a line of output is refused, not escaped
+        // into another name.
+        fs::write(root.join("docs/two\nlines.md"), "# Two\n").unwrap();
+        let error = resolve(&root, &root, "docs/two\nlines.md").unwrap_err();
+        assert!(error.to_string().contains("control character"), "{error}");
     }
 
     #[test]
