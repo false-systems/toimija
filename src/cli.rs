@@ -3075,6 +3075,22 @@ fn run_intent(args: IntentArgs) -> Result<()> {
     };
     let marker = session::declare_intent(&repo_root, &id, args.text, args.scope, spec)?;
     info!(event = "toimija.session.intent_declared", session = %marker.id);
+    // The packet shows the intent, scope and spec, so it is rewritten now: the
+    // watcher ignores the marker and would leave them stale until the
+    // repository next changed.
+    if let Ok(worktree) = git::discover(&runner, &cwd) {
+        let plain = ContextArgs {
+            json: false,
+            for_diff: false,
+            budget: None,
+        };
+        if let Err(error) = ambient_refresh(&runner, &worktree, &plain) {
+            warn!(event = "toimija.session.intent_refresh_failed", error = %error);
+            eprintln!(
+                "toimija intent: the packet was not refreshed ({error:#}); run `toimija refresh`"
+            );
+        }
+    }
     println!(
         "session {}: intent — {}",
         marker.id,

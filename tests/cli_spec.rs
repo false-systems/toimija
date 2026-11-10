@@ -364,6 +364,7 @@ fn intent_sets_a_spec_mid_session_with_or_without_a_new_intent() {
             &["--intent", "look around"],
             "\"$T\" -q intent --spec docs/adr/0001-login-redirect.md > \"$OUT/first.txt\"\n\
              \"$T\" -q sessions > \"$OUT/after-first.txt\"\n\
+             cp \"$TOIMIJA_LIVE\" \"$OUT/packet-after-first.md\"\n\
              \"$T\" -q intent 'fix the redirect' --spec '#7' > \"$OUT/second.txt\"\n\
              \"$T\" -q sessions > \"$OUT/after-second.txt\"\n\
              \"$T\" -q intent --spec docs/adr/0009-nothing.md 2> \"$OUT/missing.err\"\n\
@@ -381,6 +382,13 @@ fn intent_sets_a_spec_mid_session_with_or_without_a_new_intent() {
         sandbox
             .read("first.txt")
             .contains("spec — docs/adr/0001-login-redirect.md")
+    );
+    // The live packet follows at once: the watcher does not wait for a change
+    // in the repository to show the new spec.
+    let packet = sandbox.read("packet-after-first.md");
+    assert!(
+        packet.contains("## Spec\n- file: docs/adr/0001-login-redirect.md"),
+        "{packet}"
     );
     // Both at once.
     let second = sandbox.read("after-second.txt");
