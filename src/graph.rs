@@ -1,0 +1,587 @@
+//! `toimija graph`: what is cooking in this clone, as the git graph of its
+//! branches, each tip with three facts beside it:
+//!
+//! - **proof**: what sykli's receipts say of the commit (`sykli status
+//!   --commit`). Toimija asks; it runs no check.
+//! - **review**: the level of the review kept for the commit's tree
+//!   (`refs/notes/toimija/review`), without its findings.
+//! - **who is there**: the open sessions on that branch, in any worktree of
+//!   the clone, with their intent.
+//!
+//! The graph holds the base (`origin/main`) and every local branch not yet in
+//! it. Read-only: it writes nothing and asks no network.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Result, bail};
+use serde::Serialize;
+
+use crate::command::CommandRunner;
+use crate::sessions::{self, Liveness};
+
+/// Where reviews are kept: one git note per tree.
+const REVIEW_NOTES: &str = "refs/notes/toimija/review";
+/// The longest intent shown beside a session.
+const INTENT_WIDTH: usize = 60;
+
+/// What sykli's receipts say of a commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "state", content = "detail")]
+pub enum Proof {
+    Passed,
+    Failed,
+    /// sykli holds no receipt of the commit's tree.
+    NotRun,
+    /// sykli answered with a verdict this view does not name.
+    Other(String),
+    /// The commit carries no `sykli.json`: nothing gates it.
+    NoGate,
+    /// sykli could not be asked (not installed, or it gave no answer).
+    Unknown(String),
+}
+
+/// The review kept for a commit's tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Review {
+    Fine,
+    Look,
+    Blocking,
+    /// Blocking, and a person let it cross.
+    Overruled,
+    None,
+    /// A note is there, but it is not a review this view can read.
+    Unreadable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Present {
+    pub agent: String,
+    pub liveness: &'static str,
+    pub intent: Option<String>,
+    pub worktree: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Tip {
+    pub commit: String,
+    pub branches: Vec<String>,
+    pub subject: String,
+    pub proof: Proof,
+    pub review: Review,
+    pub sessions: Vec<Present>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum Line {
+    /// A branch tip or the base, after its graph prefix.
+    Tip { graph: String, tip: Tip },
+    /// Graph edges, or a commit no branch points at.
+    Edge { graph: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Graph {
+    pub schema: &'static str,
+    pub base: Option<String>,
+    pub lines: Vec<Line>,
+    /// What could not be read; the graph is then partial.
+    pub warnings: Vec<String>,
+}
+
+/// Asks what sykli says of a commit.
+pub type Prover<'a> = &'a dyn Fn(&Path, &str) -> Proof;
+
+pub fn build(
+    runner: &dyn CommandRunner,
+    repo_root: &Path,
+    base: &str,
+    prover: Prover<'_>,
+) -> Result<Graph> {
+    let mut warnings = Vec::new();
+    let base = git(
+        runner,
+        repo_root,
+        &["rev-parse", "--verify", "--quiet", base],
+    )
+    .ok()
+    .map(|_| base.to_string());
+    if base.is_none() {
+        warnings.push("no base ref here: every local branch is shown whole".to_string());
+    }
+    let mut log = vec![
+        "log".to_string(),
+        "--graph".to_string(),
+        "--simplify-by-decoration".to_string(),
+        "--decorate-refs=refs/heads/".to_string(),
+        "--format=%x01%H%x02%T%x02%D%x02%s".to_string(),
+        "--branches".to_string(),
+    ];
+    if let Some(base) = &base {
+        log.insert(4, format!("--decorate-refs=refs/remotes/{base}"));
+        log.push(base.clone());
+        // The base's own history is not what is cooking.
+        log.push("--not".to_string());
+        log.push(format!("{base}^@"));
+    } else {
+        log.push("--max-count=50".to_string());
+    }
+    let log: Vec<&str> = log.iter().map(String::as_str).collect();
+    let text = git(runner, repo_root, &log)?;
+
+    let reviews = reviews(runner, repo_root, &mut warnings);
+    let present = present(runner, repo_root, &mut warnings);
+    let lines = text
+        .lines()
+        .map(|line| {
+            let Some((graph, commit)) = line.split_once('\u{1}') else {
+                return Line::Edge {
+                    graph: line.trim_end().to_string(),
+                };
+            };
+            let mut fields = commit.splitn(4, '\u{2}');
+            let (sha, tree, refs, subject) = (
+                fields.next().unwrap_or_default(),
+                fields.next().unwrap_or_default(),
+                fields.next().unwrap_or_default(),
+                fields.next().unwrap_or_default(),
+            );
+            let branches = branches(refs);
+            if branches.is_empty() {
+                // Where branches part: a commit no branch points at.
+                return Line::Edge {
+                    graph: format!("{graph}{}  (no branch)", &sha[..sha.len().min(7)]),
+                };
+            }
+            let sessions = branches
+                .iter()
+                .flat_map(|branch| present.get(branch).cloned().unwrap_or_default())
+                .collect();
+            Line::Tip {
+                graph: graph.to_string(),
+                tip: Tip {
+                    commit: sha.to_string(),
+                    proof: prover(repo_root, sha),
+                    review: review_of(runner, repo_root, reviews.get(tree)),
+                    branches,
+                    subject: subject.to_string(),
+                    sessions,
+                },
+            }
+        })
+        .collect();
+    Ok(Graph {
+        schema: "toimija-graph.v1",
+        base,
+        lines,
+        warnings,
+    })
+}
+
+/// The branch names of a `%D` decoration, the checked-out one included.
+fn branches(decoration: &str) -> Vec<String> {
+    decoration
+        .split(", ")
+        .map(|name| name.strip_prefix("HEAD -> ").unwrap_or(name).trim())
+        .filter(|name| !name.is_empty() && *name != "HEAD")
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every tree that has a review note, with the note's blob.
+fn reviews(
+    runner: &dyn CommandRunner,
+    repo_root: &Path,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<String, String> {
+    if git(
+        runner,
+        repo_root,
+        &["rev-parse", "--verify", "--quiet", REVIEW_NOTES],
+    )
+    .is_err()
+    {
+        return BTreeMap::new();
+    }
+    match git(runner, repo_root, &["notes", "--ref", REVIEW_NOTES, "list"]) {
+        Ok(list) => list
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(blob, tree)| (tree.to_string(), blob.to_string()))
+            .collect(),
+        Err(error) => {
+            warnings.push(format!("the reviews could not be listed: {error}"));
+            BTreeMap::new()
+        }
+    }
+}
+
+fn review_of(runner: &dyn CommandRunner, repo_root: &Path, blob: Option<&String>) -> Review {
+    let Some(blob) = blob else {
+        return Review::None;
+    };
+    let Ok(text) = git(runner, repo_root, &["cat-file", "blob", blob]) else {
+        return Review::Unreadable;
+    };
+    let Ok(note) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Review::Unreadable;
+    };
+    match (note["level"].as_str(), note["overruled"].is_null()) {
+        (Some("fine"), _) => Review::Fine,
+        (Some("look"), _) => Review::Look,
+        (Some("blocking"), true) => Review::Blocking,
+        (Some("blocking"), false) => Review::Overruled,
+        _ => Review::Unreadable,
+    }
+}
+
+/// The open sessions of every worktree of the clone, by branch.
+fn present(
+    runner: &dyn CommandRunner,
+    repo_root: &Path,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<String, Vec<Present>> {
+    let mut by_branch: BTreeMap<String, Vec<Present>> = BTreeMap::new();
+    let worktrees = match git(runner, repo_root, &["worktree", "list", "--porcelain"]) {
+        Ok(list) => list
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .map(PathBuf::from)
+            .collect(),
+        Err(error) => {
+            warnings.push(format!("the worktrees could not be listed: {error}"));
+            vec![repo_root.to_path_buf()]
+        }
+    };
+    for worktree in worktrees {
+        if !worktree.join(".toimija/sessions").is_dir() {
+            continue;
+        }
+        let report = match sessions::report(runner, &worktree, sessions::DEFAULT_STALE_AFTER_SECS) {
+            Ok(report) => report,
+            Err(error) => {
+                warnings.push(format!(
+                    "the sessions of {} could not be read: {error}",
+                    worktree.display()
+                ));
+                continue;
+            }
+        };
+        for view in report.sessions {
+            let liveness = match view.liveness {
+                Liveness::Active => "live",
+                Liveness::Stale => "stale",
+                Liveness::Closed => continue,
+            };
+            let Some(branch) = view.marker.branch.clone() else {
+                continue;
+            };
+            by_branch.entry(branch).or_default().push(Present {
+                agent: view.agent_label().to_string(),
+                liveness,
+                intent: view.marker.intent.clone(),
+                worktree: view.marker.worktree.clone(),
+            });
+        }
+    }
+    by_branch
+}
+
+/// What sykli says of a commit, asked of the installed sykli.
+pub fn sykli_proof(repo_root: &Path, commit: &str) -> Proof {
+    let output = match std::process::Command::new("sykli")
+        .current_dir(repo_root)
+        .args(["status", "--commit", commit, "--json"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Proof::Unknown("sykli is not installed".to_string()),
+    };
+    let Ok(status) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        let said = String::from_utf8_lossy(&output.stderr);
+        if said.contains("has no sykli.json") {
+            return Proof::NoGate;
+        }
+        return Proof::Unknown("sykli gave no answer".to_string());
+    };
+    match status["verdict"].as_str() {
+        Some("passed") => Proof::Passed,
+        Some("failed") => Proof::Failed,
+        Some("none") => Proof::NotRun,
+        Some(other) => Proof::Other(other.to_string()),
+        None => Proof::Unknown("sykli gave no verdict".to_string()),
+    }
+}
+
+pub fn render_text(graph: &Graph) -> String {
+    let mut out = String::new();
+    let tips: Vec<&Tip> = graph
+        .lines
+        .iter()
+        .filter_map(|line| match line {
+            Line::Tip { tip, .. } => Some(tip),
+            Line::Edge { .. } => None,
+        })
+        .collect();
+    let names = |tip: &Tip| tip.branches.join(", ");
+    let name_width = tips.iter().map(|tip| names(tip).len()).max().unwrap_or(0);
+    let graph_width = graph
+        .lines
+        .iter()
+        .map(|line| match line {
+            Line::Tip { graph, .. } | Line::Edge { graph } => graph.chars().count(),
+        })
+        .max()
+        .unwrap_or(0);
+    for line in &graph.lines {
+        match line {
+            Line::Edge { graph } => {
+                let _ = writeln!(out, "{graph}");
+            }
+            Line::Tip { graph, tip } => {
+                let _ = write!(
+                    out,
+                    "{graph:<graph_width$} {}  {:<name_width$}  {:<8}  review: {:<9}",
+                    &tip.commit[..tip.commit.len().min(7)],
+                    names(tip),
+                    proof_word(&tip.proof),
+                    review_word(&tip.review),
+                );
+                for (index, session) in tip.sessions.iter().enumerate() {
+                    out.push_str(if index == 0 { "  " } else { "; " });
+                    let _ = write!(out, "{} {}", session.agent, session.liveness);
+                    match &session.intent {
+                        Some(intent) => {
+                            let _ = write!(out, ": \"{}\"", shorten(intent));
+                        }
+                        None => out.push_str(": intent not given"),
+                    }
+                }
+                out.truncate(out.trim_end().len());
+                out.push('\n');
+            }
+        }
+    }
+    if tips.is_empty() {
+        out.push_str("No branches here.\n");
+    }
+    for warning in &graph.warnings {
+        let _ = writeln!(out, "warning: {warning}");
+    }
+    out
+}
+
+fn proof_word(proof: &Proof) -> &str {
+    match proof {
+        Proof::Passed => "proven",
+        Proof::Failed => "FAILED",
+        Proof::NotRun => "not run",
+        Proof::Other(word) => word,
+        Proof::NoGate => "no gate",
+        Proof::Unknown(_) => "unknown",
+    }
+}
+
+fn review_word(review: &Review) -> &'static str {
+    match review {
+        Review::Fine => "fine",
+        Review::Look => "look",
+        Review::Blocking => "BLOCKING",
+        Review::Overruled => "overruled",
+        Review::None => "none",
+        Review::Unreadable => "unreadable",
+    }
+}
+
+fn shorten(intent: &str) -> String {
+    let line = intent.lines().next().unwrap_or_default();
+    match line.char_indices().nth(INTENT_WIDTH) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line.to_string(),
+    }
+}
+
+fn git(runner: &dyn CommandRunner, repo_root: &Path, args: &[&str]) -> Result<String> {
+    let output = runner.run(repo_root, "git", args)?;
+    if output.status != 0 {
+        bail!("git {}: {}", args.join(" "), output.stderr_lossy().trim());
+    }
+    Ok(output.stdout_lossy().trim_end().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::ProcessCommandRunner;
+    use std::fs;
+
+    fn run(root: &Path, args: &[&str]) -> String {
+        git(&ProcessCommandRunner, root, args).unwrap()
+    }
+
+    /// `origin/main` at the first commit; `work` one commit ahead of it and
+    /// checked out; `other` one different commit ahead.
+    fn repo() -> Option<tempfile::TempDir> {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return None;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run(root, &["init", "-q", "-b", "main"]);
+        run(root, &["config", "user.email", "toimija@example.invalid"]);
+        run(root, &["config", "user.name", "Toimija Test"]);
+        fs::write(root.join("a.txt"), "a\n").unwrap();
+        run(root, &["add", "-A"]);
+        run(root, &["commit", "-q", "-m", "first"]);
+        run(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run(root, &["checkout", "-q", "-b", "other"]);
+        fs::write(root.join("o.txt"), "o\n").unwrap();
+        run(root, &["add", "-A"]);
+        run(root, &["commit", "-q", "-m", "other work"]);
+        run(root, &["checkout", "-q", "-b", "work", "main"]);
+        fs::write(root.join("w.txt"), "w\n").unwrap();
+        run(root, &["add", "-A"]);
+        run(root, &["commit", "-q", "-m", "the work"]);
+        Some(dir)
+    }
+
+    fn tips(graph: &Graph) -> Vec<&Tip> {
+        graph
+            .lines
+            .iter()
+            .filter_map(|line| match line {
+                Line::Tip { tip, .. } => Some(tip),
+                Line::Edge { .. } => None,
+            })
+            .collect()
+    }
+
+    fn tip<'a>(graph: &'a Graph, branch: &str) -> &'a Tip {
+        tips(graph)
+            .into_iter()
+            .find(|tip| tip.branches.iter().any(|name| name == branch))
+            .unwrap_or_else(|| panic!("no tip for {branch}"))
+    }
+
+    #[test]
+    fn every_branch_not_in_the_base_is_a_tip_with_its_proof_and_review() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let work_tree = run(root, &["rev-parse", "work^{tree}"]);
+        let other_tree = run(root, &["rev-parse", "other^{tree}"]);
+        let note = |tree: &str, json: &str| {
+            run(
+                root,
+                &[
+                    "notes",
+                    "--ref",
+                    REVIEW_NOTES,
+                    "add",
+                    "-f",
+                    "-m",
+                    json,
+                    tree,
+                ],
+            );
+        };
+        note(&work_tree, r#"{"level":"look","overruled":null}"#);
+        note(
+            &other_tree,
+            r#"{"level":"blocking","overruled":{"why":"accepted","at":1}}"#,
+        );
+        let work = run(root, &["rev-parse", "work"]);
+        let prover = |_: &Path, commit: &str| {
+            if commit == work {
+                Proof::Passed
+            } else {
+                Proof::NotRun
+            }
+        };
+
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &prover).unwrap();
+        assert_eq!(tips(&graph).len(), 3, "{graph:#?}");
+        assert_eq!(tip(&graph, "work").proof, Proof::Passed);
+        assert_eq!(tip(&graph, "work").review, Review::Look);
+        assert_eq!(tip(&graph, "other").proof, Proof::NotRun);
+        assert_eq!(tip(&graph, "other").review, Review::Overruled);
+        let base = tip(&graph, "origin/main");
+        assert!(base.branches.contains(&"main".to_string()), "{base:?}");
+        assert_eq!(base.review, Review::None);
+
+        let text = render_text(&graph);
+        assert!(text.contains("proven"), "{text}");
+        assert!(text.contains("review: look"), "{text}");
+        assert!(text.contains("review: overruled"), "{text}");
+        assert!(text.contains("not run"), "{text}");
+        assert!(
+            !text.contains("accepted"),
+            "no review detail is shown: {text}"
+        );
+    }
+
+    #[test]
+    fn a_blocking_review_and_a_failed_proof_stand_out_and_a_bad_note_is_not_a_review() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let work_tree = run(root, &["rev-parse", "work^{tree}"]);
+        let other_tree = run(root, &["rev-parse", "other^{tree}"]);
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-m",
+                r#"{"level":"blocking","overruled":null}"#,
+                &work_tree,
+            ],
+        );
+        run(
+            root,
+            &[
+                "notes",
+                "--ref",
+                REVIEW_NOTES,
+                "add",
+                "-m",
+                "not json",
+                &other_tree,
+            ],
+        );
+        let failed = |_: &Path, _: &str| Proof::Failed;
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &failed).unwrap();
+        assert_eq!(tip(&graph, "work").review, Review::Blocking);
+        assert_eq!(tip(&graph, "other").review, Review::Unreadable);
+        let text = render_text(&graph);
+        assert!(text.contains("review: BLOCKING"), "{text}");
+        assert!(text.contains("FAILED"), "{text}");
+        assert!(text.contains("review: unreadable"), "{text}");
+    }
+
+    #[test]
+    fn without_the_base_ref_the_graph_says_so_and_still_shows_the_branches() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let none = |_: &Path, _: &str| Proof::NoGate;
+        let graph = build(&ProcessCommandRunner, root, "origin/trunk", &none).unwrap();
+        assert_eq!(graph.base, None);
+        assert!(graph.warnings[0].contains("no base ref"), "{graph:?}");
+        assert!(tips(&graph).len() >= 2);
+        assert!(render_text(&graph).contains("warning: no base ref"));
+    }
+
+    #[test]
+    fn a_long_intent_is_cut_and_only_its_first_line_is_shown() {
+        assert_eq!(shorten("fix the watcher\nand more"), "fix the watcher");
+        let long = "x".repeat(INTENT_WIDTH + 5);
+        assert_eq!(shorten(&long).chars().count(), INTENT_WIDTH + 1);
+    }
+}

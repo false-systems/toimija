@@ -212,6 +212,19 @@ pub enum Command {
         toimija landed --base origin/develop --json"
     )]
     Landed(LandedArgs),
+    /// [experimental] Show what is cooking in this clone: the graph of its branches, each tip
+    /// with whether it is proven, how serious its review is and who is working there.
+    ///
+    /// Use this to see at a glance which branches are in progress and which
+    /// need a person: proof is what sykli's receipts say of the commit, review
+    /// is the level kept for its tree (`refs/notes/toimija/review`), and the
+    /// sessions are the open ones on that branch in any worktree. Read-only:
+    /// it runs no check, decides nothing and asks no network.
+    #[command(
+        after_help = "Examples:\n  toimija graph                        # branches not yet in origin/main\n  \
+        toimija graph --base origin/develop --json"
+    )]
+    Graph(GraphArgs),
     /// [experimental] List sibling sessions live in this repo: who is here, on which branch and
     /// worktree, with what intent and scope, and where overlap warrants care.
     ///
@@ -305,6 +318,16 @@ pub struct LandedArgs {
     #[arg(long, default_value = "origin/main")]
     pub base: String,
     /// Emit the report as JSON instead of text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GraphArgs {
+    /// Ref the branches are heading for; its own history is left out.
+    #[arg(long, default_value = "origin/main")]
+    pub base: String,
+    /// Emit the graph as JSON instead of text.
     #[arg(long)]
     pub json: bool,
 }
@@ -589,6 +612,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::History(args) if args.json => "json",
         Command::Landed(args) if args.json => "json",
+        Command::Graph(args) if args.json => "json",
         Command::RepositoryPoint(args) if args.json => "json",
         _ => "text",
     };
@@ -614,6 +638,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::History(args) => run_history(args).map(|()| 0),
         Command::Clean(args) => run_clean(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
+        Command::Graph(args) => run_graph(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
         Command::Validate(args) => run_validate(args).map(|()| 0),
         Command::Verify(args) => run_verify(args),
@@ -663,6 +688,7 @@ impl Command {
             Command::History(_) => "history",
             Command::Clean(_) => "clean",
             Command::Landed(_) => "landed",
+            Command::Graph(_) => "graph",
             Command::Sessions(_) => "sessions",
             Command::Validate(_) => "validate",
             Command::Verify(_) => "verify",
@@ -1960,6 +1986,19 @@ fn run_watch(args: ContextArgs) -> Result<()> {
             refresh::CURRENT_JSON
         );
     })?;
+    Ok(())
+}
+
+fn run_graph(args: GraphArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let graph = crate::graph::build(&runner, &repo_root, &args.base, &crate::graph::sykli_proof)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&graph)?);
+    } else {
+        print!("{}", crate::graph::render_text(&graph));
+    }
     Ok(())
 }
 

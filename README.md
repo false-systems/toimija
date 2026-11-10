@@ -500,6 +500,7 @@ failure into an empty, reassuring list.
 | `clean` | Reclaim expired Toimija-owned artifacts |
 | `validate --plan` | Render validation commands without executing them |
 | `landed` | Check whether branch content reached a base ref |
+| `graph` | Show the branches in progress: proven or not, review level, who is there |
 | `init`, `doctor` | Configure a repository and detect setup drift |
 
 Every command finds its worktree with one `git rev-parse` and reads
@@ -645,8 +646,8 @@ The same gate is this repository's [sykli](https://github.com/false-systems/sykl
 contract: `sykli.json` (`sykli-contract.v1`), pinned by `sykli.lock`, run
 with `sykli run` and by the advisory `Sykli` CI job. Receipts are
 content-addressed, so a task whose inputs have not changed is a cache hit.
-Sykli here is CI only; Sykli delegation inside toimija's commands stays out of
-scope (`.toimija/repo.yaml`).
+Sykli here is CI, plus one read: `toimija graph` asks `sykli status --commit`
+what its receipts say. Toimija runs and judges no check (`.toimija/repo.yaml`).
 
 | task | runs | after | reads |
 | --- | --- | --- | --- |

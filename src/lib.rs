@@ -10,6 +10,7 @@ mod diagnostics;
 pub mod error;
 pub mod footprint;
 pub mod git;
+pub mod graph;
 pub mod landed;
 pub mod logging;
 mod owned;

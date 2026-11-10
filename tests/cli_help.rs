@@ -57,7 +57,7 @@ fn every_subcommand_help_says_when_to_use_it() {
     // an agent can pick between siblings (enter vs context vs refresh, …).
     for subcommand in [
         "init", "doctor", "context", "refresh", "enter", "watch", "run", "intent", "handover",
-        "history", "clean", "landed", "sessions", "validate", "verify", "snapshot",
+        "history", "clean", "landed", "graph", "sessions", "validate", "verify", "snapshot",
     ] {
         Command::cargo_bin("toimija")
             .unwrap()
@@ -84,6 +84,7 @@ fn high_traffic_subcommands_carry_examples() {
         ("clean", "toimija clean --dry-run"),
         ("verify", "toimija verify --json"),
         ("landed", "toimija landed"),
+        ("graph", "toimija graph --base"),
         ("doctor", "toimija doctor --strict"),
         ("snapshot", "toimija snapshot --lease"),
         ("context", "toimija context --for-diff"),

@@ -774,6 +774,7 @@ toimija init               # create .toimija/repo.yaml if missing
 | `repository-point` | Export the exact current repository point (repository ref, point ref, tree OID, consistency token, branch, dirty) as a false-agent-protocol v1 `RepositoryPointEnvelope`, its tree's algorithm in `extensions.tree_algorithm`; `--json` for tools. The token is re-read after the tree is written (one `git status`); a worktree that moved is read afresh after a short pause, up to three times in all, then refused. The point id is `rpoint_v3_` and a SHA-256 over the repository, the token and its version, and the tree and its algorithm: equal ids mean equal trees, by construction. The token, named in `extensions.consistency_algorithm`, is a freshness check and does not see every change to the tree (README, "Repository points", "Known gaps"); `dirty: false` does not mean `tree == HEAD^{tree}`; ids of different versions are not comparable. |
 | `doctor` | Check Toimija setup (`--strict` gates on config/doc drift). |
 | `landed` | Report whether a branch's work is present in a base ref, by content. |
+| `graph` | Show the branches not yet in the base: proof, review level and open sessions. |
 | `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` (which keeps Git away from the packet, sessions, history and temp files) if missing. |
 
 `--for-diff` and `--budget` tune the packet; `--json` switches the print commands
@@ -919,6 +920,35 @@ toimija doctor --strict
 A failing doctor ends, on stderr, with the checks that failed, by name, such
 as `toimija doctor --strict: 1 check failed (inside git repo); the report above
 says why and what to do`.
+
+## What is cooking? (`toimija graph`)
+
+`toimija graph` draws the git graph of the base (`origin/main`, or `--base`)
+and every local branch not yet in it. Beside each branch tip it puts three
+facts and no detail:
+
+- **proof**: what sykli's receipts say of the commit, asked with
+  `sykli status --commit`: `proven`, `FAILED`, `not run`, `no gate` (the commit
+  carries no `sykli.json`) or `unknown` (sykli could not be asked). Toimija
+  runs no check.
+- **review**: the level of the review kept for the commit's tree as a git note
+  (`refs/notes/toimija/review`): `fine`, `look`, `BLOCKING`, `overruled` (a
+  person let a blocking review cross) or `none`. Findings are not shown.
+- **who is there**: the open sessions on that branch in any worktree of the
+  clone, live or stale, each with its intent.
+
+```text
+$ toimija graph
+* 553a1ff  feat/review-task  proven   review: fine      claude live: "local land step"
+| * 77296cc  perf/budgets    not run  review: none
+|/
+* abf372f  origin/main, main proven   review: none
+```
+
+`--json` prints `toimija-graph.v1`: the base, the lines in order (a tip with
+its commit, branches, subject, proof, review and sessions, or a graph edge)
+and `warnings` naming what could not be read. It is read-only and asks no
+network.
 
 ## Did the work land? (`toimija landed`)
 
