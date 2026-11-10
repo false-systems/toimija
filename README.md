@@ -10,7 +10,9 @@ Toimija reads that state once and writes a short packet: the branch, the
 changed files, what to read first and how to validate. It starts the agent
 with that packet, keeps the packet current while the agent works, shows which
 other sessions are in the same repository, and carries a note from one agent
-to the next.
+to the next. In a folder that holds several repositories, it gives the agent
+the facts of the folder instead: each repository, its branch, and who is
+working where.
 
 Git is not a save button here. Git is the substrate.
 Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
@@ -88,6 +90,7 @@ Run these inside a Git repository, in this order:
 
 ```bash
 toimija init                    # once: write .toimija/repo.yaml, then fill in role and boundaries
+toimija init --workspace        # or, in a folder of repositories: write .toimija/workspace.yaml
 toimija run claude              # start an agent as a session, with the packet in its launch prompt
 toimija sessions                # see the sessions working in this repository
 toimija intent "fix the login redirect" --scope src/auth.rs   # a session says why it is here

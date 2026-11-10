@@ -23,6 +23,7 @@ Contents:
 - [Snapshots](#snapshots)
 - [The seal](#the-seal)
 - [Sessions](#sessions)
+- [Workspaces](#workspaces)
 - [Validation plans](#validation-plans)
 - [`doctor`](#doctor)
 - [`landed`](#landed)
@@ -40,6 +41,7 @@ repository live in a state directory on the machine.
 
 ```text
 .toimija/repo.yaml       yours     what the repository is, its boundaries, validation commands
+.toimija/workspace.yaml  yours     in a folder of repositories: what the folder is for and what to read first
 .toimija/.gitignore      Toimija   keeps Git away from the generated files below
 .toimija/current.md      Toimija   the repository-level packet, for a reader with no session
 .toimija/current.json    Toimija   the same packet as JSON
@@ -231,6 +233,10 @@ counted, even in a repository where Git lists them, and neither are the other
 generated-state folders (see [Repository points](#repository-points)).
 
 ### Outside a repository
+
+A folder with a workspace file is a [workspace](#workspaces): `run` opens the
+same kind of session there and puts the workspace packet in the launch
+prompt. The rest of this section is about a folder with no workspace file.
 
 In a folder that is not inside a Git repository, `run` opens a session with no
 packet. There is no Git state to read, so there is no packet, watcher,
@@ -901,6 +907,137 @@ and changes nothing. `sessions --prune` runs the same pass.
 An automatic pass logs one warning on failure and never fails the command. An
 explicit `clean` reports its errors.
 
+## Workspaces
+
+A workspace is a folder that holds repositories and is not a repository
+itself. It describes itself with one file, `.toimija/workspace.yaml`. In a
+workspace, `context`, `enter` and `run` work from the folder, and the agent
+gets a packet about the folder: its repositories, their branches, who is
+working where, and what was left for the next agent.
+
+### The file
+
+```bash
+toimija init --workspace
+```
+
+`init --workspace` writes `.toimija/workspace.yaml` as a commented template,
+and `.toimija/.gitignore`. It refuses inside a Git repository, where `init`
+seeds the repository's own configuration, and it refuses when the file is
+already there.
+
+```yaml
+role: the services of one product
+read_first:
+  - NOTES.md
+  - docs/architecture.md
+```
+
+- **`role`**: one line that says what the folder is for.
+- **`read_first`**: paths, relative to the folder, that an agent starting
+  here reads first.
+
+Both fields are optional, and an empty file is a workspace. A field Toimija
+does not know is an error that names the field.
+
+### Discovery
+
+Inside a Git repository nothing changes: the repository is nearer, so it
+wins, even when a workspace file sits above it. Outside any repository,
+Toimija walks up from the current directory to the first folder that has
+`.toimija/workspace.yaml`. The nearest one wins. There is no list of
+workspaces anywhere else.
+
+### The packet
+
+`toimija context` in a workspace prints the packet as Markdown, and
+`--json` prints it as JSON with the schema `toimija-workspace.v1`. This is a
+workspace of three repositories with one session in a repository and one in
+the folder itself:
+
+```text
+# Toimija Workspace
+
+## Workspace
+- folder: /work
+- role: the services of one product
+
+## Read first
+- NOTES.md
+- docs/architecture.md (missing)
+
+## Repositories
+- api
+  - role: service that signs users in
+  - branch: main
+  - session: claude (live): fix the expired-session redirect
+  - handover: none
+- web
+  - role: not set
+  - branch: feat/login
+  - sessions: none
+  - handover: the login form is done; the redirect test still fails
+- docs
+  - role: not set
+  - branch: detached at 2e584f3
+  - sessions: none
+  - handover: none
+
+## Sessions in this folder
+- claude (live): plan the release
+
+## Not in this packet
+Uncommitted work and validation are per repository: run `toimija context` inside a repository for them.
+```
+
+What it holds:
+
+- **Workspace**: the folder, its role, and its read-first list. A path that
+  does not exist is marked `(missing)`.
+- **Repositories**: the entries directly inside the folder that have a `.git`
+  directory or a `.git` file. Those with an open session or a waiting
+  handover come first, then the rest by name. For each:
+  - its role, from its own `.toimija/repo.yaml`;
+  - its branch, read from its `HEAD` file. A `.git` file is followed through
+    its `gitdir:` line. A detached HEAD shows as `detached at` and the short
+    commit id. A `HEAD` that cannot be read shows as `unknown`;
+  - its open sessions, live or stale, each with its agent and intent;
+  - the first line of a waiting handover.
+- **Sessions in this folder**: the sessions `run` opened in the workspace
+  folder or a plain folder below it.
+- **Not read**: anything that could not be read, with the reason. This
+  section appears only when there is something to name.
+- **Not in this packet**: one line that says what is left out.
+
+The packet is built by reading files. It starts no git process, however many
+repositories the folder holds. The one git process a command starts here is
+the question every command asks first: is this folder inside a repository?
+
+### Commands in a workspace
+
+| Command | What it does |
+| --- | --- |
+| `init --workspace` | Write `.toimija/workspace.yaml`. |
+| `context` | Print the workspace packet. `--json` prints it as JSON. |
+| `enter` | Print the workspace packet. It writes nothing. |
+| `run <agent>` | Open a session as in any folder outside a repository, with the workspace packet in the launch prompt of a known agent. The session is recorded in the state directory, and nothing is written in the folder. |
+| `sessions` | List the sessions opened outside any repository, on this machine. |
+| `doctor` | Check that the workspace file parses and that its read-first paths exist. |
+
+`--for-diff`, `--budget` and `context --identity` shape a repository's packet
+and are refused in a workspace. The other commands need a repository.
+
+### Limits
+
+- A workspace packet does not show uncommitted work, ahead and behind, or a
+  validation plan. Run `toimija context` inside a repository for those.
+- Only repositories directly inside the folder are listed. A repository two
+  levels down is not.
+- The branch comes from the `HEAD` file as it is on disk. Toimija does not
+  ask Git to interpret it.
+- The packet is not written to disk, has no seal and is not checked by
+  `verify`. Print it again to get the current state.
+
 ## Validation plans
 
 ```bash
@@ -1038,7 +1175,7 @@ and never touches your index or working tree. `--base` defaults to
 
 | Command | What it does |
 | --- | --- |
-| `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` when missing. |
+| `init` | Create `.toimija/repo.yaml` and `.toimija/.gitignore` when missing. `--workspace` creates `.toimija/workspace.yaml` in a folder of repositories. |
 | `run <agent>` | Open a session, start the agent with the packet, keep the packet current, exit with the agent's status. |
 | `enter` | Write the packet and print it. This is the first step for an agent that is not under `run`. |
 | `context` | Print the packet without writing it. `--identity --json` prints only what `repo.yaml` says the repository is, under schema `toimija-identity.v1`, with one git process. |
@@ -1178,7 +1315,8 @@ Toimija does not:
   launch, the summary at exit, and nothing in between;
 - write `AGENTS.md`, `CLAUDE.md`, Git hooks or harness settings;
 - parse source code, or build an MCP, LSP, SCIP, Kythe or Tree-sitter index;
-- coordinate work across repositories.
+- coordinate work across repositories. A [workspace](#workspaces) shows the
+  repositories of one folder and assigns nothing.
 
 Known limits of what it does:
 
