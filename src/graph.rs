@@ -217,7 +217,9 @@ pub fn build(
                 named.clone()
             };
             lines.push(Line::Tip {
-                graph: "* ".to_string(),
+                // Labelled, not drawn: git left it out of the graph, so no
+                // position in it would be true.
+                graph: "base".to_string(),
                 tip: Tip {
                     commit: id.clone(),
                     branches: vec![name],
@@ -953,6 +955,10 @@ mod tests {
             .expect("the base is a tip");
         assert_eq!(shown.proof, Proof::Passed);
         assert_eq!(shown.subject, "the work");
+        // It is not drawn as a node of the graph: git did not place it there.
+        let text = render_text(&graph);
+        let line = text.lines().find(|line| line.contains(&base[..7])).unwrap();
+        assert!(line.starts_with("base"), "{text}");
     }
 
     #[test]
