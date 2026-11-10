@@ -422,8 +422,10 @@ pub fn render_text(graph: &Graph) -> String {
     let graph_width = graph
         .lines
         .iter()
-        .map(|line| match line {
-            Line::Tip { graph, .. } | Line::Edge { graph } => graph.chars().count(),
+        // Only tips are padded: an edge line carries its own text.
+        .filter_map(|line| match line {
+            Line::Tip { graph, .. } => Some(graph.trim_end().chars().count()),
+            Line::Edge { .. } => None,
         })
         .max()
         .unwrap_or(0);
@@ -435,7 +437,8 @@ pub fn render_text(graph: &Graph) -> String {
             Line::Tip { graph, tip } => {
                 let _ = write!(
                     out,
-                    "{graph:<graph_width$} {}  {:<name_width$}  {:<8}  review: {:<9}",
+                    "{:<graph_width$} {}  {:<name_width$}  {:<8}  review: {:<9}",
+                    graph.trim_end(),
                     &tip.commit[..tip.commit.len().min(7)],
                     names(tip),
                     proof_word(&tip.proof),
@@ -823,6 +826,37 @@ mod tests {
             proof_of(&serde_json::json!({})),
             Proof::Unknown(_)
         ));
+    }
+
+    #[test]
+    fn tips_line_up_right_after_the_graph_and_edges_do_not_widen_it() {
+        let tip = |graph: &str, name: &str| Line::Tip {
+            graph: graph.to_string(),
+            tip: Tip {
+                commit: "abcdef0123".to_string(),
+                branches: vec![name.to_string()],
+                subject: String::new(),
+                proof: Proof::Passed,
+                review: Review::None,
+                sessions: Vec::new(),
+            },
+        };
+        let graph = Graph {
+            schema: "toimija-graph.v1",
+            base: None,
+            lines: vec![
+                tip("* ", "work"),
+                tip("| * ", "other"),
+                Line::Edge {
+                    graph: "* 1234567  (no branch)".to_string(),
+                },
+            ],
+            warnings: Vec::new(),
+        };
+        let text = render_text(&graph);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with("*   abcdef0  work "), "{text}");
+        assert!(lines[1].starts_with("| * abcdef0  other"), "{text}");
     }
 
     #[test]
