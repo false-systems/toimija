@@ -1,0 +1,2507 @@
+{
+  "schema": "sykli-receipt.v1",
+  "contract_hash": "cd7db0413a3fca8ec2ac445fee12888efb0b0a3af481b228307ce32c0cbbe361",
+  "lock_digest": "b88e56e707e1b42a9e8cb312321138f0f3f6184a0588f5b6c3e71d71e43bebd0",
+  "started_at_ms": 1794343430938,
+  "subject": {
+    "repository": "/Users/yair/projects/_worktrees/toimija-spec",
+    "tree_oid": "f24320af478328cb4a11578e02156f3404c19655",
+    "inputs_digest": "e10cf7e0086e4fce0bb1de23b2c8abf5f4a6afd3f85ff28df0d2e91615a6651e",
+    "head_tree_oid": "f24320af478328cb4a11578e02156f3404c19655",
+    "dirty": false
+  },
+  "tasks": [
+    {
+      "name": "fmt",
+      "command": "cargo fmt --check",
+      "runtime_fingerprint": "shell:/bin/sh:sha256:84ca7f9b83021621e16059a1c7850df72a462d879e8239d566236ca6ddd00953:env:sha256:f86467ca2c40add47d13e37a4dddd22d24e5b87b332f7195f5041af05b4d51b6:rust:sha256:0271f1bb56b66f188d8f1bb3b634b44d5a7aa99bb25773dfd4c5fc735b6b06d5",
+      "exit_code": 0,
+      "started_at_ms": 1794343431192,
+      "duration_ms": 285,
+      "stdout": "",
+      "stdout_truncated": false,
+      "stdout_bytes_dropped": 0,
+      "stderr": "",
+      "stderr_truncated": false,
+      "stderr_bytes_dropped": 0,
+      "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_digests": {},
+      "outcome": "passed",
+      "importable": true,
+      "class": null,
+      "retryable": false,
+      "source": "task",
+      "error": null,
+      "provenance": null,
+      "inputs": {
+        "Cargo.toml": {
+          "sha256": "d86663e7963517b6bf1a7dbe5320b8be3e8a5c18c6ad11fdd319073bfbc89344",
+          "mode": 0,
+          "object": "100644 5c991753cd76243947f4ba8e8d3c465be5c5a3be"
+        },
+        "build.rs": {
+          "sha256": "6ae6f5878506594d0a7d75079c937bb763a1c313dff3470eb04f5cb3ea5ddd5d",
+          "mode": 0,
+          "object": "100644 4d363dbdfcb1e890d30c81ebab283ddaf793e364"
+        },
+        "fixtures/rust_repo/Cargo.toml": {
+          "sha256": "60ff3da58cd7d6341db07c55e18422cc46bd7afb20c87ace80d2431f0fdd31e6",
+          "mode": 0,
+          "object": "100644 ae6f40057e59a80e81bad57e149c23b694f43cb9"
+        },
+        "fixtures/rust_repo/src/lib.rs": {
+          "sha256": "3cc6c1ab6ee629a0c6eed3ed5e22c13d62659a18bbf556351578d07cd5f2bf7e",
+          "mode": 0,
+          "object": "100644 6906932feb5eea110e95e107174ae70f84009abd"
+        },
+        "src/adapters/agents.rs": {
+          "sha256": "c5ab6bd216bf9bf9d715f782931053772bd38f59277f9066a05bbf99272729a6",
+          "mode": 0,
+          "object": "100644 2434a01d718268c07296fba190f523e30cba6e21"
+        },
+        "src/adapters/elixir.rs": {
+          "sha256": "9714c698152ea405f646dc4326d69ea5d369a065348ed9c0b04a3dae48f77343",
+          "mode": 0,
+          "object": "100644 4d575bd5675f557bb59e4d4586777c8e04ac06d5"
+        },
+        "src/adapters/generic.rs": {
+          "sha256": "a5eefe783bfd1caffe26c7603da64e358094b4917d32f66e1de4b1afb1681be5",
+          "mode": 0,
+          "object": "100644 781bfe0acc029059a398f75a2707d98f3e854a0a"
+        },
+        "src/adapters/mod.rs": {
+          "sha256": "7b80d187ebf621d589eec4751f1a146effa06b23bbcf734a3c3b957d9376cbd2",
+          "mode": 0,
+          "object": "100644 0bcce9cff7758f495789ea44368e6b38853aecff"
+        },
+        "src/adapters/pack.rs": {
+          "sha256": "207d987523833eb090a06486ee5a8ec72660ae55c97a208b17e8a264eda1f9e4",
+          "mode": 0,
+          "object": "100644 43e56674d0b3a251a5c8c89f2f236640063125c7"
+        },
+        "src/adapters/rust.rs": {
+          "sha256": "4ca20759c62786affaa36293bdbb0baa5a1e2f81059056eb5999d4749016c842",
+          "mode": 0,
+          "object": "100644 153202eaeac1327137f5eeebc6343bfe45e44210"
+        },
+        "src/atomic_write.rs": {
+          "sha256": "dd21b632c448f077d293244ab358a27fe83373fb4270f15cba34bb9feb7722a4",
+          "mode": 0,
+          "object": "100644 5f7f142553dfaac22e9137542237a4fe84ba76c2"
+        },
+        "src/canonical.rs": {
+          "sha256": "e36b84d8e1768dbd69c7d1512526e7c0ca75e69bd36b673a89c6ef7ab0122ad8",
+          "mode": 0,
+          "object": "100644 9cfcdf5635ccf5f11551097b0d0ff7f2faa49584"
+        },
+        "src/cli.rs": {
+          "sha256": "1d8d860ff710ef5e6293f9a3ed425ff0125551d7c7806e8da2dcc1e4366eb534",
+          "mode": 0,
+          "object": "100644 36528288447011be69e866e856e5f059e20a658d"
+        },
+        "src/command.rs": {
+          "sha256": "873523c40101e76e169d6247f70db6fcdf88bbac5c3c0e3e28f6111801d656c0",
+          "mode": 0,
+          "object": "100644 919e00265088c0b81a378259492eacc605c4ecb3"
+        },
+        "src/config.rs": {
+          "sha256": "c1933ee24d2678d114ffd91b1c79febf24badc6cddfc4f4e9428ac5cf9e332a4",
+          "mode": 0,
+          "object": "100644 d061468322f42a70d20aa7980b57639eecac979b"
+        },
+        "src/consistency.rs": {
+          "sha256": "f85e09274087a5e23d320888984a1c5112e16666cfd35f69f0ec84aaf579aa7e",
+          "mode": 0,
+          "object": "100644 6df68a02736a3185f82c26fffa682682fb49d960"
+        },
+        "src/context.rs": {
+          "sha256": "01118671bb3f742866703b9d8900d53f45df0af908784e2d4ee5ae87c0d88043",
+          "mode": 0,
+          "object": "100644 472a098a5726ec9ddba8074f0462468ef5e7595e"
+        },
+        "src/coverage.rs": {
+          "sha256": "29f5df165f479f293cc4db03fa78ae7b5932f38080f76b7aca3a47ca8013f657",
+          "mode": 0,
+          "object": "100644 168a9a3706ba4997085aa1f9a76e2873ec726335"
+        },
+        "src/diagnostics.rs": {
+          "sha256": "d02bf9cc4e62171acfc8c326e85c897456e0f41b5f1b419cb8665c0d60c45245",
+          "mode": 0,
+          "object": "100644 60b04f8d4a27c272b5ff59af79a304b8f0b4c8ec"
+        },
+        "src/error.rs": {
+          "sha256": "f14d981aed5ff8f25aac128e6708c2c8cb51660034a7f6684c6c4211f47e8cd2",
+          "mode": 0,
+          "object": "100644 2907a228462b5792dde2946c5459ac12d51c97ed"
+        },
+        "src/footprint.rs": {
+          "sha256": "88c2e1e7fa8b7482cda1efb10d5e93187bd3ba7d21a2786384687d05dcf8f2ee",
+          "mode": 0,
+          "object": "100644 f4cf74bc2c084d20a6ac753dd2f68b5488ec9920"
+        },
+        "src/git.rs": {
+          "sha256": "58dd1c65d02d65f406d579c62c548fe6b9d1804da6b06381dcd2d81eedf59f46",
+          "mode": 0,
+          "object": "100644 1d811a6be6e7e9afc8ab4309a4173a3a58362d66"
+        },
+        "src/graph.rs": {
+          "sha256": "3e8dfc567edf117985024b8aa4975bd6e8dcc1ea114b9c0ecb90cdfa9f017847",
+          "mode": 0,
+          "object": "100644 975c53c6a492fcfb5ae62d719c557cc3abe05460"
+        },
+        "src/landed.rs": {
+          "sha256": "4e141b87a923cb79b47dd3340761c2e35fd8b24b1a14f6b14cac61d67685a368",
+          "mode": 0,
+          "object": "100644 486a6228cee2ffb792ea44ad8d6d96e6e3df93a4"
+        },
+        "src/lib.rs": {
+          "sha256": "2ea770ba720a32e7cd09c7390f9c09ebfcbf098f612b410b6587fe72efe6543b",
+          "mode": 0,
+          "object": "100644 10d1fc481ec38e4f5580db9c783381ff3cc6f84e"
+        },
+        "src/logging.rs": {
+          "sha256": "0fa9d9aafaa83e047150ca00e0e9e1d2edd418ac7ce477bda37a62e837ceacc2",
+          "mode": 0,
+          "object": "100644 bb2c9cb67d142933e11a2a0bc4e96e225a75ac4e"
+        },
+        "src/main.rs": {
+          "sha256": "de130aa8e092d6021df987814d386fc12f9bdbfdf3e5f80f091408b83bdc2ee1",
+          "mode": 0,
+          "object": "100644 77fae4c3a6f0743701eedac4dd926eed272989e8"
+        },
+        "src/owned.rs": {
+          "sha256": "25d8a670a3c1060a7774ab5894c0123701f6af795fd70a06263e795d9223663f",
+          "mode": 0,
+          "object": "100644 1253e20e6f98fe55dea8400434fd69d8afa19ddb"
+        },
+        "src/path_codec.rs": {
+          "sha256": "e720202e4c713d9f689bb673f965dee8df8614c5f11ca474dc273d82e287dea7",
+          "mode": 0,
+          "object": "100644 335122ef13289f8b252ff10e28896f445fb47a91"
+        },
+        "src/refresh.rs": {
+          "sha256": "42b6a4b5bb492655baa401802e712260601f21c7f9d49940f6f332d11a7c098a",
+          "mode": 0,
+          "object": "100644 5faa25641dd1487531e5d22a4020d5d53de44d2a"
+        },
+        "src/render.rs": {
+          "sha256": "8dc5928ea1960a445d3521eda41bc32ef4981aacca661457ecb559b08f313dd7",
+          "mode": 0,
+          "object": "100644 874e728eddca5c21e45935e95b5a1433667099ab"
+        },
+        "src/repo.rs": {
+          "sha256": "83a50477ace694188df00974d418620ec56dc69116d3bfb374802c31427fa682",
+          "mode": 0,
+          "object": "100644 c9d46835a473ca9360ad13b8de30dbc1f22e0646"
+        },
+        "src/seal.rs": {
+          "sha256": "e089d493d808d87d1abfb2e4603bb69b71f352f85a08539207abc0cd3ab79f37",
+          "mode": 0,
+          "object": "100644 772f740066e286af4a6db9df6370af2a68aa6c48"
+        },
+        "src/semantic.rs": {
+          "sha256": "e6b04b398a3f26fb9c1229639cb69bc1461aab45324e378e8ad3be5a95cf04ff",
+          "mode": 0,
+          "object": "100644 212e471961ba2a14acc4742b4e03166a76f0e852"
+        },
+        "src/session.rs": {
+          "sha256": "b875058721950fffab605086913169c73b39493d815127c39c4877ad05bfd1ed",
+          "mode": 0,
+          "object": "100644 7ec35678b29c977166f7fe312518c13740593eed"
+        },
+        "src/sessions.rs": {
+          "sha256": "4f3a6768dea5fbaf513d8dc674d165c5c1c0ef5f66175266b5424b3ba446f2cc",
+          "mode": 0,
+          "object": "100644 334307bc758727f0e852888e618adb8759e4f635"
+        },
+        "src/snapshot.rs": {
+          "sha256": "e9733aaa3acd2785e7fb864bec6bcf55beca7b5fdb2fcf1450ed9cc731b78975",
+          "mode": 0,
+          "object": "100644 fca33325c502cc45d0dd42bf7e902f4aa16bda93"
+        },
+        "src/spec.rs": {
+          "sha256": "119dc0891a5f5da032496283c77737b3d12f447252217bf2db699043ec81bdb7",
+          "mode": 0,
+          "object": "100644 6f83afa228f731d3ee360dc4d4d785973b638eb4"
+        },
+        "src/tree_identity.rs": {
+          "sha256": "726670c8bb29c8f1f5af22a0e1a7e776833c461493ac8f86b578e39c1b0308eb",
+          "mode": 0,
+          "object": "100644 02a3fd95aa3f10ce418d64dda3e7c507c9d7b0ba"
+        },
+        "src/validate.rs": {
+          "sha256": "2c0ced442d3313bcd15da29b3311d2514c66c5b4877dc63b6700a3693964ee5d",
+          "mode": 0,
+          "object": "100644 7500d9a6c9b59cfe7fda1b9db89137b61cc11b06"
+        },
+        "src/watch.rs": {
+          "sha256": "ccec1268519e2503bbbc24c74a66c54a60e7ea6c8380673abcaba67671c378a1",
+          "mode": 0,
+          "object": "100644 ebe2ba8e92f7cc5a0422f064f49e76bdc0947511"
+        },
+        "src/workspace.rs": {
+          "sha256": "047ddeadd0378c2960ab272c178ddb7ec6caf75c1157bda2586cafca120710a6",
+          "mode": 0,
+          "object": "100644 0766ddc5cdda05e1f60c7344a9f60152fd30a2dc"
+        },
+        "tests/canonical_digests.rs": {
+          "sha256": "48395ee9453a34f8f988f14372e1ea8e1452a83ba821f3c6b95dc06c661bb70c",
+          "mode": 0,
+          "object": "100644 55dbad8c49c51175b6cb312d6cbd6a13e1b03ac0"
+        },
+        "tests/cli_budgets.rs": {
+          "sha256": "a55c425fda752008f9361cd06cc3a953f21c3e74727f24a3ec0d670b2ff33f4a",
+          "mode": 0,
+          "object": "100644 655a0505753c67dffd8c4e92523662759595690a"
+        },
+        "tests/cli_clean.rs": {
+          "sha256": "c1cff5228fa6e3ffdede61bba8ad1360adcd4e1bff8915cb42712d89c829634a",
+          "mode": 0,
+          "object": "100644 d7c32bb29c05e2e9bb3e68a19010784ec3dafcd9"
+        },
+        "tests/cli_context.rs": {
+          "sha256": "20231f2fb7aba03ee34c337ccfd3073fcf60248cdbb131bf6cfc074181799901",
+          "mode": 0,
+          "object": "100644 06933395440fa9815dcedcbd2c1be20debb24e70"
+        },
+        "tests/cli_doctor.rs": {
+          "sha256": "b5fa6c59d648ddb3fce5ec35cd5fc0d94d630ff734197f95fff7c7a3e4b66ff4",
+          "mode": 0,
+          "object": "100644 e46b88689811a33604ac15579c081d4ea1a60483"
+        },
+        "tests/cli_enter.rs": {
+          "sha256": "d40b5e389644135a0e2bcbf8d7e78a5de21b948e29459958b767b484bb4dc883",
+          "mode": 0,
+          "object": "100644 566bc9218986abf0f172d553fad8d19f99e47202"
+        },
+        "tests/cli_graph.rs": {
+          "sha256": "7a99998fca44d856ee6e95a5a567bafbb7b703dc97487de8264133e6673862c3",
+          "mode": 0,
+          "object": "100644 6d271b93020b85f8f6607628324fe7592c2ca345"
+        },
+        "tests/cli_help.rs": {
+          "sha256": "8f5635f6a43c2c08cbb130ac5483df622b95965c676ac9f5ab6ce5d2da4e06ef",
+          "mode": 0,
+          "object": "100644 b6692ea6b04a42b5953b47bb56f66532f601f12f"
+        },
+        "tests/cli_history.rs": {
+          "sha256": "09e08cacc6d6b95d13898176a478aecf28ba3850bbd53d79585e5bb4ee5b35a8",
+          "mode": 0,
+          "object": "100644 c677a10db5b32f4d1679df3e771ea41a8d531964"
+        },
+        "tests/cli_intent.rs": {
+          "sha256": "61445897e74272a5c9fa9044c4bdc5f6c48813686be50ac40cdf917c246bbf0c",
+          "mode": 0,
+          "object": "100644 f2fe96603d485e46434b2bd2f9afd538bb3378b3"
+        },
+        "tests/cli_landed.rs": {
+          "sha256": "87e21b5604a3ee5da95c8a129017be41d9e0151c38419fbba5a8fc09f347a3af",
+          "mode": 0,
+          "object": "100644 9610d9e72e53fa0dc0ccd0ef652c069932091598"
+        },
+        "tests/cli_langs.rs": {
+          "sha256": "3c274e1cde84200961d3592a70ec40edf5da4f538743e666ea49eef2c8278ff3",
+          "mode": 0,
+          "object": "100644 f30f438784c0c484051197fec2611abb64846a1c"
+        },
+        "tests/cli_logging.rs": {
+          "sha256": "50274ccc1c3ecd884053c1308511dbb3b1d8bde92ea0095bf500e4d348bc5e5e",
+          "mode": 0,
+          "object": "100644 493c823f5eae34c4f8f7f21d0c0cf7b8a5f51a33"
+        },
+        "tests/cli_point_identity.rs": {
+          "sha256": "8388252c13d64ebc398ca81ef7630bb62141bc4ebd7a0b0fc1479d0f0e23ead1",
+          "mode": 0,
+          "object": "100644 219a1d15a8bab0c23d0738132f74282bcff17f56"
+        },
+        "tests/cli_refresh.rs": {
+          "sha256": "2d7b4f2dbd81b4f048ee6f11a7c8c742a9169fcbbf2118326693cbe68988a299",
+          "mode": 0,
+          "object": "100644 93ea8622e1df6c60afb82e42d2a77a07f1ec9b26"
+        },
+        "tests/cli_run.rs": {
+          "sha256": "aa0fd95119682854221895e641407adfb3bd8cc6bd1c3519b2301179bb896d97",
+          "mode": 0,
+          "object": "100644 a8ce99173aa48cbc67ea24984e448050da6136ca"
+        },
+        "tests/cli_run_outside.rs": {
+          "sha256": "26c24499f451d11c552a30d6299e9282f238cfe59ebe94234baa0b3cf7a3136c",
+          "mode": 0,
+          "object": "100644 96db769ecd33469565692e815ba179a6c6fef773"
+        },
+        "tests/cli_sessions.rs": {
+          "sha256": "dff4907a758da24104d9fca21b2094a87719f4b668fa68248e22f0700bb838c2",
+          "mode": 0,
+          "object": "100644 f559187abd09f22785ee14c06f4d2b5907f9533d"
+        },
+        "tests/cli_snapshot.rs": {
+          "sha256": "b3323a9d104679888ec569925bb3efd71404b738ea2c8e1538f77e707ba8dcc1",
+          "mode": 0,
+          "object": "100644 58596e0403256fe5c9c63dcef0f914d5204098a3"
+        },
+        "tests/cli_spec.rs": {
+          "sha256": "361fedd3376d7ea155b2ead3adc891b2981ac042d50d0fb394ee4a5f84d42591",
+          "mode": 0,
+          "object": "100644 0e87443c2720019bcf576dbeae41ec004efd8918"
+        },
+        "tests/cli_tree_identity.rs": {
+          "sha256": "3c208cbece8d28af18c5941ecc18b3eae022d5ff023b4a9e4312fc55e70d378f",
+          "mode": 0,
+          "object": "100644 3c86747a33603dc6512dd794547b54e49a265098"
+        },
+        "tests/cli_validate.rs": {
+          "sha256": "28375f62139a58e5e45ec3ea593df07ce04a7fd95e30ce26c09e51c61d3f1bbb",
+          "mode": 0,
+          "object": "100644 47dc7a692a2bf76eab59603c027ab511a4a3a1f0"
+        },
+        "tests/cli_verify.rs": {
+          "sha256": "69371e7f0518a815c6831508c342086fee14dc8158c5a9f6a4f2cd91cf2956e3",
+          "mode": 0,
+          "object": "100644 c920482c083f803d4bdc280dfb8a14af4928121c"
+        },
+        "tests/cli_watch.rs": {
+          "sha256": "bcd5ba76e51d6c6cf6adfd2d44f5132004d87eb954d6dcbbd90fce57f63da0a0",
+          "mode": 0,
+          "object": "100644 e83ce6d025b63ef5310853a393e6104bbaa50ed8"
+        },
+        "tests/cli_workspace.rs": {
+          "sha256": "0bb164902612aa57aaacfc8010655fa56096dd36fb35599e01a599e99f871302",
+          "mode": 0,
+          "object": "100644 acf15b52fe6f7e42672ea1ea7525ac314171ca3d"
+        },
+        "tests/common/fixture.rs": {
+          "sha256": "93949ff6564dbfdabc7769b0840ffb8e41a773f0b89347a03b813690bf50a7a9",
+          "mode": 0,
+          "object": "100644 fb9910881b7c118f5633a5ea079401f42f90996e"
+        },
+        "tests/common/mod.rs": {
+          "sha256": "75a124d29197a207b2a36c48da7dbb67f8b22e06bed0858b18ecea5aa25ffdc8",
+          "mode": 0,
+          "object": "100644 34696c55cc3f2f0944b02347e6cc4b0411f2294b"
+        },
+        "tests/common/scenarios.rs": {
+          "sha256": "c5b493b0213e1103a766ea8dd6e6b243b9be3996d5911926556b5a5502087afe",
+          "mode": 0,
+          "object": "100644 1a2cb5e98b7c8fe7415ca5111fc3dd734839a965"
+        },
+        "tests/differential.rs": {
+          "sha256": "1aaa6464a5593a317e367a9a41a0801f985a7c68aee4b76d57a8a92995951ebe",
+          "mode": 0,
+          "object": "100644 aaf67ff28c9d6176528fe85075fcfd3e6b89d8ad"
+        },
+        "tests/docs.rs": {
+          "sha256": "5895157835c51d51dc39c7a821065b43d12048d8f5c97b0f5c870565f9b48c33",
+          "mode": 0,
+          "object": "100644 d4459ca6ba0a3948049b5e822a359e9dd9a4fd77"
+        },
+        "tests/git_isolation.rs": {
+          "sha256": "d999b1625f71aa4845e0e5ae997de5e0c07ef164037db75451d96703d2c262b8",
+          "mode": 0,
+          "object": "100644 1a472645869dfc74053de6ceccf7371d07ebba2d"
+        },
+        "tests/git_state.rs": {
+          "sha256": "f2afc4825a1ead0f54df56a19cae5f78f739803896a84b5f54cc17892c0da061",
+          "mode": 0,
+          "object": "100644 b1cdc93c1ddd13fff1ca3a8843d906ad4bf7454a"
+        },
+        "tests/instructions.rs": {
+          "sha256": "e48f6daafc6fd17ebca51ac623fd8dc6632ccd29753e67c1a5fdbed25cf3daa2",
+          "mode": 0,
+          "object": "100644 afb7eb5867bf97a66edc33b76f3c2dced420d063"
+        },
+        "tests/qa_p0.rs": {
+          "sha256": "cfbb44b2647ac3440b8f2663196f1a095638ae93c5a1535d6f3e824778b8bbf3",
+          "mode": 0,
+          "object": "100644 53e3f593f9b017d92a6d1cde208dd86de3eb77ee"
+        },
+        "tests/symlink_escape.rs": {
+          "sha256": "487f5f5c5b1769138e4f81369554aae57cb586557962f2840b4fb56b6c594145",
+          "mode": 0,
+          "object": "100644 8e250782ed45cf71db3bcf1eeab18cf9f17b70a5"
+        },
+        "tests/tree_identity_conformance.rs": {
+          "sha256": "f8f885d6c3f20cd7ceca7b5060484eb8fbbb355060e8694fd2466bec901a7508",
+          "mode": 0,
+          "object": "100644 15923f229d3e030658ad1059b254f849806f3eb0"
+        },
+        "xtask/Cargo.toml": {
+          "sha256": "4ad8db4e44f7421343d73c4516cc3d6495dee69416cd7893e23b2160b1b983e6",
+          "mode": 0,
+          "object": "100644 1d061cc94f7e0d147286b9b771f592b9bdd440f1"
+        },
+        "xtask/src/land.rs": {
+          "sha256": "2559a43e5403e96fe92337860fc06ad233da5a74600bd60181bd06abdfce5b50",
+          "mode": 0,
+          "object": "100644 e8ef69277cee90dcc9393d98d19751fbaa5cb7d4"
+        },
+        "xtask/src/main.rs": {
+          "sha256": "f4b233999e8c7e4660c9eab74632e478a581159442f5f04d18885bac4b572afc",
+          "mode": 0,
+          "object": "100644 6fe4074b0bc496bf9ec0344dcbfe0223db5c4536"
+        },
+        "xtask/src/review.rs": {
+          "sha256": "48aa5a6928a58b1627bf86b9fafd185cbd950009b1c32c83e2c493cc77c8dc23",
+          "mode": 0,
+          "object": "100644 d1fcc1f8b0a2c09dcdf6abd62192eacf77498cc7"
+        },
+        "xtask/tests/fail_closed.rs": {
+          "sha256": "0c013caa31a33b7d0c212fd08a7474207fa0c8747288fc40a18fd1eaf715b9a8",
+          "mode": 0,
+          "object": "100644 ac9edaf12ee4aa28332bde3545d071960d405f8b"
+        }
+      }
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy --all-targets -- -D warnings",
+      "runtime_fingerprint": "shell:/bin/sh:sha256:84ca7f9b83021621e16059a1c7850df72a462d879e8239d566236ca6ddd00953:env:sha256:f86467ca2c40add47d13e37a4dddd22d24e5b87b332f7195f5041af05b4d51b6:rust:sha256:0271f1bb56b66f188d8f1bb3b634b44d5a7aa99bb25773dfd4c5fc735b6b06d5",
+      "exit_code": 0,
+      "started_at_ms": 1794343431513,
+      "duration_ms": 14579,
+      "stdout": "",
+      "stdout_truncated": false,
+      "stdout_bytes_dropped": 0,
+      "stderr": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on build directory\n   Compiling toimija v0.2.0 (/Users/yair/projects/_worktrees/toimija-spec)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.50s\n",
+      "stderr_truncated": false,
+      "stderr_bytes_dropped": 0,
+      "stdout_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_digest": "8a9efc6c07e5ca9c5e1d05efc5a8ff53eba3133d3c60874b0c0ea9ca70fe27c4",
+      "output_digests": {},
+      "outcome": "passed",
+      "importable": true,
+      "class": null,
+      "retryable": false,
+      "source": "task",
+      "error": null,
+      "provenance": null,
+      "inputs": {
+        ".cargo/config.toml": {
+          "sha256": "201dfb0784cbcc796f6b7bcbee5c69994ed7a61dd2a3cab6c910e91195291aeb",
+          "mode": 0,
+          "object": "100644 c22347fb68ed40814e38c25b1898d7c928b2d5d4"
+        },
+        "Cargo.lock": {
+          "sha256": "2225f26b0665115b42ef890c1974abfe4bcc3128668a37a2f34dcc1dee222b47",
+          "mode": 0,
+          "object": "100644 4f46f456c2247e3ce137164513a5635c509a2336"
+        },
+        "Cargo.toml": {
+          "sha256": "d86663e7963517b6bf1a7dbe5320b8be3e8a5c18c6ad11fdd319073bfbc89344",
+          "mode": 0,
+          "object": "100644 5c991753cd76243947f4ba8e8d3c465be5c5a3be"
+        },
+        "build.rs": {
+          "sha256": "6ae6f5878506594d0a7d75079c937bb763a1c313dff3470eb04f5cb3ea5ddd5d",
+          "mode": 0,
+          "object": "100644 4d363dbdfcb1e890d30c81ebab283ddaf793e364"
+        },
+        "fixtures/rust_repo/Cargo.toml": {
+          "sha256": "60ff3da58cd7d6341db07c55e18422cc46bd7afb20c87ace80d2431f0fdd31e6",
+          "mode": 0,
+          "object": "100644 ae6f40057e59a80e81bad57e149c23b694f43cb9"
+        },
+        "fixtures/rust_repo/src/lib.rs": {
+          "sha256": "3cc6c1ab6ee629a0c6eed3ed5e22c13d62659a18bbf556351578d07cd5f2bf7e",
+          "mode": 0,
+          "object": "100644 6906932feb5eea110e95e107174ae70f84009abd"
+        },
+        "rust-toolchain.toml": {
+          "sha256": "65bbb4ce11e08541b3f86e650602a9b3996dadaa5722822dcd7ae5c6c2af806b",
+          "mode": 0,
+          "object": "100644 ec7f985f520283460045dfc58ec8001d72dc1efa"
+        },
+        "src/adapters/agents.rs": {
+          "sha256": "c5ab6bd216bf9bf9d715f782931053772bd38f59277f9066a05bbf99272729a6",
+          "mode": 0,
+          "object": "100644 2434a01d718268c07296fba190f523e30cba6e21"
+        },
+        "src/adapters/elixir.rs": {
+          "sha256": "9714c698152ea405f646dc4326d69ea5d369a065348ed9c0b04a3dae48f77343",
+          "mode": 0,
+          "object": "100644 4d575bd5675f557bb59e4d4586777c8e04ac06d5"
+        },
+        "src/adapters/generic.rs": {
+          "sha256": "a5eefe783bfd1caffe26c7603da64e358094b4917d32f66e1de4b1afb1681be5",
+          "mode": 0,
+          "object": "100644 781bfe0acc029059a398f75a2707d98f3e854a0a"
+        },
+        "src/adapters/mod.rs": {
+          "sha256": "7b80d187ebf621d589eec4751f1a146effa06b23bbcf734a3c3b957d9376cbd2",
+          "mode": 0,
+          "object": "100644 0bcce9cff7758f495789ea44368e6b38853aecff"
+        },
+        "src/adapters/pack.rs": {
+          "sha256": "207d987523833eb090a06486ee5a8ec72660ae55c97a208b17e8a264eda1f9e4",
+          "mode": 0,
+          "object": "100644 43e56674d0b3a251a5c8c89f2f236640063125c7"
+        },
+        "src/adapters/rust.rs": {
+          "sha256": "4ca20759c62786affaa36293bdbb0baa5a1e2f81059056eb5999d4749016c842",
+          "mode": 0,
+          "object": "100644 153202eaeac1327137f5eeebc6343bfe45e44210"
+        },
+        "src/atomic_write.rs": {
+          "sha256": "dd21b632c448f077d293244ab358a27fe83373fb4270f15cba34bb9feb7722a4",
+          "mode": 0,
+          "object": "100644 5f7f142553dfaac22e9137542237a4fe84ba76c2"
+        },
+        "src/canonical.rs": {
+          "sha256": "e36b84d8e1768dbd69c7d1512526e7c0ca75e69bd36b673a89c6ef7ab0122ad8",
+          "mode": 0,
+          "object": "100644 9cfcdf5635ccf5f11551097b0d0ff7f2faa49584"
+        },
+        "src/cli.rs": {
+          "sha256": "1d8d860ff710ef5e6293f9a3ed425ff0125551d7c7806e8da2dcc1e4366eb534",
+          "mode": 0,
+          "object": "100644 36528288447011be69e866e856e5f059e20a658d"
+        },
+        "src/command.rs": {
+          "sha256": "873523c40101e76e169d6247f70db6fcdf88bbac5c3c0e3e28f6111801d656c0",
+          "mode": 0,
+          "object": "100644 919e00265088c0b81a378259492eacc605c4ecb3"
+        },
+        "src/config.rs": {
+          "sha256": "c1933ee24d2678d114ffd91b1c79febf24badc6cddfc4f4e9428ac5cf9e332a4",
+          "mode": 0,
+          "object": "100644 d061468322f42a70d20aa7980b57639eecac979b"
+        },
+        "src/consistency.rs": {
+          "sha256": "f85e09274087a5e23d320888984a1c5112e16666cfd35f69f0ec84aaf579aa7e",
+          "mode": 0,
+          "object": "100644 6df68a02736a3185f82c26fffa682682fb49d960"
+        },
+        "src/context.rs": {
+          "sha256": "01118671bb3f742866703b9d8900d53f45df0af908784e2d4ee5ae87c0d88043",
+          "mode": 0,
+          "object": "100644 472a098a5726ec9ddba8074f0462468ef5e7595e"
+        },
+        "src/coverage.rs": {
+          "sha256": "29f5df165f479f293cc4db03fa78ae7b5932f38080f76b7aca3a47ca8013f657",
+          "mode": 0,
+          "object": "100644 168a9a3706ba4997085aa1f9a76e2873ec726335"
+        },
+        "src/diagnostics.rs": {
+          "sha256": "d02bf9cc4e62171acfc8c326e85c897456e0f41b5f1b419cb8665c0d60c45245",
+          "mode": 0,
+          "object": "100644 60b04f8d4a27c272b5ff59af79a304b8f0b4c8ec"
+        },
+        "src/error.rs": {
+          "sha256": "f14d981aed5ff8f25aac128e6708c2c8cb51660034a7f6684c6c4211f47e8cd2",
+          "mode": 0,
+          "object": "100644 2907a228462b5792dde2946c5459ac12d51c97ed"
+        },
+        "src/footprint.rs": {
+          "sha256": "88c2e1e7fa8b7482cda1efb10d5e93187bd3ba7d21a2786384687d05dcf8f2ee",
+          "mode": 0,
+          "object": "100644 f4cf74bc2c084d20a6ac753dd2f68b5488ec9920"
+        },
+        "src/git.rs": {
+          "sha256": "58dd1c65d02d65f406d579c62c548fe6b9d1804da6b06381dcd2d81eedf59f46",
+          "mode": 0,
+          "object": "100644 1d811a6be6e7e9afc8ab4309a4173a3a58362d66"
+        },
+        "src/graph.rs": {
+          "sha256": "3e8dfc567edf117985024b8aa4975bd6e8dcc1ea114b9c0ecb90cdfa9f017847",
+          "mode": 0,
+          "object": "100644 975c53c6a492fcfb5ae62d719c557cc3abe05460"
+        },
+        "src/landed.rs": {
+          "sha256": "4e141b87a923cb79b47dd3340761c2e35fd8b24b1a14f6b14cac61d67685a368",
+          "mode": 0,
+          "object": "100644 486a6228cee2ffb792ea44ad8d6d96e6e3df93a4"
+        },
+        "src/lib.rs": {
+          "sha256": "2ea770ba720a32e7cd09c7390f9c09ebfcbf098f612b410b6587fe72efe6543b",
+          "mode": 0,
+          "object": "100644 10d1fc481ec38e4f5580db9c783381ff3cc6f84e"
+        },
+        "src/logging.rs": {
+          "sha256": "0fa9d9aafaa83e047150ca00e0e9e1d2edd418ac7ce477bda37a62e837ceacc2",
+          "mode": 0,
+          "object": "100644 bb2c9cb67d142933e11a2a0bc4e96e225a75ac4e"
+        },
+        "src/main.rs": {
+          "sha256": "de130aa8e092d6021df987814d386fc12f9bdbfdf3e5f80f091408b83bdc2ee1",
+          "mode": 0,
+          "object": "100644 77fae4c3a6f0743701eedac4dd926eed272989e8"
+        },
+        "src/owned.rs": {
+          "sha256": "25d8a670a3c1060a7774ab5894c0123701f6af795fd70a06263e795d9223663f",
+          "mode": 0,
+          "object": "100644 1253e20e6f98fe55dea8400434fd69d8afa19ddb"
+        },
+        "src/path_codec.rs": {
+          "sha256": "e720202e4c713d9f689bb673f965dee8df8614c5f11ca474dc273d82e287dea7",
+          "mode": 0,
+          "object": "100644 335122ef13289f8b252ff10e28896f445fb47a91"
+        },
+        "src/refresh.rs": {
+          "sha256": "42b6a4b5bb492655baa401802e712260601f21c7f9d49940f6f332d11a7c098a",
+          "mode": 0,
+          "object": "100644 5faa25641dd1487531e5d22a4020d5d53de44d2a"
+        },
+        "src/render.rs": {
+          "sha256": "8dc5928ea1960a445d3521eda41bc32ef4981aacca661457ecb559b08f313dd7",
+          "mode": 0,
+          "object": "100644 874e728eddca5c21e45935e95b5a1433667099ab"
+        },
+        "src/repo.rs": {
+          "sha256": "83a50477ace694188df00974d418620ec56dc69116d3bfb374802c31427fa682",
+          "mode": 0,
+          "object": "100644 c9d46835a473ca9360ad13b8de30dbc1f22e0646"
+        },
+        "src/seal.rs": {
+          "sha256": "e089d493d808d87d1abfb2e4603bb69b71f352f85a08539207abc0cd3ab79f37",
+          "mode": 0,
+          "object": "100644 772f740066e286af4a6db9df6370af2a68aa6c48"
+        },
+        "src/semantic.rs": {
+          "sha256": "e6b04b398a3f26fb9c1229639cb69bc1461aab45324e378e8ad3be5a95cf04ff",
+          "mode": 0,
+          "object": "100644 212e471961ba2a14acc4742b4e03166a76f0e852"
+        },
+        "src/session.rs": {
+          "sha256": "b875058721950fffab605086913169c73b39493d815127c39c4877ad05bfd1ed",
+          "mode": 0,
+          "object": "100644 7ec35678b29c977166f7fe312518c13740593eed"
+        },
+        "src/sessions.rs": {
+          "sha256": "4f3a6768dea5fbaf513d8dc674d165c5c1c0ef5f66175266b5424b3ba446f2cc",
+          "mode": 0,
+          "object": "100644 334307bc758727f0e852888e618adb8759e4f635"
+        },
+        "src/snapshot.rs": {
+          "sha256": "e9733aaa3acd2785e7fb864bec6bcf55beca7b5fdb2fcf1450ed9cc731b78975",
+          "mode": 0,
+          "object": "100644 fca33325c502cc45d0dd42bf7e902f4aa16bda93"
+        },
+        "src/spec.rs": {
+          "sha256": "119dc0891a5f5da032496283c77737b3d12f447252217bf2db699043ec81bdb7",
+          "mode": 0,
+          "object": "100644 6f83afa228f731d3ee360dc4d4d785973b638eb4"
+        },
+        "src/tree_identity.rs": {
+          "sha256": "726670c8bb29c8f1f5af22a0e1a7e776833c461493ac8f86b578e39c1b0308eb",
+          "mode": 0,
+          "object": "100644 02a3fd95aa3f10ce418d64dda3e7c507c9d7b0ba"
+        },
+        "src/validate.rs": {
+          "sha256": "2c0ced442d3313bcd15da29b3311d2514c66c5b4877dc63b6700a3693964ee5d",
+          "mode": 0,
+          "object": "100644 7500d9a6c9b59cfe7fda1b9db89137b61cc11b06"
+        },
+        "src/watch.rs": {
+          "sha256": "ccec1268519e2503bbbc24c74a66c54a60e7ea6c8380673abcaba67671c378a1",
+          "mode": 0,
+          "object": "100644 ebe2ba8e92f7cc5a0422f064f49e76bdc0947511"
+        },
+        "src/workspace.rs": {
+          "sha256": "047ddeadd0378c2960ab272c178ddb7ec6caf75c1157bda2586cafca120710a6",
+          "mode": 0,
+          "object": "100644 0766ddc5cdda05e1f60c7344a9f60152fd30a2dc"
+        },
+        "tests/canonical_digests.rs": {
+          "sha256": "48395ee9453a34f8f988f14372e1ea8e1452a83ba821f3c6b95dc06c661bb70c",
+          "mode": 0,
+          "object": "100644 55dbad8c49c51175b6cb312d6cbd6a13e1b03ac0"
+        },
+        "tests/cli_budgets.rs": {
+          "sha256": "a55c425fda752008f9361cd06cc3a953f21c3e74727f24a3ec0d670b2ff33f4a",
+          "mode": 0,
+          "object": "100644 655a0505753c67dffd8c4e92523662759595690a"
+        },
+        "tests/cli_clean.rs": {
+          "sha256": "c1cff5228fa6e3ffdede61bba8ad1360adcd4e1bff8915cb42712d89c829634a",
+          "mode": 0,
+          "object": "100644 d7c32bb29c05e2e9bb3e68a19010784ec3dafcd9"
+        },
+        "tests/cli_context.rs": {
+          "sha256": "20231f2fb7aba03ee34c337ccfd3073fcf60248cdbb131bf6cfc074181799901",
+          "mode": 0,
+          "object": "100644 06933395440fa9815dcedcbd2c1be20debb24e70"
+        },
+        "tests/cli_doctor.rs": {
+          "sha256": "b5fa6c59d648ddb3fce5ec35cd5fc0d94d630ff734197f95fff7c7a3e4b66ff4",
+          "mode": 0,
+          "object": "100644 e46b88689811a33604ac15579c081d4ea1a60483"
+        },
+        "tests/cli_enter.rs": {
+          "sha256": "d40b5e389644135a0e2bcbf8d7e78a5de21b948e29459958b767b484bb4dc883",
+          "mode": 0,
+          "object": "100644 566bc9218986abf0f172d553fad8d19f99e47202"
+        },
+        "tests/cli_graph.rs": {
+          "sha256": "7a99998fca44d856ee6e95a5a567bafbb7b703dc97487de8264133e6673862c3",
+          "mode": 0,
+          "object": "100644 6d271b93020b85f8f6607628324fe7592c2ca345"
+        },
+        "tests/cli_help.rs": {
+          "sha256": "8f5635f6a43c2c08cbb130ac5483df622b95965c676ac9f5ab6ce5d2da4e06ef",
+          "mode": 0,
+          "object": "100644 b6692ea6b04a42b5953b47bb56f66532f601f12f"
+        },
+        "tests/cli_history.rs": {
+          "sha256": "09e08cacc6d6b95d13898176a478aecf28ba3850bbd53d79585e5bb4ee5b35a8",
+          "mode": 0,
+          "object": "100644 c677a10db5b32f4d1679df3e771ea41a8d531964"
+        },
+        "tests/cli_intent.rs": {
+          "sha256": "61445897e74272a5c9fa9044c4bdc5f6c48813686be50ac40cdf917c246bbf0c",
+          "mode": 0,
+          "object": "100644 f2fe96603d485e46434b2bd2f9afd538bb3378b3"
+        },
+        "tests/cli_landed.rs": {
+          "sha256": "87e21b5604a3ee5da95c8a129017be41d9e0151c38419fbba5a8fc09f347a3af",
+          "mode": 0,
+          "object": "100644 9610d9e72e53fa0dc0ccd0ef652c069932091598"
+        },
+        "tests/cli_langs.rs": {
+          "sha256": "3c274e1cde84200961d3592a70ec40edf5da4f538743e666ea49eef2c8278ff3",
+          "mode": 0,
+          "object": "100644 f30f438784c0c484051197fec2611abb64846a1c"
+        },
+        "tests/cli_logging.rs": {
+          "sha256": "50274ccc1c3ecd884053c1308511dbb3b1d8bde92ea0095bf500e4d348bc5e5e",
+          "mode": 0,
+          "object": "100644 493c823f5eae34c4f8f7f21d0c0cf7b8a5f51a33"
+        },
+        "tests/cli_point_identity.rs": {
+          "sha256": "8388252c13d64ebc398ca81ef7630bb62141bc4ebd7a0b0fc1479d0f0e23ead1",
+          "mode": 0,
+          "object": "100644 219a1d15a8bab0c23d0738132f74282bcff17f56"
+        },
+        "tests/cli_refresh.rs": {
+          "sha256": "2d7b4f2dbd81b4f048ee6f11a7c8c742a9169fcbbf2118326693cbe68988a299",
+          "mode": 0,
+          "object": "100644 93ea8622e1df6c60afb82e42d2a77a07f1ec9b26"
+        },
+        "tests/cli_run.rs": {
+          "sha256": "aa0fd95119682854221895e641407adfb3bd8cc6bd1c3519b2301179bb896d97",
+          "mode": 0,
+          "object": "100644 a8ce99173aa48cbc67ea24984e448050da6136ca"
+        },
+        "tests/cli_run_outside.rs": {
+          "sha256": "26c24499f451d11c552a30d6299e9282f238cfe59ebe94234baa0b3cf7a3136c",
+          "mode": 0,
+          "object": "100644 96db769ecd33469565692e815ba179a6c6fef773"
+        },
+        "tests/cli_sessions.rs": {
+          "sha256": "dff4907a758da24104d9fca21b2094a87719f4b668fa68248e22f0700bb838c2",
+          "mode": 0,
+          "object": "100644 f559187abd09f22785ee14c06f4d2b5907f9533d"
+        },
+        "tests/cli_snapshot.rs": {
+          "sha256": "b3323a9d104679888ec569925bb3efd71404b738ea2c8e1538f77e707ba8dcc1",
+          "mode": 0,
+          "object": "100644 58596e0403256fe5c9c63dcef0f914d5204098a3"
+        },
+        "tests/cli_spec.rs": {
+          "sha256": "361fedd3376d7ea155b2ead3adc891b2981ac042d50d0fb394ee4a5f84d42591",
+          "mode": 0,
+          "object": "100644 0e87443c2720019bcf576dbeae41ec004efd8918"
+        },
+        "tests/cli_tree_identity.rs": {
+          "sha256": "3c208cbece8d28af18c5941ecc18b3eae022d5ff023b4a9e4312fc55e70d378f",
+          "mode": 0,
+          "object": "100644 3c86747a33603dc6512dd794547b54e49a265098"
+        },
+        "tests/cli_validate.rs": {
+          "sha256": "28375f62139a58e5e45ec3ea593df07ce04a7fd95e30ce26c09e51c61d3f1bbb",
+          "mode": 0,
+          "object": "100644 47dc7a692a2bf76eab59603c027ab511a4a3a1f0"
+        },
+        "tests/cli_verify.rs": {
+          "sha256": "69371e7f0518a815c6831508c342086fee14dc8158c5a9f6a4f2cd91cf2956e3",
+          "mode": 0,
+          "object": "100644 c920482c083f803d4bdc280dfb8a14af4928121c"
+        },
+        "tests/cli_watch.rs": {
+          "sha256": "bcd5ba76e51d6c6cf6adfd2d44f5132004d87eb954d6dcbbd90fce57f63da0a0",
+          "mode": 0,
+          "object": "100644 e83ce6d025b63ef5310853a393e6104bbaa50ed8"
+        },
+        "tests/cli_workspace.rs": {
+          "sha256": "0bb164902612aa57aaacfc8010655fa56096dd36fb35599e01a599e99f871302",
+          "mode": 0,
+          "object": "100644 acf15b52fe6f7e42672ea1ea7525ac314171ca3d"
+        },
+        "tests/common/fixture.rs": {
+          "sha256": "93949ff6564dbfdabc7769b0840ffb8e41a773f0b89347a03b813690bf50a7a9",
+          "mode": 0,
+          "object": "100644 fb9910881b7c118f5633a5ea079401f42f90996e"
+        },
+        "tests/common/mod.rs": {
+          "sha256": "75a124d29197a207b2a36c48da7dbb67f8b22e06bed0858b18ecea5aa25ffdc8",
+          "mode": 0,
+          "object": "100644 34696c55cc3f2f0944b02347e6cc4b0411f2294b"
+        },
+        "tests/common/scenarios.rs": {
+          "sha256": "c5b493b0213e1103a766ea8dd6e6b243b9be3996d5911926556b5a5502087afe",
+          "mode": 0,
+          "object": "100644 1a2cb5e98b7c8fe7415ca5111fc3dd734839a965"
+        },
+        "tests/differential.rs": {
+          "sha256": "1aaa6464a5593a317e367a9a41a0801f985a7c68aee4b76d57a8a92995951ebe",
+          "mode": 0,
+          "object": "100644 aaf67ff28c9d6176528fe85075fcfd3e6b89d8ad"
+        },
+        "tests/docs.rs": {
+          "sha256": "5895157835c51d51dc39c7a821065b43d12048d8f5c97b0f5c870565f9b48c33",
+          "mode": 0,
+          "object": "100644 d4459ca6ba0a3948049b5e822a359e9dd9a4fd77"
+        },
+        "tests/git_isolation.rs": {
+          "sha256": "d999b1625f71aa4845e0e5ae997de5e0c07ef164037db75451d96703d2c262b8",
+          "mode": 0,
+          "object": "100644 1a472645869dfc74053de6ceccf7371d07ebba2d"
+        },
+        "tests/git_state.rs": {
+          "sha256": "f2afc4825a1ead0f54df56a19cae5f78f739803896a84b5f54cc17892c0da061",
+          "mode": 0,
+          "object": "100644 b1cdc93c1ddd13fff1ca3a8843d906ad4bf7454a"
+        },
+        "tests/instructions.rs": {
+          "sha256": "e48f6daafc6fd17ebca51ac623fd8dc6632ccd29753e67c1a5fdbed25cf3daa2",
+          "mode": 0,
+          "object": "100644 afb7eb5867bf97a66edc33b76f3c2dced420d063"
+        },
+        "tests/qa_p0.rs": {
+          "sha256": "cfbb44b2647ac3440b8f2663196f1a095638ae93c5a1535d6f3e824778b8bbf3",
+          "mode": 0,
+          "object": "100644 53e3f593f9b017d92a6d1cde208dd86de3eb77ee"
+        },
+        "tests/symlink_escape.rs": {
+          "sha256": "487f5f5c5b1769138e4f81369554aae57cb586557962f2840b4fb56b6c594145",
+          "mode": 0,
+          "object": "100644 8e250782ed45cf71db3bcf1eeab18cf9f17b70a5"
+        },
+        "tests/tree_identity_conformance.rs": {
+          "sha256": "f8f885d6c3f20cd7ceca7b5060484eb8fbbb355060e8694fd2466bec901a7508",
+          "mode": 0,
+          "object": "100644 15923f229d3e030658ad1059b254f849806f3eb0"
+        },
+        "xtask/Cargo.toml": {
+          "sha256": "4ad8db4e44f7421343d73c4516cc3d6495dee69416cd7893e23b2160b1b983e6",
+          "mode": 0,
+          "object": "100644 1d061cc94f7e0d147286b9b771f592b9bdd440f1"
+        },
+        "xtask/src/land.rs": {
+          "sha256": "2559a43e5403e96fe92337860fc06ad233da5a74600bd60181bd06abdfce5b50",
+          "mode": 0,
+          "object": "100644 e8ef69277cee90dcc9393d98d19751fbaa5cb7d4"
+        },
+        "xtask/src/main.rs": {
+          "sha256": "f4b233999e8c7e4660c9eab74632e478a581159442f5f04d18885bac4b572afc",
+          "mode": 0,
+          "object": "100644 6fe4074b0bc496bf9ec0344dcbfe0223db5c4536"
+        },
+        "xtask/src/review.rs": {
+          "sha256": "48aa5a6928a58b1627bf86b9fafd185cbd950009b1c32c83e2c493cc77c8dc23",
+          "mode": 0,
+          "object": "100644 d1fcc1f8b0a2c09dcdf6abd62192eacf77498cc7"
+        },
+        "xtask/tests/fail_closed.rs": {
+          "sha256": "0c013caa31a33b7d0c212fd08a7474207fa0c8747288fc40a18fd1eaf715b9a8",
+          "mode": 0,
+          "object": "100644 ac9edaf12ee4aa28332bde3545d071960d405f8b"
+        }
+      }
+    },
+    {
+      "name": "test",
+      "command": "cargo test",
+      "runtime_fingerprint": "shell:/bin/sh:sha256:84ca7f9b83021621e16059a1c7850df72a462d879e8239d566236ca6ddd00953:env:sha256:f86467ca2c40add47d13e37a4dddd22d24e5b87b332f7195f5041af05b4d51b6:rust:sha256:0271f1bb56b66f188d8f1bb3b634b44d5a7aa99bb25773dfd4c5fc735b6b06d5",
+      "exit_code": 0,
+      "started_at_ms": 1794343431513,
+      "duration_ms": 52777,
+      "stdout": "\nrunning 312 tests\ntest adapters::agents::tests::a_cut_alert_leaves_no_room_for_a_later_one ... ok\ntest adapters::agents::tests::images_take_every_value_up_to_the_next_flag ... ok\ntest adapters::agents::tests::known_agents_match_by_basename_only ... ok\ntest adapters::agents::tests::prompt_style_config_values_are_validated ... ok\ntest adapters::agents::tests::outside_prompt_defers_discovery_until_there_is_work ... ok\ntest adapters::agents::tests::idle_delivery_preserves_explicit_agent_configuration ... ok\ntest adapters::agents::tests::a_users_own_developer_instructions_keep_the_packet_out_of_that_slot ... ok\ntest adapters::agents::tests::idle_codex_gets_only_the_prompt_and_starts_no_renderer ... ok\ntest adapters::agents::tests::task_section_is_omitted_when_absent_and_unknown_agents_get_none ... ok\ntest adapters::agents::tests::configured_agents_extend_and_override_the_builtin_table ... ok\ntest adapters::agents::tests::composed_prompt_carries_contract_packet_path_and_task ... ok\ntest adapters::agents::tests::opencode_run_gets_the_prompt_as_its_message ... ok\ntest adapters::agents::tests::values_are_toml_strings_even_with_a_delete_character ... ok\ntest adapters::agents::tests::codex_carries_dynamic_handshake_without_changing_environment_policy ... ok\ntest adapters::elixir::tests::elixir_read_first_includes_test_helper_for_mix_file ... ok\ntest adapters::pack::tests::companions_expand_exist_filter_and_skip_tests_themselves ... ok\ntest adapters::elixir::tests::focused_is_empty_for_single_app_repo ... ok\ntest adapters::pack::tests::manifest_reads_are_bounded ... ok\ntest adapters::pack::tests::markers_are_anchored_not_substring ... ok\ntest adapters::pack::tests::malformed_node_manifest_drops_each_candidate_once ... ok\ntest adapters::pack::tests::node_commands_require_string_scripts ... ok\ntest adapters::pack::tests::detection_claims_by_manifest_in_table_order ... ok\ntest adapters::pack::tests::node_hints_test_and_spec_siblings_at_repo_root_too ... ok\ntest adapters::elixir::tests::elixir_read_first_maps_lib_file_to_test_file ... ok\ntest adapters::pack::tests::primary_detection_preserves_manifest_symlinks ... ok\ntest adapters::pack::tests::terraform_detection_accepts_any_root_tf_file ... ok\ntest adapters::rust::tests::package_name_reads_only_the_package_table ... ok\ntest adapters::rust::tests::package_name_is_none_for_virtual_workspace ... ok\ntest adapters::pack::tests::python_tables_are_section_aware ... ok\ntest adapters::rust::tests::focused_is_empty_when_only_non_source_changed ... ok\ntest adapters::elixir::tests::focused_maps_changed_source_to_owning_umbrella_app ... ok\ntest adapters::pack::tests::python_commands_require_explicit_evidence ... ok\ntest adapters::pack::tests::python_checks_both_sibling_and_tests_dir ... ok\ntest canonical::tests::a_digest_is_sha256_and_64_lowercase_hex_digits ... ok\ntest adapters::rust::tests::focused_maps_changed_source_to_owning_crate_test ... ok\ntest canonical::tests::keys_are_sorted_at_every_level_and_arrays_keep_their_order ... ok\ntest cli::tests::short_oid_is_safe_for_short_input ... ok\ntest cli::tests::summary_flags_a_moved_head_and_branch_switch ... ok\ntest cli::tests::panic_message_recovers_str_and_string_payloads ... ok\ntest cli::tests::summary_omits_head_line_when_head_is_unchanged ... ok\ntest cli::tests::summary_reports_consumption_honestly_in_both_directions ... ok\ntest command::tests::a_git_command_is_pinned_to_its_directory ... ok\ntest cli::tests::a_worktree_that_moves_while_materializing_is_refused ... ok\ntest command::tests::scrub_marks_every_repo_location_var_for_removal ... ok\ntest cli::tests::run_help_names_every_builtin_agent ... ok\ntest command::tests::runner_preserves_invalid_utf8_until_text_is_requested ... ok\ntest adapters::tests::registry_resolves_every_pack_and_preserves_smart_rust_behavior ... ok\ntest adapters::rust::tests::rust_mod_file_maps_to_module_integration_test ... ok\ntest adapters::elixir::tests::focused_caps_and_falls_back_to_full_suite ... ok\ntest atomic_write::tests::failure_before_rename_preserves_the_old_file ... ok\ntest atomic_write::tests::the_temp_file_is_staged_apart_from_its_target ... ok\ntest config::tests::a_config_with_retired_sections_still_loads ... ok\ntest consistency::tests::a_changed_working_tree_is_stale ... ok\ntest config::tests::invalid_yaml_is_actionable ... ok\ntest adapters::rust::tests::rust_read_first_finds_integration_and_sibling_tests ... ok\ntest config::tests::loads_stewardship_overrides ... ok\ntest consistency::tests::fingerprint_is_deterministic ... ok\ntest consistency::tests::a_repo_yaml_change_is_still_a_real_change ... ok\ntest consistency::tests::identical_state_verifies_as_consistent ... ok\ntest consistency::tests::a_moved_head_is_stale_with_a_reason ... ok\ntest consistency::tests::head_states_are_explicit ... ok\ntest consistency::tests::the_token_leaves_out_exactly_what_tree_identity_v1_leaves_out ... ok\ntest consistency::tests::index_fingerprint_is_order_independent ... ok\ntest context::tests::builtin_artifact_dirs_are_filtered_even_with_empty_config ... ok\ntest consistency::tests::toimija_generated_output_does_not_make_a_packet_stale ... ok\ntest context::tests::context_ordering_rules_are_stable ... ok\ntest consistency::tests::sykli_output_does_not_make_a_packet_stale ... ok\ntest context::tests::ignore_matching_is_segment_aware_not_substring ... ok\ntest context::tests::multi_segment_rules_match_contiguous_sequence ... ok\ntest context::tests::context_packet_serializes_to_json ... ok\ntest context::tests::context_packet_defaults_missing_schema ... ok\ntest context::tests::refresh_token_covers_git_state_and_ignores_observer_environment ... ok\ntest context::tests::safe_to_ignore_filters_changed_paths_by_prefix ... ok\ntest coverage::tests::available_omits_reason ... ok\ntest coverage::tests::statuses_serialize_snake_case ... ok\ntest context::tests::packet_seal_digest_round_trips_without_self_reference ... ok\ntest config::tests::zero_stewardship_values_are_rejected ... ok\ntest config::tests::loads_config_with_defaults ... ok\ntest diagnostics::tests::captured_writes_land_in_the_log_and_restoration_is_clean ... ok\ntest footprint::tests::registry_classifies_every_owned_artifact_shape ... ok\ntest footprint::tests::an_artifact_a_concurrent_sweep_already_reclaimed_is_not_a_failure ... ok\ntest footprint::tests::a_reaped_lid_death_records_its_frozen_heartbeat ... ok\ntest footprint::tests::concurrent_journaling_records_a_session_once ... ok\ntest consistency::tests::git_operations_are_explicit ... ok\ntest diagnostics::tests::each_capture_truncates_so_the_count_is_its_own ... ok\ntest footprint::tests::unknown_artifact_path_is_classified_as_none ... ok\ntest footprint::tests::reap_tolerates_a_directory_a_sibling_already_removed ... ok\ntest footprint::tests::nothing_is_deleted_unless_its_parent_resolves_inside_toimija ... ok\ntest footprint::tests::failed_journal_open_keeps_the_session_directory ... ok\ntest git::tests::a_single_remote_not_named_origin_names_the_default_branch ... ok\ntest git::tests::an_answer_that_cannot_be_split_is_not_guessed_at ... ok\ntest git::tests::base_discovery_falls_back_to_common_branch_names ... ok\ntest git::tests::an_unborn_head_has_no_history_to_read ... ok\ntest git::tests::base_discovery_uses_origin_head_before_fallbacks ... ok\ntest git::tests::base_discovery_ignores_feature_upstream_and_prefers_trunk ... ok\ntest git::tests::a_status_carries_the_ref_facts_only_while_head_and_the_upstream_hold ... ok\ntest git::tests::empty_branch_diff_is_an_available_observation ... ok\ntest git::tests::failed_branch_diff_is_a_blind_spot_not_an_empty_observation ... ok\ntest git::tests::from_a_subdirectory_the_root_is_asked_again ... ok\ntest git::tests::missing_merge_base_degrades_branch_diff_coverage ... ok\ntest git::tests::name_status_keeps_new_path_for_renames ... ok\ntest git::tests::nul_name_status_preserves_rename_and_copy_origins ... ok\ntest git::tests::one_rev_parse_names_the_whole_worktree ... ok\ntest git::tests::outside_a_repository_discovery_says_so_with_one_process ... ok\ntest git::tests::nul_porcelain_preserves_control_bytes_and_conflict_spaces ... ok\ntest git::tests::parses_ahead_and_behind_the_upstream ... ok\ntest git::tests::parses_branch_and_changes ... ok\ntest git::tests::parses_rename_and_copy_paths_from_porcelain_v2 ... ok\ntest git::tests::parses_detached_and_conflict ... ok\ntest git::tests::run_git_observed_distinguishes_exit_and_spawn_failure ... ok\ntest footprint::tests::unknown_history_fields_are_tolerated_and_malformed_lines_are_counted ... ok\ntest diagnostics::tests::the_wrapped_child_writes_to_the_real_terminal_not_the_log ... ok\ntest footprint::tests::teardown_journaled_session_is_not_journaled_again_by_the_sweep ... ok\ntest footprint::tests::sweep_never_reaps_a_session_without_a_certain_dead_pid ... ok\ntest graph::tests::a_long_intent_is_cut_and_only_its_first_line_is_shown ... ok\ntest footprint::tests::sweep_dry_run_and_cleanup_share_exact_candidates ... ok\ntest graph::tests::a_verdict_short_of_passed_is_unknown_when_sykli_could_not_read_all_its_runs ... ok\ntest footprint::tests::sweep_compacts_history_to_the_newest_whole_records ... ok\ntest footprint::tests::sweep_leaves_a_contended_session_dir_in_place_and_continues ... ok\ntest graph::tests::a_sessions_folder_that_cannot_be_looked_at_is_a_warning ... ok\ntest git::token_state_tests::dirty_leaves_out_what_the_token_leaves_out ... ok\ntest graph::tests::a_base_given_as_a_commit_id_is_still_a_tip_with_its_proof ... ok\ntest graph::tests::a_branch_already_in_the_base_is_not_in_progress ... ok\ntest graph::tests::tips_line_up_right_after_the_graph_and_edges_do_not_widen_it ... ok\ntest graph::tests::an_unreadable_session_marker_is_a_warning_not_silence ... ok\ntest graph::tests::a_worktree_with_an_unusual_path_is_still_read ... ok\ntest graph::tests::an_unknown_proof_and_an_unreadable_review_are_warnings ... ok\ntest landed::tests::ambiguous_reason_reports_the_unprovable_count ... ok\ntest landed::tests::classify_covers_each_outcome ... ok\ntest landed::tests::multiset_difference_honors_duplicate_counts ... ok\ntest landed::tests::reason_names_the_base_and_counts ... ok\ntest atomic_write::tests::concurrent_readers_only_observe_complete_json ... ok\ntest graph::tests::a_commit_id_base_that_nothing_points_at_is_still_shown ... ok\ntest owned::staging_tests::a_symlinked_staging_directory_is_refused_and_nothing_lands_behind_it ... ok\ntest graph::tests::a_blocking_review_and_a_failed_proof_stand_out_and_a_bad_note_is_not_a_review ... ok\ntest owned::tests::a_file_symlink_is_never_opened_and_a_missing_directory_reads_as_not_found ... ok\ntest owned::tests::only_paths_under_toimija_are_accepted ... ok\ntest path_codec::tests::invalid_utf8_round_trips_through_the_encoded_form ... ok\ntest owned::tests::a_symlink_anywhere_on_the_way_is_refused_and_nothing_is_created_behind_it ... ok\ntest render::tests::every_configured_read_first_entry_renders_even_past_the_cap ... ok\ntest render::tests::budget_preserves_high_value_sections_over_raw_lists ... ok\ntest render::tests::failed_branch_diff_renders_unknown_not_zero ... ok\ntest render::tests::for_diff_markdown_includes_diff_focus_sections ... ok\ntest render::tests::generated_paths_are_counted_apart_from_the_work ... ok\ntest render::tests::json_context_snapshot_is_stable ... ok\ntest render::tests::large_worktree_does_not_starve_later_sections_at_default_budget ... ok\ntest render::tests::long_lists_are_capped_with_honest_remaining_count ... ok\ntest render::tests::markdown_context_snapshot_is_stable ... ok\ntest render::tests::markdown_includes_key_sections ... ok\ntest render::tests::markdown_read_first_lists_configured_docs_then_changed_files_and_tests ... ok\ntest render::tests::recent_commits_absent_renders_unavailable ... ok\ntest render::tests::recent_commits_render_capped_with_oid_and_summary ... ok\ntest render::tests::session_block_renders_identity_on_per_session_packets ... ok\ntest render::tests::small_budget_preserves_mandatory_context_without_fake_omissions ... ok\ntest render::tests::session_drift_compares_entry_to_current_git_state ... ok\ntest render::tests::utc_minute_is_the_civil_date_and_time ... ok\ntest render::tests::unset_identity_fields_render_fillable_hint ... ok\ntest render::tests::workset_contract_renders_on_every_packet ... ok\ntest repo::tests::a_failing_doctor_names_only_the_checks_that_failed ... ok\ntest repo::tests::blank_boundary_never_counts_as_present ... ok\ntest repo::tests::boundary_matches_through_casing_and_trailing_period ... ok\ntest repo::tests::boundary_matches_through_line_wrapping ... ok\ntest repo::tests::detects_rust_repo ... ok\ntest repo::tests::detects_elixir_repo ... ok\ntest repo::tests::missing_boundary_is_detected ... ok\ntest repo::tests::secondary_extension_detection_obeys_entry_budget ... ok\ntest repo::tests::secondary_walk_honors_configured_exclusions ... ok\ntest repo::tests::secondary_walk_never_follows_symlinks ... ok\ntest repo::tests::secondary_walk_reports_entry_budget_exhaustion ... ok\ntest seal::tests::a_sealed_artifact_names_toimija_and_its_own_version ... ok\ntest seal::tests::tampering_after_the_seal_is_visible ... ok\ntest seal::tests::the_digest_is_the_canonical_digest_of_the_artifact_without_the_seals_digest ... ok\ntest repo::tests::secondary_walk_is_bounded_and_suppresses_primary_kind ... ok\ntest semantic::tests::a_point_envelope_names_its_tree_algorithm_and_token_version ... ok\ntest semantic::tests::a_point_id_covers_its_tree_and_both_algorithms ... ok\ntest semantic::tests::a_retry_waits_a_short_bounded_while_before_reading_again ... ok\ntest semantic::tests::repository_and_point_refs_are_typed_and_deterministic ... ok\ntest session::tests::close_keeps_the_intent_and_scope_the_session_declared_while_it_ran ... ok\ntest session::tests::declare_intent_refuses_a_closed_session ... ok\ntest owned::staging_tests::an_emptied_staging_ignore_file_is_repaired_before_the_next_write ... ok\ntest session::tests::declare_intent_updates_a_live_marker_and_appends_scope_deduped ... ok\ntest session::tests::env_points_live_at_the_session_packet_and_repo_live_at_the_summary ... ok\ntest session::tests::reads_an_old_marker_that_predates_the_added_fields ... ok\ntest session::tests::session_id_is_timestamp_dash_pid ... ok\ntest session::tests::session_id_validation_accepts_minted_ids_and_rejects_traversal ... ok\ntest owned::staging_tests::git_never_lists_a_replacement_in_flight ... ok\ntest session::tests::open_writes_an_active_marker_then_close_marks_it_closed ... ok\ntest session::tests::stamp_is_quiet_when_prune_removed_the_session_dir_mid_heartbeat ... ok\ntest sessions::tests::a_process_start_is_stable_and_a_later_process_starts_later ... ok\ntest sessions::tests::active_sessions_are_never_prunable ... ok\ntest sessions::tests::closed_marker_is_always_closed ... ok\ntest sessions::tests::closed_session_ages_out_even_if_its_pid_was_recycled ... ok\ntest sessions::tests::closed_session_is_prunable_only_past_retention ... ok\ntest sessions::tests::closed_session_without_closed_at_ages_from_start ... ok\ntest sessions::tests::empty_worktrees_are_not_grouped_as_shared ... ok\ntest sessions::tests::frozen_heartbeat_goes_stale_even_with_a_live_pid ... ok\ntest sessions::tests::lone_live_session_warns_about_nothing ... ok\ntest sessions::tests::long_session_with_a_recent_heartbeat_stays_active ... ok\ntest git::token_state_tests::the_lean_token_read_agrees_with_the_full_one ... ok\ntest sessions::tests::nested_scope_paths_overlap ... ok\ntest sessions::tests::only_two_known_different_starts_prove_another_process ... ok\ntest sessions::tests::open_marker_past_threshold_is_stale_even_if_pid_alive ... ok\ntest sessions::tests::open_marker_with_dead_pid_is_stale ... ok\ntest sessions::tests::open_marker_with_live_pid_is_active ... ok\ntest sessions::tests::overlapping_declared_scope_warns ... ok\ntest sessions::tests::probe_eperm_means_alive_under_another_user ... ok\ntest sessions::tests::probe_esrch_is_the_only_dead_verdict ... ok\ntest sessions::tests::probe_exit_zero_is_alive ... ok\ntest sessions::tests::probe_pins_the_c_locale ... ok\ntest sessions::tests::probe_spawn_failure_is_unknown ... ok\ntest sessions::tests::probe_unrecognized_diagnostics_are_unknown ... ok\ntest sessions::tests::proc_stat_start_counts_fields_after_the_command_name ... ok\ntest session::tests::touch_stamps_last_seen_on_a_live_marker_only ... ok\ntest sessions::tests::sibling_prefix_paths_do_not_falsely_overlap ... ok\ntest sessions::tests::stale_but_open_session_is_flagged ... ok\ntest sessions::tests::stale_by_ttl_with_a_live_pid_is_never_prunable ... ok\ntest sessions::tests::stale_retention_ages_from_the_last_heartbeat_when_present ... ok\ntest sessions::tests::stale_session_with_a_dead_pid_ages_from_start ... ok\ntest sessions::tests::stale_session_with_an_unknown_pid_is_never_prunable ... ok\ntest sessions::tests::two_live_sessions_on_one_branch_warn_descriptively ... ok\ntest sessions::tests::unknown_intent_among_branch_siblings_is_flagged ... ok\ntest sessions::tests::unknown_probe_leaves_the_heartbeat_deciding ... ok\ntest snapshot::tests::a_lease_marker_without_an_algorithm_reads_as_legacy ... ok\ntest snapshot::tests::lease_ids_are_names_never_paths ... ok\ntest sessions::tests::report_preserves_process_evidence_without_rewriting_the_marker ... ok\ntest sessions::tests::marker_scan_reports_malformed_markers_instead_of_skipping_them ... ok\ntest session::tests::touch_surfaces_a_corrupt_marker_instead_of_silently_skipping ... ok\ntest spec::tests::a_slug_is_lowercase_with_single_hyphens ... ok\ntest spec::tests::a_file_whose_stored_path_reads_as_an_issue_reference_is_refused ... ok\ntest snapshot::tests::materialize_runs_tree_identity_v1_step_for_step ... ok\ntest spec::tests::an_issue_reference_is_a_number_or_a_url_and_nothing_else ... ok\ntest spec::tests::a_spec_path_is_stored_as_it_is_and_reads_back_the_same_file ... ok\ntest spec::tests::a_path_is_stored_relative_to_the_root_and_must_be_inside_it ... ok\ntest spec::tests::only_four_digit_markdown_files_are_numbered_specs ... ok\ntest spec::tests::title_and_status_are_read_only_where_the_file_states_them ... ok\ntest tree_identity::tests::an_unreserved_namespace_is_ordinary_work_content ... ok\ntest tree_identity::tests::config_is_re_added_after_namespaces_are_dropped ... ok\ntest tree_identity::tests::config_paths_live_inside_an_excluded_namespace ... ok\ntest tree_identity::tests::every_namespace_is_excluded_and_dot_is_escaped ... ok\ntest tree_identity::tests::v1_definition_is_frozen ... ok\ntest spec::tests::create_never_replaces_a_file_and_the_folder_stays_inside ... ok\ntest validate::tests::an_unreadable_contract_still_names_the_gate_and_says_why_tasks_are_missing ... ok\ntest validate::tests::a_declared_sykli_gate_replaces_the_inferred_plan ... ok\ntest spec::tests::a_symlink_never_takes_a_spec_outside_the_repository ... ok\ntest validate::tests::explicit_replacement_omits_inferred_validation ... ok\ntest validate::tests::repository_validation_is_additive_and_deduplicated ... ok\ntest validate::tests::validation_plan_from_config ... ok\ntest validate::tests::repo_config_adds_to_a_declared_gate_and_only_gate_false_removes_it ... ok\ntest watch::tests::a_failed_refresh_backs_off_from_half_a_second_to_the_safety_net ... ok\ntest validate::tests::validation_plan_inferred_for_elixir ... ok\ntest validate::tests::validation_plan_inferred_for_rust ... ok\ntest watch::tests::a_failed_refresh_learns_no_packet ... ok\ntest watch::tests::a_failed_resume_refresh_keeps_watching ... ok\ntest semantic::tests::a_moving_worktree_is_retried_a_bounded_number_of_times_then_refused ... ok\ntest watch::tests::a_forward_wall_clock_step_over_threshold_is_a_suspension ... ok\ntest watch::tests::a_failed_refresh_says_so_in_the_packet_once_and_keeps_the_last_good_content ... ok\ntest graph::tests::without_the_base_ref_the_graph_says_so_and_still_shows_the_branches ... ok\ntest watch::tests::a_wall_clock_set_backwards_never_fires ... ok\ntest graph::tests::branch_names_are_short_whatever_git_is_configured_to_print ... ok\ntest graph::tests::without_sykli_a_commit_with_no_contract_has_no_gate_and_one_with_it_is_unknown ... ok\ntest graph::tests::the_base_is_shown_however_it_is_named ... ok\ntest graph::tests::every_branch_not_in_the_base_is_a_tip_with_its_proof_and_review ... ok\ntest watch::tests::arming_surfaces_a_failure_for_an_unwatchable_path ... ok\ntest watch::tests::build_names_at_any_depth_are_checked_and_never_ignored ... ok\ntest watch::tests::a_repository_under_an_ignored_name_still_sees_its_own_events ... ok\ntest watch::tests::errors_scoped_to_ignored_dirs_stay_quiet_but_others_surface ... ok\ntest watch::tests::events_under_the_canonical_spelling_of_the_root_are_matched ... ok\ntest watch::tests::jitter_under_threshold_triggers_no_refresh ... ok\ntest watch::tests::live_files_are_ignored ... ok\ntest watch::tests::native_arm_failure_arms_the_fallback_instead_of_aborting ... ok\ntest watch::tests::an_idle_tick_starts_no_git_process_on_an_event_backend ... ok\ntest watch::tests::native_probe_timeout_arms_the_fallback_and_says_so ... ok\ntest watch::tests::per_session_output_is_ignored_but_repo_yaml_is_not ... ok\ntest watch::tests::poll_scan_not_found_races_stay_quiet_but_real_io_errors_surface ... ok\ntest watch::tests::probe_accepts_the_symlink_resolved_path_native_backends_report ... ok\ntest watch::tests::an_idle_watch_on_this_platforms_backend_stays_within_budget ... ok\ntest watch::tests::read_only_access_events_are_dropped_but_a_closed_write_is_kept ... ok\ntest watch::tests::resume_triggers_exactly_one_refresh_and_heartbeat ... ok\ntest watch::tests::runs_output_is_ignored_but_repo_yaml_is_not ... ok\ntest watch::tests::scheduler_jitter_under_the_threshold_is_not_a_suspension ... ok\ntest watch::tests::source_is_a_tree_change_and_git_state_a_git_change ... ok\ntest watch::tests::a_failing_refresh_is_not_retried_on_every_tick ... ok\ntest watch::tests::suspension_is_detected_when_wall_time_outruns_the_monotonic_clock ... ok\ntest watch::tests::the_readiness_probe_is_ignored ... ok\ntest watch::tests::a_root_build_dir_event_refreshes_only_when_git_status_shows_a_change ... ok\ntest git::token_state_tests::a_carried_collection_is_what_a_fresh_read_finds ... ok\ntest watch::tests::an_index_rewrite_that_changes_nothing_costs_one_status_and_no_refresh ... ok\ntest watch::tests::toimija_git_footprint_is_ignored_without_hiding_git_state ... ok\ntest watch::tests::the_stamp_sees_a_detach_in_a_reftable_linked_worktree ... ok\ntest workspace::tests::a_file_of_comments_is_an_empty_workspace_and_the_template_is_one ... ok\ntest workspace::tests::a_long_role_intent_or_handover_is_cut_to_one_short_line ... ok\ntest workspace::tests::a_session_folder_counts_only_outside_repositories_and_inside_the_workspace ... ok\ntest workspace::tests::head_is_read_as_a_branch_a_detached_id_or_unknown ... ok\ntest watch::tests::an_idle_tick_starts_one_git_process_under_git_polling ... ok\ntest watch::tests::probe_wait_keeps_one_total_deadline_under_steady_unrelated_churn ... ok\ntest watch::tests::the_stamp_sees_each_kind_of_git_change_without_a_git_process ... ok\ntest watch::tests::catch_up_refreshes_a_change_made_before_the_watcher_armed ... ok\ntest watch::tests::a_build_dir_below_the_root_costs_one_status_and_a_tracked_file_there_refreshes ... ok\ntest watch::tests::toimijas_own_refresh_moves_no_stamp ... ok\ntest watch::tests::the_safety_net_catches_what_no_event_or_stamp_reports ... ok\ntest watch::tests::staging_and_a_commit_refresh_without_any_filesystem_event ... ok\ntest watch::tests::a_failing_refresh_is_retried_with_a_doubling_delay ... ok\ntest watch::tests::packet_and_live_probe_agree_in_every_head_and_file_state ... ok\ntest graph::tests::without_a_base_every_branch_is_shown_however_many_there_are ... ok\n\ntest result: ok. 312 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.10s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 1 test\ntest canonical_bytes_and_digests_are_pinned ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 10 tests\ntest a_sandbox_traces_its_own_git ... ok\ntest the_reports_find_the_root_once ... ok\ntest landed_reads_the_root_and_head_together ... ok\ntest the_identity_costs_one_git_process_and_is_the_packets_repo ... ok\ntest handover_costs_the_packet_and_one ... ok\ntest verify_reads_the_refs_only_when_the_token_holds ... ok\ntest a_repository_point_reads_only_what_the_token_fingerprints ... ok\ntest the_packet_commands_read_the_worktree_once ... ok\ntest run_costs_enter_and_nine ... ok\ntest what_the_packet_costs_depends_on_what_there_is_to_read ... ok\n\ntest result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.88s\n\n\nrunning 2 tests\ntest clean_dry_run_lists_without_deleting_then_removes_exact_expired_files ... ok\ntest clean_journals_expired_sessions_and_honors_the_history_cap ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s\n\n\nrunning 8 tests\ntest context_outside_git_repo_fails_clearly ... ok\ntest context_markdown_reports_dirty_repo ... ok\ntest context_json_is_valid ... ok\ntest context_json_carries_the_repo_identity_ohjaa_reads ... ok\ntest context_budget_truncates_markdown_output ... ok\ntest context_json_has_stable_ordering_in_real_repo ... ok\ntest context_json_applies_configured_read_first_and_ignore_rules ... ok\ntest toimijas_own_files_are_not_the_repositorys_work ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.80s\n\n\nrunning 20 tests\ntest doctor_outside_git_repo_reports_failure ... ok\ntest doctor_rejects_zero_stewardship_retention ... ok\ntest doctor_invalid_config_fails ... ok\ntest doctor_missing_config_is_advisory ... ok\ntest doctor_reports_drift_as_advisory_by_default ... ok\ntest doctor_ready_rust_repo_succeeds ... ok\ntest doctor_claude_without_agents_reference_is_advisory ... ok\ntest doctor_boundaries_satisfied_by_repo_yaml_reference ... ok\ntest doctor_checks_every_directory_init_ignores ... ok\ntest doctor_accepts_boundaries_sourced_by_reference ... ok\ntest doctor_strict_escalates_drift_to_failure ... ok\ntest logs_written_to_a_pipe_carry_no_colour_codes ... ok\ntest a_failing_doctor_names_the_checks_that_failed ... ok\ntest doctor_strict_passes_on_this_repo ... ok\ntest on_a_terminal_logs_are_coloured_unless_no_color_says_not ... ok\ntest doctor_strict_flags_missing_important_doc ... ok\ntest doctor_strict_ready_repo_succeeds ... ok\ntest doctor_warns_when_git_would_list_the_packet ... ok\ntest every_failing_check_says_what_to_do ... ok\ntest doctor_requires_claude_md_to_import_agents_md ... ok\n\ntest result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s\n\n\nrunning 9 tests\ntest enter_json_is_valid ... ok\ntest a_packet_without_a_handover_has_no_section_for_it ... ok\ntest enter_renders_the_context_packet ... ok\ntest enter_respects_disabled_automatic_cleanup ... ok\ntest enter_succeeds_when_automatic_cleanup_fails ... ok\ntest enter_writes_the_live_packet_but_not_agent_docs ... ok\ntest enter_inside_a_run_session_targets_the_session_packet ... ok\ntest a_handover_is_shown_to_the_next_agent_on_entering ... ok\ntest the_sweep_never_follows_a_committed_symlink_out_of_the_repository ... ok\n\ntest result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s\n\n\nrunning 5 tests\ntest graph_outside_a_repository_fails ... ok\ntest graph_lists_the_branch_and_the_base_with_no_review ... ok\ntest graph_json_names_its_schema_and_the_tips ... ok\ntest graph_exits_4_and_says_what_is_missing_when_a_session_marker_is_unreadable ... ok\ntest graph_shows_a_session_open_on_the_branch_with_its_intent ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.62s\n\n\nrunning 11 tests\ntest context_help_describes_every_flag ... ok\ntest top_level_help_shows_the_agent_workflow_and_boundaries ... ok\ntest top_level_help_describes_every_subcommand ... ok\ntest verify_json_help_describes_the_shape_verify_emits ... ok\ntest run_help_offers_alerts_for_launchers_to_detect ... ok\ntest every_command_the_source_names_exists ... ok\ntest version_names_the_commit_it_was_built_from ... ok\ntest spec_help_describes_the_flag_and_the_subcommands ... ok\ntest high_traffic_subcommands_carry_examples ... ok\ntest every_subcommand_help_says_when_to_use_it ... ok\ntest a_build_names_only_its_own_repositorys_commit ... ok\n\ntest result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s\n\n\nrunning 3 tests\ntest history_skips_malformed_lines_with_a_counted_warning ... ok\ntest history_lists_newest_first_and_json_emits_all_records ... ok\ntest run_teardown_records_a_closed_session_without_waiting_for_prune ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s\n\n\nrunning 4 tests\ntest intent_outside_a_run_session_fails_with_guidance ... ok\ntest intent_rejects_a_traversal_shaped_session_id ... ok\ntest intent_refuses_a_closed_session ... ok\ntest intent_updates_own_marker_via_the_env_handshake ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s\n\n\nrunning 10 tests\ntest landed_outside_git_repo_fails ... ok\ntest landed_is_unknown_without_a_merge_base ... ok\ntest landed_reports_not_landed_when_surface_is_outstanding ... ok\ntest landed_json_is_valid ... ok\ntest landed_sees_squash_landing_that_ancestry_would_miss ... ok\ntest landed_ambiguous_evidence_points_away_when_change_is_absent ... ok\ntest landed_when_head_is_the_base_or_behind_it ... ok\ntest landed_reports_partial_when_some_paths_remain ... ok\ntest landed_is_ambiguous_when_base_edits_the_file_after_landing ... ok\ntest head_in_the_base_with_uncommitted_work_is_not_landed ... ok\n\ntest result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s\n\n\nrunning 8 tests\ntest terraform_repo_gets_the_terraform_minimum_pack ... ok\ntest go_repo_gets_the_go_minimum_pack ... ok\ntest unproven_node_commands_are_dropped_with_notes ... ok\ntest python_repo_gets_the_python_minimum_pack ... ok\ntest repo_config_still_beats_minimum_inference ... ok\ntest node_repo_gets_the_node_minimum_pack ... ok\ntest full_adapters_outrank_minimum_packs_in_polyglot_repos ... ok\ntest secondary_languages_are_reported_without_changing_the_primary_plan ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s\n\n\nrunning 3 tests\ntest verbose_json_logs_go_to_stderr_and_keep_stdout_parseable ... ok\ntest quiet_mode_suppresses_logs_without_suppressing_stdout ... ok\ntest run_emits_the_command_finish_bookend_with_the_wrapped_exit_code ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s\n\n\nrunning 15 tests\ntest a_lease_from_an_earlier_toimija_lists_its_token_unversioned_and_releases ... ok\ntest a_sykli_receipt_does_not_make_the_packet_stale ... ok\ntest row_1b_an_ignored_repo_yaml_appearing_gets_a_new_point ... ok\ntest row_5_a_skip_worktree_edit_gets_a_new_point ... ok\ntest row_6_an_edit_the_stat_cache_misses_gets_a_new_point ... ok\ntest row_1_an_ignored_repo_yaml_edit_gets_a_new_point ... ok\ntest row_4_an_assume_unchanged_edit_gets_a_new_point ... ok\ntest a_change_undone_during_the_write_gets_its_own_point ... ok\ntest row_3_a_commit_in_a_nested_repository_gets_a_new_point ... ok\ntest a_packet_from_an_earlier_token_version_is_not_comparable ... ok\ntest the_point_id_is_the_documented_digest_of_the_envelope ... ok\ntest row_7_a_sparse_and_a_full_checkout_of_one_commit_get_different_points ... ok\ntest row_2_a_commit_in_a_submodule_already_ahead_gets_a_new_point ... ok\ntest points_and_tokens_name_their_version ... ok\ntest sykli_writing_receipts_never_makes_a_point_refuse ... ok\n\ntest result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s\n\n\nrunning 9 tests\ntest refresh_writes_current_md_and_json ... ok\ntest refresh_with_a_corrupt_marker_warns_and_stays_repo_level ... ok\ntest refresh_json_prints_packet_to_stdout ... ok\ntest refresh_with_a_session_env_but_no_marker_stays_repo_level ... ok\ntest refresh_with_a_mismatched_marker_id_warns_and_stays_repo_level ... ok\ntest refresh_mutates_nothing_outside_current_files ... ok\ntest session_refresh_with_an_unreadable_marker_still_writes_the_packet ... ok\ntest refresh_updates_a_stale_packet_after_git_state_changes ... ok\ntest refresh_inside_a_run_session_targets_the_session_packet ... ok\n\ntest result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s\n\n\nrunning 40 tests\ntest an_interrupted_run_still_closes_its_session_marker ... ok\ntest an_unknown_agent_without_task_or_briefing_still_hears_its_packet_was_not_delivered ... ok\ntest an_unknown_agent_is_told_its_briefing_was_not_delivered_and_the_session_records_it ... ok\ntest a_session_that_ends_leaves_no_brief_in_the_repo_packet ... ok\ntest a_flag_where_a_value_belongs_is_a_missing_value_and_nothing_launches ... ok\ntest alerts_open_the_prompt_above_the_packet_and_the_briefing_stays_last ... ok\ntest a_users_own_developer_instructions_survive_and_the_packet_goes_first ... ok\ntest interrupting_a_running_agent_still_closes_its_session_marker ... ok\ntest run_closes_the_session_marker_when_the_child_fails_to_launch ... ok\ntest alerts_are_capped_near_a_kilobyte_and_an_unknown_agent_is_told_it_missed_them ... ok\ntest run_banners_env_var_only_delivery_for_unknown_agents ... ok\ntest run_closes_the_session_when_the_last_launch_check_refuses ... ok\ntest codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories ... ok\ntest alerts_reach_idle_codex_and_sessions_outside_a_repository ... ok\ntest opencode_run_gets_the_packet_as_its_message ... ok\ntest a_briefing_may_start_with_a_hyphen_and_a_blank_one_is_dropped ... ok\ntest run_does_not_execute_the_validation_plan ... ok\ntest run_exit_summary_reports_consumption ... ok\ntest run_enters_then_launches_the_command ... ok\ntest run_hands_the_child_a_per_session_handshake ... ok\ntest run_hands_the_child_its_repository_point ... ok\ntest run_inlines_the_packet_for_gemini ... ok\ntest pi_and_opencode_get_the_packet_in_their_launch_prompt ... ok\ntest run_inlines_the_packet_behind_a_configured_flag ... ok\ntest run_inlines_the_packet_into_a_known_agents_launch_prompt ... ok\ntest run_inlines_the_packet_for_an_agent_configured_in_repo_yaml ... ok\ntest run_exits_with_the_wrapped_command_status ... ok\ntest run_intent_reaches_the_session_packet ... ok\ntest run_launches_without_an_intent_and_says_none_was_given ... ok\ntest run_captures_recoverable_watcher_diagnostics_off_terminal ... ok\ntest run_preserves_signal_termination_as_128_plus_signal ... ok\ntest run_refuses_a_merge_in_progress ... ok\ntest run_writes_a_per_session_packet_and_closes_the_marker ... ok\ntest run_takes_the_agent_and_its_arguments_without_a_separator ... ok\ntest run_refuses_conflicted_files ... ok\ntest run_refuses_a_rebase_in_progress ... ok\ntest run_takes_the_flags_ohjaa_launches_with_and_sessions_reports_what_it_reads ... ok\ntest the_equals_form_passes_any_text_even_a_flags_name ... ok\ntest the_exit_summary_does_not_count_toimijas_own_files ... ok\ntest idle_codex_gets_context_without_a_startup_message ... ok\n\ntest result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.24s\n\n\nrunning 5 tests\ntest sessions_outside_a_repo_lists_the_state_directory_and_says_so ... ok\ntest run_outside_a_repo_refuses_what_needs_one_before_opening_a_session ... ok\ntest a_known_agent_gets_its_task_and_no_packet_outside_a_repo ... ok\ntest run_outside_a_repo_opens_a_visible_session_and_leaves_no_folder_behind ... ok\ntest an_unknown_agent_outside_a_repo_is_told_its_briefing_was_not_delivered ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.11s\n\n\nrunning 9 tests\ntest a_healthy_scan_reports_available_coverage ... ok\ntest a_live_pid_that_started_at_another_time_is_not_the_sessions_process ... ok\ntest an_open_marker_with_a_dead_pid_is_stale_and_warned ... ok\ntest lists_a_closed_marker_with_its_intent_and_scope ... ok\ntest prune_keeps_the_session_when_the_history_journal_cannot_be_opened ... ok\ntest an_open_marker_with_a_live_pid_is_active ... ok\ntest a_malformed_sibling_marker_is_visible_not_silent ... ok\ntest prune_removes_old_closed_sessions_and_keeps_live_and_recent_ones ... ok\ntest a_run_records_when_its_process_started_and_reads_as_live ... ok\n\ntest result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s\n\n\nrunning 10 tests\ntest listing_a_damaged_unicode_tree_does_not_panic ... ok\ntest refuses_when_a_path_is_both_staged_and_worktree_modified ... ok\ntest snapshot_excludes_tool_state_but_keeps_the_repo_manifest ... ok\ntest snapshot_materializes_a_tree_of_the_worktree_including_untracked ... ok\ntest a_lease_with_a_dotted_id_can_be_taken_and_released ... ok\ntest a_tracked_file_that_matches_gitignore_stays_in_the_tree ... ok\ntest inherited_git_location_cannot_redirect_snapshot_objects_or_refs ... ok\ntest identical_content_yields_the_same_tree_but_a_change_yields_a_new_one ... ok\ntest a_leased_snapshot_survives_gc_and_release_lets_it_go ... ok\ntest a_lease_id_that_is_a_path_touches_nothing ... ok\n\ntest result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s\n\n\nrunning 12 tests\ntest spec_list_in_a_repository_with_no_spec_folder_says_so ... ok\ntest a_spec_file_that_is_missing_or_outside_the_repository_stops_the_launch ... ok\ntest spec_new_and_list_use_the_folder_repo_yaml_names ... ok\ntest the_workspace_packet_shows_a_session_spec_beside_its_intent ... ok\ntest spec_new_writes_the_next_numbered_file_and_nothing_else ... ok\ntest without_a_spec_nothing_says_spec ... ok\ntest a_file_spec_is_kept_relative_to_the_root_and_shown_everywhere ... ok\ntest a_title_or_status_the_file_does_not_state_is_not_guessed ... ok\ntest a_spec_that_is_also_a_changed_file_is_still_first_under_read_first ... ok\ntest a_spec_set_mid_session_keeps_the_packet_settings_the_session_started_with ... ok\ntest intent_sets_a_spec_mid_session_with_or_without_a_new_intent ... ok\ntest an_issue_reference_is_kept_as_given_and_never_read ... ok\n\ntest result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s\n\n\nrunning 10 tests\ntest a_lease_from_before_tree_identity_v1_keeps_its_tree_and_reads_as_legacy ... ok\ntest a_point_id_from_the_tree_costs_no_git_process ... ok\ntest the_refresh_at_exit_computes_no_point_for_the_ended_session ... ok\ntest repository_point_retries_when_the_worktree_moves_under_the_tree_write ... ok\ntest the_token_is_read_again_after_the_tree_write_with_one_git_process ... ok\ntest the_tree_is_tree_identity_v1_whatever_sykli_and_the_ignore_rules_hold ... ok\ntest repository_point_refuses_rather_than_pair_a_tree_with_another_moments_token ... ok\ntest points_snapshots_and_packets_name_their_tree_algorithm ... ok\ntest sykli_state_never_moves_the_tree_but_work_content_does ... ok\ntest a_session_packet_never_pairs_a_tree_with_another_moments_token ... ok\n\ntest result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.45s\n\n\nrunning 13 tests\ntest validate_plan_outside_git_repo_fails ... ok\ntest validate_plan_uses_repo_config_when_present ... ok\ntest validate_without_plan_is_rejected ... ok\ntest validate_plan_names_the_sykli_gate_when_the_repo_declares_one ... ok\ntest validate_plan_adds_repo_checks_to_inferred_rust_checks ... ok\ntest validate_plan_for_generic_repo_is_unknown ... ok\ntest validate_plan_replaces_inference_only_when_explicit ... ok\ntest validate_plan_infers_rust_commands ... ok\ntest replace_inferred_drops_guesses_but_keeps_the_declared_gate ... ok\ntest a_blank_gate_command_is_refused_when_the_config_loads ... ok\ntest context_packet_carries_the_sykli_gate_without_an_inferred_warning ... ok\ntest repo_config_can_name_its_own_gate_command_or_opt_out ... ok\ntest an_overridden_gate_is_not_said_to_write_the_receipt ... ok\n\ntest result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s\n\n\nrunning 24 tests\ntest explicit_packet_rejects_unrelated_paths ... ok\ntest an_agent_whose_run_was_killed_can_refresh_its_way_out ... ok\ntest staged_index_content_change_is_stale_even_when_worktree_bytes_do_not_change ... ok\ntest an_earlier_schema_packet_of_a_live_session_says_to_restart_it ... ok\ntest an_empty_live_json_handshake_reads_as_unset ... ok\ntest remote_base_changes_make_the_packet_stale ... ok\ntest ambient_session_verifies_its_packet_not_the_repo_summary ... ok\ntest explicit_packet_wins_and_reports_its_identity ... ok\ntest ignored_file_does_not_change_token ... ok\ntest fresh_packet_verifies_consistent_then_a_change_makes_it_stale ... ok\ntest tampered_ambient_packet_fails_even_when_repo_summary_is_valid ... ok\ntest verify_accepts_valid_packet_from_older_additive_schema ... ok\ntest a_packet_stale_from_a_moved_ref_says_the_tree_held_still ... ok\ntest verify_refuses_a_seal_in_another_envelope_format ... ok\ntest staged_and_deleted_and_renamed_changes_are_stale ... ok\ntest verify_rejects_a_packet_after_its_seal_is_removed ... ok\ntest verify_distinguishes_missing_and_unsupported_consistency ... ok\ntest verify_rejects_a_forged_seal_digest ... ok\ntest verify_rejects_digest_valid_envelopes_bound_to_the_wrong_schema_or_anchor ... ok\ntest verify_without_a_packet_is_missing_packet ... ok\ntest verify_refuses_a_packet_of_an_earlier_schema_and_says_to_refresh ... ok\ntest verify_refuses_a_packet_whose_session_pid_now_names_another_process ... ok\ntest verify_refuses_a_repo_packet_left_by_a_killed_session ... ok\ntest verify_refuses_a_packet_that_names_a_closed_session ... ok\n\ntest result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s\n\n\nrunning 12 tests\ntest watch_refreshes_on_a_file_change_then_stops ... ok\ntest watch_sees_a_work_tree_edit_in_a_repository_under_an_ignored_name ... ok\ntest watch_sees_a_commit_in_a_plain_checkout ... ok\ntest watch_reads_history_again_after_a_graft ... ok\ntest watch_sees_an_edit_to_a_tracked_file_under_a_build_directory_name ... ok\ntest run_s_exit_packet_reads_history_again_after_a_graft ... ok\ntest watch_sees_a_worktree_added_elsewhere ... ok\ntest watch_sees_staging_in_a_linked_worktree ... ok\ntest watch_sees_a_fetch_move_the_upstream ... ok\ntest watch_sees_a_commit_in_a_linked_worktree ... ok\ntest watch_sees_a_branch_switch_in_a_linked_worktree ... ok\ntest run_costs_enter_plus_a_constant_however_long_the_agent_runs ... ok\n\ntest result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.49s\n\n\nrunning 13 tests\ntest outside_a_repository_and_a_workspace_context_fails_and_names_the_way_in ... ok\ntest an_empty_workspace_file_is_a_workspace_and_an_unknown_field_is_named ... ok\ntest doctor_in_a_workspace_checks_the_file_and_its_read_first_paths ... ok\ntest context_in_a_workspace_prints_the_workspace_packet ... ok\ntest the_json_packet_names_its_schema_and_holds_the_same_facts ... ok\ntest a_repository_with_an_open_session_is_listed_first_with_that_session ... ok\ntest the_nearest_workspace_file_above_the_current_directory_wins ... ok\ntest enter_in_a_workspace_prints_the_packet_and_writes_nothing ... ok\ntest init_workspace_writes_the_file_once_and_refuses_inside_a_repository ... ok\ntest inside_a_repository_the_repository_wins_over_a_workspace_above_it ... ok\ntest the_workspace_packet_starts_no_git_process_however_many_repositories ... ok\ntest run_in_a_folder_with_no_workspace_file_is_as_it_was ... ok\ntest run_in_a_workspace_puts_the_workspace_packet_in_the_launch_prompt ... ok\n\ntest result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.11s\n\n\nrunning 2 tests\ntest every_output_is_the_baselines ... ignored, needs a baseline toimija: TOIMIJA_BASELINE=/path/to/toimija\ntest git_processes_against_the_baseline ... ignored, needs a baseline toimija: TOIMIJA_BASELINE=/path/to/toimija\n\ntest result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 5 tests\ntest readme_states_the_git_state_thesis ... ok\ntest readme_states_git_is_the_substrate ... ok\ntest canonical_digest_matches_pinned_vector ... ok\ntest history_schema_matches_emitted_record_fields ... ok\ntest seal_schema_matches_the_seal_this_code_writes ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 2 tests\ntest git_at_scrubs_the_redirecting_environment ... ok\ntest a_child_git_never_sees_the_repository_its_environment_names ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s\n\n\nrunning 23 tests\ntest build_artifacts_are_filtered_live_without_config ... ok\ntest changed_surface_falls_back_to_working_tree_without_a_base ... ok\ntest detached_head_warns_and_renders ... ok\ntest ahead_and_behind_are_unknown_with_nothing_to_compare_against ... ok\ntest committed_branch_change_appears_in_surface_with_clean_tree ... ok\ntest adversarial_git_paths_round_trip_without_forging_markdown ... ok\ntest branch_surface_uses_trunk_not_feature_upstream ... ok\ntest context_reads_the_changed_file_then_its_companion_test_first ... ok\ntest init_says_what_the_agent_docs_should_carry ... ok\ntest conflict_json_keeps_index_stages_for_a_spaced_path ... ok\ntest init_creates_config_without_overwrite ... ok\ntest validate_plan_does_not_run_commands ... ok\ntest unborn_branch_reports_head_and_merge_base_unavailable ... ok\ntest staged_rename_keeps_old_and_new_paths_in_json ... ok\ntest staged_file_appears_in_context ... ok\ntest untracked_file_warns ... ok\ntest init_ignores_the_packet_so_the_first_refresh_leaves_the_tree_clean ... ok\ntest a_shallow_repository_leaves_ahead_and_behind_unknown ... ok\ntest working_tree_dirt_at_base_is_not_labelled_branch_diff ... ok\ntest read_first_keeps_the_configured_docs_first_on_a_wide_branch ... ok\ntest without_an_upstream_ahead_and_behind_use_the_remote_default_branch ... ok\ntest ahead_and_behind_are_counted_against_the_upstream_without_fetching ... ok\ntest a_remote_not_named_origin_is_the_base_and_counts_ahead_and_behind ... ok\n\ntest result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s\n\n\nrunning 2 tests\ntest an_import_inside_code_does_not_count ... ok\ntest claude_code_loads_agents_md_and_both_stay_small ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 4 tests\ntest json_stdout_stays_parseable_when_diagnostics_are_enabled ... ok\ntest public_json_preserves_staged_unstaged_and_untracked_intent ... ok\ntest identical_context_json_has_stable_semantic_ordering ... ok\ntest interrupted_merge_is_visible_and_verification_is_unsafe ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s\n\n\nrunning 5 tests\ntest a_symlinked_sessions_dir_is_refused_by_run ... ok\ntest a_symlinked_snapshots_dir_is_refused_by_lease_and_release ... ok\ntest a_symlinked_history_journal_or_lock_is_never_appended_to ... ok\ntest a_symlinked_session_dir_is_refused_by_the_session_writers ... ok\ntest a_symlinked_toimija_dir_is_refused_by_every_writer ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s\n\n\nrunning 8 tests\ntest excludes_are_valid_pathspecs ... ok\ntest t1_the_plan_is_reproducible_from_its_own_description ... ok\ntest t2_generated_state_in_any_namespace_does_not_change_identity ... ok\ntest t3_configuration_changes_identity_even_when_gitignored ... ok\ntest t5_ignore_rules_apply_outside_namespaces ... ok\ntest t6_a_tracked_namespace_file_is_still_excluded ... ok\ntest t4_canonical_identity_includes_config_whatever_the_ignore_status ... ok\ntest t7_content_under_an_unreserved_namespace_contributes_to_identity ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+      "stdout_truncated": false,
+      "stdout_bytes_dropped": 0,
+      "stderr": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on build directory\n   Compiling toimija v0.2.0 (/Users/yair/projects/_worktrees/toimija-spec)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.67s\n     Running unittests src/lib.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/toimija-847116df65a5a18c)\nafter restore - not for the log\nchild-noise\n     Running unittests src/main.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/toimija-ef877ba2ac741213)\n     Running tests/canonical_digests.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/canonical_digests-d674d37d80ea964c)\n     Running tests/cli_budgets.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_budgets-d1f523c514ba6766)\n     Running tests/cli_clean.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_clean-3254dbcac2bd6e68)\n     Running tests/cli_context.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_context-927d963d6d692498)\n     Running tests/cli_doctor.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_doctor-0fb742bd722bb3d0)\n     Running tests/cli_enter.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_enter-0e1ccc807e572972)\n     Running tests/cli_graph.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_graph-db48636c4ee98d4d)\n     Running tests/cli_help.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_help-208c446dc160d0dc)\n     Running tests/cli_history.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_history-57c7dc550b8e1347)\n     Running tests/cli_intent.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_intent-41205905932aa198)\n     Running tests/cli_landed.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_landed-9f423e2457db85ed)\n     Running tests/cli_langs.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_langs-dab94fdb5dd1cff8)\n     Running tests/cli_logging.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_logging-237e1abbf22d0bf2)\n     Running tests/cli_point_identity.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_point_identity-dfc9a7782f35a1f7)\n     Running tests/cli_refresh.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_refresh-f5c53ed56f904cda)\n     Running tests/cli_run.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_run-42e06d4682ae1833)\n     Running tests/cli_run_outside.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_run_outside-21da438e4c31869a)\n     Running tests/cli_sessions.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_sessions-1e5f0f1787a00e6c)\n     Running tests/cli_snapshot.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_snapshot-f92bb802b5eabdbd)\n     Running tests/cli_spec.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_spec-5ca54c9f5791a325)\n     Running tests/cli_tree_identity.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_tree_identity-59189c971591ff4a)\n     Running tests/cli_validate.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_validate-8d4cc0222708368f)\n     Running tests/cli_verify.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_verify-353c0a8ed335f0dd)\n     Running tests/cli_watch.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_watch-9a24f07d7d160eec)\n     Running tests/cli_workspace.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/cli_workspace-eebb9cb1d015951e)\n     Running tests/differential.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/differential-60ddf365e275cdef)\n     Running tests/docs.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/docs-72159bc4d6eee33b)\n     Running tests/git_isolation.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/git_isolation-f243dbd3fde53726)\n     Running tests/git_state.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/git_state-1c63bbdc3cdf1975)\n     Running tests/instructions.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/instructions-adb44e33d70af734)\n     Running tests/qa_p0.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/qa_p0-ddff5a9da218bfb0)\n     Running tests/symlink_escape.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/symlink_escape-92c12270b05d8e68)\n     Running tests/tree_identity_conformance.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/tree_identity_conformance-c3e7f2b9701c0fd9)\n   Doc-tests toimija\n",
+      "stderr_truncated": false,
+      "stderr_bytes_dropped": 0,
+      "stdout_digest": "b2e9d9f132d0c378980b96fcbecc8a7cb9988a791f55889e90b8c76fa45e662d",
+      "stderr_digest": "9fde366e5c42a1b0fd34e4894ef19ff0b8beac7cca2129f5b96531e4e8c18764",
+      "output_digests": {},
+      "outcome": "passed",
+      "importable": true,
+      "class": null,
+      "retryable": false,
+      "source": "task",
+      "error": null,
+      "provenance": null,
+      "inputs": {
+        ".cargo/config.toml": {
+          "sha256": "201dfb0784cbcc796f6b7bcbee5c69994ed7a61dd2a3cab6c910e91195291aeb",
+          "mode": 0,
+          "object": "100644 c22347fb68ed40814e38c25b1898d7c928b2d5d4"
+        },
+        ".github/workflows/ci.yml": {
+          "sha256": "324205152c62cbb5d6a278191d9d2b4af0918a0a0c9820b4a82fd6c50f98daf3",
+          "mode": 0,
+          "object": "100644 2eea8650f5aa18352d8521af1d31d48b75ac55cb"
+        },
+        ".github/workflows/release.yml": {
+          "sha256": "c301ab263f9be65d25c1fe5ac180ca504f0c6dd2e4d4ff7f058dfe285278d474",
+          "mode": 0,
+          "object": "100644 a5cff4ed2122fb3c65c214c2cb71034e69e006ba"
+        },
+        ".gitignore": {
+          "sha256": "4fcee3b73475328030049ddbc735ba5ad300280f390445da5af4959797f24036",
+          "mode": 0,
+          "object": "100644 c21ccd95108e7c6243215e0bef105ff6d18a1a64"
+        },
+        ".toimija/repo.yaml": {
+          "sha256": "458b8ed16164d0a244ed17be7c421fbe82e6d5f6456819abf855489fa131e464",
+          "mode": 0,
+          "object": "100644 b877339b9ee3fefa70f35f183a069fb0307206fa"
+        },
+        "AGENTS.md": {
+          "sha256": "b92d988580150a2c3bb4f544c32a238519955a77f918081575ae98f3ffe758b6",
+          "mode": 0,
+          "object": "100644 54e9e7e34be36be203c09b213ee49b6cb8732288"
+        },
+        "CLAUDE.md": {
+          "sha256": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49",
+          "mode": 0,
+          "object": "100644 43c994c2d3617f947bcb5adf1933e21dabe46bb5"
+        },
+        "Cargo.lock": {
+          "sha256": "2225f26b0665115b42ef890c1974abfe4bcc3128668a37a2f34dcc1dee222b47",
+          "mode": 0,
+          "object": "100644 4f46f456c2247e3ce137164513a5635c509a2336"
+        },
+        "Cargo.toml": {
+          "sha256": "d86663e7963517b6bf1a7dbe5320b8be3e8a5c18c6ad11fdd319073bfbc89344",
+          "mode": 0,
+          "object": "100644 5c991753cd76243947f4ba8e8d3c465be5c5a3be"
+        },
+        "LICENSE": {
+          "sha256": "58785fba262d6b8f74f7f0ed9a3c94769bd75d9f88a20d6223977134cf118efc",
+          "mode": 0,
+          "object": "100644 bc7b079a19756d059329c94f45b32f63555b4141"
+        },
+        "README.md": {
+          "sha256": "38c8a0a7f94ae47a92f6f5fc030b09803853b8796439c40cb790c1c9e3099334",
+          "mode": 0,
+          "object": "100644 9e84729843cefd61c78491c767284fab3a0cb7aa"
+        },
+        "build.rs": {
+          "sha256": "6ae6f5878506594d0a7d75079c937bb763a1c313dff3470eb04f5cb3ea5ddd5d",
+          "mode": 0,
+          "object": "100644 4d363dbdfcb1e890d30c81ebab283ddaf793e364"
+        },
+        "docs/assets/loop.svg": {
+          "sha256": "a878029239c08d3c6d145c412a39afd382f2f1ab3f97410a8f1769f13ddce966",
+          "mode": 0,
+          "object": "100644 07393ac36a76f9c14b851cf7f4c6ffcff5aa47ab"
+        },
+        "docs/assets/toimija.svg": {
+          "sha256": "028a31349536b1f676f632348822b141a231f8c3244b66efbbfbdaca9edd9318",
+          "mode": 0,
+          "object": "100644 6ebbe9b2fa5654076a1f844b5e65056e3e81dd24"
+        },
+        "docs/reference.md": {
+          "sha256": "f85bdbb1416cdb0677463fd8111a171e48d3b82faa7c5d5b2642dcd31eff6b2c",
+          "mode": 0,
+          "object": "100644 eaa9ff9c023ea9eac883d1824aa077a109928a97"
+        },
+        "docs/schemas/history-record.v1.schema.json": {
+          "sha256": "d30d22bcdd02f6972e2a9c39508f44396b6bd45f5836177fb18639be4511a700",
+          "mode": 0,
+          "object": "100644 c7cb14588f21499005510a7ca3c7483b3f8d3f91"
+        },
+        "docs/schemas/toimija-seal.v1.schema.json": {
+          "sha256": "5082ed525d753eba9c253cb5fcab4c5603b4b493796f8e86822402899cf0fc23",
+          "mode": 0,
+          "object": "100644 28024001ac73d0a4a36f92fb6bd7bc7b93467ce5"
+        },
+        "fixtures/elixir_repo/lib/fixture_elixir_repo.ex": {
+          "sha256": "3c100f0f6081c0ba318e1dcf0b6cbd747aebb5fdb1300fe7c6f04c9e77029132",
+          "mode": 0,
+          "object": "100644 8d6bea0e3d4e5d9841fadc6f15564600d6d9f40d"
+        },
+        "fixtures/elixir_repo/mix.exs": {
+          "sha256": "da86ae4737e5efd690f884a8a233a33c1ea4a86a6514c629be758e1632c6f8a4",
+          "mode": 0,
+          "object": "100644 ef5f12f7572d2d8614b36be92ddf0d421dc40ba3"
+        },
+        "fixtures/rust_repo/Cargo.toml": {
+          "sha256": "60ff3da58cd7d6341db07c55e18422cc46bd7afb20c87ace80d2431f0fdd31e6",
+          "mode": 0,
+          "object": "100644 ae6f40057e59a80e81bad57e149c23b694f43cb9"
+        },
+        "fixtures/rust_repo/src/lib.rs": {
+          "sha256": "3cc6c1ab6ee629a0c6eed3ed5e22c13d62659a18bbf556351578d07cd5f2bf7e",
+          "mode": 0,
+          "object": "100644 6906932feb5eea110e95e107174ae70f84009abd"
+        },
+        "rust-toolchain.toml": {
+          "sha256": "65bbb4ce11e08541b3f86e650602a9b3996dadaa5722822dcd7ae5c6c2af806b",
+          "mode": 0,
+          "object": "100644 ec7f985f520283460045dfc58ec8001d72dc1efa"
+        },
+        "src/adapters/agents.rs": {
+          "sha256": "c5ab6bd216bf9bf9d715f782931053772bd38f59277f9066a05bbf99272729a6",
+          "mode": 0,
+          "object": "100644 2434a01d718268c07296fba190f523e30cba6e21"
+        },
+        "src/adapters/elixir.rs": {
+          "sha256": "9714c698152ea405f646dc4326d69ea5d369a065348ed9c0b04a3dae48f77343",
+          "mode": 0,
+          "object": "100644 4d575bd5675f557bb59e4d4586777c8e04ac06d5"
+        },
+        "src/adapters/generic.rs": {
+          "sha256": "a5eefe783bfd1caffe26c7603da64e358094b4917d32f66e1de4b1afb1681be5",
+          "mode": 0,
+          "object": "100644 781bfe0acc029059a398f75a2707d98f3e854a0a"
+        },
+        "src/adapters/mod.rs": {
+          "sha256": "7b80d187ebf621d589eec4751f1a146effa06b23bbcf734a3c3b957d9376cbd2",
+          "mode": 0,
+          "object": "100644 0bcce9cff7758f495789ea44368e6b38853aecff"
+        },
+        "src/adapters/pack.rs": {
+          "sha256": "207d987523833eb090a06486ee5a8ec72660ae55c97a208b17e8a264eda1f9e4",
+          "mode": 0,
+          "object": "100644 43e56674d0b3a251a5c8c89f2f236640063125c7"
+        },
+        "src/adapters/rust.rs": {
+          "sha256": "4ca20759c62786affaa36293bdbb0baa5a1e2f81059056eb5999d4749016c842",
+          "mode": 0,
+          "object": "100644 153202eaeac1327137f5eeebc6343bfe45e44210"
+        },
+        "src/atomic_write.rs": {
+          "sha256": "dd21b632c448f077d293244ab358a27fe83373fb4270f15cba34bb9feb7722a4",
+          "mode": 0,
+          "object": "100644 5f7f142553dfaac22e9137542237a4fe84ba76c2"
+        },
+        "src/canonical.rs": {
+          "sha256": "e36b84d8e1768dbd69c7d1512526e7c0ca75e69bd36b673a89c6ef7ab0122ad8",
+          "mode": 0,
+          "object": "100644 9cfcdf5635ccf5f11551097b0d0ff7f2faa49584"
+        },
+        "src/cli.rs": {
+          "sha256": "1d8d860ff710ef5e6293f9a3ed425ff0125551d7c7806e8da2dcc1e4366eb534",
+          "mode": 0,
+          "object": "100644 36528288447011be69e866e856e5f059e20a658d"
+        },
+        "src/command.rs": {
+          "sha256": "873523c40101e76e169d6247f70db6fcdf88bbac5c3c0e3e28f6111801d656c0",
+          "mode": 0,
+          "object": "100644 919e00265088c0b81a378259492eacc605c4ecb3"
+        },
+        "src/config.rs": {
+          "sha256": "c1933ee24d2678d114ffd91b1c79febf24badc6cddfc4f4e9428ac5cf9e332a4",
+          "mode": 0,
+          "object": "100644 d061468322f42a70d20aa7980b57639eecac979b"
+        },
+        "src/consistency.rs": {
+          "sha256": "f85e09274087a5e23d320888984a1c5112e16666cfd35f69f0ec84aaf579aa7e",
+          "mode": 0,
+          "object": "100644 6df68a02736a3185f82c26fffa682682fb49d960"
+        },
+        "src/context.rs": {
+          "sha256": "01118671bb3f742866703b9d8900d53f45df0af908784e2d4ee5ae87c0d88043",
+          "mode": 0,
+          "object": "100644 472a098a5726ec9ddba8074f0462468ef5e7595e"
+        },
+        "src/coverage.rs": {
+          "sha256": "29f5df165f479f293cc4db03fa78ae7b5932f38080f76b7aca3a47ca8013f657",
+          "mode": 0,
+          "object": "100644 168a9a3706ba4997085aa1f9a76e2873ec726335"
+        },
+        "src/diagnostics.rs": {
+          "sha256": "d02bf9cc4e62171acfc8c326e85c897456e0f41b5f1b419cb8665c0d60c45245",
+          "mode": 0,
+          "object": "100644 60b04f8d4a27c272b5ff59af79a304b8f0b4c8ec"
+        },
+        "src/error.rs": {
+          "sha256": "f14d981aed5ff8f25aac128e6708c2c8cb51660034a7f6684c6c4211f47e8cd2",
+          "mode": 0,
+          "object": "100644 2907a228462b5792dde2946c5459ac12d51c97ed"
+        },
+        "src/footprint.rs": {
+          "sha256": "88c2e1e7fa8b7482cda1efb10d5e93187bd3ba7d21a2786384687d05dcf8f2ee",
+          "mode": 0,
+          "object": "100644 f4cf74bc2c084d20a6ac753dd2f68b5488ec9920"
+        },
+        "src/git.rs": {
+          "sha256": "58dd1c65d02d65f406d579c62c548fe6b9d1804da6b06381dcd2d81eedf59f46",
+          "mode": 0,
+          "object": "100644 1d811a6be6e7e9afc8ab4309a4173a3a58362d66"
+        },
+        "src/graph.rs": {
+          "sha256": "3e8dfc567edf117985024b8aa4975bd6e8dcc1ea114b9c0ecb90cdfa9f017847",
+          "mode": 0,
+          "object": "100644 975c53c6a492fcfb5ae62d719c557cc3abe05460"
+        },
+        "src/landed.rs": {
+          "sha256": "4e141b87a923cb79b47dd3340761c2e35fd8b24b1a14f6b14cac61d67685a368",
+          "mode": 0,
+          "object": "100644 486a6228cee2ffb792ea44ad8d6d96e6e3df93a4"
+        },
+        "src/lib.rs": {
+          "sha256": "2ea770ba720a32e7cd09c7390f9c09ebfcbf098f612b410b6587fe72efe6543b",
+          "mode": 0,
+          "object": "100644 10d1fc481ec38e4f5580db9c783381ff3cc6f84e"
+        },
+        "src/logging.rs": {
+          "sha256": "0fa9d9aafaa83e047150ca00e0e9e1d2edd418ac7ce477bda37a62e837ceacc2",
+          "mode": 0,
+          "object": "100644 bb2c9cb67d142933e11a2a0bc4e96e225a75ac4e"
+        },
+        "src/main.rs": {
+          "sha256": "de130aa8e092d6021df987814d386fc12f9bdbfdf3e5f80f091408b83bdc2ee1",
+          "mode": 0,
+          "object": "100644 77fae4c3a6f0743701eedac4dd926eed272989e8"
+        },
+        "src/owned.rs": {
+          "sha256": "25d8a670a3c1060a7774ab5894c0123701f6af795fd70a06263e795d9223663f",
+          "mode": 0,
+          "object": "100644 1253e20e6f98fe55dea8400434fd69d8afa19ddb"
+        },
+        "src/path_codec.rs": {
+          "sha256": "e720202e4c713d9f689bb673f965dee8df8614c5f11ca474dc273d82e287dea7",
+          "mode": 0,
+          "object": "100644 335122ef13289f8b252ff10e28896f445fb47a91"
+        },
+        "src/refresh.rs": {
+          "sha256": "42b6a4b5bb492655baa401802e712260601f21c7f9d49940f6f332d11a7c098a",
+          "mode": 0,
+          "object": "100644 5faa25641dd1487531e5d22a4020d5d53de44d2a"
+        },
+        "src/render.rs": {
+          "sha256": "8dc5928ea1960a445d3521eda41bc32ef4981aacca661457ecb559b08f313dd7",
+          "mode": 0,
+          "object": "100644 874e728eddca5c21e45935e95b5a1433667099ab"
+        },
+        "src/repo.rs": {
+          "sha256": "83a50477ace694188df00974d418620ec56dc69116d3bfb374802c31427fa682",
+          "mode": 0,
+          "object": "100644 c9d46835a473ca9360ad13b8de30dbc1f22e0646"
+        },
+        "src/seal.rs": {
+          "sha256": "e089d493d808d87d1abfb2e4603bb69b71f352f85a08539207abc0cd3ab79f37",
+          "mode": 0,
+          "object": "100644 772f740066e286af4a6db9df6370af2a68aa6c48"
+        },
+        "src/semantic.rs": {
+          "sha256": "e6b04b398a3f26fb9c1229639cb69bc1461aab45324e378e8ad3be5a95cf04ff",
+          "mode": 0,
+          "object": "100644 212e471961ba2a14acc4742b4e03166a76f0e852"
+        },
+        "src/session.rs": {
+          "sha256": "b875058721950fffab605086913169c73b39493d815127c39c4877ad05bfd1ed",
+          "mode": 0,
+          "object": "100644 7ec35678b29c977166f7fe312518c13740593eed"
+        },
+        "src/sessions.rs": {
+          "sha256": "4f3a6768dea5fbaf513d8dc674d165c5c1c0ef5f66175266b5424b3ba446f2cc",
+          "mode": 0,
+          "object": "100644 334307bc758727f0e852888e618adb8759e4f635"
+        },
+        "src/snapshot.rs": {
+          "sha256": "e9733aaa3acd2785e7fb864bec6bcf55beca7b5fdb2fcf1450ed9cc731b78975",
+          "mode": 0,
+          "object": "100644 fca33325c502cc45d0dd42bf7e902f4aa16bda93"
+        },
+        "src/spec.rs": {
+          "sha256": "119dc0891a5f5da032496283c77737b3d12f447252217bf2db699043ec81bdb7",
+          "mode": 0,
+          "object": "100644 6f83afa228f731d3ee360dc4d4d785973b638eb4"
+        },
+        "src/tree_identity.rs": {
+          "sha256": "726670c8bb29c8f1f5af22a0e1a7e776833c461493ac8f86b578e39c1b0308eb",
+          "mode": 0,
+          "object": "100644 02a3fd95aa3f10ce418d64dda3e7c507c9d7b0ba"
+        },
+        "src/validate.rs": {
+          "sha256": "2c0ced442d3313bcd15da29b3311d2514c66c5b4877dc63b6700a3693964ee5d",
+          "mode": 0,
+          "object": "100644 7500d9a6c9b59cfe7fda1b9db89137b61cc11b06"
+        },
+        "src/watch.rs": {
+          "sha256": "ccec1268519e2503bbbc24c74a66c54a60e7ea6c8380673abcaba67671c378a1",
+          "mode": 0,
+          "object": "100644 ebe2ba8e92f7cc5a0422f064f49e76bdc0947511"
+        },
+        "src/workspace.rs": {
+          "sha256": "047ddeadd0378c2960ab272c178ddb7ec6caf75c1157bda2586cafca120710a6",
+          "mode": 0,
+          "object": "100644 0766ddc5cdda05e1f60c7344a9f60152fd30a2dc"
+        },
+        "tests/canonical_digests.rs": {
+          "sha256": "48395ee9453a34f8f988f14372e1ea8e1452a83ba821f3c6b95dc06c661bb70c",
+          "mode": 0,
+          "object": "100644 55dbad8c49c51175b6cb312d6cbd6a13e1b03ac0"
+        },
+        "tests/cli_budgets.rs": {
+          "sha256": "a55c425fda752008f9361cd06cc3a953f21c3e74727f24a3ec0d670b2ff33f4a",
+          "mode": 0,
+          "object": "100644 655a0505753c67dffd8c4e92523662759595690a"
+        },
+        "tests/cli_clean.rs": {
+          "sha256": "c1cff5228fa6e3ffdede61bba8ad1360adcd4e1bff8915cb42712d89c829634a",
+          "mode": 0,
+          "object": "100644 d7c32bb29c05e2e9bb3e68a19010784ec3dafcd9"
+        },
+        "tests/cli_context.rs": {
+          "sha256": "20231f2fb7aba03ee34c337ccfd3073fcf60248cdbb131bf6cfc074181799901",
+          "mode": 0,
+          "object": "100644 06933395440fa9815dcedcbd2c1be20debb24e70"
+        },
+        "tests/cli_doctor.rs": {
+          "sha256": "b5fa6c59d648ddb3fce5ec35cd5fc0d94d630ff734197f95fff7c7a3e4b66ff4",
+          "mode": 0,
+          "object": "100644 e46b88689811a33604ac15579c081d4ea1a60483"
+        },
+        "tests/cli_enter.rs": {
+          "sha256": "d40b5e389644135a0e2bcbf8d7e78a5de21b948e29459958b767b484bb4dc883",
+          "mode": 0,
+          "object": "100644 566bc9218986abf0f172d553fad8d19f99e47202"
+        },
+        "tests/cli_graph.rs": {
+          "sha256": "7a99998fca44d856ee6e95a5a567bafbb7b703dc97487de8264133e6673862c3",
+          "mode": 0,
+          "object": "100644 6d271b93020b85f8f6607628324fe7592c2ca345"
+        },
+        "tests/cli_help.rs": {
+          "sha256": "8f5635f6a43c2c08cbb130ac5483df622b95965c676ac9f5ab6ce5d2da4e06ef",
+          "mode": 0,
+          "object": "100644 b6692ea6b04a42b5953b47bb56f66532f601f12f"
+        },
+        "tests/cli_history.rs": {
+          "sha256": "09e08cacc6d6b95d13898176a478aecf28ba3850bbd53d79585e5bb4ee5b35a8",
+          "mode": 0,
+          "object": "100644 c677a10db5b32f4d1679df3e771ea41a8d531964"
+        },
+        "tests/cli_intent.rs": {
+          "sha256": "61445897e74272a5c9fa9044c4bdc5f6c48813686be50ac40cdf917c246bbf0c",
+          "mode": 0,
+          "object": "100644 f2fe96603d485e46434b2bd2f9afd538bb3378b3"
+        },
+        "tests/cli_landed.rs": {
+          "sha256": "87e21b5604a3ee5da95c8a129017be41d9e0151c38419fbba5a8fc09f347a3af",
+          "mode": 0,
+          "object": "100644 9610d9e72e53fa0dc0ccd0ef652c069932091598"
+        },
+        "tests/cli_langs.rs": {
+          "sha256": "3c274e1cde84200961d3592a70ec40edf5da4f538743e666ea49eef2c8278ff3",
+          "mode": 0,
+          "object": "100644 f30f438784c0c484051197fec2611abb64846a1c"
+        },
+        "tests/cli_logging.rs": {
+          "sha256": "50274ccc1c3ecd884053c1308511dbb3b1d8bde92ea0095bf500e4d348bc5e5e",
+          "mode": 0,
+          "object": "100644 493c823f5eae34c4f8f7f21d0c0cf7b8a5f51a33"
+        },
+        "tests/cli_point_identity.rs": {
+          "sha256": "8388252c13d64ebc398ca81ef7630bb62141bc4ebd7a0b0fc1479d0f0e23ead1",
+          "mode": 0,
+          "object": "100644 219a1d15a8bab0c23d0738132f74282bcff17f56"
+        },
+        "tests/cli_refresh.rs": {
+          "sha256": "2d7b4f2dbd81b4f048ee6f11a7c8c742a9169fcbbf2118326693cbe68988a299",
+          "mode": 0,
+          "object": "100644 93ea8622e1df6c60afb82e42d2a77a07f1ec9b26"
+        },
+        "tests/cli_run.rs": {
+          "sha256": "aa0fd95119682854221895e641407adfb3bd8cc6bd1c3519b2301179bb896d97",
+          "mode": 0,
+          "object": "100644 a8ce99173aa48cbc67ea24984e448050da6136ca"
+        },
+        "tests/cli_run_outside.rs": {
+          "sha256": "26c24499f451d11c552a30d6299e9282f238cfe59ebe94234baa0b3cf7a3136c",
+          "mode": 0,
+          "object": "100644 96db769ecd33469565692e815ba179a6c6fef773"
+        },
+        "tests/cli_sessions.rs": {
+          "sha256": "dff4907a758da24104d9fca21b2094a87719f4b668fa68248e22f0700bb838c2",
+          "mode": 0,
+          "object": "100644 f559187abd09f22785ee14c06f4d2b5907f9533d"
+        },
+        "tests/cli_snapshot.rs": {
+          "sha256": "b3323a9d104679888ec569925bb3efd71404b738ea2c8e1538f77e707ba8dcc1",
+          "mode": 0,
+          "object": "100644 58596e0403256fe5c9c63dcef0f914d5204098a3"
+        },
+        "tests/cli_spec.rs": {
+          "sha256": "361fedd3376d7ea155b2ead3adc891b2981ac042d50d0fb394ee4a5f84d42591",
+          "mode": 0,
+          "object": "100644 0e87443c2720019bcf576dbeae41ec004efd8918"
+        },
+        "tests/cli_tree_identity.rs": {
+          "sha256": "3c208cbece8d28af18c5941ecc18b3eae022d5ff023b4a9e4312fc55e70d378f",
+          "mode": 0,
+          "object": "100644 3c86747a33603dc6512dd794547b54e49a265098"
+        },
+        "tests/cli_validate.rs": {
+          "sha256": "28375f62139a58e5e45ec3ea593df07ce04a7fd95e30ce26c09e51c61d3f1bbb",
+          "mode": 0,
+          "object": "100644 47dc7a692a2bf76eab59603c027ab511a4a3a1f0"
+        },
+        "tests/cli_verify.rs": {
+          "sha256": "69371e7f0518a815c6831508c342086fee14dc8158c5a9f6a4f2cd91cf2956e3",
+          "mode": 0,
+          "object": "100644 c920482c083f803d4bdc280dfb8a14af4928121c"
+        },
+        "tests/cli_watch.rs": {
+          "sha256": "bcd5ba76e51d6c6cf6adfd2d44f5132004d87eb954d6dcbbd90fce57f63da0a0",
+          "mode": 0,
+          "object": "100644 e83ce6d025b63ef5310853a393e6104bbaa50ed8"
+        },
+        "tests/cli_workspace.rs": {
+          "sha256": "0bb164902612aa57aaacfc8010655fa56096dd36fb35599e01a599e99f871302",
+          "mode": 0,
+          "object": "100644 acf15b52fe6f7e42672ea1ea7525ac314171ca3d"
+        },
+        "tests/common/fixture.rs": {
+          "sha256": "93949ff6564dbfdabc7769b0840ffb8e41a773f0b89347a03b813690bf50a7a9",
+          "mode": 0,
+          "object": "100644 fb9910881b7c118f5633a5ea079401f42f90996e"
+        },
+        "tests/common/mod.rs": {
+          "sha256": "75a124d29197a207b2a36c48da7dbb67f8b22e06bed0858b18ecea5aa25ffdc8",
+          "mode": 0,
+          "object": "100644 34696c55cc3f2f0944b02347e6cc4b0411f2294b"
+        },
+        "tests/common/scenarios.rs": {
+          "sha256": "c5b493b0213e1103a766ea8dd6e6b243b9be3996d5911926556b5a5502087afe",
+          "mode": 0,
+          "object": "100644 1a2cb5e98b7c8fe7415ca5111fc3dd734839a965"
+        },
+        "tests/differential.rs": {
+          "sha256": "1aaa6464a5593a317e367a9a41a0801f985a7c68aee4b76d57a8a92995951ebe",
+          "mode": 0,
+          "object": "100644 aaf67ff28c9d6176528fe85075fcfd3e6b89d8ad"
+        },
+        "tests/docs.rs": {
+          "sha256": "5895157835c51d51dc39c7a821065b43d12048d8f5c97b0f5c870565f9b48c33",
+          "mode": 0,
+          "object": "100644 d4459ca6ba0a3948049b5e822a359e9dd9a4fd77"
+        },
+        "tests/git_isolation.rs": {
+          "sha256": "d999b1625f71aa4845e0e5ae997de5e0c07ef164037db75451d96703d2c262b8",
+          "mode": 0,
+          "object": "100644 1a472645869dfc74053de6ceccf7371d07ebba2d"
+        },
+        "tests/git_state.rs": {
+          "sha256": "f2afc4825a1ead0f54df56a19cae5f78f739803896a84b5f54cc17892c0da061",
+          "mode": 0,
+          "object": "100644 b1cdc93c1ddd13fff1ca3a8843d906ad4bf7454a"
+        },
+        "tests/instructions.rs": {
+          "sha256": "e48f6daafc6fd17ebca51ac623fd8dc6632ccd29753e67c1a5fdbed25cf3daa2",
+          "mode": 0,
+          "object": "100644 afb7eb5867bf97a66edc33b76f3c2dced420d063"
+        },
+        "tests/qa_p0.rs": {
+          "sha256": "cfbb44b2647ac3440b8f2663196f1a095638ae93c5a1535d6f3e824778b8bbf3",
+          "mode": 0,
+          "object": "100644 53e3f593f9b017d92a6d1cde208dd86de3eb77ee"
+        },
+        "tests/symlink_escape.rs": {
+          "sha256": "487f5f5c5b1769138e4f81369554aae57cb586557962f2840b4fb56b6c594145",
+          "mode": 0,
+          "object": "100644 8e250782ed45cf71db3bcf1eeab18cf9f17b70a5"
+        },
+        "tests/tree_identity_conformance.rs": {
+          "sha256": "f8f885d6c3f20cd7ceca7b5060484eb8fbbb355060e8694fd2466bec901a7508",
+          "mode": 0,
+          "object": "100644 15923f229d3e030658ad1059b254f849806f3eb0"
+        },
+        "xtask/Cargo.toml": {
+          "sha256": "4ad8db4e44f7421343d73c4516cc3d6495dee69416cd7893e23b2160b1b983e6",
+          "mode": 0,
+          "object": "100644 1d061cc94f7e0d147286b9b771f592b9bdd440f1"
+        },
+        "xtask/src/land.rs": {
+          "sha256": "2559a43e5403e96fe92337860fc06ad233da5a74600bd60181bd06abdfce5b50",
+          "mode": 0,
+          "object": "100644 e8ef69277cee90dcc9393d98d19751fbaa5cb7d4"
+        },
+        "xtask/src/main.rs": {
+          "sha256": "f4b233999e8c7e4660c9eab74632e478a581159442f5f04d18885bac4b572afc",
+          "mode": 0,
+          "object": "100644 6fe4074b0bc496bf9ec0344dcbfe0223db5c4536"
+        },
+        "xtask/src/review.rs": {
+          "sha256": "48aa5a6928a58b1627bf86b9fafd185cbd950009b1c32c83e2c493cc77c8dc23",
+          "mode": 0,
+          "object": "100644 d1fcc1f8b0a2c09dcdf6abd62192eacf77498cc7"
+        },
+        "xtask/tests/fail_closed.rs": {
+          "sha256": "0c013caa31a33b7d0c212fd08a7474207fa0c8747288fc40a18fd1eaf715b9a8",
+          "mode": 0,
+          "object": "100644 ac9edaf12ee4aa28332bde3545d071960d405f8b"
+        }
+      }
+    },
+    {
+      "name": "doctor",
+      "command": "cargo run --quiet -- doctor --strict",
+      "runtime_fingerprint": "shell:/bin/sh:sha256:84ca7f9b83021621e16059a1c7850df72a462d879e8239d566236ca6ddd00953:env:sha256:f86467ca2c40add47d13e37a4dddd22d24e5b87b332f7195f5041af05b4d51b6:rust:sha256:0271f1bb56b66f188d8f1bb3b634b44d5a7aa99bb25773dfd4c5fc735b6b06d5",
+      "exit_code": 0,
+      "started_at_ms": 1794343484318,
+      "duration_ms": 4344,
+      "stdout": "Toimija doctor (strict)\n\n- ok: git installed - git found\n- ok: inside git repo - git repo detected\n- ok: toimija config - config found\n- ok: repo name - repo name present\n- ok: repo role - repo role present\n- ok: boundaries - boundaries present\n- ok: repo kind - Rust repo detected\n- ok: validation plan - validation can be inferred\n- ok: packet ignored - Git ignores the packet, sessions, history, handover, runs and snapshots\n- ok: AGENTS.md - file present\n- ok: CLAUDE.md - CLAUDE.md imports AGENTS.md\n- ok: preflight mention - agent docs point at the `toimija enter` preflight\n- ok: important docs - important_docs paths exist\n- ok: boundaries mirrored - boundaries appear in the agent docs\n\n",
+      "stdout_truncated": false,
+      "stdout_bytes_dropped": 0,
+      "stderr": "",
+      "stderr_truncated": false,
+      "stderr_bytes_dropped": 0,
+      "stdout_digest": "d8e306fcfa55b3e1fcfbcf750973d9128fabc449d9f5de0b2d6d77535555b719",
+      "stderr_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output_digests": {},
+      "outcome": "passed",
+      "importable": true,
+      "class": null,
+      "retryable": false,
+      "source": "task",
+      "error": null,
+      "provenance": null,
+      "inputs": {
+        ".cargo/config.toml": {
+          "sha256": "201dfb0784cbcc796f6b7bcbee5c69994ed7a61dd2a3cab6c910e91195291aeb",
+          "mode": 0,
+          "object": "100644 c22347fb68ed40814e38c25b1898d7c928b2d5d4"
+        },
+        ".github/workflows/ci.yml": {
+          "sha256": "324205152c62cbb5d6a278191d9d2b4af0918a0a0c9820b4a82fd6c50f98daf3",
+          "mode": 0,
+          "object": "100644 2eea8650f5aa18352d8521af1d31d48b75ac55cb"
+        },
+        ".github/workflows/release.yml": {
+          "sha256": "c301ab263f9be65d25c1fe5ac180ca504f0c6dd2e4d4ff7f058dfe285278d474",
+          "mode": 0,
+          "object": "100644 a5cff4ed2122fb3c65c214c2cb71034e69e006ba"
+        },
+        ".gitignore": {
+          "sha256": "4fcee3b73475328030049ddbc735ba5ad300280f390445da5af4959797f24036",
+          "mode": 0,
+          "object": "100644 c21ccd95108e7c6243215e0bef105ff6d18a1a64"
+        },
+        ".toimija/repo.yaml": {
+          "sha256": "458b8ed16164d0a244ed17be7c421fbe82e6d5f6456819abf855489fa131e464",
+          "mode": 0,
+          "object": "100644 b877339b9ee3fefa70f35f183a069fb0307206fa"
+        },
+        "AGENTS.md": {
+          "sha256": "b92d988580150a2c3bb4f544c32a238519955a77f918081575ae98f3ffe758b6",
+          "mode": 0,
+          "object": "100644 54e9e7e34be36be203c09b213ee49b6cb8732288"
+        },
+        "CLAUDE.md": {
+          "sha256": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49",
+          "mode": 0,
+          "object": "100644 43c994c2d3617f947bcb5adf1933e21dabe46bb5"
+        },
+        "Cargo.lock": {
+          "sha256": "2225f26b0665115b42ef890c1974abfe4bcc3128668a37a2f34dcc1dee222b47",
+          "mode": 0,
+          "object": "100644 4f46f456c2247e3ce137164513a5635c509a2336"
+        },
+        "Cargo.toml": {
+          "sha256": "d86663e7963517b6bf1a7dbe5320b8be3e8a5c18c6ad11fdd319073bfbc89344",
+          "mode": 0,
+          "object": "100644 5c991753cd76243947f4ba8e8d3c465be5c5a3be"
+        },
+        "LICENSE": {
+          "sha256": "58785fba262d6b8f74f7f0ed9a3c94769bd75d9f88a20d6223977134cf118efc",
+          "mode": 0,
+          "object": "100644 bc7b079a19756d059329c94f45b32f63555b4141"
+        },
+        "README.md": {
+          "sha256": "38c8a0a7f94ae47a92f6f5fc030b09803853b8796439c40cb790c1c9e3099334",
+          "mode": 0,
+          "object": "100644 9e84729843cefd61c78491c767284fab3a0cb7aa"
+        },
+        "build.rs": {
+          "sha256": "6ae6f5878506594d0a7d75079c937bb763a1c313dff3470eb04f5cb3ea5ddd5d",
+          "mode": 0,
+          "object": "100644 4d363dbdfcb1e890d30c81ebab283ddaf793e364"
+        },
+        "docs/assets/loop.svg": {
+          "sha256": "a878029239c08d3c6d145c412a39afd382f2f1ab3f97410a8f1769f13ddce966",
+          "mode": 0,
+          "object": "100644 07393ac36a76f9c14b851cf7f4c6ffcff5aa47ab"
+        },
+        "docs/assets/toimija.svg": {
+          "sha256": "028a31349536b1f676f632348822b141a231f8c3244b66efbbfbdaca9edd9318",
+          "mode": 0,
+          "object": "100644 6ebbe9b2fa5654076a1f844b5e65056e3e81dd24"
+        },
+        "docs/reference.md": {
+          "sha256": "f85bdbb1416cdb0677463fd8111a171e48d3b82faa7c5d5b2642dcd31eff6b2c",
+          "mode": 0,
+          "object": "100644 eaa9ff9c023ea9eac883d1824aa077a109928a97"
+        },
+        "docs/schemas/history-record.v1.schema.json": {
+          "sha256": "d30d22bcdd02f6972e2a9c39508f44396b6bd45f5836177fb18639be4511a700",
+          "mode": 0,
+          "object": "100644 c7cb14588f21499005510a7ca3c7483b3f8d3f91"
+        },
+        "docs/schemas/toimija-seal.v1.schema.json": {
+          "sha256": "5082ed525d753eba9c253cb5fcab4c5603b4b493796f8e86822402899cf0fc23",
+          "mode": 0,
+          "object": "100644 28024001ac73d0a4a36f92fb6bd7bc7b93467ce5"
+        },
+        "fixtures/elixir_repo/lib/fixture_elixir_repo.ex": {
+          "sha256": "3c100f0f6081c0ba318e1dcf0b6cbd747aebb5fdb1300fe7c6f04c9e77029132",
+          "mode": 0,
+          "object": "100644 8d6bea0e3d4e5d9841fadc6f15564600d6d9f40d"
+        },
+        "fixtures/elixir_repo/mix.exs": {
+          "sha256": "da86ae4737e5efd690f884a8a233a33c1ea4a86a6514c629be758e1632c6f8a4",
+          "mode": 0,
+          "object": "100644 ef5f12f7572d2d8614b36be92ddf0d421dc40ba3"
+        },
+        "fixtures/rust_repo/Cargo.toml": {
+          "sha256": "60ff3da58cd7d6341db07c55e18422cc46bd7afb20c87ace80d2431f0fdd31e6",
+          "mode": 0,
+          "object": "100644 ae6f40057e59a80e81bad57e149c23b694f43cb9"
+        },
+        "fixtures/rust_repo/src/lib.rs": {
+          "sha256": "3cc6c1ab6ee629a0c6eed3ed5e22c13d62659a18bbf556351578d07cd5f2bf7e",
+          "mode": 0,
+          "object": "100644 6906932feb5eea110e95e107174ae70f84009abd"
+        },
+        "rust-toolchain.toml": {
+          "sha256": "65bbb4ce11e08541b3f86e650602a9b3996dadaa5722822dcd7ae5c6c2af806b",
+          "mode": 0,
+          "object": "100644 ec7f985f520283460045dfc58ec8001d72dc1efa"
+        },
+        "src/adapters/agents.rs": {
+          "sha256": "c5ab6bd216bf9bf9d715f782931053772bd38f59277f9066a05bbf99272729a6",
+          "mode": 0,
+          "object": "100644 2434a01d718268c07296fba190f523e30cba6e21"
+        },
+        "src/adapters/elixir.rs": {
+          "sha256": "9714c698152ea405f646dc4326d69ea5d369a065348ed9c0b04a3dae48f77343",
+          "mode": 0,
+          "object": "100644 4d575bd5675f557bb59e4d4586777c8e04ac06d5"
+        },
+        "src/adapters/generic.rs": {
+          "sha256": "a5eefe783bfd1caffe26c7603da64e358094b4917d32f66e1de4b1afb1681be5",
+          "mode": 0,
+          "object": "100644 781bfe0acc029059a398f75a2707d98f3e854a0a"
+        },
+        "src/adapters/mod.rs": {
+          "sha256": "7b80d187ebf621d589eec4751f1a146effa06b23bbcf734a3c3b957d9376cbd2",
+          "mode": 0,
+          "object": "100644 0bcce9cff7758f495789ea44368e6b38853aecff"
+        },
+        "src/adapters/pack.rs": {
+          "sha256": "207d987523833eb090a06486ee5a8ec72660ae55c97a208b17e8a264eda1f9e4",
+          "mode": 0,
+          "object": "100644 43e56674d0b3a251a5c8c89f2f236640063125c7"
+        },
+        "src/adapters/rust.rs": {
+          "sha256": "4ca20759c62786affaa36293bdbb0baa5a1e2f81059056eb5999d4749016c842",
+          "mode": 0,
+          "object": "100644 153202eaeac1327137f5eeebc6343bfe45e44210"
+        },
+        "src/atomic_write.rs": {
+          "sha256": "dd21b632c448f077d293244ab358a27fe83373fb4270f15cba34bb9feb7722a4",
+          "mode": 0,
+          "object": "100644 5f7f142553dfaac22e9137542237a4fe84ba76c2"
+        },
+        "src/canonical.rs": {
+          "sha256": "e36b84d8e1768dbd69c7d1512526e7c0ca75e69bd36b673a89c6ef7ab0122ad8",
+          "mode": 0,
+          "object": "100644 9cfcdf5635ccf5f11551097b0d0ff7f2faa49584"
+        },
+        "src/cli.rs": {
+          "sha256": "1d8d860ff710ef5e6293f9a3ed425ff0125551d7c7806e8da2dcc1e4366eb534",
+          "mode": 0,
+          "object": "100644 36528288447011be69e866e856e5f059e20a658d"
+        },
+        "src/command.rs": {
+          "sha256": "873523c40101e76e169d6247f70db6fcdf88bbac5c3c0e3e28f6111801d656c0",
+          "mode": 0,
+          "object": "100644 919e00265088c0b81a378259492eacc605c4ecb3"
+        },
+        "src/config.rs": {
+          "sha256": "c1933ee24d2678d114ffd91b1c79febf24badc6cddfc4f4e9428ac5cf9e332a4",
+          "mode": 0,
+          "object": "100644 d061468322f42a70d20aa7980b57639eecac979b"
+        },
+        "src/consistency.rs": {
+          "sha256": "f85e09274087a5e23d320888984a1c5112e16666cfd35f69f0ec84aaf579aa7e",
+          "mode": 0,
+          "object": "100644 6df68a02736a3185f82c26fffa682682fb49d960"
+        },
+        "src/context.rs": {
+          "sha256": "01118671bb3f742866703b9d8900d53f45df0af908784e2d4ee5ae87c0d88043",
+          "mode": 0,
+          "object": "100644 472a098a5726ec9ddba8074f0462468ef5e7595e"
+        },
+        "src/coverage.rs": {
+          "sha256": "29f5df165f479f293cc4db03fa78ae7b5932f38080f76b7aca3a47ca8013f657",
+          "mode": 0,
+          "object": "100644 168a9a3706ba4997085aa1f9a76e2873ec726335"
+        },
+        "src/diagnostics.rs": {
+          "sha256": "d02bf9cc4e62171acfc8c326e85c897456e0f41b5f1b419cb8665c0d60c45245",
+          "mode": 0,
+          "object": "100644 60b04f8d4a27c272b5ff59af79a304b8f0b4c8ec"
+        },
+        "src/error.rs": {
+          "sha256": "f14d981aed5ff8f25aac128e6708c2c8cb51660034a7f6684c6c4211f47e8cd2",
+          "mode": 0,
+          "object": "100644 2907a228462b5792dde2946c5459ac12d51c97ed"
+        },
+        "src/footprint.rs": {
+          "sha256": "88c2e1e7fa8b7482cda1efb10d5e93187bd3ba7d21a2786384687d05dcf8f2ee",
+          "mode": 0,
+          "object": "100644 f4cf74bc2c084d20a6ac753dd2f68b5488ec9920"
+        },
+        "src/git.rs": {
+          "sha256": "58dd1c65d02d65f406d579c62c548fe6b9d1804da6b06381dcd2d81eedf59f46",
+          "mode": 0,
+          "object": "100644 1d811a6be6e7e9afc8ab4309a4173a3a58362d66"
+        },
+        "src/graph.rs": {
+          "sha256": "3e8dfc567edf117985024b8aa4975bd6e8dcc1ea114b9c0ecb90cdfa9f017847",
+          "mode": 0,
+          "object": "100644 975c53c6a492fcfb5ae62d719c557cc3abe05460"
+        },
+        "src/landed.rs": {
+          "sha256": "4e141b87a923cb79b47dd3340761c2e35fd8b24b1a14f6b14cac61d67685a368",
+          "mode": 0,
+          "object": "100644 486a6228cee2ffb792ea44ad8d6d96e6e3df93a4"
+        },
+        "src/lib.rs": {
+          "sha256": "2ea770ba720a32e7cd09c7390f9c09ebfcbf098f612b410b6587fe72efe6543b",
+          "mode": 0,
+          "object": "100644 10d1fc481ec38e4f5580db9c783381ff3cc6f84e"
+        },
+        "src/logging.rs": {
+          "sha256": "0fa9d9aafaa83e047150ca00e0e9e1d2edd418ac7ce477bda37a62e837ceacc2",
+          "mode": 0,
+          "object": "100644 bb2c9cb67d142933e11a2a0bc4e96e225a75ac4e"
+        },
+        "src/main.rs": {
+          "sha256": "de130aa8e092d6021df987814d386fc12f9bdbfdf3e5f80f091408b83bdc2ee1",
+          "mode": 0,
+          "object": "100644 77fae4c3a6f0743701eedac4dd926eed272989e8"
+        },
+        "src/owned.rs": {
+          "sha256": "25d8a670a3c1060a7774ab5894c0123701f6af795fd70a06263e795d9223663f",
+          "mode": 0,
+          "object": "100644 1253e20e6f98fe55dea8400434fd69d8afa19ddb"
+        },
+        "src/path_codec.rs": {
+          "sha256": "e720202e4c713d9f689bb673f965dee8df8614c5f11ca474dc273d82e287dea7",
+          "mode": 0,
+          "object": "100644 335122ef13289f8b252ff10e28896f445fb47a91"
+        },
+        "src/refresh.rs": {
+          "sha256": "42b6a4b5bb492655baa401802e712260601f21c7f9d49940f6f332d11a7c098a",
+          "mode": 0,
+          "object": "100644 5faa25641dd1487531e5d22a4020d5d53de44d2a"
+        },
+        "src/render.rs": {
+          "sha256": "8dc5928ea1960a445d3521eda41bc32ef4981aacca661457ecb559b08f313dd7",
+          "mode": 0,
+          "object": "100644 874e728eddca5c21e45935e95b5a1433667099ab"
+        },
+        "src/repo.rs": {
+          "sha256": "83a50477ace694188df00974d418620ec56dc69116d3bfb374802c31427fa682",
+          "mode": 0,
+          "object": "100644 c9d46835a473ca9360ad13b8de30dbc1f22e0646"
+        },
+        "src/seal.rs": {
+          "sha256": "e089d493d808d87d1abfb2e4603bb69b71f352f85a08539207abc0cd3ab79f37",
+          "mode": 0,
+          "object": "100644 772f740066e286af4a6db9df6370af2a68aa6c48"
+        },
+        "src/semantic.rs": {
+          "sha256": "e6b04b398a3f26fb9c1229639cb69bc1461aab45324e378e8ad3be5a95cf04ff",
+          "mode": 0,
+          "object": "100644 212e471961ba2a14acc4742b4e03166a76f0e852"
+        },
+        "src/session.rs": {
+          "sha256": "b875058721950fffab605086913169c73b39493d815127c39c4877ad05bfd1ed",
+          "mode": 0,
+          "object": "100644 7ec35678b29c977166f7fe312518c13740593eed"
+        },
+        "src/sessions.rs": {
+          "sha256": "4f3a6768dea5fbaf513d8dc674d165c5c1c0ef5f66175266b5424b3ba446f2cc",
+          "mode": 0,
+          "object": "100644 334307bc758727f0e852888e618adb8759e4f635"
+        },
+        "src/snapshot.rs": {
+          "sha256": "e9733aaa3acd2785e7fb864bec6bcf55beca7b5fdb2fcf1450ed9cc731b78975",
+          "mode": 0,
+          "object": "100644 fca33325c502cc45d0dd42bf7e902f4aa16bda93"
+        },
+        "src/spec.rs": {
+          "sha256": "119dc0891a5f5da032496283c77737b3d12f447252217bf2db699043ec81bdb7",
+          "mode": 0,
+          "object": "100644 6f83afa228f731d3ee360dc4d4d785973b638eb4"
+        },
+        "src/tree_identity.rs": {
+          "sha256": "726670c8bb29c8f1f5af22a0e1a7e776833c461493ac8f86b578e39c1b0308eb",
+          "mode": 0,
+          "object": "100644 02a3fd95aa3f10ce418d64dda3e7c507c9d7b0ba"
+        },
+        "src/validate.rs": {
+          "sha256": "2c0ced442d3313bcd15da29b3311d2514c66c5b4877dc63b6700a3693964ee5d",
+          "mode": 0,
+          "object": "100644 7500d9a6c9b59cfe7fda1b9db89137b61cc11b06"
+        },
+        "src/watch.rs": {
+          "sha256": "ccec1268519e2503bbbc24c74a66c54a60e7ea6c8380673abcaba67671c378a1",
+          "mode": 0,
+          "object": "100644 ebe2ba8e92f7cc5a0422f064f49e76bdc0947511"
+        },
+        "src/workspace.rs": {
+          "sha256": "047ddeadd0378c2960ab272c178ddb7ec6caf75c1157bda2586cafca120710a6",
+          "mode": 0,
+          "object": "100644 0766ddc5cdda05e1f60c7344a9f60152fd30a2dc"
+        },
+        "tests/canonical_digests.rs": {
+          "sha256": "48395ee9453a34f8f988f14372e1ea8e1452a83ba821f3c6b95dc06c661bb70c",
+          "mode": 0,
+          "object": "100644 55dbad8c49c51175b6cb312d6cbd6a13e1b03ac0"
+        },
+        "tests/cli_budgets.rs": {
+          "sha256": "a55c425fda752008f9361cd06cc3a953f21c3e74727f24a3ec0d670b2ff33f4a",
+          "mode": 0,
+          "object": "100644 655a0505753c67dffd8c4e92523662759595690a"
+        },
+        "tests/cli_clean.rs": {
+          "sha256": "c1cff5228fa6e3ffdede61bba8ad1360adcd4e1bff8915cb42712d89c829634a",
+          "mode": 0,
+          "object": "100644 d7c32bb29c05e2e9bb3e68a19010784ec3dafcd9"
+        },
+        "tests/cli_context.rs": {
+          "sha256": "20231f2fb7aba03ee34c337ccfd3073fcf60248cdbb131bf6cfc074181799901",
+          "mode": 0,
+          "object": "100644 06933395440fa9815dcedcbd2c1be20debb24e70"
+        },
+        "tests/cli_doctor.rs": {
+          "sha256": "b5fa6c59d648ddb3fce5ec35cd5fc0d94d630ff734197f95fff7c7a3e4b66ff4",
+          "mode": 0,
+          "object": "100644 e46b88689811a33604ac15579c081d4ea1a60483"
+        },
+        "tests/cli_enter.rs": {
+          "sha256": "d40b5e389644135a0e2bcbf8d7e78a5de21b948e29459958b767b484bb4dc883",
+          "mode": 0,
+          "object": "100644 566bc9218986abf0f172d553fad8d19f99e47202"
+        },
+        "tests/cli_graph.rs": {
+          "sha256": "7a99998fca44d856ee6e95a5a567bafbb7b703dc97487de8264133e6673862c3",
+          "mode": 0,
+          "object": "100644 6d271b93020b85f8f6607628324fe7592c2ca345"
+        },
+        "tests/cli_help.rs": {
+          "sha256": "8f5635f6a43c2c08cbb130ac5483df622b95965c676ac9f5ab6ce5d2da4e06ef",
+          "mode": 0,
+          "object": "100644 b6692ea6b04a42b5953b47bb56f66532f601f12f"
+        },
+        "tests/cli_history.rs": {
+          "sha256": "09e08cacc6d6b95d13898176a478aecf28ba3850bbd53d79585e5bb4ee5b35a8",
+          "mode": 0,
+          "object": "100644 c677a10db5b32f4d1679df3e771ea41a8d531964"
+        },
+        "tests/cli_intent.rs": {
+          "sha256": "61445897e74272a5c9fa9044c4bdc5f6c48813686be50ac40cdf917c246bbf0c",
+          "mode": 0,
+          "object": "100644 f2fe96603d485e46434b2bd2f9afd538bb3378b3"
+        },
+        "tests/cli_landed.rs": {
+          "sha256": "87e21b5604a3ee5da95c8a129017be41d9e0151c38419fbba5a8fc09f347a3af",
+          "mode": 0,
+          "object": "100644 9610d9e72e53fa0dc0ccd0ef652c069932091598"
+        },
+        "tests/cli_langs.rs": {
+          "sha256": "3c274e1cde84200961d3592a70ec40edf5da4f538743e666ea49eef2c8278ff3",
+          "mode": 0,
+          "object": "100644 f30f438784c0c484051197fec2611abb64846a1c"
+        },
+        "tests/cli_logging.rs": {
+          "sha256": "50274ccc1c3ecd884053c1308511dbb3b1d8bde92ea0095bf500e4d348bc5e5e",
+          "mode": 0,
+          "object": "100644 493c823f5eae34c4f8f7f21d0c0cf7b8a5f51a33"
+        },
+        "tests/cli_point_identity.rs": {
+          "sha256": "8388252c13d64ebc398ca81ef7630bb62141bc4ebd7a0b0fc1479d0f0e23ead1",
+          "mode": 0,
+          "object": "100644 219a1d15a8bab0c23d0738132f74282bcff17f56"
+        },
+        "tests/cli_refresh.rs": {
+          "sha256": "2d7b4f2dbd81b4f048ee6f11a7c8c742a9169fcbbf2118326693cbe68988a299",
+          "mode": 0,
+          "object": "100644 93ea8622e1df6c60afb82e42d2a77a07f1ec9b26"
+        },
+        "tests/cli_run.rs": {
+          "sha256": "aa0fd95119682854221895e641407adfb3bd8cc6bd1c3519b2301179bb896d97",
+          "mode": 0,
+          "object": "100644 a8ce99173aa48cbc67ea24984e448050da6136ca"
+        },
+        "tests/cli_run_outside.rs": {
+          "sha256": "26c24499f451d11c552a30d6299e9282f238cfe59ebe94234baa0b3cf7a3136c",
+          "mode": 0,
+          "object": "100644 96db769ecd33469565692e815ba179a6c6fef773"
+        },
+        "tests/cli_sessions.rs": {
+          "sha256": "dff4907a758da24104d9fca21b2094a87719f4b668fa68248e22f0700bb838c2",
+          "mode": 0,
+          "object": "100644 f559187abd09f22785ee14c06f4d2b5907f9533d"
+        },
+        "tests/cli_snapshot.rs": {
+          "sha256": "b3323a9d104679888ec569925bb3efd71404b738ea2c8e1538f77e707ba8dcc1",
+          "mode": 0,
+          "object": "100644 58596e0403256fe5c9c63dcef0f914d5204098a3"
+        },
+        "tests/cli_spec.rs": {
+          "sha256": "361fedd3376d7ea155b2ead3adc891b2981ac042d50d0fb394ee4a5f84d42591",
+          "mode": 0,
+          "object": "100644 0e87443c2720019bcf576dbeae41ec004efd8918"
+        },
+        "tests/cli_tree_identity.rs": {
+          "sha256": "3c208cbece8d28af18c5941ecc18b3eae022d5ff023b4a9e4312fc55e70d378f",
+          "mode": 0,
+          "object": "100644 3c86747a33603dc6512dd794547b54e49a265098"
+        },
+        "tests/cli_validate.rs": {
+          "sha256": "28375f62139a58e5e45ec3ea593df07ce04a7fd95e30ce26c09e51c61d3f1bbb",
+          "mode": 0,
+          "object": "100644 47dc7a692a2bf76eab59603c027ab511a4a3a1f0"
+        },
+        "tests/cli_verify.rs": {
+          "sha256": "69371e7f0518a815c6831508c342086fee14dc8158c5a9f6a4f2cd91cf2956e3",
+          "mode": 0,
+          "object": "100644 c920482c083f803d4bdc280dfb8a14af4928121c"
+        },
+        "tests/cli_watch.rs": {
+          "sha256": "bcd5ba76e51d6c6cf6adfd2d44f5132004d87eb954d6dcbbd90fce57f63da0a0",
+          "mode": 0,
+          "object": "100644 e83ce6d025b63ef5310853a393e6104bbaa50ed8"
+        },
+        "tests/cli_workspace.rs": {
+          "sha256": "0bb164902612aa57aaacfc8010655fa56096dd36fb35599e01a599e99f871302",
+          "mode": 0,
+          "object": "100644 acf15b52fe6f7e42672ea1ea7525ac314171ca3d"
+        },
+        "tests/common/fixture.rs": {
+          "sha256": "93949ff6564dbfdabc7769b0840ffb8e41a773f0b89347a03b813690bf50a7a9",
+          "mode": 0,
+          "object": "100644 fb9910881b7c118f5633a5ea079401f42f90996e"
+        },
+        "tests/common/mod.rs": {
+          "sha256": "75a124d29197a207b2a36c48da7dbb67f8b22e06bed0858b18ecea5aa25ffdc8",
+          "mode": 0,
+          "object": "100644 34696c55cc3f2f0944b02347e6cc4b0411f2294b"
+        },
+        "tests/common/scenarios.rs": {
+          "sha256": "c5b493b0213e1103a766ea8dd6e6b243b9be3996d5911926556b5a5502087afe",
+          "mode": 0,
+          "object": "100644 1a2cb5e98b7c8fe7415ca5111fc3dd734839a965"
+        },
+        "tests/differential.rs": {
+          "sha256": "1aaa6464a5593a317e367a9a41a0801f985a7c68aee4b76d57a8a92995951ebe",
+          "mode": 0,
+          "object": "100644 aaf67ff28c9d6176528fe85075fcfd3e6b89d8ad"
+        },
+        "tests/docs.rs": {
+          "sha256": "5895157835c51d51dc39c7a821065b43d12048d8f5c97b0f5c870565f9b48c33",
+          "mode": 0,
+          "object": "100644 d4459ca6ba0a3948049b5e822a359e9dd9a4fd77"
+        },
+        "tests/git_isolation.rs": {
+          "sha256": "d999b1625f71aa4845e0e5ae997de5e0c07ef164037db75451d96703d2c262b8",
+          "mode": 0,
+          "object": "100644 1a472645869dfc74053de6ceccf7371d07ebba2d"
+        },
+        "tests/git_state.rs": {
+          "sha256": "f2afc4825a1ead0f54df56a19cae5f78f739803896a84b5f54cc17892c0da061",
+          "mode": 0,
+          "object": "100644 b1cdc93c1ddd13fff1ca3a8843d906ad4bf7454a"
+        },
+        "tests/instructions.rs": {
+          "sha256": "e48f6daafc6fd17ebca51ac623fd8dc6632ccd29753e67c1a5fdbed25cf3daa2",
+          "mode": 0,
+          "object": "100644 afb7eb5867bf97a66edc33b76f3c2dced420d063"
+        },
+        "tests/qa_p0.rs": {
+          "sha256": "cfbb44b2647ac3440b8f2663196f1a095638ae93c5a1535d6f3e824778b8bbf3",
+          "mode": 0,
+          "object": "100644 53e3f593f9b017d92a6d1cde208dd86de3eb77ee"
+        },
+        "tests/symlink_escape.rs": {
+          "sha256": "487f5f5c5b1769138e4f81369554aae57cb586557962f2840b4fb56b6c594145",
+          "mode": 0,
+          "object": "100644 8e250782ed45cf71db3bcf1eeab18cf9f17b70a5"
+        },
+        "tests/tree_identity_conformance.rs": {
+          "sha256": "f8f885d6c3f20cd7ceca7b5060484eb8fbbb355060e8694fd2466bec901a7508",
+          "mode": 0,
+          "object": "100644 15923f229d3e030658ad1059b254f849806f3eb0"
+        },
+        "xtask/Cargo.toml": {
+          "sha256": "4ad8db4e44f7421343d73c4516cc3d6495dee69416cd7893e23b2160b1b983e6",
+          "mode": 0,
+          "object": "100644 1d061cc94f7e0d147286b9b771f592b9bdd440f1"
+        },
+        "xtask/src/land.rs": {
+          "sha256": "2559a43e5403e96fe92337860fc06ad233da5a74600bd60181bd06abdfce5b50",
+          "mode": 0,
+          "object": "100644 e8ef69277cee90dcc9393d98d19751fbaa5cb7d4"
+        },
+        "xtask/src/main.rs": {
+          "sha256": "f4b233999e8c7e4660c9eab74632e478a581159442f5f04d18885bac4b572afc",
+          "mode": 0,
+          "object": "100644 6fe4074b0bc496bf9ec0344dcbfe0223db5c4536"
+        },
+        "xtask/src/review.rs": {
+          "sha256": "48aa5a6928a58b1627bf86b9fafd185cbd950009b1c32c83e2c493cc77c8dc23",
+          "mode": 0,
+          "object": "100644 d1fcc1f8b0a2c09dcdf6abd62192eacf77498cc7"
+        },
+        "xtask/tests/fail_closed.rs": {
+          "sha256": "0c013caa31a33b7d0c212fd08a7474207fa0c8747288fc40a18fd1eaf715b9a8",
+          "mode": 0,
+          "object": "100644 ac9edaf12ee4aa28332bde3545d071960d405f8b"
+        }
+      }
+    },
+    {
+      "name": "xtask-test",
+      "command": "cargo test -p xtask",
+      "runtime_fingerprint": "shell:/bin/sh:sha256:84ca7f9b83021621e16059a1c7850df72a462d879e8239d566236ca6ddd00953:env:sha256:f86467ca2c40add47d13e37a4dddd22d24e5b87b332f7195f5041af05b4d51b6:rust:sha256:0271f1bb56b66f188d8f1bb3b634b44d5a7aa99bb25773dfd4c5fc735b6b06d5",
+      "exit_code": 0,
+      "started_at_ms": 1794343431512,
+      "duration_ms": 6625,
+      "stdout": "\nrunning 29 tests\ntest review::tests::a_reply_without_a_verdict_line_is_no_review ... ok\ntest land::tests::a_shared_receipt_counts_only_where_this_clone_knows_nothing ... ok\ntest land::tests::a_receipt_passed_when_every_task_passed_or_was_reused ... ok\ntest land::tests::the_receipt_to_share_is_the_written_file_or_the_copy_its_run_kept ... ok\ntest review::tests::a_verdict_milder_than_its_worst_finding_is_raised ... ok\ntest review::tests::a_verdict_that_is_not_one_of_the_three_is_no_review ... ok\ntest review::tests::an_agent_or_a_pipe_cannot_overrule ... ok\ntest review::tests::markdown_around_the_verdict_word_is_read ... ok\ntest review::tests::the_claude_reviewer_has_reading_tools_only ... ok\ntest review::tests::the_codex_reviewer_is_sandboxed_and_loads_no_user_configuration ... ok\ntest review::tests::the_last_verdict_line_counts_and_findings_are_kept ... ok\ntest review::tests::the_reviewer_is_another_agent_than_the_author_when_one_is_installed ... ok\ntest review::tests::a_commit_already_in_the_base_has_nothing_to_review ... ok\ntest review::tests::the_reviewer_starts_without_the_asking_sessions_agent_markers ... ok\ntest review::tests::a_reviewer_that_never_reads_its_prompt_runs_into_the_time_limit ... ok\ntest review::tests::the_reviewer_is_handed_the_commits_and_the_diff ... ok\ntest tests::a_file_under_another_seal_format_is_set_aside_and_named_not_read ... ok\n[main 648999f] second\n 1 file changed, 1 insertion(+), 1 deletion(-)\nInitialized empty Git repository in /private/var/folders/d8/c3xlzj3j4jbgh_vfzvg_56h40000gn/T/seal-why-1794343436723713000/.git/\ntest review::tests::a_reviewer_whose_child_keeps_its_output_open_runs_into_the_time_limit ... ok\ntest review::tests::a_reviewer_that_ends_without_taking_its_whole_prompt_gave_no_review ... ok\n[main (root-commit) fa54f94] initial\n 1 file changed, 1 insertion(+)\n create mode 100644 README.md\ntest review::tests::a_blocking_review_fails_until_a_person_overrules_it ... ok\ntest tests::why_renders_a_sealed_packet_and_reports_tampering ... ok\ntest review::tests::a_new_commit_is_reviewed_again ... ok\ntest land::tests::a_proof_with_no_receipt_to_share_does_not_land ... ok\ntest review::tests::uncommitted_work_a_missing_reviewer_and_no_verdict_are_no_review ... ok\ntest review::tests::the_same_tree_on_another_base_is_reviewed_again ... ok\ntest land::tests::main_moving_between_the_check_and_the_push_stops_the_landing ... ok\ntest land::tests::a_branch_behind_main_does_not_land_and_an_old_review_does_not_count ... ok\ntest land::tests::a_proven_reviewed_branch_lands_and_its_review_reaches_another_clone ... ok\ntest land::tests::an_unproven_unreviewed_or_blocked_branch_does_not_land ... ok\n\ntest result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.48s\n\n\nrunning 2 tests\ntest bare_invocation_prints_the_task_list_and_succeeds ... ok\ntest unknown_task_exits_nonzero_and_names_the_task ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s\n\n",
+      "stdout_truncated": false,
+      "stdout_bytes_dropped": 0,
+      "stderr": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n   Compiling toimija v0.2.0 (/Users/yair/projects/_worktrees/toimija-spec)\n   Compiling xtask v0.0.0 (/Users/yair/projects/_worktrees/toimija-spec/xtask)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.47s\n     Running unittests src/main.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/xtask-737cfef5114faac2)\n     Running tests/fail_closed.rs (/Users/yair/projects/toimija/.git/sykli/worktrees/15ad1f07fec50790/cache/cargo-build/debug/deps/fail_closed-7186f05199bdc371)\n",
+      "stderr_truncated": false,
+      "stderr_bytes_dropped": 0,
+      "stdout_digest": "656e3f2bb7b65969ebe31576d1b90cc2c8ccc6d9a3d21e5c355a62988bc6f6f4",
+      "stderr_digest": "0400a2023c5f630be09afda3744f57747a1ba0a894ed2145cf5610c49ba68b4b",
+      "output_digests": {},
+      "outcome": "passed",
+      "importable": true,
+      "class": null,
+      "retryable": false,
+      "source": "task",
+      "error": null,
+      "provenance": null,
+      "inputs": {
+        ".cargo/config.toml": {
+          "sha256": "201dfb0784cbcc796f6b7bcbee5c69994ed7a61dd2a3cab6c910e91195291aeb",
+          "mode": 0,
+          "object": "100644 c22347fb68ed40814e38c25b1898d7c928b2d5d4"
+        },
+        ".github/workflows/ci.yml": {
+          "sha256": "324205152c62cbb5d6a278191d9d2b4af0918a0a0c9820b4a82fd6c50f98daf3",
+          "mode": 0,
+          "object": "100644 2eea8650f5aa18352d8521af1d31d48b75ac55cb"
+        },
+        ".github/workflows/release.yml": {
+          "sha256": "c301ab263f9be65d25c1fe5ac180ca504f0c6dd2e4d4ff7f058dfe285278d474",
+          "mode": 0,
+          "object": "100644 a5cff4ed2122fb3c65c214c2cb71034e69e006ba"
+        },
+        ".gitignore": {
+          "sha256": "4fcee3b73475328030049ddbc735ba5ad300280f390445da5af4959797f24036",
+          "mode": 0,
+          "object": "100644 c21ccd95108e7c6243215e0bef105ff6d18a1a64"
+        },
+        ".toimija/repo.yaml": {
+          "sha256": "458b8ed16164d0a244ed17be7c421fbe82e6d5f6456819abf855489fa131e464",
+          "mode": 0,
+          "object": "100644 b877339b9ee3fefa70f35f183a069fb0307206fa"
+        },
+        "AGENTS.md": {
+          "sha256": "b92d988580150a2c3bb4f544c32a238519955a77f918081575ae98f3ffe758b6",
+          "mode": 0,
+          "object": "100644 54e9e7e34be36be203c09b213ee49b6cb8732288"
+        },
+        "CLAUDE.md": {
+          "sha256": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49",
+          "mode": 0,
+          "object": "100644 43c994c2d3617f947bcb5adf1933e21dabe46bb5"
+        },
+        "Cargo.lock": {
+          "sha256": "2225f26b0665115b42ef890c1974abfe4bcc3128668a37a2f34dcc1dee222b47",
+          "mode": 0,
+          "object": "100644 4f46f456c2247e3ce137164513a5635c509a2336"
+        },
+        "Cargo.toml": {
+          "sha256": "d86663e7963517b6bf1a7dbe5320b8be3e8a5c18c6ad11fdd319073bfbc89344",
+          "mode": 0,
+          "object": "100644 5c991753cd76243947f4ba8e8d3c465be5c5a3be"
+        },
+        "LICENSE": {
+          "sha256": "58785fba262d6b8f74f7f0ed9a3c94769bd75d9f88a20d6223977134cf118efc",
+          "mode": 0,
+          "object": "100644 bc7b079a19756d059329c94f45b32f63555b4141"
+        },
+        "README.md": {
+          "sha256": "38c8a0a7f94ae47a92f6f5fc030b09803853b8796439c40cb790c1c9e3099334",
+          "mode": 0,
+          "object": "100644 9e84729843cefd61c78491c767284fab3a0cb7aa"
+        },
+        "build.rs": {
+          "sha256": "6ae6f5878506594d0a7d75079c937bb763a1c313dff3470eb04f5cb3ea5ddd5d",
+          "mode": 0,
+          "object": "100644 4d363dbdfcb1e890d30c81ebab283ddaf793e364"
+        },
+        "docs/assets/loop.svg": {
+          "sha256": "a878029239c08d3c6d145c412a39afd382f2f1ab3f97410a8f1769f13ddce966",
+          "mode": 0,
+          "object": "100644 07393ac36a76f9c14b851cf7f4c6ffcff5aa47ab"
+        },
+        "docs/assets/toimija.svg": {
+          "sha256": "028a31349536b1f676f632348822b141a231f8c3244b66efbbfbdaca9edd9318",
+          "mode": 0,
+          "object": "100644 6ebbe9b2fa5654076a1f844b5e65056e3e81dd24"
+        },
+        "docs/reference.md": {
+          "sha256": "f85bdbb1416cdb0677463fd8111a171e48d3b82faa7c5d5b2642dcd31eff6b2c",
+          "mode": 0,
+          "object": "100644 eaa9ff9c023ea9eac883d1824aa077a109928a97"
+        },
+        "docs/schemas/history-record.v1.schema.json": {
+          "sha256": "d30d22bcdd02f6972e2a9c39508f44396b6bd45f5836177fb18639be4511a700",
+          "mode": 0,
+          "object": "100644 c7cb14588f21499005510a7ca3c7483b3f8d3f91"
+        },
+        "docs/schemas/toimija-seal.v1.schema.json": {
+          "sha256": "5082ed525d753eba9c253cb5fcab4c5603b4b493796f8e86822402899cf0fc23",
+          "mode": 0,
+          "object": "100644 28024001ac73d0a4a36f92fb6bd7bc7b93467ce5"
+        },
+        "fixtures/elixir_repo/lib/fixture_elixir_repo.ex": {
+          "sha256": "3c100f0f6081c0ba318e1dcf0b6cbd747aebb5fdb1300fe7c6f04c9e77029132",
+          "mode": 0,
+          "object": "100644 8d6bea0e3d4e5d9841fadc6f15564600d6d9f40d"
+        },
+        "fixtures/elixir_repo/mix.exs": {
+          "sha256": "da86ae4737e5efd690f884a8a233a33c1ea4a86a6514c629be758e1632c6f8a4",
+          "mode": 0,
+          "object": "100644 ef5f12f7572d2d8614b36be92ddf0d421dc40ba3"
+        },
+        "fixtures/rust_repo/Cargo.toml": {
+          "sha256": "60ff3da58cd7d6341db07c55e18422cc46bd7afb20c87ace80d2431f0fdd31e6",
+          "mode": 0,
+          "object": "100644 ae6f40057e59a80e81bad57e149c23b694f43cb9"
+        },
+        "fixtures/rust_repo/src/lib.rs": {
+          "sha256": "3cc6c1ab6ee629a0c6eed3ed5e22c13d62659a18bbf556351578d07cd5f2bf7e",
+          "mode": 0,
+          "object": "100644 6906932feb5eea110e95e107174ae70f84009abd"
+        },
+        "rust-toolchain.toml": {
+          "sha256": "65bbb4ce11e08541b3f86e650602a9b3996dadaa5722822dcd7ae5c6c2af806b",
+          "mode": 0,
+          "object": "100644 ec7f985f520283460045dfc58ec8001d72dc1efa"
+        },
+        "src/adapters/agents.rs": {
+          "sha256": "c5ab6bd216bf9bf9d715f782931053772bd38f59277f9066a05bbf99272729a6",
+          "mode": 0,
+          "object": "100644 2434a01d718268c07296fba190f523e30cba6e21"
+        },
+        "src/adapters/elixir.rs": {
+          "sha256": "9714c698152ea405f646dc4326d69ea5d369a065348ed9c0b04a3dae48f77343",
+          "mode": 0,
+          "object": "100644 4d575bd5675f557bb59e4d4586777c8e04ac06d5"
+        },
+        "src/adapters/generic.rs": {
+          "sha256": "a5eefe783bfd1caffe26c7603da64e358094b4917d32f66e1de4b1afb1681be5",
+          "mode": 0,
+          "object": "100644 781bfe0acc029059a398f75a2707d98f3e854a0a"
+        },
+        "src/adapters/mod.rs": {
+          "sha256": "7b80d187ebf621d589eec4751f1a146effa06b23bbcf734a3c3b957d9376cbd2",
+          "mode": 0,
+          "object": "100644 0bcce9cff7758f495789ea44368e6b38853aecff"
+        },
+        "src/adapters/pack.rs": {
+          "sha256": "207d987523833eb090a06486ee5a8ec72660ae55c97a208b17e8a264eda1f9e4",
+          "mode": 0,
+          "object": "100644 43e56674d0b3a251a5c8c89f2f236640063125c7"
+        },
+        "src/adapters/rust.rs": {
+          "sha256": "4ca20759c62786affaa36293bdbb0baa5a1e2f81059056eb5999d4749016c842",
+          "mode": 0,
+          "object": "100644 153202eaeac1327137f5eeebc6343bfe45e44210"
+        },
+        "src/atomic_write.rs": {
+          "sha256": "dd21b632c448f077d293244ab358a27fe83373fb4270f15cba34bb9feb7722a4",
+          "mode": 0,
+          "object": "100644 5f7f142553dfaac22e9137542237a4fe84ba76c2"
+        },
+        "src/canonical.rs": {
+          "sha256": "e36b84d8e1768dbd69c7d1512526e7c0ca75e69bd36b673a89c6ef7ab0122ad8",
+          "mode": 0,
+          "object": "100644 9cfcdf5635ccf5f11551097b0d0ff7f2faa49584"
+        },
+        "src/cli.rs": {
+          "sha256": "1d8d860ff710ef5e6293f9a3ed425ff0125551d7c7806e8da2dcc1e4366eb534",
+          "mode": 0,
+          "object": "100644 36528288447011be69e866e856e5f059e20a658d"
+        },
+        "src/command.rs": {
+          "sha256": "873523c40101e76e169d6247f70db6fcdf88bbac5c3c0e3e28f6111801d656c0",
+          "mode": 0,
+          "object": "100644 919e00265088c0b81a378259492eacc605c4ecb3"
+        },
+        "src/config.rs": {
+          "sha256": "c1933ee24d2678d114ffd91b1c79febf24badc6cddfc4f4e9428ac5cf9e332a4",
+          "mode": 0,
+          "object": "100644 d061468322f42a70d20aa7980b57639eecac979b"
+        },
+        "src/consistency.rs": {
+          "sha256": "f85e09274087a5e23d320888984a1c5112e16666cfd35f69f0ec84aaf579aa7e",
+          "mode": 0,
+          "object": "100644 6df68a02736a3185f82c26fffa682682fb49d960"
+        },
+        "src/context.rs": {
+          "sha256": "01118671bb3f742866703b9d8900d53f45df0af908784e2d4ee5ae87c0d88043",
+          "mode": 0,
+          "object": "100644 472a098a5726ec9ddba8074f0462468ef5e7595e"
+        },
+        "src/coverage.rs": {
+          "sha256": "29f5df165f479f293cc4db03fa78ae7b5932f38080f76b7aca3a47ca8013f657",
+          "mode": 0,
+          "object": "100644 168a9a3706ba4997085aa1f9a76e2873ec726335"
+        },
+        "src/diagnostics.rs": {
+          "sha256": "d02bf9cc4e62171acfc8c326e85c897456e0f41b5f1b419cb8665c0d60c45245",
+          "mode": 0,
+          "object": "100644 60b04f8d4a27c272b5ff59af79a304b8f0b4c8ec"
+        },
+        "src/error.rs": {
+          "sha256": "f14d981aed5ff8f25aac128e6708c2c8cb51660034a7f6684c6c4211f47e8cd2",
+          "mode": 0,
+          "object": "100644 2907a228462b5792dde2946c5459ac12d51c97ed"
+        },
+        "src/footprint.rs": {
+          "sha256": "88c2e1e7fa8b7482cda1efb10d5e93187bd3ba7d21a2786384687d05dcf8f2ee",
+          "mode": 0,
+          "object": "100644 f4cf74bc2c084d20a6ac753dd2f68b5488ec9920"
+        },
+        "src/git.rs": {
+          "sha256": "58dd1c65d02d65f406d579c62c548fe6b9d1804da6b06381dcd2d81eedf59f46",
+          "mode": 0,
+          "object": "100644 1d811a6be6e7e9afc8ab4309a4173a3a58362d66"
+        },
+        "src/graph.rs": {
+          "sha256": "3e8dfc567edf117985024b8aa4975bd6e8dcc1ea114b9c0ecb90cdfa9f017847",
+          "mode": 0,
+          "object": "100644 975c53c6a492fcfb5ae62d719c557cc3abe05460"
+        },
+        "src/landed.rs": {
+          "sha256": "4e141b87a923cb79b47dd3340761c2e35fd8b24b1a14f6b14cac61d67685a368",
+          "mode": 0,
+          "object": "100644 486a6228cee2ffb792ea44ad8d6d96e6e3df93a4"
+        },
+        "src/lib.rs": {
+          "sha256": "2ea770ba720a32e7cd09c7390f9c09ebfcbf098f612b410b6587fe72efe6543b",
+          "mode": 0,
+          "object": "100644 10d1fc481ec38e4f5580db9c783381ff3cc6f84e"
+        },
+        "src/logging.rs": {
+          "sha256": "0fa9d9aafaa83e047150ca00e0e9e1d2edd418ac7ce477bda37a62e837ceacc2",
+          "mode": 0,
+          "object": "100644 bb2c9cb67d142933e11a2a0bc4e96e225a75ac4e"
+        },
+        "src/main.rs": {
+          "sha256": "de130aa8e092d6021df987814d386fc12f9bdbfdf3e5f80f091408b83bdc2ee1",
+          "mode": 0,
+          "object": "100644 77fae4c3a6f0743701eedac4dd926eed272989e8"
+        },
+        "src/owned.rs": {
+          "sha256": "25d8a670a3c1060a7774ab5894c0123701f6af795fd70a06263e795d9223663f",
+          "mode": 0,
+          "object": "100644 1253e20e6f98fe55dea8400434fd69d8afa19ddb"
+        },
+        "src/path_codec.rs": {
+          "sha256": "e720202e4c713d9f689bb673f965dee8df8614c5f11ca474dc273d82e287dea7",
+          "mode": 0,
+          "object": "100644 335122ef13289f8b252ff10e28896f445fb47a91"
+        },
+        "src/refresh.rs": {
+          "sha256": "42b6a4b5bb492655baa401802e712260601f21c7f9d49940f6f332d11a7c098a",
+          "mode": 0,
+          "object": "100644 5faa25641dd1487531e5d22a4020d5d53de44d2a"
+        },
+        "src/render.rs": {
+          "sha256": "8dc5928ea1960a445d3521eda41bc32ef4981aacca661457ecb559b08f313dd7",
+          "mode": 0,
+          "object": "100644 874e728eddca5c21e45935e95b5a1433667099ab"
+        },
+        "src/repo.rs": {
+          "sha256": "83a50477ace694188df00974d418620ec56dc69116d3bfb374802c31427fa682",
+          "mode": 0,
+          "object": "100644 c9d46835a473ca9360ad13b8de30dbc1f22e0646"
+        },
+        "src/seal.rs": {
+          "sha256": "e089d493d808d87d1abfb2e4603bb69b71f352f85a08539207abc0cd3ab79f37",
+          "mode": 0,
+          "object": "100644 772f740066e286af4a6db9df6370af2a68aa6c48"
+        },
+        "src/semantic.rs": {
+          "sha256": "e6b04b398a3f26fb9c1229639cb69bc1461aab45324e378e8ad3be5a95cf04ff",
+          "mode": 0,
+          "object": "100644 212e471961ba2a14acc4742b4e03166a76f0e852"
+        },
+        "src/session.rs": {
+          "sha256": "b875058721950fffab605086913169c73b39493d815127c39c4877ad05bfd1ed",
+          "mode": 0,
+          "object": "100644 7ec35678b29c977166f7fe312518c13740593eed"
+        },
+        "src/sessions.rs": {
+          "sha256": "4f3a6768dea5fbaf513d8dc674d165c5c1c0ef5f66175266b5424b3ba446f2cc",
+          "mode": 0,
+          "object": "100644 334307bc758727f0e852888e618adb8759e4f635"
+        },
+        "src/snapshot.rs": {
+          "sha256": "e9733aaa3acd2785e7fb864bec6bcf55beca7b5fdb2fcf1450ed9cc731b78975",
+          "mode": 0,
+          "object": "100644 fca33325c502cc45d0dd42bf7e902f4aa16bda93"
+        },
+        "src/spec.rs": {
+          "sha256": "119dc0891a5f5da032496283c77737b3d12f447252217bf2db699043ec81bdb7",
+          "mode": 0,
+          "object": "100644 6f83afa228f731d3ee360dc4d4d785973b638eb4"
+        },
+        "src/tree_identity.rs": {
+          "sha256": "726670c8bb29c8f1f5af22a0e1a7e776833c461493ac8f86b578e39c1b0308eb",
+          "mode": 0,
+          "object": "100644 02a3fd95aa3f10ce418d64dda3e7c507c9d7b0ba"
+        },
+        "src/validate.rs": {
+          "sha256": "2c0ced442d3313bcd15da29b3311d2514c66c5b4877dc63b6700a3693964ee5d",
+          "mode": 0,
+          "object": "100644 7500d9a6c9b59cfe7fda1b9db89137b61cc11b06"
+        },
+        "src/watch.rs": {
+          "sha256": "ccec1268519e2503bbbc24c74a66c54a60e7ea6c8380673abcaba67671c378a1",
+          "mode": 0,
+          "object": "100644 ebe2ba8e92f7cc5a0422f064f49e76bdc0947511"
+        },
+        "src/workspace.rs": {
+          "sha256": "047ddeadd0378c2960ab272c178ddb7ec6caf75c1157bda2586cafca120710a6",
+          "mode": 0,
+          "object": "100644 0766ddc5cdda05e1f60c7344a9f60152fd30a2dc"
+        },
+        "tests/canonical_digests.rs": {
+          "sha256": "48395ee9453a34f8f988f14372e1ea8e1452a83ba821f3c6b95dc06c661bb70c",
+          "mode": 0,
+          "object": "100644 55dbad8c49c51175b6cb312d6cbd6a13e1b03ac0"
+        },
+        "tests/cli_budgets.rs": {
+          "sha256": "a55c425fda752008f9361cd06cc3a953f21c3e74727f24a3ec0d670b2ff33f4a",
+          "mode": 0,
+          "object": "100644 655a0505753c67dffd8c4e92523662759595690a"
+        },
+        "tests/cli_clean.rs": {
+          "sha256": "c1cff5228fa6e3ffdede61bba8ad1360adcd4e1bff8915cb42712d89c829634a",
+          "mode": 0,
+          "object": "100644 d7c32bb29c05e2e9bb3e68a19010784ec3dafcd9"
+        },
+        "tests/cli_context.rs": {
+          "sha256": "20231f2fb7aba03ee34c337ccfd3073fcf60248cdbb131bf6cfc074181799901",
+          "mode": 0,
+          "object": "100644 06933395440fa9815dcedcbd2c1be20debb24e70"
+        },
+        "tests/cli_doctor.rs": {
+          "sha256": "b5fa6c59d648ddb3fce5ec35cd5fc0d94d630ff734197f95fff7c7a3e4b66ff4",
+          "mode": 0,
+          "object": "100644 e46b88689811a33604ac15579c081d4ea1a60483"
+        },
+        "tests/cli_enter.rs": {
+          "sha256": "d40b5e389644135a0e2bcbf8d7e78a5de21b948e29459958b767b484bb4dc883",
+          "mode": 0,
+          "object": "100644 566bc9218986abf0f172d553fad8d19f99e47202"
+        },
+        "tests/cli_graph.rs": {
+          "sha256": "7a99998fca44d856ee6e95a5a567bafbb7b703dc97487de8264133e6673862c3",
+          "mode": 0,
+          "object": "100644 6d271b93020b85f8f6607628324fe7592c2ca345"
+        },
+        "tests/cli_help.rs": {
+          "sha256": "8f5635f6a43c2c08cbb130ac5483df622b95965c676ac9f5ab6ce5d2da4e06ef",
+          "mode": 0,
+          "object": "100644 b6692ea6b04a42b5953b47bb56f66532f601f12f"
+        },
+        "tests/cli_history.rs": {
+          "sha256": "09e08cacc6d6b95d13898176a478aecf28ba3850bbd53d79585e5bb4ee5b35a8",
+          "mode": 0,
+          "object": "100644 c677a10db5b32f4d1679df3e771ea41a8d531964"
+        },
+        "tests/cli_intent.rs": {
+          "sha256": "61445897e74272a5c9fa9044c4bdc5f6c48813686be50ac40cdf917c246bbf0c",
+          "mode": 0,
+          "object": "100644 f2fe96603d485e46434b2bd2f9afd538bb3378b3"
+        },
+        "tests/cli_landed.rs": {
+          "sha256": "87e21b5604a3ee5da95c8a129017be41d9e0151c38419fbba5a8fc09f347a3af",
+          "mode": 0,
+          "object": "100644 9610d9e72e53fa0dc0ccd0ef652c069932091598"
+        },
+        "tests/cli_langs.rs": {
+          "sha256": "3c274e1cde84200961d3592a70ec40edf5da4f538743e666ea49eef2c8278ff3",
+          "mode": 0,
+          "object": "100644 f30f438784c0c484051197fec2611abb64846a1c"
+        },
+        "tests/cli_logging.rs": {
+          "sha256": "50274ccc1c3ecd884053c1308511dbb3b1d8bde92ea0095bf500e4d348bc5e5e",
+          "mode": 0,
+          "object": "100644 493c823f5eae34c4f8f7f21d0c0cf7b8a5f51a33"
+        },
+        "tests/cli_point_identity.rs": {
+          "sha256": "8388252c13d64ebc398ca81ef7630bb62141bc4ebd7a0b0fc1479d0f0e23ead1",
+          "mode": 0,
+          "object": "100644 219a1d15a8bab0c23d0738132f74282bcff17f56"
+        },
+        "tests/cli_refresh.rs": {
+          "sha256": "2d7b4f2dbd81b4f048ee6f11a7c8c742a9169fcbbf2118326693cbe68988a299",
+          "mode": 0,
+          "object": "100644 93ea8622e1df6c60afb82e42d2a77a07f1ec9b26"
+        },
+        "tests/cli_run.rs": {
+          "sha256": "aa0fd95119682854221895e641407adfb3bd8cc6bd1c3519b2301179bb896d97",
+          "mode": 0,
+          "object": "100644 a8ce99173aa48cbc67ea24984e448050da6136ca"
+        },
+        "tests/cli_run_outside.rs": {
+          "sha256": "26c24499f451d11c552a30d6299e9282f238cfe59ebe94234baa0b3cf7a3136c",
+          "mode": 0,
+          "object": "100644 96db769ecd33469565692e815ba179a6c6fef773"
+        },
+        "tests/cli_sessions.rs": {
+          "sha256": "dff4907a758da24104d9fca21b2094a87719f4b668fa68248e22f0700bb838c2",
+          "mode": 0,
+          "object": "100644 f559187abd09f22785ee14c06f4d2b5907f9533d"
+        },
+        "tests/cli_snapshot.rs": {
+          "sha256": "b3323a9d104679888ec569925bb3efd71404b738ea2c8e1538f77e707ba8dcc1",
+          "mode": 0,
+          "object": "100644 58596e0403256fe5c9c63dcef0f914d5204098a3"
+        },
+        "tests/cli_spec.rs": {
+          "sha256": "361fedd3376d7ea155b2ead3adc891b2981ac042d50d0fb394ee4a5f84d42591",
+          "mode": 0,
+          "object": "100644 0e87443c2720019bcf576dbeae41ec004efd8918"
+        },
+        "tests/cli_tree_identity.rs": {
+          "sha256": "3c208cbece8d28af18c5941ecc18b3eae022d5ff023b4a9e4312fc55e70d378f",
+          "mode": 0,
+          "object": "100644 3c86747a33603dc6512dd794547b54e49a265098"
+        },
+        "tests/cli_validate.rs": {
+          "sha256": "28375f62139a58e5e45ec3ea593df07ce04a7fd95e30ce26c09e51c61d3f1bbb",
+          "mode": 0,
+          "object": "100644 47dc7a692a2bf76eab59603c027ab511a4a3a1f0"
+        },
+        "tests/cli_verify.rs": {
+          "sha256": "69371e7f0518a815c6831508c342086fee14dc8158c5a9f6a4f2cd91cf2956e3",
+          "mode": 0,
+          "object": "100644 c920482c083f803d4bdc280dfb8a14af4928121c"
+        },
+        "tests/cli_watch.rs": {
+          "sha256": "bcd5ba76e51d6c6cf6adfd2d44f5132004d87eb954d6dcbbd90fce57f63da0a0",
+          "mode": 0,
+          "object": "100644 e83ce6d025b63ef5310853a393e6104bbaa50ed8"
+        },
+        "tests/cli_workspace.rs": {
+          "sha256": "0bb164902612aa57aaacfc8010655fa56096dd36fb35599e01a599e99f871302",
+          "mode": 0,
+          "object": "100644 acf15b52fe6f7e42672ea1ea7525ac314171ca3d"
+        },
+        "tests/common/fixture.rs": {
+          "sha256": "93949ff6564dbfdabc7769b0840ffb8e41a773f0b89347a03b813690bf50a7a9",
+          "mode": 0,
+          "object": "100644 fb9910881b7c118f5633a5ea079401f42f90996e"
+        },
+        "tests/common/mod.rs": {
+          "sha256": "75a124d29197a207b2a36c48da7dbb67f8b22e06bed0858b18ecea5aa25ffdc8",
+          "mode": 0,
+          "object": "100644 34696c55cc3f2f0944b02347e6cc4b0411f2294b"
+        },
+        "tests/common/scenarios.rs": {
+          "sha256": "c5b493b0213e1103a766ea8dd6e6b243b9be3996d5911926556b5a5502087afe",
+          "mode": 0,
+          "object": "100644 1a2cb5e98b7c8fe7415ca5111fc3dd734839a965"
+        },
+        "tests/differential.rs": {
+          "sha256": "1aaa6464a5593a317e367a9a41a0801f985a7c68aee4b76d57a8a92995951ebe",
+          "mode": 0,
+          "object": "100644 aaf67ff28c9d6176528fe85075fcfd3e6b89d8ad"
+        },
+        "tests/docs.rs": {
+          "sha256": "5895157835c51d51dc39c7a821065b43d12048d8f5c97b0f5c870565f9b48c33",
+          "mode": 0,
+          "object": "100644 d4459ca6ba0a3948049b5e822a359e9dd9a4fd77"
+        },
+        "tests/git_isolation.rs": {
+          "sha256": "d999b1625f71aa4845e0e5ae997de5e0c07ef164037db75451d96703d2c262b8",
+          "mode": 0,
+          "object": "100644 1a472645869dfc74053de6ceccf7371d07ebba2d"
+        },
+        "tests/git_state.rs": {
+          "sha256": "f2afc4825a1ead0f54df56a19cae5f78f739803896a84b5f54cc17892c0da061",
+          "mode": 0,
+          "object": "100644 b1cdc93c1ddd13fff1ca3a8843d906ad4bf7454a"
+        },
+        "tests/instructions.rs": {
+          "sha256": "e48f6daafc6fd17ebca51ac623fd8dc6632ccd29753e67c1a5fdbed25cf3daa2",
+          "mode": 0,
+          "object": "100644 afb7eb5867bf97a66edc33b76f3c2dced420d063"
+        },
+        "tests/qa_p0.rs": {
+          "sha256": "cfbb44b2647ac3440b8f2663196f1a095638ae93c5a1535d6f3e824778b8bbf3",
+          "mode": 0,
+          "object": "100644 53e3f593f9b017d92a6d1cde208dd86de3eb77ee"
+        },
+        "tests/symlink_escape.rs": {
+          "sha256": "487f5f5c5b1769138e4f81369554aae57cb586557962f2840b4fb56b6c594145",
+          "mode": 0,
+          "object": "100644 8e250782ed45cf71db3bcf1eeab18cf9f17b70a5"
+        },
+        "tests/tree_identity_conformance.rs": {
+          "sha256": "f8f885d6c3f20cd7ceca7b5060484eb8fbbb355060e8694fd2466bec901a7508",
+          "mode": 0,
+          "object": "100644 15923f229d3e030658ad1059b254f849806f3eb0"
+        },
+        "xtask/Cargo.toml": {
+          "sha256": "4ad8db4e44f7421343d73c4516cc3d6495dee69416cd7893e23b2160b1b983e6",
+          "mode": 0,
+          "object": "100644 1d061cc94f7e0d147286b9b771f592b9bdd440f1"
+        },
+        "xtask/src/land.rs": {
+          "sha256": "2559a43e5403e96fe92337860fc06ad233da5a74600bd60181bd06abdfce5b50",
+          "mode": 0,
+          "object": "100644 e8ef69277cee90dcc9393d98d19751fbaa5cb7d4"
+        },
+        "xtask/src/main.rs": {
+          "sha256": "f4b233999e8c7e4660c9eab74632e478a581159442f5f04d18885bac4b572afc",
+          "mode": 0,
+          "object": "100644 6fe4074b0bc496bf9ec0344dcbfe0223db5c4536"
+        },
+        "xtask/src/review.rs": {
+          "sha256": "48aa5a6928a58b1627bf86b9fafd185cbd950009b1c32c83e2c493cc77c8dc23",
+          "mode": 0,
+          "object": "100644 d1fcc1f8b0a2c09dcdf6abd62192eacf77498cc7"
+        },
+        "xtask/tests/fail_closed.rs": {
+          "sha256": "0c013caa31a33b7d0c212fd08a7474207fa0c8747288fc40a18fd1eaf715b9a8",
+          "mode": 0,
+          "object": "100644 ac9edaf12ee4aa28332bde3545d071960d405f8b"
+        }
+      }
+    }
+  ],
+  "outcome": "passed",
+  "run": "31c4250d9eb7ab3765436d703eb4e8979cccfa54b360387f478c03e69047f44f"
+}
