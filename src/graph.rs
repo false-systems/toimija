@@ -377,8 +377,18 @@ fn proof_from(sykli: &str, repo_root: &Path, commit: &str) -> Proof {
         }
         return Proof::Unknown("sykli gave no answer".to_string());
     };
+    proof_of(&status)
+}
+
+/// The proof in sykli's answer. A pass stands on its receipt; any other
+/// verdict is only as good as the runs sykli could read.
+fn proof_of(status: &serde_json::Value) -> Proof {
+    let unread = status["unreadable_runs"].as_array().map_or(0, Vec::len);
     match status["verdict"].as_str() {
         Some("passed") => Proof::Passed,
+        Some(_) if unread > 0 => {
+            Proof::Unknown(format!("sykli could not read {unread} of its runs"))
+        }
         Some("failed") => Proof::Failed,
         Some("none") => Proof::NotRun,
         Some(other) => Proof::Other(other.to_string()),
@@ -388,8 +398,8 @@ fn proof_from(sykli: &str, repo_root: &Path, commit: &str) -> Proof {
 
 fn carries_contract(repo_root: &Path, commit: &str) -> bool {
     ["sykli.json", "sykli.rs"].iter().any(|contract| {
-        std::process::Command::new("git")
-            .current_dir(repo_root)
+        // Pinned to this repository: no inherited GIT_DIR answers for another.
+        crate::command::git_command(repo_root)
             .args(["cat-file", "-e", &format!("{commit}:{contract}")])
             .stderr(std::process::Stdio::null())
             .status()
@@ -795,6 +805,24 @@ mod tests {
         let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
         assert_eq!(tip(&graph, "work").subject, "the work");
         assert_eq!(tip(&graph, "origin/main").subject, "first");
+    }
+
+    #[test]
+    fn a_verdict_short_of_passed_is_unknown_when_sykli_could_not_read_all_its_runs() {
+        let answer = |verdict: &str, unread: usize| serde_json::json!({"verdict": verdict, "unreadable_runs": vec!["r"; unread]});
+        assert_eq!(proof_of(&answer("passed", 2)), Proof::Passed);
+        assert_eq!(proof_of(&answer("none", 0)), Proof::NotRun);
+        assert_eq!(proof_of(&answer("failed", 0)), Proof::Failed);
+        for verdict in ["none", "failed"] {
+            assert_eq!(
+                proof_of(&answer(verdict, 2)),
+                Proof::Unknown("sykli could not read 2 of its runs".to_string())
+            );
+        }
+        assert!(matches!(
+            proof_of(&serde_json::json!({})),
+            Proof::Unknown(_)
+        ));
     }
 
     #[test]
