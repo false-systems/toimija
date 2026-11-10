@@ -1,0 +1,28 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "5c4d816deca547b99022bc8b98e0f5832e10f98e",
+  "head": "2aaf5fcac3f91814e6541ac9b775f7016a60246f",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/land.rs:197: The shared-receipt fallback runs for every non-passing Sykli verdict, allowing an older passing receipt to authorize landing despite a newer recorded failure or conflict."
+    },
+    {
+      "level": "blocking",
+      "text": "xtask/src/land.rs:225: Requiring every task outcome to equal `passed` rejects verified receipts containing successful `cached` tasks, breaking cross-clone proof reuse for cached runs."
+    },
+    {
+      "level": "look",
+      "text": "sykli.json:190: The gate runs `cargo test` with root-only default members, so none of the new xtask review or landing tests execute."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794307411,
+  "overruled": null
+}
