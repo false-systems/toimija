@@ -102,13 +102,18 @@ pub fn build(
     prover: Prover<'_>,
 ) -> Result<Graph> {
     let mut warnings = Vec::new();
-    let base = git(
+    let base_id = git(
         runner,
         repo_root,
-        &["rev-parse", "--verify", "--quiet", base],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{base}^{{commit}}"),
+        ],
     )
-    .ok()
-    .map(|_| base.to_string());
+    .ok();
+    let base = base_id.as_ref().map(|_| base.to_string());
     if base.is_none() {
         warnings.push("no base ref here: every local branch is shown whole".to_string());
     }
@@ -159,7 +164,17 @@ pub fn build(
                 fields.next().unwrap_or_default(),
                 fields.next().unwrap_or_default(),
             );
-            let branches = branches(refs);
+            let mut branches = branches(refs);
+            if branches.is_empty() && base_id.as_deref() == Some(sha) {
+                // The base is a tip under whatever it was named by; a commit
+                // id is shown short.
+                let named = base.as_deref().unwrap_or(sha);
+                branches.push(if sha.starts_with(named) {
+                    sha[..sha.len().min(7)].to_string()
+                } else {
+                    named.to_string()
+                });
+            }
             if branches.is_empty() {
                 // Where branches part: a commit no branch points at.
                 return Line::Edge {
@@ -274,9 +289,14 @@ fn present(
     warnings: &mut Vec<String>,
 ) -> BTreeMap<String, Vec<Present>> {
     let mut by_branch: BTreeMap<String, Vec<Present>> = BTreeMap::new();
-    let worktrees = match git(runner, repo_root, &["worktree", "list", "--porcelain"]) {
+    let worktrees = match git(
+        runner,
+        repo_root,
+        &["worktree", "list", "--porcelain", "-z"],
+    ) {
+        // NUL-separated: git quotes nothing, whatever the path holds.
         Ok(list) => list
-            .lines()
+            .split('\0')
             .filter_map(|line| line.strip_prefix("worktree "))
             .map(PathBuf::from)
             .collect(),
@@ -715,6 +735,52 @@ mod tests {
         assert_eq!(
             proof_from(absent, root, "work"),
             Proof::Unknown("sykli is not installed".to_string())
+        );
+    }
+
+    #[test]
+    fn a_base_given_as_a_commit_id_is_still_a_tip_with_its_proof() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        run(root, &["checkout", "-q", "work"]);
+        run(root, &["branch", "-q", "-D", "main"]);
+        let id = run(root, &["rev-parse", "origin/main"]);
+        let passed = |_: &Path, _: &str| Proof::Passed;
+        let graph = build(&ProcessCommandRunner, root, &id, &passed).unwrap();
+        let base = tips(&graph)
+            .into_iter()
+            .find(|tip| tip.commit == id)
+            .expect("the base is a tip");
+        assert_eq!(base.proof, Proof::Passed);
+        assert_eq!(base.branches, [id[..7].to_string()]);
+    }
+
+    #[test]
+    fn a_worktree_with_an_unusual_path_is_still_read() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let odd = dir.path().join("wörk \"tree\"");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "odd",
+                &odd.to_string_lossy(),
+                "main",
+            ],
+        );
+        fs::create_dir_all(odd.join(".toimija/sessions")).unwrap();
+        fs::write(odd.join(".toimija/sessions/broken.json"), "not a marker").unwrap();
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        // Its sessions were looked at: the unreadable marker there is named.
+        assert!(
+            graph.warnings.iter().any(|w| w.contains("wörk")),
+            "{:?}",
+            graph.warnings
         );
     }
 
