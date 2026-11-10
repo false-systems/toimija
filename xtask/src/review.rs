@@ -541,9 +541,7 @@ fn converse(mut command: Command, who: &str, prompt: &str, limit: Duration) -> R
     let deadline = started + limit;
     let printed = by(&reader, deadline, who)?;
     let said = by(&said, deadline, who)?;
-    let handed = writer
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .unwrap_or(Ok(()));
+    let handed = by(&writer, deadline, who);
     if !status.success() {
         // What the reviewer said while working is shown only when it failed.
         eprint!("{said}");
@@ -922,6 +920,17 @@ mod tests {
         let error = converse(leaves_child, "sh", "", Duration::from_millis(500)).unwrap_err();
         assert!(error.to_string().contains("still holds"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_reviewer_that_ends_without_taking_its_whole_prompt_gave_no_review() {
+        // It exits 0 and closes its output, but what it started holds stdin
+        // and reads nothing: the verdict would be of a part of the change.
+        let mut partial = Command::new("sh");
+        partial.args(["-c", "sleep 4 <&0 >/dev/null 2>&1 & echo 'REVIEW: fine'"]);
+        let prompt = "x".repeat(2_000_000);
+        let error = converse(partial, "sh", &prompt, Duration::from_millis(500)).unwrap_err();
+        assert!(format!("{error:#}").contains("whole prompt"), "{error:#}");
     }
 
     #[test]
