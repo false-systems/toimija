@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "4de750d903d88576516c4407c1490229bc3858e6",
+  "head": "d539f9191f7c629e43011aa785ded9435ed146fe",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/review.rs:539: The output-reader joins run outside the timeout loop, so a reviewer that exits while a descendant holds its pipes open can hang review indefinitely despite the stated time limit."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794308504,
+  "overruled": null
+}
