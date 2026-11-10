@@ -612,7 +612,9 @@ what Toimija successfully observed, not what it knows with certainty.
 ## Development
 
 Toimija is one Rust crate. The development-only `xtask` installs the
-pre-commit hook but is excluded from ordinary root builds.
+pre-commit hook and holds a trial of landing without a pull request
+(`cargo xtask review`, `cargo xtask land`; see AGENTS.md). It is excluded
+from ordinary root builds.
 
 ```bash
 git clone https://github.com/false-systems/toimija.git
@@ -627,6 +629,7 @@ Before claiming completion:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo test -p xtask
 ```
 
 Install the pre-commit hook once per clone:
@@ -653,9 +656,10 @@ scope (`.toimija/repo.yaml`).
 | `fmt` | `cargo fmt --check` | | every `.rs` and `Cargo.toml` |
 | `clippy` | `cargo clippy --all-targets -- -D warnings` | `fmt` | the code: `.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/` |
 | `test` | `cargo test` | `fmt` | every tracked file |
+| `xtask-test` | `cargo test -p xtask` | `fmt` | every tracked file |
 | `doctor` | `cargo run --quiet -- doctor --strict` | `test` | every tracked file |
 
-`fmt`, `clippy` and `test` are the three checks AGENTS.md asks for before
+`fmt`, `clippy`, `test` and `xtask-test` are the checks AGENTS.md asks for before
 claiming completion. `test` and the drift guard read far more than code
 (fixtures, the agent docs, `repo.yaml`, this README), so they declare every
 tracked file except the contract and its lock; an undeclared input would be

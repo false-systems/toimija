@@ -476,18 +476,38 @@ pub fn installed() -> Vec<Agent> {
 /// returns what it said last.
 pub fn run_agent(agent: Agent, prompt: &str, root: &Path) -> Result<String> {
     let last = std::env::temp_dir().join(format!("toimija-review-{}.txt", std::process::id()));
-    let mut child = reviewer_command(agent, &last)
-        .current_dir(root)
+    let mut command = reviewer_command(agent, &last);
+    command.current_dir(root);
+    let printed = converse(command, &agent.to_string(), prompt, TIME_LIMIT)?;
+    match agent {
+        Agent::Claude => Ok(printed),
+        Agent::Codex => {
+            let reply = fs::read_to_string(&last)
+                .with_context(|| format!("{agent} wrote no last message"))?;
+            // The file is ours; a failure to remove it changes nothing.
+            let _ = fs::remove_file(&last);
+            Ok(reply)
+        }
+    }
+}
+
+/// Starts the command, hands it the prompt and returns what it printed, or
+/// fails once it has run longer than `limit`.
+fn converse(mut command: Command, who: &str, prompt: &str, limit: Duration) -> Result<String> {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("could not start {agent}"))?;
-    child
+        .with_context(|| format!("could not start {who}"))?;
+    // The prompt is written beside the wait, so a reviewer that never reads
+    // it runs into the time limit instead of holding this command forever.
+    let mut stdin = child
         .stdin
         .take()
-        .context("the reviewer's stdin is piped")?
-        .write_all(prompt.as_bytes())?;
+        .context("the reviewer's stdin is piped")?;
+    let text = prompt.to_string();
+    let writer = std::thread::spawn(move || stdin.write_all(text.as_bytes()));
     let reader = drain(
         child
             .stdout
@@ -505,37 +525,33 @@ pub fn run_agent(agent: Agent, prompt: &str, root: &Path) -> Result<String> {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if started.elapsed() > TIME_LIMIT {
+        if started.elapsed() > limit {
             child.kill()?;
             child.wait()?;
+            // Killed, its pipes are closed: the writer ends by itself.
             bail!(
-                "{agent} did not finish its review in {} minutes",
-                TIME_LIMIT.as_secs() / 60
+                "{who} did not finish its review in {} seconds",
+                limit.as_secs()
             );
         }
         std::thread::sleep(Duration::from_millis(200));
     };
     let printed = reader
         .join()
-        .map_err(|_| anyhow!("reading {agent}'s reply panicked"))??;
+        .map_err(|_| anyhow!("reading {who}'s reply panicked"))??;
     let said = said
         .join()
-        .map_err(|_| anyhow!("reading {agent}'s messages panicked"))??;
+        .map_err(|_| anyhow!("reading {who}'s messages panicked"))??;
+    let handed = writer
+        .join()
+        .map_err(|_| anyhow!("handing {who} its prompt panicked"))?;
     if !status.success() {
         // What the reviewer said while working is shown only when it failed.
         eprint!("{said}");
-        bail!("{agent} ended with {status} before giving a review");
+        bail!("{who} ended with {status} before giving a review");
     }
-    match agent {
-        Agent::Claude => Ok(printed),
-        Agent::Codex => {
-            let reply = fs::read_to_string(&last)
-                .with_context(|| format!("{agent} wrote no last message"))?;
-            // The file is ours; a failure to remove it changes nothing.
-            let _ = fs::remove_file(&last);
-            Ok(reply)
-        }
-    }
+    handed.with_context(|| format!("{who} did not take its whole prompt"))?;
+    Ok(printed)
 }
 
 fn drain(mut from: impl Read + Send + 'static) -> std::thread::JoinHandle<std::io::Result<String>> {
@@ -866,6 +882,17 @@ mod tests {
             args[..4],
             ["exec", "--sandbox", "read-only", "--ignore-user-config"]
         );
+    }
+
+    #[test]
+    fn a_reviewer_that_never_reads_its_prompt_runs_into_the_time_limit() {
+        let mut stalled = Command::new("sh");
+        stalled.args(["-c", "sleep 30"]);
+        let prompt = "x".repeat(2_000_000);
+        let started = Instant::now();
+        let error = converse(stalled, "sh", &prompt, Duration::from_millis(300)).unwrap_err();
+        assert!(error.to_string().contains("did not finish"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
