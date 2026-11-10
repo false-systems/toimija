@@ -143,8 +143,6 @@ pub fn build(
         // The base's own history is not what is cooking.
         log.push("--not".to_string());
         log.push(format!("{base}^@"));
-    } else {
-        log.push("--max-count=50".to_string());
     }
     let log: Vec<&str> = log.iter().map(String::as_str).collect();
     let text = git(runner, repo_root, &log)?;
@@ -959,6 +957,23 @@ mod tests {
         let text = render_text(&graph);
         let line = text.lines().find(|line| line.contains(&base[..7])).unwrap();
         assert!(line.starts_with("base"), "{text}");
+    }
+
+    #[test]
+    fn without_a_base_every_branch_is_shown_however_many_there_are() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        for n in 0..55 {
+            let name = format!("b{n}");
+            run(root, &["checkout", "-q", "-b", &name, "main"]);
+            run(root, &["commit", "-q", "--allow-empty", "-m", &name]);
+        }
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&ProcessCommandRunner, root, "origin/gone", &none).unwrap();
+        let shown: Vec<&String> = tips(&graph).iter().flat_map(|tip| &tip.branches).collect();
+        for n in 0..55 {
+            assert!(shown.contains(&&format!("b{n}")), "b{n} is missing");
+        }
     }
 
     #[test]
