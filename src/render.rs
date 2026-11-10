@@ -613,12 +613,23 @@ fn write_read_first(output: &mut String, packet: &ContextPacket) {
         writeln!(output, "- none").unwrap();
         return;
     }
+    // The session's file spec is always shown, and first, whatever reason
+    // it is listed for: it may be a changed file or a configured document too.
+    let spec = packet
+        .session
+        .as_ref()
+        .and_then(|session| session.spec.as_ref())
+        .filter(|spec| spec.kind == crate::spec::SpecKind::File)
+        .map(|spec| std::path::Path::new(&spec.reference));
+    let is_spec = |entry: &&crate::context::ReadFirstEntry| Some(entry.path.as_path()) == spec;
     let configured = |entry: &&crate::context::ReadFirstEntry| {
         entry.reason == "repo config"
             || entry.reason == "important doc"
             || entry.reason == crate::spec::READ_FIRST_REASON
     };
-    let (owned, derived): (Vec<_>, Vec<_>) = packet.read_first.iter().partition(configured);
+    let (first, rest): (Vec<_>, Vec<_>) = packet.read_first.iter().partition(is_spec);
+    let (owned, derived): (Vec<_>, Vec<_>) = rest.into_iter().partition(configured);
+    let owned: Vec<_> = first.into_iter().chain(owned).collect();
     let room = MAX_LIST_SHOWN.saturating_sub(owned.len());
     for entry in owned.iter().chain(derived.iter().take(room)) {
         writeln!(

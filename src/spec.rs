@@ -209,6 +209,9 @@ pub fn list(root: &Path, folder: &Path) -> Result<Vec<Listed>> {
         let Some(number) = number_of(&name) else {
             continue;
         };
+        // A numbered name that links out of the repository is refused, not
+        // read: its title and status would come from outside.
+        resolved_inside(root, &folder.join(&name))?;
         if !entry.path().is_file() {
             continue;
         }
@@ -412,6 +415,20 @@ mod tests {
             error.to_string().contains("outside the repository"),
             "{error}"
         );
+        // A numbered file in the folder that is a link out is not listed: its
+        // title and status would be read from outside.
+        fs::remove_file(root.join("docs/adr")).unwrap();
+        fs::create_dir(root.join("docs/adr")).unwrap();
+        fs::write(root.join("docs/adr/0001-mine.md"), "# Mine\n").unwrap();
+        symlink(
+            outside.join("adr/0003-theirs.md"),
+            root.join("docs/adr/0002-link.md"),
+        )
+        .unwrap();
+        let error = format!("{:#}", list(&root, Path::new("docs/adr")).unwrap_err());
+        assert!(error.contains("0002-link.md"), "{error}");
+        assert!(error.contains("outside the repository"), "{error}");
+        assert!(!error.contains("secret"), "{error}");
         // And one that becomes such a link after it was declared is not read.
         let block = describe(&root, "docs/link.md");
         assert_eq!(block.title, None);

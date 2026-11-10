@@ -572,3 +572,39 @@ fn the_workspace_packet_shows_a_session_spec_beside_its_intent() {
         "docs/adr/0001-login-redirect.md"
     );
 }
+
+/// A spec that is listed under Read first anyway (here: a new, untracked
+/// file, so a changed one) is still the first entry, ahead of the configured
+/// documents, and keeps the reason it had.
+#[test]
+fn a_spec_that_is_also_a_changed_file_is_still_first_under_read_first() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox.write(
+        ".toimija/repo.yaml",
+        "repo:\n  name: demo\n  role: test fixture\ncontext:\n  important_docs:\n    - README.md\nboundaries:\n  - stay inside fixture\n",
+    );
+    sandbox.write("docs/adr/0002-new.md", "# New\n\nStatus: proposed\n");
+    sandbox
+        .run_claude(&sandbox.repo, &["--spec", "docs/adr/0002-new.md"], CAPTURE)
+        .success();
+    let prompt = sandbox.read("prompt.txt");
+    let read_first = &prompt[prompt.find("## Read first\n").unwrap()..];
+    let read_first = &read_first[..read_first.find("\n\n").unwrap()];
+    assert!(
+        read_first.starts_with("## Read first\n- docs/adr/0002-new.md ("),
+        "{read_first}"
+    );
+    assert_eq!(
+        read_first.matches("docs/adr/0002-new.md").count(),
+        1,
+        "{read_first}"
+    );
+    // The file is still changed work once the session has ended, so the
+    // repository summary keeps it, as a changed file.
+    let summary = fs::read_to_string(sandbox.repo.join(".toimija/current.md")).unwrap();
+    assert!(!summary.contains("session spec"), "{summary}");
+    assert!(summary.contains("- docs/adr/0002-new.md ("), "{summary}");
+}
