@@ -9,8 +9,10 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build toimija-linux-aarch64
+  # Before any hosted minute is spent: the tag names the crate's version, and
+  # the release build passes on the organisation's own runner.
+  guard:
+    name: Guard
     runs-on: arc-arm64
 
     steps:
@@ -41,17 +43,91 @@ jobs:
           $sudo_cmd apt-get update
           $sudo_cmd apt-get install -y --no-install-recommends build-essential ca-certificates
 
+      - name: Verify release tag
+        run: |
+          package=$(cargo pkgid -p toimija)
+          version=${package##*#}
+          version=${version##*@}
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME does not match crate version $version" >&2; exit 1; }
+
       - name: Build
         run: cargo build --release --locked
 
-      - name: Package
-        run: |
-          mkdir -p dist
-          cp target/release/toimija dist/toimija-linux-aarch64
-          chmod +x dist/toimija-linux-aarch64
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+  # One archive per platform, on GitHub's hosted runners: the binary, the
+  # licence and the README. Linux binaries are static (musl).
+  build:
+    needs: guard
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            platform: linux
+            arch: x86_64
+            file_match: x86-64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            platform: linux
+            arch: aarch64
+            file_match: ARM aarch64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos
+            arch: x86_64
+            file_match: x86_64
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            platform: macos
+            arch: aarch64
+            file_match: arm64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential file musl-tools
+      - uses: dtolnay/rust-toolchain@master
         with:
-          name: toimija-linux-aarch64
-          path: dist/toimija-linux-aarch64
+          # Keep aligned with rust-toolchain.toml.
+          toolchain: "1.98"
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Verify and package
+        run: |
+          set -euo pipefail
+          name="toimija-${GITHUB_REF_NAME}-${{ matrix.platform }}-${{ matrix.arch }}"
+          binary="target/${{ matrix.target }}/release/toimija"
+          file "$binary" | grep -q "${{ matrix.file_match }}"
+          if [ "${{ matrix.platform }}" = linux ]; then
+            file "$binary" | grep -q "statically linked"
+          fi
+          "$binary" --help >/dev/null
+          mkdir package
+          cp "$binary" LICENSE README.md package/
+          tar -czf "$name.tar.gz" -C package toimija LICENSE README.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: toimija-${{ matrix.platform }}-${{ matrix.arch }}
+          path: toimija-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: toimija-*
+          merge-multiple: true
+      - run: sha256sum toimija-*.tar.gz > SHA256SUMS
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        with:
+          generate_release_notes: true
+          files: |
+            toimija-*.tar.gz
+            SHA256SUMS

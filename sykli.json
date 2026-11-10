@@ -221,6 +221,8 @@
         "fixtures/elixir_repo/mix.exs",
         "fixtures/rust_repo/Cargo.toml",
         "fixtures/rust_repo/src/lib.rs",
+        "install.sh",
+        "installer/test.sh",
         "rust-toolchain.toml",
         "src/adapters/agents.rs",
         "src/adapters/elixir.rs",
@@ -335,6 +337,8 @@
         "fixtures/elixir_repo/mix.exs",
         "fixtures/rust_repo/Cargo.toml",
         "fixtures/rust_repo/src/lib.rs",
+        "install.sh",
+        "installer/test.sh",
         "rust-toolchain.toml",
         "src/adapters/agents.rs",
         "src/adapters/elixir.rs",
@@ -449,6 +453,8 @@
         "fixtures/elixir_repo/mix.exs",
         "fixtures/rust_repo/Cargo.toml",
         "fixtures/rust_repo/src/lib.rs",
+        "install.sh",
+        "installer/test.sh",
         "rust-toolchain.toml",
         "src/adapters/agents.rs",
         "src/adapters/elixir.rs",
@@ -534,6 +540,14 @@
         "CARGO_BUILD_BUILD_DIR": "${worktree_cache}/cargo-build",
         "CARGO_TARGET_DIR": "${worktree_cache}/cargo-target"
       }
+    },
+    {
+      "name": "installer",
+      "run": "sh -n install.sh && sh installer/test.sh",
+      "inputs": [
+        "install.sh",
+        "installer/test.sh"
+      ]
     }
   ]
 }
