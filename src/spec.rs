@@ -215,13 +215,15 @@ pub fn list(root: &Path, folder: &Path) -> Result<Vec<Listed>> {
     let mut specs = Vec::new();
     for entry in entries {
         let entry = entry.with_context(|| format!("failed to read {}", dir.display()))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(number) = number_of(&name) else {
+        // The readable form of the name decides only whether it is numbered.
+        // Every path below is built from the name as it is on disk.
+        let file_name = entry.file_name();
+        let Some(number) = number_of(&file_name.to_string_lossy()) else {
             continue;
         };
         // A numbered name that links out of the repository is refused, not
         // read: its title and status would come from outside.
-        resolved_inside(root, &folder.join(&name))?;
+        resolved_inside(root, &folder.join(&file_name))?;
         if !entry.path().is_file() {
             continue;
         }
@@ -229,7 +231,7 @@ pub fn list(root: &Path, folder: &Path) -> Result<Vec<Listed>> {
             .map(|text| facts(&text))
             .with_context(|| format!("failed to read {}", entry.path().display()))?;
         specs.push(Listed {
-            path: folder.join(&name),
+            path: folder.join(&file_name),
             number,
             title: facts.title,
             status: facts.status,
@@ -439,6 +441,35 @@ mod tests {
         assert!(error.contains("0002-link.md"), "{error}");
         assert!(error.contains("outside the repository"), "{error}");
         assert!(!error.contains("secret"), "{error}");
+        // The same for a numbered link whose name is not UTF-8: the check is
+        // made on the name as it is on disk, not on a readable stand-in.
+        fs::remove_file(root.join("docs/adr/0002-link.md")).unwrap();
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let name = std::ffi::OsStr::from_bytes(b"0002-\xff.md");
+            // Some filesystems refuse such a name (APFS does); the case
+            // exists only where the link can be made.
+            if symlink(
+                outside.join("adr/0003-theirs.md"),
+                root.join("docs/adr").join(name),
+            )
+            .is_ok()
+            {
+                let error = format!("{:#}", list(&root, Path::new("docs/adr")).unwrap_err());
+                assert!(error.contains("outside the repository"), "{error}");
+                assert!(!error.contains("secret"), "{error}");
+            }
+        }
+        for entry in fs::read_dir(root.join("docs/adr")).unwrap() {
+            let path = entry.unwrap().path();
+            if fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+            {
+                fs::remove_file(path).unwrap();
+            }
+        }
         // And one that becomes such a link after it was declared is not read.
         let block = describe(&root, "docs/link.md");
         assert_eq!(block.title, None);
