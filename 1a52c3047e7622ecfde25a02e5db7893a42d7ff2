@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "1a52c3047e7622ecfde25a02e5db7893a42d7ff2",
+  "head": "7ba8d47953499d30ba033b60a5ba90f685332632",
+  "base": "dd037ecbd887102f01c0ae544fada6c9c0ad88f3",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/cli.rs:3082: Updating intent, scope or spec overwrites the live packet with `for_diff: false` and the default budget, discarding explicit `run --for-diff --budget` settings until another repository change triggers the watcher."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794343280,
+  "overruled": null
+}
