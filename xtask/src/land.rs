@@ -193,14 +193,7 @@ pub fn sykli_proof(root: &Path, commit: &str, tree: &str) -> Result<Proof> {
     })?;
     let verdict = status["verdict"].as_str().unwrap_or("unknown").to_string();
     if verdict == "passed" {
-        let receipt = status["current"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|entry| entry["outcome"] == "passed" && entry["judgement"] == "verified")
-            .and_then(|entry| entry["receipt"].as_str())
-            .map(PathBuf::from)
-            .filter(|path| path.is_file());
+        let receipt = receipt_file(&status, &|path| path.is_file());
         return Ok(Proof::Passed { receipt });
     }
     // Only a clone that knows nothing of this tree takes another clone's word:
@@ -242,6 +235,22 @@ pub fn sykli_proof(root: &Path, commit: &str, tree: &str) -> Result<Proof> {
             "the shared receipt verifies, but not every task in it passed".to_string(),
         ))
     }
+}
+
+/// The file of a verified passing receipt: where it was written, or else the
+/// copy sykli kept with its run, which outlives the worktree.
+fn receipt_file(status: &serde_json::Value, exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    let list = |key: &str| status[key].as_array().into_iter().flatten();
+    list("current")
+        .filter(|entry| entry["outcome"] == "passed" && entry["judgement"] == "verified")
+        .flat_map(|entry| {
+            let kept = list("runs")
+                .filter(|run| run["run"] == entry["run"] && !entry["run"].is_null())
+                .filter_map(|run| run["receipt"]["kept"]["path"].as_str());
+            entry["receipt"].as_str().into_iter().chain(kept)
+        })
+        .map(PathBuf::from)
+        .find(|path| exists(path))
 }
 
 /// sykli's verdict for a tree it holds no receipt of.
@@ -326,6 +335,32 @@ mod tests {
         for recorded in ["failed", "conflict", "passed", "unknown"] {
             assert!(!knows_nothing(recorded), "{recorded}");
         }
+    }
+
+    #[test]
+    fn the_receipt_to_share_is_the_written_file_or_the_copy_its_run_kept() {
+        let status = serde_json::json!({
+            "current": [
+                {"outcome": "failed", "judgement": "verified", "run": "r0", "receipt": "/w/failed.json"},
+                {"outcome": "passed", "judgement": "verified", "run": "r1", "receipt": "/w/rcpt.json"}
+            ],
+            "runs": [
+                {"run": "r0", "receipt": {"kept": {"path": "/git/r0.json"}}},
+                {"run": "r1", "receipt": {"kept": {"path": "/git/r1.json"}}}
+            ]
+        });
+        let all = |_: &Path| true;
+        assert_eq!(
+            receipt_file(&status, &all),
+            Some(PathBuf::from("/w/rcpt.json"))
+        );
+        // The worktree is gone: the copy kept with the passing run is taken.
+        let only_kept = |path: &Path| path.starts_with("/git");
+        assert_eq!(
+            receipt_file(&status, &only_kept),
+            Some(PathBuf::from("/git/r1.json"))
+        );
+        assert_eq!(receipt_file(&status, &|_| false), None);
     }
 
     #[test]
