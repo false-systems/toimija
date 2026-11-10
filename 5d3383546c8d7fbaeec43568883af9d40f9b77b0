@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "5d3383546c8d7fbaeec43568883af9d40f9b77b0",
+  "head": "2b1cb88f689c344f211d8ec1701f105a9f2be51c",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "look",
+  "findings": [
+    {
+      "level": "look",
+      "text": "src/graph.rs:362: The Sykli subprocess inherits repository-selecting variables such as `GIT_DIR`, unlike the repository’s command runner, so its receipt lookup can target a different repository unless Sykli independently clears them."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794319261,
+  "overruled": null
+}
