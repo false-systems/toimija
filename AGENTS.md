@@ -21,6 +21,8 @@ These mirror `.toimija/repo.yaml` verbatim; `toimija doctor --strict` fails if t
 
 Before claiming completion: `cargo fmt`, `cargo test`, `cargo clippy --all-targets -- -D warnings`; or the same as `sykli run` (`sykli.json`, cached, with structured failures) or `cargo xtask gate`. Every new tracked file goes into the inputs of `test` and `doctor` in `sykli.json`, and of `fmt` and `clippy` if it is code; stage it, then `sykli lock sykli.json`.
 
+Before work lands, run `sykli run review.json` on the committed branch: a fresh agent, another one than the author where one is installed, reads `origin/main..HEAD` with read-only tools and says `fine`, `look` or `blocking` (`cargo xtask review`). Blocking fails the run; fix it, or a person overrules it at a terminal with `cargo xtask review --overrule "<why>"`. A reviewer that is missing, fails or gives no verdict is no review, never a pass. Every new tracked file goes into `review.json`'s inputs too; then `sykli lock review.json`.
+
 Install the pre-commit hook once per clone, and again after changing `xtask`: `cargo xtask install-pre-commit-hook`. It formats the staged crates, then runs clippy and the tests. Update README.md when CLI behaviour changes; when boundaries, validation commands, major docs or structure change, update `.toimija/repo.yaml` too and run `toimija doctor --strict`.
 
 ## Working with other agents
