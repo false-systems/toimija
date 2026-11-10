@@ -52,7 +52,7 @@ pub struct ContextPacket {
     /// reader (e.g. the harness) checks it against the live repo before trusting
     /// the packet, instead of re-deriving repo state itself.
     pub consistency: Consistency,
-    /// Session identity on a per-session packet (issue #84): the wrapped
+    /// Session identity on a per-session packet: the wrapped
     /// agent's declared intent and scope, read from the session marker at
     /// refresh time — so `run --intent` reaches the harness, and a mid-session
     /// `toimija intent` update propagates on the next refresh. `None` on
@@ -60,12 +60,12 @@ pub struct ContextPacket {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionBlock>,
     /// What the last agent in this working copy left for the next one
-    /// (`toimija handover`, issue #251), read at refresh time. Additive per the
+    /// (`toimija handover`), read at refresh time. Additive per the
     /// packet contract's evolution rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover: Option<crate::session::Handover>,
     /// The packet's seal (`crate::seal`): a `sauma-envelope.v2` over the
-    /// serialized packet. `toimija-context.v2` carried it under `sauma`. The
+    /// serialized packet. The
     /// option remains only so an unsealed document can deserialize before the
     /// verification boundary rejects it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,7 +187,7 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         }
     };
     let repo_kind = repo::detect_repo_kind(&git.repo_root);
-    // What the last agent here left for the next (issue #251): every packet
+    // What the last agent here left for the next: every packet
     // built in this working copy carries it.
     let handover = crate::session::read_handover(&git.repo_root);
     let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
@@ -296,8 +296,7 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
 /// consistency token deliberately omits. Repository state only: anything read
 /// from the process environment (PATH, HOME, config files outside the repo) is
 /// banned from this input, or two honest observers of the same repo would
-/// compute different versions and staleness would never converge
-/// (proposal 0011).
+/// compute different versions and staleness would never converge.
 pub(crate) fn refresh_token(git: &GitState) -> String {
     let mut git = git.clone();
     git.staged_files
@@ -561,7 +560,7 @@ mod tests {
         assert_ne!(refresh_token(&git), original);
         git.base = None;
 
-        // The token is a pure function of repository state (proposal 0011):
+        // The token is a pure function of repository state:
         // nothing read from the observer's environment is an input to it, so
         // the same repo always yields the same token.
         assert_eq!(refresh_token(&git), original);
@@ -876,12 +875,12 @@ mod tests {
     fn multi_segment_rules_match_contiguous_sequence() {
         let rules = [PathBuf::from("deploy/container")];
         assert!(matches_safe_to_ignore(
-            Path::new("deploy/container/ahti.toml"),
+            Path::new("deploy/container/app.toml"),
             &rules
         ));
         // Only the full sequence matches; a partial tail does not.
         assert!(!matches_safe_to_ignore(
-            Path::new("container/ahti.toml"),
+            Path::new("container/app.toml"),
             &rules
         ));
     }

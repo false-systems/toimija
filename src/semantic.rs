@@ -37,7 +37,7 @@ pub const CONSISTENCY_ALGORITHM_EXTENSION: &str = "consistency_algorithm";
 /// How every point id Toimija writes begins. The id is derived from the tree
 /// as well as the token ([`point_ref`]), and this marker says so. An id that
 /// is `rpoint_` and 64 hex digits, without it, was derived from the repository
-/// and the token alone, before KATANA D9: it keeps that meaning, and is never
+/// and the token alone: it keeps that meaning, and is never
 /// compared with one of these.
 pub const POINT_ID_PREFIX: &str = "rpoint_v3_";
 
@@ -335,7 +335,7 @@ mod tests {
     }
 
     /// The id is a function of the tree: one token with two trees — every
-    /// case in issue #239 — is two points, and so is one tree under two
+    /// known gap of the token — is two points, and so is one tree under two
     /// algorithms, or one token under two token algorithms.
     #[test]
     fn a_point_id_covers_its_tree_and_both_algorithms() {

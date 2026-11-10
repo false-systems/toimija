@@ -1,4 +1,4 @@
-//! Agent launch adapters (proposal 0006 Part C): argv composition for known
+//! Agent launch adapters: argv composition for known
 //! agent CLIs. The composed launch prompt is the one delivery channel with a
 //! guarantee — the agent cannot not-see its own argv — so under `toimija run`
 //! the packet is in context by construction. Idle Codex launches carry it in
@@ -377,16 +377,37 @@ pub fn compose_launch_prompt(
     Some(prompt)
 }
 
-/// Compose the launch prompt for a session outside any Git repository (issue
-/// #225): no packet to inline, and the agent is told so rather than left to
+/// Compose the launch prompt for a session outside any Git repository:
+/// no packet to inline, and the agent is told so rather than left to
 /// look for one. `None` for agents without a resolved delivery style.
 pub fn compose_outside_prompt(
     program: &str,
     folder: &Path,
+    workspace_packet: Option<&str>,
     task: Option<&str>,
     configured: &BTreeMap<String, AgentPromptConfig>,
 ) -> Option<String> {
     prompt_style(program, configured)?;
+    if let Some(packet) = workspace_packet {
+        // A workspace: the packet stands where a repository's would, and
+        // says what it does not hold.
+        let mut prompt = format!(
+            "You are in a toimija session in a workspace, a folder that holds repositories \
+             ({}). It is not a Git repository, so the packet below is the workspace's: its \
+             repositories, their branches, open sessions and waiting handovers, read from \
+             files. Use these facts instead of repeating discovery. When work is assigned, \
+             declare why you are here and what you will touch (`toimija intent \"<why>\" \
+             --scope <path>`); `toimija sessions --outside-repos` lists you. With no concrete \
+             task, acknowledge and wait. Once a repository is selected, run `toimija context` \
+             inside it once and use that workset. `toimija context` here prints this packet \
+             afresh.\n\n{packet}",
+            folder.display()
+        );
+        if let Some(task) = task {
+            prompt.push_str(&format!("\nTask: {task}\n"));
+        }
+        return Some(prompt);
+    }
     let mut prompt = format!(
         "You are in a toimija session outside any Git repository ({}). There is no \
          session packet: toimija compiles Git context, and this folder has none. \
@@ -710,7 +731,7 @@ mod tests {
             "codex",
             "# Toimija Context\n\nbody\n",
             &live,
-            Some("fix #51"),
+            Some("fix the redirect"),
             &no_config(),
         )
         .unwrap();
@@ -727,7 +748,7 @@ mod tests {
         assert!(prompt.contains("run `toimija verify` before commit or handoff"));
         assert!(prompt.contains(".toimija/sessions/1-1/current.md"));
         assert!(prompt.contains("# Toimija Context"));
-        assert!(prompt.ends_with("Task: fix #51\n"));
+        assert!(prompt.ends_with("Task: fix the redirect\n"));
     }
 
     #[test]
@@ -745,7 +766,8 @@ mod tests {
     #[test]
     fn outside_prompt_defers_discovery_until_there_is_work() {
         let prompt =
-            compose_outside_prompt("codex", Path::new("/projects"), None, &no_config()).unwrap();
+            compose_outside_prompt("codex", Path::new("/projects"), None, None, &no_config())
+                .unwrap();
         assert!(prompt.contains("With no concrete task, acknowledge and wait"));
         assert!(prompt.contains("toimija intent"));
         assert!(prompt.contains("Once a repository is selected"));

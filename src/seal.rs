@@ -4,14 +4,13 @@
 //!
 //! The envelope, its canonical byte string and every digest over it live in the
 //! vendored canonical crate (`vendor/sauma-canonical`, pinned by
-//! `vendor/sauma-canonical.contract`). Sauma wrote it and was archived on
-//! 2026-10-13; Toimija keeps the code as its own. The envelope format keeps the
-//! name it was registered under, `sauma-envelope.v2`.
+//! `vendor/sauma-canonical.contract`). Toimija keeps that code as its own. The
+//! envelope format is named `sauma-envelope.v2`.
 //!
 //! This module names what a seal's digest covers and supplies Toimija's
 //! producer identity; nothing here hashes. The crate's own `attach` and
-//! `verify_value` read the envelope under the key `sauma`, where
-//! `toimija-context.v2` kept it, so for `seal` the two are done here, with the
+//! `verify_value` read the envelope under the key `sauma`,
+//! so for `seal` the two are done here, with the
 //! crate's [`digest_value`] and the crate's v2 rule: the digest covers the
 //! whole artifact, the envelope included, without the envelope's own `digest`.
 
@@ -30,8 +29,7 @@ pub const TOOL: &str = "toimija";
 /// The key a sealed artifact carries its envelope under.
 pub const KEY: &str = "seal";
 
-/// The key other tools' artifacts (kisko's model calls, teko's work, kelpo's
-/// verdicts) carry the same envelope under, as `toimija-context.v2` did. A
+/// The key other tools' artifacts carry the same envelope under. A
 /// walker over the local chain reads both.
 pub const SAUMA_KEY: &str = "sauma";
 
@@ -120,8 +118,8 @@ pub fn verify_value(value: &Value) -> serde_json::Result<Option<(String, String)
     Ok((actual != seal.digest).then_some((seal.digest, actual)))
 }
 
-/// A seal is `sauma-envelope.v2`. The legacy v1 form, whose digest left the
-/// envelope out, was only ever written under the `sauma` key.
+/// A seal is `sauma-envelope.v2`. The v1 form, whose digest leaves the
+/// envelope out, belongs under the `sauma` key only.
 fn supported(seal: &Envelope) -> serde_json::Result<()> {
     use serde::de::Error as _;
     if seal.envelope == ENVELOPE_SCHEMA {
@@ -136,7 +134,7 @@ fn supported(seal: &Envelope) -> serde_json::Result<()> {
 
 /// A v1 envelope, for the schema-conformance check in `tests/docs.rs`.
 ///
-/// Nothing in Toimija emits v1 any more. This stays because `docs.rs` asserts
+/// Nothing in Toimija emits v1. This exists because `docs.rs` asserts
 /// that the shape the published `sauma-envelope.v1.schema.json` describes is
 /// the shape this code produces — a check that needs something to produce it.
 /// It is the one place the producer identity is built outside `attach`, for the

@@ -154,8 +154,8 @@ fn verify_accepts_valid_packet_from_older_additive_schema() {
 }
 
 /// A seal is `sauma-envelope.v2`, whose digest covers the seal itself. The
-/// legacy v1 form, which covered the body alone, was only ever written under
-/// `toimija-context.v1`'s `sauma` key; under `seal` it is refused, not read
+/// v1 form, which covers the body alone, belongs under the `sauma` key
+/// only; under `seal` it is refused, not read
 /// as a body-only seal.
 #[test]
 fn verify_refuses_a_seal_in_the_legacy_envelope_form() {
@@ -192,8 +192,8 @@ fn verify_refuses_a_seal_in_the_legacy_envelope_form() {
     );
 }
 
-/// `toimija-context.v3` renamed the packet's `sauma` key to `seal`. A packet
-/// an earlier toimija wrote is not read under the new rules: verify refuses
+/// A packet of another schema version, with its seal under `sauma`, is not
+/// read under this version's rules: verify refuses
 /// it and says to refresh, which replaces it.
 #[test]
 fn verify_refuses_a_packet_of_an_earlier_schema_and_says_to_refresh() {

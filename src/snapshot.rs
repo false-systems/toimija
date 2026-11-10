@@ -4,15 +4,15 @@
 //! time-of-use gap: the bytes a reader sees cannot change under it, because it
 //! reads frozen git objects, not the mutable worktree.
 //!
-//! The tree is faija's **tree-identity.v1**: the identity of a working State,
-//! computed by the canonical procedure in the vendored `faija-terms` crate.
-//! Toimija keeps no tree algorithm of its own. Every tree it writes from now on
+//! The tree is **tree-identity.v1**: the identity of a working State,
+//! computed by the canonical procedure in `crate::tree_identity`.
+//! Toimija has one tree algorithm. Every tree it writes
 //! — snapshots, leases, repository points, session packets — is that one, and
 //! every record that carries a tree names the algorithm beside it.
 //!
 //! The tree oid is the **content address** of the snapshot, and its identity;
 //! the consistency token read beside it is a **freshness check**, which does
-//! not see every change to the tree (README, "Repository points"). Git's
+//! not see every change to the tree (docs/reference.md, "Repository points"). Git's
 //! object database is the store — free dedup
 //! (unchanged subtrees share oids), free GC (`git gc` reclaims unreferenced
 //! objects), free diff/distribution.
@@ -27,22 +27,19 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use faija_terms::{Step, TreeIdentityAlgorithm};
 use serde::{Deserialize, Serialize};
 
 use crate::command::CommandRunner;
 use crate::consistency::Consistency;
+use crate::tree_identity::{Step, TreeIdentityAlgorithm};
 
-/// The tree-identity algorithm Toimija computes. Named here, not taken from
-/// `TreeIdentityAlgorithm::CURRENT`, so that moving to a later version is a
-/// decision made in this file and never a side effect of re-vendoring
-/// faija-terms.
+/// The tree-identity algorithm Toimija computes. Named here, so that moving
+/// to a later version is a decision made in this file.
 pub const TREE_ALGORITHM: TreeIdentityAlgorithm = TreeIdentityAlgorithm::V1;
 
-/// What a stored tree that names no algorithm was computed with: Toimija's own
-/// procedure from before it adopted tree-identity.v1. That procedure changed
-/// over time (its last form left out `.toimija` and `.teko` but kept `.sykli`),
-/// and nothing recorded which form wrote a given tree. Such a tree keeps
+/// What a stored tree that names no algorithm was computed with: a procedure
+/// of Toimija's own that is not tree-identity.v1, in a form nothing recorded.
+/// Such a tree keeps
 /// exactly the meaning it had when written: it is read as this, never
 /// recomputed or relabelled as tree-identity.v1.
 pub const LEGACY_TREE_ALGORITHM: &str = "toimija-legacy";
@@ -76,7 +73,7 @@ pub fn is_worktree_moved(error: &anyhow::Error) -> bool {
 ///
 /// The re-read is one git process ([`crate::git::token_state_at`]), reusing
 /// `read`'s root and git dir. It sees only what the token fingerprints, and
-/// not a change undone before it reads (A → B → A); see the README,
+/// not a change undone before it reads (A → B → A); see docs/reference.md,
 /// "Repository points", for what the token does not observe.
 pub fn tree_at_token(
     runner: &impl CommandRunner,
@@ -121,10 +118,10 @@ pub fn materialize(runner: &impl CommandRunner, worktree: &crate::git::Worktree)
     tree
 }
 
-/// Run faija's canonical procedure, step by step as faija-terms returns it,
-/// against the scratch `index`. The steps are faija's; only the running is
-/// Toimija's: its process runner, its error handling. A step this build does
-/// not know fails to compile here, so a re-vendored plan cannot be run
+/// Run the canonical procedure, step by step as the plan returns it,
+/// against the scratch `index`. The steps are the plan's; the running is
+/// here: the process runner, the error handling. A step this function does
+/// not handle fails to compile here, so a changed plan cannot be run
 /// half-understood.
 fn materialize_into(runner: &impl CommandRunner, repo_root: &Path, index: &Path) -> Result<String> {
     let mut tree = None;
@@ -218,8 +215,8 @@ pub fn lease_ref(id: &str) -> String {
 }
 
 /// Acquire a lease on `tree`: pin it with a git ref so `git gc` retains it while
-/// held, and record a marker. This is AHTI's `begin_snapshot` — but the "active
-/// reader refcount that blocks reclamation" is git reachability, cross-process.
+/// held, and record a marker. The "active reader refcount that blocks
+/// reclamation" is git reachability, cross-process.
 pub fn acquire_lease(
     runner: &impl CommandRunner,
     repo_root: &Path,
@@ -378,11 +375,11 @@ mod tests {
         }
     }
 
-    /// tree-identity.v1 as faija freezes it, written out literally: these are
+    /// tree-identity.v1 as it is frozen, written out literally: these are
     /// the git operations, in this order, that Toimija must run — and the
-    /// `.sykli` namespace the old procedure missed is in both lists.
+    /// `.sykli` namespace is in both lists.
     #[test]
-    fn materialize_runs_faija_tree_identity_v1_step_for_step() {
+    fn materialize_runs_tree_identity_v1_step_for_step() {
         let repo = tempfile::tempdir().unwrap();
         let expected = |force_add: bool| {
             let mut calls: Vec<Vec<&str>> = vec![

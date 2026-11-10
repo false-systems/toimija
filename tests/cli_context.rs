@@ -306,7 +306,7 @@ fn context_json_carries_the_repo_identity_ohjaa_reads() {
     fs::create_dir_all(temp.path().join(".toimija")).unwrap();
     fs::write(
         temp.path().join(".toimija/repo.yaml"),
-        "repo:\n  name: teko\n  role: durable task contract\n  not:\n    - inbox\n    - tracker\n",
+        "repo:\n  name: widget\n  role: durable task contract\n  not:\n    - inbox\n    - tracker\n",
     )
     .unwrap();
 
@@ -317,7 +317,7 @@ fn context_json_carries_the_repo_identity_ohjaa_reads() {
         .assert()
         .success();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
-    assert_eq!(value["repo"]["name"], "teko");
+    assert_eq!(value["repo"]["name"], "widget");
     assert_eq!(value["repo"]["role"], "durable task contract");
     assert_eq!(
         value["repo"]["not_roles"],

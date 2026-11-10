@@ -8,6 +8,7 @@ default-members = ["."]
 name = "toimija"
 version = "0.2.0"
 edition = "2024"
+license = "MIT"
 default-run = "toimija"
 
 [dependencies]
@@ -18,19 +19,13 @@ notify = "8.2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-# Vendored: the canonical crate sauma wrote, for the packet's seal
-# (`src/seal.rs`). Sauma is archived; Toimija keeps this copy as its own.
+# Vendored: the canonical crate for the packet's seal (`src/seal.rs`).
 # Pinned by `vendor/sauma-canonical.contract`, which a test checks on every
 # run, so an edit to the crate fails the build.
 sauma-canonical = { path = "vendor/sauma-canonical" }
-# Vendored, not fetched: faija is private, and a git dependency would cost
-# every build a credential. Faija owns tree-identity.v1, the identity of a
-# working State, and Toimija runs its procedure instead of keeping its own.
-# Pinned by `vendor/faija-terms.contract`; refresh with the script beside it.
-faija-terms = { path = "vendor/faija-terms" }
 # Toimija hashes for things that are not artifact envelopes — consistency
 # tokens, environment digests, repository points. Those stay here; only the
-# envelope digest moved to sauma-canonical.
+# envelope digest is in sauma-canonical.
 sha2 = "0.10"
 signal-hook = "0.3"
 false-agent-protocol = { version = "0.1.3", git = "https://github.com/false-systems/false-agent-protocol.git", tag = "v0.1.3" }

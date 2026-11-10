@@ -129,7 +129,7 @@ fn refresh_with_a_corrupt_marker_warns_and_stays_repo_level() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("session.json"), "not json").unwrap();
 
-    // Issue #161: unreadable ≠ missing. The refresh still succeeds and stays
+    // Unreadable ≠ missing. The refresh still succeeds and stays
     // repo-level — writes must not target a session whose state is unknown —
     // but the broken marker is warned about instead of being silently treated
     // as "no session".
@@ -188,7 +188,7 @@ fn session_refresh_with_an_unreadable_marker_still_writes_the_packet() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("session.json"), "not json").unwrap();
 
-    // Issue #161: the marker went unreadable mid-session. The session packet
+    // The marker went unreadable mid-session. The session packet
     // is still written (best-effort, never a failed refresh) — it just loses
     // its session block; the warning is asserted at the CLI layer above.
     let runner = toimija::command::ProcessCommandRunner;
@@ -232,7 +232,7 @@ fn refresh_writes_current_md_and_json() {
         "the Markdown and JSON repo packets must identify the same refresh"
     );
     assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v3");
-    // v3 carries the seal under `seal`; v2's `sauma` key is gone.
+    // The packet carries the seal under `seal`, never under `sauma`.
     assert!(value.get("sauma").is_none(), "{value:#}");
     assert_eq!(value["seal"]["envelope"], "sauma-envelope.v2");
     assert_eq!(value["seal"]["schema"], "toimija-context.v3");

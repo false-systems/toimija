@@ -3,7 +3,7 @@ use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
 
-// Minimum language packs (issue #136): a repo recognized only by its manifest
+// Minimum language packs: a repo recognized only by its manifest
 // still gets a real packet — kind, inferred test+lint tiers, honest notes.
 
 mod common;

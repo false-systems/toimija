@@ -1,24 +1,24 @@
-//! Toimija's State identity is faija's tree-identity.v1.
+//! Toimija's State identity is tree-identity.v1.
 //!
 //! The tree in a snapshot, a repository point and a session packet is the one
-//! faija-terms' canonical procedure yields: the work content, leaving out the
+//! the canonical procedure yields: the work content, leaving out the
 //! generated namespaces `.toimija`, `.teko` and `.sykli`, with
 //! `.toimija/repo.yaml` forced in. These tests run that procedure here, from
-//! the vendored crate and with real git, and hold Toimija's commands to it.
+//! its plan and with real git, and hold Toimija's commands to it.
 //!
 //! They also hold the pairing: a repository point is a tree *and* the token of
 //! the state it was written from. A worktree that moves, in a way the token
 //! observes, while the tree is being written must never come out as a tree from
 //! after the move beside a token from before it. (What the token does not
-//! observe is listed in the README, "Repository points".)
+//! observe is listed in docs/reference.md, "Repository points".)
 
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use faija_terms::{Step, TreeIdentityAlgorithm};
 use tempfile::TempDir;
+use toimija::tree_identity::{Step, TreeIdentityAlgorithm};
 
 mod common;
 use common::{git_at, git_available, run_git};
@@ -73,12 +73,12 @@ fn git_out(root: &Path, args: &[&str], index: Option<&Path>) -> Result<String, S
     }
 }
 
-/// faija's canonical procedure, run step by step exactly as faija-terms
+/// The canonical procedure, run step by step exactly as the plan
 /// returns it, against a scratch index outside the repository. Independent of
 /// Toimija's code: this is what Toimija's tree must equal.
-fn faija_tree(root: &Path) -> String {
+fn canonical_tree(root: &Path) -> String {
     let scratch = tempfile::tempdir().unwrap();
-    let index = scratch.path().join("faija.index");
+    let index = scratch.path().join("canonical.index");
     let index = Some(index.as_path());
     let mut tree = None;
     for step in TreeIdentityAlgorithm::V1.plan() {
@@ -147,14 +147,14 @@ fn point_tree(root: &Path) -> String {
 }
 
 #[test]
-fn the_tree_is_faija_tree_identity_v1_whatever_sykli_and_the_ignore_rules_hold() {
+fn the_tree_is_tree_identity_v1_whatever_sykli_and_the_ignore_rules_hold() {
     if !git_available() {
         return;
     }
     for rules in IGNORE_RULES {
         let temp = fixture(rules);
         let root = temp.path();
-        let expected = faija_tree(root);
+        let expected = canonical_tree(root);
 
         // The fixture exercises what it claims to.
         let paths = tree_paths(root, &expected);
@@ -255,7 +255,7 @@ fn points_snapshots_and_packets_name_their_tree_algorithm() {
     let execution = &read("packet.json")["session"]["execution"];
     assert_eq!(session_point["extensions"]["tree_algorithm"], v1);
     assert_eq!(execution["extensions"]["tree_algorithm"], v1);
-    assert_eq!(execution["repository"]["tree_oid"], faija_tree(root));
+    assert_eq!(execution["repository"]["tree_oid"], canonical_tree(root));
 }
 
 /// A lease taken before Toimija computed tree-identity.v1 recorded no
@@ -559,7 +559,7 @@ fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
 }
 
 /// The whole budget, exactly. A point's id is derived from the tree the point
-/// writes anyway (KATANA D9), so the id costs no git process. A change to either
+/// writes anyway, so the id costs no git process. A change to either
 /// count is a change to the budget, made here on purpose: `repository-point`
 /// went from 22 to 19 when the packet stopped mining history (the two bounded
 /// `git log` walks and the `git ls-tree` of the removed relevance layer), and

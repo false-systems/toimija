@@ -20,8 +20,8 @@ use crate::refresh;
 /// Directory, relative to the repo root, holding all per-session state.
 pub const SESSIONS_SUBDIR: &str = ".toimija/sessions";
 
-/// Handshake variables earlier versions set and this one does not: the
-/// worker.v1 result and context paths. `run` clears them for the child, so a
+/// Handshake variables this version does not set: the worker.v1 result and
+/// context paths. `run` clears them for the child, so a
 /// value inherited from an outer session cannot point it at a stale file.
 pub const RETIRED_ENV: &[&str] = &["FALSE_SYSTEMS_RESULT_PATH", "FALSE_SYSTEMS_CONTEXT_PATH"];
 
@@ -39,7 +39,7 @@ pub const REPO_ONLY_ENV: &[&str] = &[
 /// Overrides where sessions opened outside any Git repository live.
 pub const STATE_DIR_ENV: &str = "TOIMIJA_STATE_DIR";
 
-/// Where sessions opened outside any Git repository live (issue #225):
+/// Where sessions opened outside any Git repository live:
 /// machine-local state, never a `.toimija/` folder in the directory the agent
 /// works in. `$TOIMIJA_STATE_DIR`, else `$XDG_STATE_HOME/toimija`, else
 /// `$HOME/.local/state/toimija`; only absolute paths count. `None` when none
@@ -119,7 +119,7 @@ pub struct SessionMarker {
     pub scope: Vec<String>,
     pub started_at: u64,
     /// Unix seconds of the last observed activity — stamped by `run`'s watcher
-    /// on each packet refresh (proposal 0002). Staleness measures inactivity
+    /// on each packet refresh. Staleness measures inactivity
     /// from here, not lifetime from `started_at`. `None` (a marker written
     /// before the field existed) falls back to `started_at`.
     #[serde(default)]
@@ -136,7 +136,7 @@ pub struct SessionMarker {
     pub undelivered: Vec<String>,
 }
 
-/// Compose a session id as `<unix-secs>-<pid>` (decision D1). Roughly sortable by
+/// Compose a session id as `<unix-secs>-<pid>`. Roughly sortable by
 /// start time; the pid disambiguates sessions opened in the same second. Pure, so
 /// tests are deterministic.
 pub fn session_id(started_at: u64, pid: u32) -> String {
@@ -168,7 +168,7 @@ impl Session {
     }
 
     /// Open a session for an agent working in `folder`, which is not inside
-    /// any Git repository (issue #225). The session lives under `state_root`
+    /// any Git repository. The session lives under `state_root`
     /// (see [`outside_root`]) and records `folder` as its worktree. It has no
     /// context packet: `current.md` only says why, so the listing's packet path
     /// is never a file that does not exist.
@@ -258,7 +258,7 @@ impl Session {
 
     /// Close the session: status -> closed, stamp `closed_at` and the wrapped
     /// command's `exit_status` (when known), rewrite the marker. `run` calls this
-    /// when the wrapped command exits (decision D4).
+    /// when the wrapped command exits.
     ///
     /// The wrapped agent may have rewritten the marker on disk while it ran —
     /// `toimija intent` declares intent and scope, heartbeats stamp
@@ -342,7 +342,7 @@ impl Session {
 /// can never steer writes into the wrong repo. Returns the id and the
 /// session directory.
 ///
-/// Unreadable ≠ missing (issue #161): a marker that exists but cannot be read
+/// Unreadable ≠ missing: a marker that exists but cannot be read
 /// or parsed — or whose recorded id disagrees with its directory — still
 /// resolves to `None` (writes must not target a session whose state is
 /// unknown), but it is warned about, because the wrapped agent keeps reading
@@ -413,11 +413,11 @@ pub fn load_marker(session_dir: &Path) -> Result<SessionMarker> {
     serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", marker_path.display()))
 }
 
-/// Best-effort activity heartbeat (proposal 0002): stamp `last_seen_at = now`
+/// Best-effort activity heartbeat: stamp `last_seen_at = now`
 /// on an open marker. Called by `run`'s watcher after each packet refresh —
 /// an event worth a refresh is worth a heartbeat, and nothing else is. A
 /// closed or missing marker is left alone: the heartbeat must never fight
-/// the close path. An unreadable or corrupt marker is an error (issue #161)
+/// the close path. An unreadable or corrupt marker is an error
 /// — callers log it and keep looping, but silence here means heartbeats stop
 /// stamping and a live session gets misreported stale.
 pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
@@ -442,8 +442,8 @@ pub fn touch(repo_root: &Path, id: &str) -> Result<()> {
     stamp(repo_root, &marker_path, &marker)
 }
 
-/// Write half of the heartbeat, split out so the prune race is testable
-/// (issue #159): the session directory can vanish between `touch`'s read and
+/// Write half of the heartbeat, split out so the prune race is testable:
+/// the session directory can vanish between `touch`'s read and
 /// this write when a sibling's startup prune wins the interleaving. `NotFound`
 /// then means "pruned — nothing left to stamp", the same quiet outcome as a
 /// marker already missing at the read. Every other error still surfaces.
@@ -462,7 +462,7 @@ fn stamp(repo_root: &Path, marker_path: &Path, marker: &SessionMarker) -> Result
     }
 }
 
-/// Whether `id` has the `<unix-secs>-<pid>` shape `run` mints (decision D1).
+/// Whether `id` has the `<unix-secs>-<pid>` shape `run` mints.
 /// `toimija intent` reads the id from the environment, so this is also the
 /// guard that keeps a hostile `TOIMIJA_SESSION` from steering the marker path
 /// out of `.toimija/sessions/`.
@@ -524,7 +524,7 @@ pub fn declare_intent(
 }
 
 /// Where a working copy's handover lives: beside its live packet under
-/// `.toimija/`, which repositories keep out of Git (issue #251).
+/// `.toimija/`, which repositories keep out of Git.
 pub const HANDOVER_FILE: &str = ".toimija/handover.json";
 
 /// What the last agent in this working copy left for the next one (`toimija
@@ -634,7 +634,7 @@ mod tests {
         )
         .unwrap();
 
-        // Simulate a pre-0002 marker (no heartbeat) so the stamp is provable.
+        // Simulate a marker with no heartbeat so the stamp is provable.
         let marker_path = temp
             .path()
             .join(SESSIONS_SUBDIR)
@@ -702,7 +702,7 @@ mod tests {
             .join(SESSIONS_SUBDIR)
             .join(&session.id)
             .join("session.json");
-        // Issue #161: unreadable ≠ missing. A corrupt marker must error (the
+        // Unreadable ≠ missing. A corrupt marker must error (the
         // watcher logs it) — heartbeats silently stopping is how a live
         // session gets misreported stale.
         fs::write(&marker_path, "not json").unwrap();
@@ -717,7 +717,7 @@ mod tests {
             Session::open(temp.path(), &["claude".to_string()], None, Vec::new()).unwrap();
         let dir = temp.path().join(SESSIONS_SUBDIR).join(&session.id);
         let marker = load_marker(&dir).unwrap();
-        // The exact interleaving from issue #159: marker read, prune removes
+        // The interleaving that matters: marker read, prune removes
         // the directory, then the heartbeat writes. The write must be the
         // quiet outcome, not `failed to write …/session.json.tmp-…`.
         fs::remove_dir_all(&dir).unwrap();

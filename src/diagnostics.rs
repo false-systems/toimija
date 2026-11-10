@@ -140,7 +140,7 @@ mod imp {
     use std::process::Stdio;
 
     /// Without descriptor duplication there is no isolation to perform: the
-    /// wrapped command shares our terminal, as it did before this mechanism.
+    /// wrapped command shares our terminal.
     /// The platforms this crate targets (see signal forwarding) are Unix.
     pub struct Capture;
 

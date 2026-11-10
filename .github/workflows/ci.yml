@@ -24,12 +24,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # The arc runners' egress is rate-limited for anonymous git-over-HTTPS
+      # The runners' egress is rate-limited for anonymous git-over-HTTPS
       # ("could not read Username for 'https://github.com'"), which breaks
       # cargo's fetch of the public git dependencies (the protocol crate).
       # Present the job's read-only token for the org's
       # URLs: authenticated reads are never anonymous-limited, and the rewrite
-      # is scoped to false-systems so nothing else changes behavior.
+      # is scoped to this organisation so nothing else changes behavior.
       - name: Authenticate git dependency fetches
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -73,8 +73,7 @@ jobs:
 
   # The same gate as a sykli execution contract (sykli.json). Advisory while it
   # proves itself on these runners; the `rust` job above stays the required
-  # gate until branch protection is flipped deliberately
-  # (docs/qa/ci-quality-gates.md: never silently swap a required gate).
+  # gate until branch protection is flipped deliberately.
   sykli:
     name: Sykli
     runs-on: arc-arm64
@@ -118,8 +117,7 @@ jobs:
           $sudo_cmd apt-get update
           $sudo_cmd apt-get install -y --no-install-recommends build-essential ca-certificates
 
-      # The Rust sykli, which took the name on 2026-08-04 (the Elixir one it
-      # succeeded lives at sykli-elixir and is retired here). Its Action can
+      # sykli's Action can
       # only install a release, or build the sykli repo itself (`version:
       # source` builds the *caller's* checkout), and there is no release yet.
       # So install it the way its README documents, pinned to the commit the

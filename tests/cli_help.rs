@@ -75,6 +75,7 @@ fn every_subcommand_help_says_when_to_use_it() {
 #[test]
 fn high_traffic_subcommands_carry_examples() {
     for (subcommand, example) in [
+        ("init", "toimija init --workspace"),
         ("enter", "toimija enter --for-diff --budget 4000"),
         ("run", "toimija run --intent"),
         ("sessions", "toimija sessions --prune"),
@@ -114,8 +115,8 @@ fn context_help_describes_every_flag() {
 #[test]
 fn verify_json_help_describes_the_shape_verify_emits() {
     // `verify --json` emits `{ "status": ..., "packet_path": ... }`; the help
-    // once promised `{ "consistent": bool, "reasons": [...] }`, a shape no
-    // command has ever emitted.
+    // must not promise `{ "consistent": bool, "reasons": [...] }`, a shape no
+    // command emits.
     Command::cargo_bin("toimija")
         .unwrap()
         .args(["verify", "--help"])

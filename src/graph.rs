@@ -200,7 +200,35 @@ pub fn build(
             }
         })
         .collect();
-    let lines: Vec<Line> = lines;
+    let mut lines: Vec<Line> = lines;
+    // A base that no ref names can be simplified out of the log. It is the
+    // commit everything here is measured against, so it is shown regardless.
+    if let (Some(id), Some(named)) = (&base_id, &base) {
+        let shown = lines.iter().any(|line| match line {
+            Line::Tip { tip, .. } => &tip.commit == id,
+            Line::Edge { .. } => false,
+        });
+        if !shown {
+            let detail = git(runner, repo_root, &["log", "-1", "--format=%T%x02%s", id])?;
+            let (tree, subject) = detail.split_once('\u{2}').unwrap_or((&detail, ""));
+            let name = if id.starts_with(named.as_str()) {
+                id[..id.len().min(7)].to_string()
+            } else {
+                named.clone()
+            };
+            lines.push(Line::Tip {
+                graph: "* ".to_string(),
+                tip: Tip {
+                    commit: id.clone(),
+                    branches: vec![name],
+                    subject: subject.to_string(),
+                    proof: prover(repo_root, id),
+                    review: review_of(runner, repo_root, reviews.get(tree)),
+                    sessions: Vec::new(),
+                },
+            });
+        }
+    }
     // A tip whose proof or review could not be read is a gap in the picture.
     for line in &lines {
         let Line::Tip { tip, .. } = line else {
@@ -905,6 +933,26 @@ mod tests {
             .arg("-u")
             .output()
             .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "0")
+    }
+
+    #[test]
+    fn a_commit_id_base_that_nothing_points_at_is_still_shown() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        // `work` gets a second commit; the base is its first, which no ref names
+        // and which is neither a root nor where branches part.
+        let base = run(root, &["rev-parse", "work"]);
+        fs::write(root.join("w2.txt"), "w2\n").unwrap();
+        run(root, &["add", "-A"]);
+        run(root, &["commit", "-q", "-m", "more work"]);
+        let passed = |_: &Path, _: &str| Proof::Passed;
+        let graph = build(&ProcessCommandRunner, root, &base, &passed).unwrap();
+        let shown = tips(&graph)
+            .into_iter()
+            .find(|tip| tip.commit == base)
+            .expect("the base is a tip");
+        assert_eq!(shown.proof, Proof::Passed);
+        assert_eq!(shown.subject, "the work");
     }
 
     #[test]

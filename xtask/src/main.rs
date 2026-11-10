@@ -21,6 +21,9 @@ use anyhow::{bail, Result};
 use devx_pre_commit::{install_self_as_hook, locate_project_root, PreCommitContext};
 use serde::Deserialize;
 
+mod land;
+mod review;
+
 fn run_hook() -> Result<()> {
     let mut ctx = PreCommitContext::from_git_diff(locate_project_root()?)?;
     // Never touch generated code, only hand-written sources.
@@ -381,7 +384,7 @@ fn collect_artifact(raw: &str, artifacts: &mut Vec<Artifact>) -> Result<()> {
         return Ok(());
     };
     // Toimija's packets carry their envelope under `seal`; other tools'
-    // artifacts (kisko's model calls, say) carry the same envelope under
+    // artifacts (a harness's model calls, say) carry the same envelope under
     // `sauma`, where each key has its own digest rule.
     let (envelope, actual) = if let Some(seal) = value.get(toimija::seal::KEY).cloned() {
         let envelope: Envelope = serde_json::from_value(seal)?;
@@ -465,6 +468,16 @@ fn main() -> Result<()> {
             run_why(query)?;
         }
         Some("gate") => run_full_gate()?,
+        Some("land") => {
+            // 0 landed, 1 refused, 2 could not tell.
+            let code = land::main(&locate_project_root()?, &args[2..]);
+            std::process::exit(i32::from(code));
+        }
+        Some("review") => {
+            // The exit code is the verdict: 0 may cross, 1 blocking, 2 no review.
+            let code = review::main(&locate_project_root()?, &args[2..]);
+            std::process::exit(i32::from(code));
+        }
         other => {
             eprintln!("toimija dev tasks:");
             eprintln!("  cargo xtask gate                      run the full gate: fmt --check, clippy -D warnings, tests");
@@ -472,6 +485,8 @@ fn main() -> Result<()> {
             eprintln!(
                 "  cargo xtask why <query>              walk the local chain of sealed artifacts"
             );
+            eprintln!("  cargo xtask review                    a fresh agent reviews this branch: fine, look or blocking");
+            eprintln!("  cargo xtask land                      put this branch on main when it is proven and reviewed");
             // Fail closed: a caller that treats the exit code as a verdict (the
             // harness gate, CI) must never mistake "task not found" for a pass.
             if let Some(arg) = other {
@@ -502,7 +517,7 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(root.join(".toimija/current.json")).unwrap())
                 .unwrap();
         let token = packet["consistency"]["token"].as_str().unwrap();
-        let model_call = kisko_event(token, false);
+        let model_call = model_call_event(token, false);
         assert_eq!(
             model_call["sauma"]["digest"].as_str().unwrap(),
             toimija::seal::digest_under_sauma_key(&model_call)
@@ -516,10 +531,10 @@ mod tests {
 
         let output = render_why(&root, token).unwrap();
         assert!(output.contains("toimija-context.v3"));
-        assert!(output.contains("  ← kisko-model-call.v1"));
+        assert!(output.contains("  ← widget-model-call.v1"));
         assert!(!output.contains("digest mismatch"));
 
-        let tampered = kisko_event(token, true);
+        let tampered = model_call_event(token, true);
         fs::write(
             root.join(".toimija/runs/x.jsonl"),
             format!("{}\n", serde_json::to_string(&tampered).unwrap()),
@@ -527,21 +542,21 @@ mod tests {
         .unwrap();
         let output = render_why(&root, token).unwrap();
         assert!(output.contains("toimija-context.v3"));
-        assert!(output.contains("kisko-model-call.v1"));
+        assert!(output.contains("widget-model-call.v1"));
         assert!(output.contains("digest mismatch"));
-        assert!(!output.contains("  ← kisko-model-call.v1"));
+        assert!(!output.contains("  ← widget-model-call.v1"));
     }
 
     #[test]
     fn walker_rejects_unknown_envelope_versions() {
-        let mut artifact = kisko_event(&format!("sha256:{}", "a".repeat(64)), false);
+        let mut artifact = model_call_event(&format!("sha256:{}", "a".repeat(64)), false);
         artifact["sauma"]["envelope"] = json!("sauma-envelope.v999");
 
         let error = collect_artifact(&artifact.to_string(), &mut Vec::new()).unwrap_err();
         assert!(error.to_string().contains("v999"));
 
         // A seal is v2 only: the legacy form was never written under `seal`.
-        let mut sealed = kisko_event(&format!("sha256:{}", "a".repeat(64)), false);
+        let mut sealed = model_call_event(&format!("sha256:{}", "a".repeat(64)), false);
         let mut envelope = sealed.as_object_mut().unwrap().remove("sauma").unwrap();
         envelope["envelope"] = json!(toimija::seal::LEGACY_ENVELOPE_SCHEMA);
         sealed["seal"] = envelope;
@@ -589,9 +604,9 @@ mod tests {
         .unwrap();
     }
 
-    fn kisko_event(token: &str, tamper_digest: bool) -> serde_json::Value {
+    fn model_call_event(token: &str, tamper_digest: bool) -> serde_json::Value {
         let mut event = json!({
-            "schema": "kisko-model-call.v1",
+            "schema": "widget-model-call.v1",
             "payload": {
                 "model": "test-model",
                 "request": "review"
@@ -600,7 +615,7 @@ mod tests {
         });
         event["sauma"] = json!({
             "envelope": "sauma-envelope.v2",
-            "schema": "kisko-model-call.v1",
+            "schema": "widget-model-call.v1",
             "digest": "",
             "provenance": [
                 {
@@ -613,7 +628,7 @@ mod tests {
                 }
             ],
             "producer": {
-                "tool": "kisko",
+                "tool": "widget",
                 "version": "0.0.0",
                 "run": "call-1"
             },
