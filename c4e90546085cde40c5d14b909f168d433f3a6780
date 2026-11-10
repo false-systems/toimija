@@ -1,0 +1,24 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "c4e90546085cde40c5d14b909f168d433f3a6780",
+  "head": "e153cac130181faaf41c433f55ff70627bcd327b",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:163: When `--base` is a commit ID with no local branch pointing at it, this converts the base into an edge and silently omits its proof and review instead of reporting them."
+    },
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:283: Git quotes worktree paths containing non-ASCII or special characters in porcelain output, so treating those strings as literal paths silently drops their sessions without a warning."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794318700,
+  "overruled": null
+}
