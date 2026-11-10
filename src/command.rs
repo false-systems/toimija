@@ -64,7 +64,7 @@ const GIT_LOCATION_ENV: [&str; 7] = [
 
 /// Remove the repo-locating git env vars from `command` so repository discovery
 /// falls back to the working directory we set. See [`GIT_LOCATION_ENV`].
-fn scrub_git_location_env(command: &mut Command) {
+pub fn scrub_git_location_env(command: &mut Command) {
     for key in GIT_LOCATION_ENV {
         command.env_remove(key);
     }

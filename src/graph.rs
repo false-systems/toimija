@@ -308,8 +308,19 @@ fn present(
         }
     };
     for worktree in worktrees {
-        if !worktree.join(".toimija/sessions").is_dir() {
-            continue;
+        // No sessions folder is no session; one that cannot be looked at is
+        // a gap, since a live session may sit behind it.
+        match std::fs::metadata(worktree.join(".toimija/sessions")) {
+            Ok(found) if found.is_dir() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                warnings.push(format!(
+                    "the sessions of {} could not be looked at: {error}",
+                    worktree.display()
+                ));
+                continue;
+            }
         }
         let report = match sessions::report(runner, &worktree, sessions::DEFAULT_STALE_AFTER_SECS) {
             Ok(report) => report,
@@ -359,11 +370,13 @@ pub fn sykli_proof(repo_root: &Path, commit: &str) -> Proof {
 }
 
 fn proof_from(sykli: &str, repo_root: &Path, commit: &str) -> Proof {
-    let output = match std::process::Command::new(sykli)
+    let mut asked = std::process::Command::new(sykli);
+    asked
         .current_dir(repo_root)
-        .args(["status", "--commit", commit, "--json"])
-        .output()
-    {
+        .args(["status", "--commit", commit, "--json"]);
+    // As for toimija's own git: no inherited GIT_DIR points sykli elsewhere.
+    crate::command::scrub_git_location_env(&mut asked);
+    let output = match asked.output() {
         Ok(output) => output,
         // Without sykli the one thing still known is whether the commit
         // carries a contract at all: one that does not is gated by nothing.
@@ -857,6 +870,41 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[0].starts_with("*   abcdef0  work "), "{text}");
         assert!(lines[1].starts_with("| * abcdef0  other"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sessions_folder_that_cannot_be_looked_at_is_a_warning() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        let hidden = root.join(".toimija");
+        fs::create_dir_all(hidden.join("sessions")).unwrap();
+        fs::set_permissions(&hidden, fs::Permissions::from_mode(0o000)).unwrap();
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none);
+        fs::set_permissions(&hidden, fs::Permissions::from_mode(0o755)).unwrap();
+        let graph = graph.unwrap();
+        // Root reads through any mode: only assert where the denial is real.
+        if runs_as_root() {
+            return;
+        }
+        assert!(
+            graph
+                .warnings
+                .iter()
+                .any(|w| w.contains("could not be looked at")),
+            "{:?}",
+            graph.warnings
+        );
+    }
+
+    #[cfg(unix)]
+    fn runs_as_root() -> bool {
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "0")
     }
 
     #[test]
