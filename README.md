@@ -5,6 +5,10 @@
 Toimija is a command-line tool that gives a coding agent the facts of the Git
 repository it works in.
 
+It is for a person who works with coding agents such as Claude Code, Codex, pi
+or opencode, at the moment they start one in a repository and want it to know
+where it is. It needs `git`, an agent CLI, and Rust for a source install.
+
 > We do not ask the model to understand the repo first. We ask Git what state the repo is in.
 
 A coding agent usually enters a repository by listing, searching and guessing.
@@ -22,22 +26,27 @@ Git gives us the graph of what happened. Toimija turns that graph into operation
 
 ## See it
 
-A session is open in a small repository. From another terminal:
+<img src="docs/assets/see-it.svg" alt="One terminal runs an agent with toimija run. In another, toimija sessions lists the session as live with its branch and intent, and toimija graph shows that branch as proven and not yet reviewed, with the session on it, above the main branch." width="100%">
+
+<details><summary>The same, as text</summary>
 
 ```console
+# one terminal:  toimija run --intent "tidy the README" claude
+
 $ toimija sessions
 LIVE
-  claude  1794321108-81405
-    branch: fix/login-redirect
-    worktree: /work/demo
-    intent: fix the login redirect
-    scope: src/auth.rs
-    started: 3s ago
-    seen: 3s ago
-    packet: .toimija/sessions/1794321108-81405/current.md
+  claude  1794350046-58479
+    branch: tidy-readme
+    intent: tidy the README
+
+$ toimija graph
+* 4191206  tidy-readme  proven    review: none       claude live: "tidy the README"
+* 3588810  origin/main  proven    review: fine
 ```
 
-The packet that session reads (shortened here):
+</details>
+
+The packet a session reads (shortened here):
 
 ```console
 $ toimija context
@@ -88,11 +97,21 @@ cargo install --path .
 Toimija is not on crates.io yet. Once it is published, `cargo install toimija`
 installs it with Rust 1.98 or newer; until then, use the commands above.
 
-Toimija runs on macOS and Linux.
+Toimija runs on macOS and Linux. On Windows, use WSL, where it is the Linux
+build; native Windows is not supported.
 
 ## Use
 
-Inside a Git repository, in the order you meet them:
+From nothing to an agent that knows where it is:
+
+```bash
+cd your-repository
+toimija init          # once: write .toimija/repo.yaml; fill in role and boundaries
+toimija run claude    # start the agent as a session, with the packet in its prompt
+toimija sessions      # from another terminal: see it working
+```
+
+The fuller list, in the order you meet the commands:
 
 ```bash
 toimija init               # once per repository: write .toimija/repo.yaml
@@ -122,6 +141,8 @@ alone.
 - **ohjaa** holds what agents are told. A person decides it.
 - **vessa** counts what agents used.
 
+[Your first loop](docs/first-loop.md) walks one small change through all four.
+
 ## What it does not do
 
 - It does not decide. It assigns no work, judges no result and closes nothing.
@@ -136,6 +157,7 @@ alone.
 
 ## More
 
+- [Your first loop](docs/first-loop.md): one small change, from a new repository to a deployment.
 - [Reference](docs/reference.md): every command, the packet, sessions, workspaces and configuration.
 - [Agent guide](AGENTS.md): for agents that work on toimija itself.
 - [Licence](LICENSE): MIT.
