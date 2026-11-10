@@ -887,6 +887,7 @@ mod tests {
             exit_status: None,
 
             undelivered: Vec::new(),
+            packet: None,
         }
     }
 
@@ -1250,6 +1251,7 @@ mod tests {
                 closed_at: None,
                 exit_status: None,
                 undelivered: Vec::new(),
+                packet: None,
             },
             liveness,
             pid_check: PidCheck::Unknown,

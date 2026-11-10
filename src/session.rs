@@ -73,6 +73,14 @@ pub enum SessionStatus {
 /// On-disk session marker (`session.json`). Self-describing so its readers
 /// (`toimija sessions`, `toimija history`) need no extra context — and so the
 /// cross-repo north star is not blocked by an under-specified record.
+/// How a session asked for its packet at launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PacketSettings {
+    pub for_diff: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionMarker {
     pub id: String,
@@ -134,6 +142,10 @@ pub struct SessionMarker {
     /// when everything was delivered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undelivered: Vec<String>,
+    /// The packet settings `run` was started with, so a refresh made on the
+    /// session's behalf writes the packet the session asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet: Option<PacketSettings>,
 }
 
 /// Compose a session id as `<unix-secs>-<pid>`. Roughly sortable by
@@ -229,6 +241,7 @@ impl Session {
             closed_at: None,
             exit_status: None,
             undelivered: Vec::new(),
+            packet: None,
         };
         let session = Session {
             id,
@@ -241,6 +254,12 @@ impl Session {
         };
         session.write_marker()?;
         Ok(session)
+    }
+
+    /// Record the packet settings the session was started with.
+    pub fn record_packet(&mut self, packet: PacketSettings) -> Result<()> {
+        self.marker.packet = Some(packet);
+        self.write_marker()
     }
 
     /// Record the spec the session starts from, and rewrite the marker.

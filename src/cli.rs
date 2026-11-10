@@ -1066,6 +1066,13 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         close_session_after_startup_failure(&repo_root, &mut session);
         return Err(error).context("failed to record the session's spec");
     }
+    if let Err(error) = session.record_packet(session::PacketSettings {
+        for_diff: args.for_diff,
+        budget: args.budget,
+    }) {
+        close_session_after_startup_failure(&repo_root, &mut session);
+        return Err(error).context("failed to record the session's packet settings");
+    }
 
     // 2. Enter: refresh the session packet (authoritative for the agent, and
     //    mirrored to the repo-level summary) and print it as the work preflight.
@@ -3079,12 +3086,17 @@ fn run_intent(args: IntentArgs) -> Result<()> {
     // watcher ignores the marker and would leave them stale until the
     // repository next changed.
     if let Ok(worktree) = git::discover(&runner, &cwd) {
-        let plain = ContextArgs {
-            json: false,
+        // With the settings the session was started with, where it recorded them.
+        let asked = marker.packet.unwrap_or(session::PacketSettings {
             for_diff: false,
             budget: None,
+        });
+        let as_launched = ContextArgs {
+            json: false,
+            for_diff: asked.for_diff,
+            budget: asked.budget,
         };
-        if let Err(error) = ambient_refresh(&runner, &worktree, &plain) {
+        if let Err(error) = ambient_refresh(&runner, &worktree, &as_launched) {
             warn!(event = "toimija.session.intent_refresh_failed", error = %error);
             eprintln!(
                 "toimija intent: the packet was not refreshed ({error:#}); run `toimija refresh`"

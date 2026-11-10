@@ -407,6 +407,31 @@ fn intent_sets_a_spec_mid_session_with_or_without_a_new_intent() {
     assert!(!sandbox.read("nothing.err").is_empty());
 }
 
+#[test]
+fn a_spec_set_mid_session_keeps_the_packet_settings_the_session_started_with() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox
+        .run_claude(
+            &sandbox.repo,
+            &["--intent", "look around", "--for-diff"],
+            "\"$T\" -q intent --spec docs/adr/0001-login-redirect.md > \"$OUT/first.txt\"\n\
+             cp \"$TOIMIJA_LIVE\" \"$OUT/packet.md\"",
+        )
+        .success();
+    let packet = sandbox.read("packet.md");
+    assert!(
+        packet.contains("## Spec\n- file: docs/adr/0001-login-redirect.md"),
+        "{packet}"
+    );
+    assert!(
+        packet.contains("## Diff focus"),
+        "the session asked for the diff section: {packet}"
+    );
+}
+
 fn listing(root: &Path) -> Vec<String> {
     fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
         for entry in fs::read_dir(dir).unwrap() {

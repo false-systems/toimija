@@ -933,6 +933,7 @@ mod tests {
             exit_status: Some(0),
 
             undelivered: Vec::new(),
+            packet: None,
         }
     }
 
