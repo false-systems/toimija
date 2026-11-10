@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "0e3c018f0c529e456bdf27e7c8956c894191c85c",
+  "head": "12440e419d7dd510251c09a6c529286d56973f69",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "xtask/src/land.rs:199: If a receipt’s original file was deleted but Sykli still verifies its retained copy, this returns a pass without a receipt, allowing main to advance without sharing the promised proof; use the retained copy or refuse."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794308315,
+  "overruled": null
+}
