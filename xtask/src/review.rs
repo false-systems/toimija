@@ -240,7 +240,9 @@ pub fn review(root: &Path, installed: &[Agent], reviewer: Reviewer<'_>) -> Resul
         return Ok(None);
     }
     let path = record_path(root, &tree)?;
-    if let Some(kept) = read_record(&path)? {
+    // A kept review answers only for the change it read: the same tree on
+    // another base is another diff.
+    if let Some(kept) = read_record(&path)?.filter(|kept| kept.base == base) {
         return Ok(Some(kept));
     }
     let range = format!("{base}..{head}");
@@ -284,7 +286,8 @@ pub fn review(root: &Path, installed: &[Agent], reviewer: Reviewer<'_>) -> Resul
 pub fn overrule(root: &Path, why: &str) -> Result<Record> {
     let tree = git(root, &["rev-parse", "HEAD^{tree}"])?;
     let path = record_path(root, &tree)?;
-    let Some(mut record) = read_record(&path)? else {
+    let base = git(root, &["merge-base", BASE, "HEAD"])?;
+    let Some(mut record) = read_record(&path)?.filter(|kept| kept.base == base) else {
         bail!("no review is kept for this commit: run `sykli run review.json` first");
     };
     if record.level != Level::Blocking {
@@ -301,22 +304,24 @@ pub fn overrule(root: &Path, why: &str) -> Result<Record> {
     Ok(record)
 }
 
+/// What an agent session sets in its environment.
+const AGENT_MARKERS: [&str; 12] = [
+    "TOIMIJA_SESSION",
+    "TOIMIJA_RUN",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    "PI_SESSION_ID",
+    "PI_CODING_AGENT",
+    "OPENCODE",
+    "OPENCODE_SESSION_ID",
+    "AI_AGENT",
+];
+
 /// Only a person at a terminal overrules: an agent session is refused.
 pub fn person_at_terminal(env: &dyn Fn(&str) -> bool, terminal: bool) -> Result<()> {
-    const AGENT_MARKERS: [&str; 12] = [
-        "TOIMIJA_SESSION",
-        "TOIMIJA_RUN",
-        "CLAUDECODE",
-        "CLAUDE_CODE_ENTRYPOINT",
-        "CLAUDE_CODE_SESSION_ID",
-        "CODEX_THREAD_ID",
-        "CODEX_SESSION_ID",
-        "PI_SESSION_ID",
-        "PI_CODING_AGENT",
-        "OPENCODE",
-        "OPENCODE_SESSION_ID",
-        "AI_AGENT",
-    ];
     if let Some(marker) = AGENT_MARKERS.iter().find(|name| env(name)) {
         bail!("only a person overrules a review: this is an agent session ({marker} is set)");
     }
@@ -413,34 +418,11 @@ pub fn installed() -> Vec<Agent> {
 /// returns what it said last.
 pub fn run_agent(agent: Agent, prompt: &str, root: &Path) -> Result<String> {
     let last = std::env::temp_dir().join(format!("toimija-review-{}.txt", std::process::id()));
-    let mut command = Command::new(agent.program());
-    match agent {
-        Agent::Codex => {
-            command
-                .args(["exec", "--sandbox", "read-only", "--ephemeral", "-o"])
-                .arg(&last)
-                .arg("-");
-        }
-        Agent::Claude => {
-            command.args([
-                "-p",
-                "--tools",
-                "Read,Grep,Glob,Bash",
-                "--allowedTools",
-                "Read",
-                "Grep",
-                "Glob",
-                "Bash(git diff:*)",
-                "Bash(git log:*)",
-                "Bash(git show:*)",
-            ]);
-        }
-    }
-    let mut child = command
+    let mut child = reviewer_command(agent, &last)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not start {agent}"))?;
     child
@@ -448,14 +430,18 @@ pub fn run_agent(agent: Agent, prompt: &str, root: &Path) -> Result<String> {
         .take()
         .context("the reviewer's stdin is piped")?
         .write_all(prompt.as_bytes())?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .context("the reviewer's stdout is piped")?;
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        stdout.read_to_string(&mut text).map(|_| text)
-    });
+    let reader = drain(
+        child
+            .stdout
+            .take()
+            .context("the reviewer's stdout is piped")?,
+    );
+    let said = drain(
+        child
+            .stderr
+            .take()
+            .context("the reviewer's stderr is piped")?,
+    );
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -474,7 +460,12 @@ pub fn run_agent(agent: Agent, prompt: &str, root: &Path) -> Result<String> {
     let printed = reader
         .join()
         .map_err(|_| anyhow!("reading {agent}'s reply panicked"))??;
+    let said = said
+        .join()
+        .map_err(|_| anyhow!("reading {agent}'s messages panicked"))??;
     if !status.success() {
+        // What the reviewer said while working is shown only when it failed.
+        eprint!("{said}");
         bail!("{agent} ended with {status} before giving a review");
     }
     match agent {
@@ -487,6 +478,45 @@ pub fn run_agent(agent: Agent, prompt: &str, root: &Path) -> Result<String> {
             Ok(reply)
         }
     }
+}
+
+fn drain(mut from: impl Read + Send + 'static) -> std::thread::JoinHandle<std::io::Result<String>> {
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        from.read_to_string(&mut text).map(|_| text)
+    })
+}
+
+/// The reviewer's command line. It starts as a session of its own: no agent
+/// marker of the session that asked for the review reaches it.
+fn reviewer_command(agent: Agent, last: &Path) -> Command {
+    let mut command = Command::new(agent.program());
+    for marker in AGENT_MARKERS {
+        command.env_remove(marker);
+    }
+    match agent {
+        Agent::Codex => {
+            command
+                .args(["exec", "--sandbox", "read-only", "--ephemeral", "-o"])
+                .arg(last)
+                .arg("-");
+        }
+        Agent::Claude => {
+            command.args([
+                "-p",
+                "--tools",
+                "Read,Grep,Glob,Bash",
+                "--allowedTools",
+                "Read",
+                "Grep",
+                "Glob",
+                "Bash(git diff:*)",
+                "Bash(git log:*)",
+                "Bash(git show:*)",
+            ]);
+        }
+    }
+    command
 }
 
 /// `cargo xtask review [--overrule <why>]`, returning the exit code.
@@ -716,5 +746,50 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn the_same_tree_on_another_base_is_reviewed_again() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = branch_repo("review-rebased");
+        fs::write(root.join("more.txt"), "more\n").unwrap();
+        run_git(&root, &["add", "-A"]);
+        run_git(&root, &["commit", "-q", "-m", "more"]);
+        let calls = Cell::new(0);
+        let blocking = |_: Agent, _: &str, _: &Path| {
+            calls.set(calls.get() + 1);
+            Ok("REVIEW: blocking\n".to_string())
+        };
+        review(&root, &[Agent::Codex], &blocking).unwrap().unwrap();
+        overrule(&root, "accepted").unwrap();
+
+        // The base moves under the same tree: the change is now another diff.
+        run_git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
+        let again = review(&root, &[Agent::Codex], &blocking).unwrap().unwrap();
+        assert_eq!(calls.get(), 2);
+        assert_eq!(
+            again.overruled, None,
+            "an overrule does not follow the tree"
+        );
+        assert_eq!(exit_code(&again), 1);
+    }
+
+    #[test]
+    fn the_reviewer_starts_without_the_asking_sessions_agent_markers() {
+        for agent in Agent::ALL {
+            let command = reviewer_command(agent, Path::new("/tmp/last.txt"));
+            let removed: Vec<_> = command
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .collect();
+            assert!(removed.contains(&"CLAUDECODE".to_string()), "{removed:?}");
+            assert!(
+                removed.contains(&"TOIMIJA_SESSION".to_string()),
+                "{removed:?}"
+            );
+        }
     }
 }
