@@ -1,0 +1,20 @@
+{
+  "schema": "toimija-review.v1",
+  "tree": "650b138ba9b83298dbdb7ed2bb7a796b1a19779c",
+  "head": "c59869f788dfb3b281580806e94bf9ddab5b579c",
+  "base": "abf372fc0636e85a14b5820c1685f8334c0040b1",
+  "level": "blocking",
+  "findings": [
+    {
+      "level": "blocking",
+      "text": "src/graph.rs:124: With Git’s `log.decorate=full` configuration, decorations contain `refs/heads/...`, so the branch lookup silently omits all sessions stored under short branch names."
+    }
+  ],
+  "reviewer": "codex",
+  "authors": [
+    "claude"
+  ],
+  "independent": "yes",
+  "at": 1794318908,
+  "overruled": null
+}
