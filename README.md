@@ -126,4 +126,4 @@ Toimija is one of five tools. Each works alone.
 - [Reference](docs/reference.md): every command, the packet, sessions,
   configuration and guarantees.
 - [Agent guide](AGENTS.md): for agents that work on Toimija itself.
-- Licence: [Apache-2.0](LICENSE).
+- Licence: [MIT](LICENSE).
