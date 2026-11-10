@@ -1,18 +1,21 @@
 <img src="docs/assets/toimija.svg" alt="toimija: Facts for agents. No decisions." width="100%">
 
+# toimija
+
 Toimija is a command-line tool that gives a coding agent the facts of the Git
 repository it works in.
 
+> We do not ask the model to understand the repo first. We ask Git what state the repo is in.
+
 A coding agent usually enters a repository by listing, searching and guessing.
 That is slow, every agent repeats it, and the result is out of date as soon as
-the repository moves. We do not ask the model to understand the repo first. We ask Git what state the repo is in.
-Toimija reads that state once and writes a short packet: the branch, the
-changed files, what to read first and how to validate. It starts the agent
-with that packet, keeps the packet current while the agent works, shows which
-other sessions are in the same repository, and carries a note from one agent
-to the next. In a folder that holds several repositories, it gives the agent
-the facts of the folder instead: each repository, its branch, and who is
-working where.
+the repository moves. Toimija reads the repository's state once and writes a
+short packet: the branch, the changed files, what to read first and how to
+validate. It starts the agent with that packet and keeps it current while the
+agent works. It shows which other sessions are in the same repository, and
+carries a note from one agent to the next. In a folder that holds several
+repositories, it gives the agent the facts of the folder instead: each
+repository, its branch, and who is working where.
 
 Git is not a save button here. Git is the substrate.
 Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
@@ -89,17 +92,17 @@ Toimija runs on macOS and Linux.
 
 ## Use
 
-Run these inside a Git repository, in this order:
+Inside a Git repository, in the order you meet them:
 
 ```bash
-toimija init                    # once: write .toimija/repo.yaml, then fill in role and boundaries
-toimija init --workspace        # or, in a folder of repositories: write .toimija/workspace.yaml
-toimija run claude              # start an agent as a session, with the packet in its launch prompt
-toimija sessions                # see the sessions working in this repository
-toimija graph                   # the branches in progress: proven or not, review level, who is there
-toimija intent "fix the login redirect" --scope src/auth.rs   # a session says why it is here
-toimija verify                  # before a commit: does the packet still match the repository?
-toimija handover --next "the redirect is fixed; tests still to write"   # leave a note for the next agent
+toimija init               # once per repository: write .toimija/repo.yaml
+toimija init --workspace   # or once per folder of repositories
+toimija run claude         # start an agent as a session, with its packet
+toimija sessions           # who is working in this repository
+toimija graph              # branches in progress: proven, reviewed, who is there
+toimija intent "fix the login redirect"          # a session says why it is here
+toimija verify             # before a commit: does the packet still match?
+toimija handover --next "tests still to write"   # a note for the next agent
 ```
 
 `toimija run` takes any agent command: `toimija run codex`, or
@@ -108,12 +111,15 @@ that is started some other way gets the same packet with `toimija enter`.
 
 ## How it fits
 
-Toimija is one of four tools. Each works alone.
+Toimija is one of four small tools for working with coding agents. Each one works
+alone.
 
-- **toimija**: facts about a repository for agents.
-- **sykli**: declared checks and proof.
-- **ohjaa**: what agents are told, decided by a person.
-- **vessa**: what agents used.
+<img src="docs/assets/loop.svg" alt="A piece of work moves through five steps: start, check, review, land, deploy. toimija starts it, sykli does the other four, ohjaa holds what agents know, and vessa counts what agents used." width="100%">
+
+- **toimija** starts the session and gives the agent the facts of the repository.
+- **sykli** runs the declared checks, keeps the proof, and reviews, lands and deploys the work.
+- **ohjaa** holds what agents are told. A person decides it.
+- **vessa** counts what agents used.
 
 ## What it does not do
 
@@ -129,7 +135,6 @@ Toimija is one of four tools. Each works alone.
 
 ## More
 
-- [Reference](docs/reference.md): every command, the packet, sessions,
-  configuration and guarantees.
-- [Agent guide](AGENTS.md): for agents that work on Toimija itself.
-- Licence: [MIT](LICENSE).
+- [Reference](docs/reference.md): every command, the packet, sessions, workspaces and configuration.
+- [Agent guide](AGENTS.md): for agents that work on toimija itself.
+- [Licence](LICENSE): MIT.
