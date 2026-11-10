@@ -7,8 +7,7 @@
 # and rewrites `vendor/sauma-canonical.contract`. It never edits the crate: if
 # the copy needs changing, the change belongs in sauma.
 #
-# Carried rather than fetched, for the reason taso carries selko-canonical:
-# sauma is a private repository and publishes nothing, so a git dependency
+# Carried rather than fetched: sauma publishes nothing, so a git dependency
 # would cost every build a credential. The monopoly is unchanged — there is
 # still exactly one implementation, distributed rather than linked — and
 # `tests/vendored_canonical.rs` recomputes the digest on every run, so an edit

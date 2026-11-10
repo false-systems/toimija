@@ -117,7 +117,7 @@ fn snapshot_excludes_tool_state_but_keeps_the_repo_manifest() {
         "generated\n",
     )
     .unwrap();
-    fs::write(temp.path().join(".teko/teko.redb"), "generated\n").unwrap();
+    fs::write(temp.path().join(".teko/state.redb"), "generated\n").unwrap();
 
     let tree = snapshot_tree(temp.path());
     let listing = git_stdout(temp.path(), &["ls-tree", "-r", "--name-only", &tree]);

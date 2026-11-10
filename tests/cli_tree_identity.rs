@@ -10,7 +10,7 @@
 //! the state it was written from. A worktree that moves, in a way the token
 //! observes, while the tree is being written must never come out as a tree from
 //! after the move beside a token from before it. (What the token does not
-//! observe is listed in the README, "Repository points".)
+//! observe is listed in docs/reference.md, "Repository points".)
 
 use std::ffi::OsString;
 use std::fs;
@@ -559,7 +559,7 @@ fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
 }
 
 /// The whole budget, exactly. A point's id is derived from the tree the point
-/// writes anyway (KATANA D9), so the id costs no git process. A change to either
+/// writes anyway, so the id costs no git process. A change to either
 /// count is a change to the budget, made here on purpose: `repository-point`
 /// went from 22 to 19 when the packet stopped mining history (the two bounded
 /// `git log` walks and the `git ls-tree` of the removed relevance layer), and

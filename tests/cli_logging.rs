@@ -64,8 +64,8 @@ fn run_emits_the_command_finish_bookend_with_the_wrapped_exit_code() {
     let temp = tempfile::tempdir().unwrap();
     init_repo(temp.path());
 
-    // `run` adopts the wrapped command's exit code, which historically bypassed
-    // the finish event via `process::exit` (issue #51). Both must hold at once.
+    // `run` adopts the wrapped command's exit code, which must not bypass
+    // the finish event via `process::exit`. Both must hold at once.
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())

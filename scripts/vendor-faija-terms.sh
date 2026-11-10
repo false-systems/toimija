@@ -10,8 +10,8 @@
 #
 # faija owns tree-identity.v1, the canonical procedure for the identity of a
 # working State. Toimija runs that procedure from this copy rather than keeping
-# its own. Carried rather than fetched, like sauma-canonical: faija is a private
-# repository and publishes nothing, so a git dependency would cost every build a
+# its own. Carried rather than fetched, like sauma-canonical: faija
+# publishes no crate, so a git dependency would cost every build a
 # credential. There is still exactly one implementation, distributed rather than
 # linked, and `tests/vendored_faija_terms.rs` recomputes the digest on every
 # run, so an edit here fails the build and shows up as a diff touching

@@ -319,7 +319,7 @@ mod staging_tests {
     /// Sykli (`git add --all` on a scratch index) and every other Git reader
     /// list untracked files, then stat them. A temp file Git can list
     /// vanishes under it at the rename: `fatal: unable to stat
-    /// '.toimija/current.json.tmp-…'` (audit 2026-10-09, 2 of 12 runs).
+    /// '.toimija/current.json.tmp-…'`.
     #[test]
     fn git_never_lists_a_replacement_in_flight() {
         let runner = ProcessCommandRunner;

@@ -50,7 +50,7 @@ pub struct GitState {
     /// `branch_diff_coverage` says whether an empty list is a real observation
     /// or a blind spot.
     pub branch_files: Vec<ChangedFile>,
-    /// Coverage of the merge-base diff behind `branch_files` (R10, TA-005):
+    /// Coverage of the merge-base diff behind `branch_files`:
     /// `available` means the (possibly empty) list is trustworthy; `degraded`
     /// means the diff could not apply (no merge-base); `failed` means the diff
     /// command itself failed and the list is unknown, not empty.
@@ -901,7 +901,7 @@ fn run_git_ok_bytes(runner: &impl CommandRunner, cwd: &Path, args: &[&str]) -> O
 /// The coverage source label for the merge-base branch diff.
 const BRANCH_DIFF_SOURCE: &str = "git diff --name-status <merge-base> HEAD";
 
-/// Run a git command for a stage whose failure affects a product claim (R10):
+/// Run a git command for a stage whose failure affects a product claim:
 /// unlike [`run_git_ok_bytes`], spawn failure and a nonzero exit come back as
 /// distinct, safe diagnostics instead of collapsing into `None`.
 pub(crate) fn run_git_observed(
@@ -1602,7 +1602,7 @@ R094\tsrc/old.rs\tsrc/renamed.rs
             assert_eq!(parse_discovery(stdout), None, "{stdout:?}");
         }
 
-        // Discovery then reads the root alone, as before, and leaves the
+        // Discovery then reads the root alone and leaves the
         // rest to the readers that need it.
         let runner = FakeRunner::default()
             .with(
@@ -1913,7 +1913,7 @@ mod token_state_tests {
 
         for generated in [
             ".sykli/receipt.json",
-            ".teko/teko.redb",
+            ".teko/state.redb",
             ".toimija/current.json",
         ] {
             let path = root.join(generated);

@@ -309,9 +309,8 @@ fn replace_inferred_drops_guesses_but_keeps_the_declared_gate() {
     if !git_available() {
         return;
     }
-    // perusta, selko, taso, ote, kide and ruuma set replace_inferred to drop
-    // toimija's cargo-shape guesses, before any gate existed. A declared gate
-    // is not a guess.
+    // A repository may set replace_inferred to drop toimija's cargo-shape
+    // guesses. A declared gate is not a guess.
     let temp = tempfile::tempdir().unwrap();
     rust_repo_with_contract(
         temp.path(),
@@ -340,7 +339,7 @@ fn repo_config_can_name_its_own_gate_command_or_opt_out() {
     if !git_available() {
         return;
     }
-    // ote runs its gate through mise; the override is named as written.
+    // A repository may run its gate through mise; the override is named as written.
     let mise = "mkdir -p .sykli && mise exec -- sykli run sykli.json --json > .sykli/receipt.json && mise exec -- sykli verify .sykli/receipt.json --contract sykli.json";
     let temp = tempfile::tempdir().unwrap();
     rust_repo_with_contract(

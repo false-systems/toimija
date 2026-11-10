@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" fill="none" role="img" aria-labelledby="t d">
+<title id="t">toimija</title>
+<desc id="d">One repository state, drawn as a persistent circle, read by four agent sessions around it. One session is new and one has ended.</desc>
+<rect width="1200" height="360" fill="#f1ebdc"/>
+<g stroke="#171715" stroke-width="2">
+<path d="M40 40H56M48 32V48M1144 320H1160M1152 312V328"/>
+<path d="M64 286H560" stroke="#b9b3a5"/>
+<circle cx="900" cy="170" r="74" fill="#c75b36" stroke="none"/>
+<circle cx="900" cy="170" r="52" stroke="#171715"/>
+<path d="M900 96V56M900 244V284M826 170H760M974 170H1040"/>
+<path d="M870 20H930V56H870Z"/>
+<path d="M870 284H930V320H870Z" fill="#d4aa4e"/>
+<path d="M700 140H760V200H700Z"/>
+<path d="M1040 140H1100V200H1040Z" stroke-dasharray="6 8"/>
+</g>
+<text x="64" y="188" font-family="Geist, 'Helvetica Neue', Arial, sans-serif" font-size="132" font-weight="600" letter-spacing="-7" fill="#171715">toimija</text>
+<text x="66" y="254" font-family="'Geist Mono', ui-monospace, Menlo, monospace" font-size="24" fill="#57594f">FACTS FOR AGENTS. NO DECISIONS.</text>
+<g fill="#171715" font-family="ui-monospace, Menlo, monospace" font-size="18" text-anchor="middle"><text x="900" y="177">STATE</text></g>
+</svg>

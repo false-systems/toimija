@@ -3,7 +3,7 @@ use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
 
-// `run` outside any Git repository (issue #225): a visible session with no
+// `run` outside any Git repository: a visible session with no
 // packet, recorded in the state directory, never in the folder itself.
 
 mod common;

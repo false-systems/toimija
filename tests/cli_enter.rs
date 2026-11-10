@@ -306,8 +306,8 @@ fn the_sweep_never_follows_a_committed_symlink_out_of_the_repository() {
     }
 }
 
-/// `toimija handover` leaves a note for the next agent in this working copy
-/// (issue #251): no session needed, shown under "Last handover" in every
+/// `toimija handover` leaves a note for the next agent in this working copy:
+/// no session needed, shown under "Last handover" in every
 /// packet built here, the live `.toimija/current.md` included at once, and
 /// replaced by the next one.
 #[test]

@@ -148,8 +148,8 @@ pub enum Command {
     /// `toimija sessions --outside-repos` lists it.
     #[command(
         after_help = "Examples:\n  toimija run claude   # a session; say why later with `toimija intent`\n  \
-        toimija run --intent \"fix #51\" --task \"fix the login redirect\" -- claude   # packet + task in the launch prompt\n  \
-        toimija run --intent \"fix #51\" --scope src/cli.rs -- codex   # declare intent/scope for siblings\n  \
+        toimija run --intent \"fix the redirect\" --task \"fix the login redirect\" -- claude   # packet + task in the launch prompt\n  \
+        toimija run --intent \"fix the redirect\" --scope src/cli.rs -- codex   # declare intent/scope for siblings\n  \
         toimija run --intent unknown --for-diff --budget 4000 -- sh -c '…'   # tune the packet the child sees\n  \
         cd ~/projects && toimija run --intent \"cross-repo sweep\" --scope ~/projects/a -- claude   # outside a repo: a session, no packet"
     )]
@@ -163,7 +163,7 @@ pub enum Command {
     /// assignment, never a lock. Writes one marker file; no network.
     #[command(
         after_help = "Examples:\n  toimija intent \"migrating the auth module\"\n  \
-        toimija intent \"fix #51\" --scope src/cli.rs --scope tests/cli_run.rs"
+        toimija intent \"fix the redirect\" --scope src/cli.rs --scope tests/cli_run.rs"
     )]
     Intent(IntentArgs),
     /// Leave a handover for the next agent in this working copy.
@@ -177,7 +177,7 @@ pub enum Command {
     #[command(
         after_help = "Examples:\n  toimija handover --unfinished \"the parser's error tests\" \
         --next \"the lexer is done; start at src/parse.rs\"\n  \
-        toimija handover --surprised \"cargo builds go to ~/.cargo-target, not ./target\""
+        toimija handover --surprised \"the build writes to a shared target folder\""
     )]
     Handover(HandoverArgs),
     /// List durable records of concluded sessions.
@@ -358,8 +358,8 @@ pub struct RunArgs {
 /// that is.
 const RUN_TEXT_OPTIONS: [&str; 3] = ["--task", "--briefing", "--alert"];
 
-/// Issue #237: `--briefing --task "fix it"` took `--task` as the briefing and
-/// launched a program named `fix it`. When the argument after a spaced
+/// Without this check `--briefing --task "fix it"` takes `--task` as the
+/// briefing and launches a program named `fix it`. When the argument after a spaced
 /// `--task`, `--briefing` or `--alert` is one of `run`'s own flags, or the
 /// `--` before the command, the value was left out, and that is refused as a
 /// usage error before anything runs. The `=` form says the value is intended,
@@ -806,10 +806,10 @@ fn run_enter(args: ContextArgs) -> Result<()> {
     Ok(())
 }
 
-/// Refresh honoring the run handshake (issue #68): when this process runs
+/// Refresh honoring the run handshake: when this process runs
 /// inside a `toimija run` session, target *that session's* packet — the one
 /// `$TOIMIJA_LIVE` points the agent at — which also mirrors to the repo-level
-/// summary (decision D3). Sessionless invocations keep writing only
+/// summary. Sessionless invocations keep writing only
 /// `.toimija/current.*`. Updating one's own packet is activity, so the
 /// session heartbeat is stamped too.
 fn ambient_refresh(
@@ -872,7 +872,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
     let runner = ProcessCommandRunner;
     let worktree = match git::discover(&runner, &cwd) {
         Ok(worktree) => worktree,
-        // Git ran and said no: a session outside any repository (issue #225).
+        // Git ran and said no: a session outside any repository.
         // A missing git stays an error — that is not the same as "no repo".
         Err(crate::error::ToimijaError::NotGitRepo) => {
             return run_outside_repo(args, &cwd, &termination);
@@ -989,7 +989,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         let runner = ProcessCommandRunner;
         watch_session.run(&runner, &watch_plan, &watcher_stop, || {
             watcher_refreshes.fetch_add(1, Ordering::Relaxed);
-            // Heartbeat (proposal 0002): an event worth a refresh is worth a
+            // Heartbeat: an event worth a refresh is worth a
             // `last_seen_at` stamp, so staleness measures inactivity rather
             // than lifetime. Best-effort — never interrupts the watch loop.
             if let Err(error) = session::touch(&watch_root, &heartbeat_id) {
@@ -1016,7 +1016,7 @@ fn run_run(mut args: RunArgs) -> Result<i32> {
         .command
         .split_first()
         .expect("clap `required = true` guarantees at least one argument");
-    // Proposal 0006 Part C: for a known or configured agent the packet travels
+    // For a known or configured agent the packet travels
     // in argv — in context by construction. Anything else keeps the env-var
     // handshake, and says so instead of silently degrading. The `agents:`
     // section of repo.yaml extends the built-in table so any harness can be
@@ -1308,8 +1308,8 @@ impl Drop for TerminationWatch {
 /// interactive foreground program and must keep the terminal (a background
 /// process group reading the tty is stopped with SIGTTIN) — so Ctrl-C still
 /// reaches it directly from the tty; forwarded here are the signals that target
-/// this PID specifically. Registering SIGINT also means an interrupt no longer
-/// kills the wrapper before it can close the session marker and print the exit
+/// this PID specifically. Registering SIGINT also means an interrupt does not
+/// kill the wrapper before it can close the session marker and print the exit
 /// summary.
 #[cfg(unix)]
 fn supervise_agent(
@@ -1457,7 +1457,7 @@ fn verify_run_entry(
     unreachable!("the two-attempt entry gate always returns or errors")
 }
 
-/// `run` outside any Git repository (issue #225): a visible session with no
+/// `run` outside any Git repository: a visible session with no
 /// packet. The marker lives under the machine-local state root (never in
 /// `folder`), a heartbeat keeps it from reading stale while the agent works,
 /// and `toimija sessions --outside-repos` lists it. What needs Git — the
@@ -1791,7 +1791,7 @@ fn journal_closed_session(repo_root: &std::path::Path, session: &session::Sessio
     }
 }
 
-/// What the session consumed of toimija — and nothing else. Proposal 0006 D7:
+/// What the session consumed of toimija — and nothing else:
 /// built only from toimija-owned state (the session marker); nothing observed
 /// about the agent's behavior or file access.
 struct Consumption {
@@ -1988,7 +1988,7 @@ fn run_landed(args: LandedArgs) -> Result<()> {
 ///
 /// A move the token observes is refused here. That is the most the token can
 /// give: it is a freshness check over what `git status` lists, and some changes
-/// to the tree never reach that list (README, "Repository points", "Known
+/// to the tree never reach that list (docs/reference.md, "Known
 /// gaps"). So equal tokens never prove equal trees; a consumer that needs one
 /// exact State compares the tree oid (or a repository point's id, which is
 /// derived from the tree), and reads content from that immutable tree.
@@ -2476,8 +2476,8 @@ enum StoredPacket {
 }
 
 /// Why a packet of `schema` is not read here, if it is not. A packet is read
-/// under its own schema's rules: one an earlier toimija wrote (the
-/// `toimija-context.v2` seal sat under `sauma`, say) is refused with the way
+/// under its own schema's rules: one an earlier toimija wrote (with
+/// another `toimija-context` version) is refused with the way
 /// out; one this toimija does not know at all is refused as such.
 ///
 /// The way out depends on who writes the packet. An older `toimija run` keeps
@@ -2704,7 +2704,7 @@ fn run_sessions(args: SessionsArgs) -> Result<()> {
         Some(_) => false,
     };
     let repo_root = if outside {
-        // Sessions `run` opened outside any repository (issue #225). Reading
+        // Sessions `run` opened outside any repository. Reading
         // them never creates the state directory; an absent one holds none.
         session::outside_root().with_context(|| {
             format!(
@@ -2908,7 +2908,7 @@ fn run_handover(args: HandoverArgs) -> Result<()> {
 
 /// Where session `id` lives: the repository the command runs in when its
 /// marker is there, else the state root when `run` opened it outside any
-/// repository (issue #225) — so an agent from such a session can still speak
+/// repository — so an agent from such a session can still speak
 /// after changing into a repo. The root is found by looking, never taken from
 /// the environment, so a handshake cannot steer writes elsewhere.
 fn session_root(

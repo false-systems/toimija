@@ -18,9 +18,7 @@ fn readme_states_the_git_state_thesis() {
 
 #[test]
 fn readme_states_git_is_the_substrate() {
-    // The dedicated "Git as the starting point" section was folded into the
-    // identity block (it triple-stated the thesis); the guarantee is the
-    // substance, verbatim, not the heading.
+    // The guarantee is the substance, verbatim, not a heading.
     assert!(
         README.contains("Git is not a save button here. Git is the substrate."),
         "README.md must keep the Git-substrate statement"
@@ -142,7 +140,7 @@ fn sauma_schema_matches_emitted_envelope_fields() {
     }
 }
 
-/// Pins the sauma canonical form and digest to a fixed vector so the digest law
+/// Pins the seal's canonical form and digest to a fixed vector so the digest law
 /// is enforced by CI, not just described in prose. The schema `description`
 /// promises "object keys sorted lexicographically at every level"; this proves
 /// the code delivers exactly that and that the digest is a stable content-address

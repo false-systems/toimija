@@ -1,4 +1,4 @@
-//! Agent launch adapters (proposal 0006 Part C): argv composition for known
+//! Agent launch adapters: argv composition for known
 //! agent CLIs. The composed launch prompt is the one delivery channel with a
 //! guarantee — the agent cannot not-see its own argv — so under `toimija run`
 //! the packet is in context by construction. Idle Codex launches carry it in
@@ -377,8 +377,8 @@ pub fn compose_launch_prompt(
     Some(prompt)
 }
 
-/// Compose the launch prompt for a session outside any Git repository (issue
-/// #225): no packet to inline, and the agent is told so rather than left to
+/// Compose the launch prompt for a session outside any Git repository:
+/// no packet to inline, and the agent is told so rather than left to
 /// look for one. `None` for agents without a resolved delivery style.
 pub fn compose_outside_prompt(
     program: &str,
@@ -710,7 +710,7 @@ mod tests {
             "codex",
             "# Toimija Context\n\nbody\n",
             &live,
-            Some("fix #51"),
+            Some("fix the redirect"),
             &no_config(),
         )
         .unwrap();
@@ -727,7 +727,7 @@ mod tests {
         assert!(prompt.contains("run `toimija verify` before commit or handoff"));
         assert!(prompt.contains(".toimija/sessions/1-1/current.md"));
         assert!(prompt.contains("# Toimija Context"));
-        assert!(prompt.ends_with("Task: fix #51\n"));
+        assert!(prompt.ends_with("Task: fix the redirect\n"));
     }
 
     #[test]
