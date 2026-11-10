@@ -101,13 +101,12 @@ that is started some other way gets the same packet with `toimija enter`.
 
 ## How it fits
 
-Toimija is one of five tools. Each works alone.
+Toimija is one of four tools. Each works alone.
 
 - **toimija**: facts about a repository for agents.
 - **sykli**: declared checks and proof.
 - **ohjaa**: what agents are told, decided by a person.
 - **vessa**: what agents used.
-- **faija**: the words they share.
 
 ## What it does not do
 
