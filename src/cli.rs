@@ -638,7 +638,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::History(args) => run_history(args).map(|()| 0),
         Command::Clean(args) => run_clean(args).map(|()| 0),
         Command::Landed(args) => run_landed(args).map(|()| 0),
-        Command::Graph(args) => run_graph(args).map(|()| 0),
+        Command::Graph(args) => run_graph(args),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
         Command::Validate(args) => run_validate(args).map(|()| 0),
         Command::Verify(args) => run_verify(args),
@@ -1989,7 +1989,9 @@ fn run_watch(args: ContextArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_graph(args: GraphArgs) -> Result<()> {
+/// Exit code 4 when part of the picture could not be read: the graph is
+/// printed, with what is missing named, but it is not the whole of it.
+fn run_graph(args: GraphArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
     let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
@@ -1999,7 +2001,7 @@ fn run_graph(args: GraphArgs) -> Result<()> {
     } else {
         print!("{}", crate::graph::render_text(&graph));
     }
-    Ok(())
+    Ok(if graph.warnings.is_empty() { 0 } else { 4 })
 }
 
 fn run_landed(args: LandedArgs) -> Result<()> {

@@ -90,6 +90,29 @@ fn graph_shows_a_session_open_on_the_branch_with_its_intent() {
 }
 
 #[test]
+fn graph_exits_4_and_says_what_is_missing_when_a_session_marker_is_unreadable() {
+    if !git_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    fs::create_dir_all(dir.path().join(".toimija/sessions")).unwrap();
+    fs::write(
+        dir.path().join(".toimija/sessions/broken.json"),
+        "not a marker",
+    )
+    .unwrap();
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("graph")
+        .assert()
+        .code(4)
+        .stdout(predicate::str::contains("work"))
+        .stdout(predicate::str::contains("warning: the sessions of"));
+}
+
+#[test]
 fn graph_outside_a_repository_fails() {
     let dir = tempfile::tempdir().unwrap();
     Command::cargo_bin("toimija")

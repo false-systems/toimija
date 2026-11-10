@@ -947,8 +947,11 @@ $ toimija graph
 
 `--json` prints `toimija-graph.v1`: the base, the lines in order (a tip with
 its commit, branches, subject, proof, review and sessions, or a graph edge)
-and `warnings` naming what could not be read. It is read-only and asks no
-network.
+and `warnings` naming what could not be read. With a warning the graph is
+still printed and the exit code is 4: it is not the whole picture. A branch
+that was squash-merged is not an ancestor of the base, so it stays in the
+graph until it is deleted; `toimija landed` answers that by content. It is
+read-only and asks no network.
 
 ## Did the work land? (`toimija landed`)
 

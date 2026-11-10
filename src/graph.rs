@@ -270,6 +270,18 @@ fn present(
                 continue;
             }
         };
+        if report.coverage.status != crate::coverage::CoverageStatus::Available {
+            // A marker that could not be read may be a live session.
+            warnings.push(format!(
+                "the sessions of {} were read only in part: {}",
+                worktree.display(),
+                report
+                    .coverage
+                    .reason
+                    .as_deref()
+                    .unwrap_or("a session marker could not be read")
+            ));
+        }
         for view in report.sessions {
             let liveness = match view.liveness {
                 Liveness::Active => "live",
@@ -564,6 +576,38 @@ mod tests {
         assert!(text.contains("review: BLOCKING"), "{text}");
         assert!(text.contains("FAILED"), "{text}");
         assert!(text.contains("review: unreadable"), "{text}");
+    }
+
+    #[test]
+    fn a_branch_already_in_the_base_is_not_in_progress() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        // The base moves on to `other`; `main` is now behind it, inside it.
+        run(root, &["update-ref", "refs/remotes/origin/main", "other"]);
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        let shown: Vec<&String> = tips(&graph).iter().flat_map(|tip| &tip.branches).collect();
+        assert!(!shown.iter().any(|name| *name == "main"), "{shown:?}");
+        assert!(shown.iter().any(|name| *name == "work"), "{shown:?}");
+        assert!(shown.iter().any(|name| *name == "other"), "{shown:?}");
+    }
+
+    #[test]
+    fn an_unreadable_session_marker_is_a_warning_not_silence() {
+        let Some(dir) = repo() else { return };
+        let root = dir.path();
+        fs::create_dir_all(root.join(".toimija/sessions")).unwrap();
+        fs::write(root.join(".toimija/sessions/broken.json"), "not a marker").unwrap();
+        let none = |_: &Path, _: &str| Proof::NotRun;
+        let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
+        assert!(
+            graph
+                .warnings
+                .iter()
+                .any(|w| w.contains("read only in part")),
+            "{:?}",
+            graph.warnings
+        );
     }
 
     #[test]
