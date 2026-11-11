@@ -143,7 +143,7 @@ pub fn execution_context(
 }
 
 /// The repository point of the state `git` was read as, whose token is
-/// `consistency`: the token, and the tree-identity.v1 tree written from the
+/// `consistency`: the token, and the tree-identity.v2 tree written from the
 /// worktree. A point reads nothing else: `git` may be a whole packet's state
 /// or only what a token fingerprints. Its id is derived from both
 /// ([`point_ref`]), so two points with one id hold one tree, whatever the
@@ -314,11 +314,11 @@ mod tests {
         let extensions = point_extensions();
         assert_eq!(
             extensions[TREE_ALGORITHM_EXTENSION],
-            serde_json::Value::String("tree-identity.v1".to_string())
+            serde_json::Value::String("tree-identity.v2".to_string())
         );
         assert_eq!(
             extensions[CONSISTENCY_ALGORITHM_EXTENSION],
-            serde_json::Value::String("toimija-consistency-v3".to_string())
+            serde_json::Value::String("toimija-consistency-v4".to_string())
         );
     }
 
@@ -327,7 +327,7 @@ mod tests {
         let repository = repository_ref(Path::new(".")).unwrap();
         assert!(repository.as_str().starts_with("repo_"));
         let id = |token: &str, tree: &str| {
-            point_ref(&repository, "consistency", token, "tree-identity.v1", tree).unwrap()
+            point_ref(&repository, "consistency", token, "tree-identity.v2", tree).unwrap()
         };
         assert_eq!(id("token", "tree"), id("token", "tree"));
         assert_ne!(id("token", "tree"), id("other", "tree"));
@@ -340,16 +340,16 @@ mod tests {
     #[test]
     fn a_point_id_covers_its_tree_and_both_algorithms() {
         let repository = repository_ref(Path::new(".")).unwrap();
-        let base = point_ref(&repository, "c", "token", "tree-identity.v1", "aaaa").unwrap();
+        let base = point_ref(&repository, "c", "token", "tree-identity.v2", "aaaa").unwrap();
         for other in [
-            point_ref(&repository, "c", "token", "tree-identity.v1", "bbbb"),
+            point_ref(&repository, "c", "token", "tree-identity.v2", "bbbb"),
             point_ref(&repository, "c", "token", "toimija-legacy", "aaaa"),
-            point_ref(&repository, "c2", "token", "tree-identity.v1", "aaaa"),
+            point_ref(&repository, "c2", "token", "tree-identity.v2", "aaaa"),
             point_ref(
                 &RepositoryRef::parse("repo_other").unwrap(),
                 "c",
                 "token",
-                "tree-identity.v1",
+                "tree-identity.v2",
                 "aaaa",
             ),
         ] {
@@ -357,7 +357,7 @@ mod tests {
         }
         // Fields are delimited: moving a byte across a boundary is another id.
         assert_ne!(
-            point_ref(&repository, "c", "token", "tree-identity.v1a", "aaa").unwrap(),
+            point_ref(&repository, "c", "token", "tree-identity.v2a", "aaa").unwrap(),
             base
         );
         // 64 hex digits after the marker, inside the protocol's id limits.

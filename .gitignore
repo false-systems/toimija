@@ -17,9 +17,6 @@
 # The note for the next agent in this working copy — written by `toimija handover`.
 .toimija/handover.json
 
-# Generated state of another tool; tree-identity.v1 names this folder.
-.teko/
-
 # Harness run transcripts — generated, never committed. Ignored so
 # a harness writing its own transcript does not invalidate the packet it verified.
 .toimija/runs/

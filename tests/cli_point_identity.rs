@@ -294,7 +294,7 @@ fn row_6_an_edit_the_stat_cache_misses_gets_a_new_point() {
 
 /// Row 7: one commit, in a full checkout and then a sparse one. The sparse
 /// checkout keeps namespace content outside its cone in the tree
-/// (tree-identity.v1 as specified).
+/// (tree-identity.v2 as specified).
 #[test]
 fn row_7_a_sparse_and_a_full_checkout_of_one_commit_get_different_points() {
     if !git_available() {
@@ -419,7 +419,7 @@ fn a_change_undone_during_the_write_gets_its_own_point() {
 }
 
 /// sykli writes receipts into a `.sykli/` that git can see, at every step of
-/// the tree write. tree-identity.v1
+/// the tree write. tree-identity.v2
 /// leaves `.sykli/` out, so the tree holds still — and since the token
 /// leaves out exactly what the tree leaves out, the token holds still too.
 /// A token that saw every receipt would have the point refused after three
@@ -492,7 +492,7 @@ fn a_sykli_receipt_does_not_make_the_packet_stale() {
     assert_eq!(stale["status"], "stale_packet", "{stale}");
 }
 
-const TOKEN_VERSION: &str = "toimija-consistency-v3";
+const TOKEN_VERSION: &str = "toimija-consistency-v4";
 
 /// Every record that carries a token or a point names its version: the point
 /// envelope and the session packet's execution context in `extensions`, beside
@@ -514,7 +514,7 @@ fn points_and_tokens_name_their_version() {
         envelope["extensions"]["consistency_algorithm"],
         TOKEN_VERSION
     );
-    assert_eq!(envelope["extensions"]["tree_algorithm"], "tree-identity.v1");
+    assert_eq!(envelope["extensions"]["tree_algorithm"], "tree-identity.v2");
     let id = envelope["repository"]["id"].as_str().unwrap();
     assert!(id.starts_with("rpoint_v3_"), "{id}");
     let token = envelope["repository"]["consistency_token"]
@@ -566,7 +566,7 @@ fn points_and_tokens_name_their_version() {
 
 /// A packet written by an earlier toimija carries an earlier token version.
 /// Its token keeps the meaning it was written with and is never recomputed
-/// under v3 — so `verify` can say neither "fresh" nor "stale" about it, only
+/// under the current version — so `verify` can say neither "fresh" nor "stale" about it, only
 /// "not comparable", and a refresh replaces it.
 #[test]
 fn a_packet_from_an_earlier_token_version_is_not_comparable() {
@@ -581,7 +581,11 @@ fn a_packet_from_an_earlier_token_version_is_not_comparable() {
     let path = root.join(".toimija/current.json");
     let fresh = fs::read_to_string(&path).unwrap();
 
-    for earlier in ["toimija-consistency-v2", "toimija-consistency-v1"] {
+    for earlier in [
+        "toimija-consistency-v3",
+        "toimija-consistency-v2",
+        "toimija-consistency-v1",
+    ] {
         let mut packet: serde_json::Value = serde_json::from_str(&fresh).unwrap();
         packet["consistency"]["algorithm"] = serde_json::json!(earlier);
         fs::write(&path, serde_json::to_string_pretty(&packet).unwrap()).unwrap();

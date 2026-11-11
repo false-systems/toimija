@@ -317,8 +317,8 @@ fn is_dirty(parsed: &ParsedStatus) -> bool {
 }
 
 /// Whether any listed path is the repository's own work: one outside the
-/// generated namespaces the consistency token and tree-identity.v1 leave out
-/// (`.toimija/`, `.teko/`, `.sykli/`; `.toimija/repo.yaml` is work). `dirty`
+/// generated namespaces the consistency token and tree-identity.v2 leave out
+/// (`.toimija/` and `.sykli/`; `.toimija/repo.yaml` is work). `dirty`
 /// is read from these lists filtered as the token filters them, so a packet
 /// never calls a state dirty that its token and its point id call unchanged,
 /// and a gate's receipt counts the same on every machine, whatever its global
@@ -341,7 +341,7 @@ pub(crate) fn has_work(
 
 /// Whether `path` is the repository's own work rather than generated tool
 /// state: Toimija's own files under `.toimija/` (but not `.toimija/repo.yaml`),
-/// and `.teko/` and `.sykli/`, which the token and the tree leave out too.
+/// and `.sykli/`, which the token and the tree leave out too.
 pub(crate) fn is_work(path: &Path) -> bool {
     !crate::consistency::is_generated_output(path)
 }
@@ -1911,11 +1911,7 @@ mod token_state_tests {
         assert!(!clean.dirty);
         let token = Consistency::fingerprint(&clean).token;
 
-        for generated in [
-            ".sykli/receipt.json",
-            ".teko/state.redb",
-            ".toimija/current.json",
-        ] {
+        for generated in [".sykli/receipt.json", ".toimija/current.json"] {
             let path = root.join(generated);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "generated\n").unwrap();
