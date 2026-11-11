@@ -19,7 +19,7 @@ Contents:
 - [The packet](#the-packet)
 - [Checking freshness: `verify`](#checking-freshness-verify)
 - [Repository points](#repository-points)
-- [tree-identity.v1](#tree-identityv1)
+- [tree-identity.v2](#tree-identityv2)
 - [Snapshots](#snapshots)
 - [The seal](#the-seal)
 - [Sessions](#sessions)
@@ -228,8 +228,8 @@ moved HEAD are shown as `before → after`. The intent and expansion lines come
 from the session marker, never from watching the agent.
 
 The worktree line counts the repository's own work. Toimija's files are never
-counted, even in a repository where Git lists them, and neither are the other
-generated-state folders (see [Repository points](#repository-points)).
+counted, even in a repository where Git lists them, and neither is `.sykli/`,
+where sykli keeps its receipts (see [tree-identity.v2](#tree-identityv2)).
 
 ### Outside a repository
 
@@ -609,17 +609,17 @@ toimija -q repository-point --json
 {
   "protocol": { "major": 1, "minor": 0 },
   "repository": {
-    "id": "rpoint_v3_48f8052f7b046d137d2b6cd2d71558bece4706e3877388246e3c805acfad18bd",
-    "repository": "repo_78f24503915d687826f623de5de1cd204958fe7086f56c8b30833d41990cb6ff",
-    "consistency_token": "sha256:36f3ee63d6a14669238371a467f17a8c8ce4d4422e2ef4e3b299996e35e098be",
-    "tree_oid": "e009288e3f8f775b96c883b83a32a243bfc07a09",
+    "id": "rpoint_v3_100b6c5a6e0ba127b4db9a2e5fd80c4b9ee60a6fcfb3482f149bec454db65e4b",
+    "repository": "repo_07074bc5787f928caf06539664b4fadb1a7b9d23d956e51b5650f8c68da12c32",
+    "consistency_token": "sha256:947e96d26c47cdbb6d44c2d15203504ffb902f4d5c7217cb60f28bc5fa0f7ae7",
+    "tree_oid": "67a94e84b0d48ba9342f06470e401ffd5919fce6",
     "branch": "fix/login-redirect",
     "dirty": true,
-    "captured_at": "2026-11-10T14:30:57.253835Z"
+    "captured_at": "2026-11-11T15:50:00.60271Z"
   },
   "extensions": {
-    "consistency_algorithm": "toimija-consistency-v3",
-    "tree_algorithm": "tree-identity.v1"
+    "consistency_algorithm": "toimija-consistency-v4",
+    "tree_algorithm": "tree-identity.v2"
   }
 }
 ```
@@ -630,7 +630,7 @@ v1 `RepositoryPointEnvelope`. Inside a session the same point is at
 `$FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the session's packet carries it as
 `session.execution.repository`.
 
-The tree is [tree-identity.v1](#tree-identityv1): every tracked path and every
+The tree is [tree-identity.v2](#tree-identityv2): every tracked path and every
 untracked path that is not ignored, without the generated-state folders, and
 with `.toimija/repo.yaml` always included. Snapshots, leases, repository
 points and session packets all carry this one tree and name its algorithm.
@@ -644,7 +644,7 @@ tree. The reverse does not hold: two points can share a tree and differ in
 HEAD, the index or the branch.
 
 **The token is a freshness check, not an identity.** Equal tokens do not mean
-equal trees. The token leaves out exactly what tree-identity.v1 leaves out, so
+equal trees. The token leaves out exactly what tree-identity.v2 leaves out, so
 a tool that writes into a generated-state folder moves neither the tree nor
 the token.
 
@@ -679,22 +679,24 @@ change, `verify` still passes the packet and a held point still looks current.
 | One commit in a sparse and in a full checkout | differ | blind |
 | A change made and undone while the tree is written | the point names the tree it wrote | blind |
 
-Three edge cases belong to tree-identity.v1 itself. An ignored
+Three edge cases belong to tree-identity.v2 itself. An ignored
 `.toimija/repo.yaml` outside a sparse cone makes the tree write fail. So does
 a symlinked `.toimija/`. And "not ignored" depends on each machine's global
 ignore file, so one content can have two trees on two machines.
 
 ### Versions
 
-Points and tokens carry their version. The token is `toimija-consistency-v3`
-and point ids begin `rpoint_v3_`. A token or id of another version keeps the
+Points and tokens carry their version. The token is `toimija-consistency-v4`
+and point ids begin `rpoint_v3_`. A point id covers the token's version and
+the tree's algorithm, so a point of another token version or tree algorithm
+has another id. A token or id of another version keeps the
 meaning it was written with. Toimija never recomputes or relabels it, and a
 comparison across versions says **not comparable**, never equal or different.
 
 The token has the shape `sha256:<hex>`. Its hash covers the version name, so
 tokens of two versions never coincide.
 
-## tree-identity.v1
+## tree-identity.v2
 
 Tree identity says which content makes up one version of a repository's work.
 It is how Toimija names an exact state. The rule is written down here and
@@ -706,8 +708,9 @@ without the namespaces of generated tool state that the version fixes, and
 with the tool configuration that the version forces in, whether or not Git
 ignores it.
 
-- **Excluded namespaces.** `.toimija`, `.teko` and `.sykli`: three folders of
-  generated tool state at the repository root.
+- **Excluded namespaces.** `.toimija` and `.sykli`: two folders of generated
+  tool state at the repository root. Any other folder is work, a dot-folder
+  included.
 - **Forced-in configuration.** `.toimija/repo.yaml`. It is configuration, so
   it is part of the work.
 
@@ -719,7 +722,7 @@ The steps run in this order against a throwaway index:
 | --- | --- |
 | Seed from HEAD | `read-tree HEAD`. A failure is tolerated: a repository with no commit has no tracked files. |
 | Overlay the worktree | `add -A -- <excludes>`, with one exclude pathspec for each namespace, such as `:(exclude,top,glob)[.]toimija/**`. |
-| Drop the namespaces | `rm --cached -r -q --ignore-unmatch .toimija .teko .sykli`. This removes namespace content that is tracked. |
+| Drop the namespaces | `rm --cached -r -q --ignore-unmatch .toimija .sykli`. This removes namespace content that is tracked. |
 | Force-add the configuration | `add -f -- .toimija/repo.yaml`, only when the file exists in the worktree. |
 | Write the tree | `write-tree`. Its output is the tree identity. |
 
@@ -730,7 +733,7 @@ Any tool can run these steps with plain `git` and get the same tree.
 
 - **Frozen.** The namespaces, the configuration path and the step order are
   part of the version. Changing one changes every identity already recorded,
-  so it needs a new version. A test, `v1_definition_is_frozen`, pins all
+  so it needs a new version. A test, `v2_definition_is_frozen`, pins all
   three, and an edit to any of them fails the build.
 - **No registration.** The namespaces are not read from configuration.
   Configuration that changes later must not change what an earlier identity
@@ -739,7 +742,7 @@ Any tool can run these steps with plain `git` and get the same tree.
   tool writes generated state there. A folder that nothing writes to is
   ordinary work content, and it moves the identity.
 - **The id is recorded.** Every record that carries a tree names its
-  algorithm, `tree-identity.v1`, beside it.
+  algorithm, `tree-identity.v2`, beside it.
 - **A tree identity is not the whole state of a repository.** HEAD, the index
   and an operation in progress are outside it. Two repositories can share a
   tree and differ in the rest.
@@ -756,7 +759,7 @@ toimija snapshot --release <ID>
 `verify` says whether a packet is fresh now. A reader that needs one version
 to stay readable while the worktree keeps moving takes a snapshot.
 `snapshot` writes the working tree, untracked files included, as a Git tree
-object under tree-identity.v1. Files are then readable at that version with
+object under tree-identity.v2. Files are then readable at that version with
 `git cat-file`.
 
 - `--lease` pins the snapshot with a Git ref under `refs/toimija/`, so

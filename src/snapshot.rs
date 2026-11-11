@@ -4,7 +4,7 @@
 //! time-of-use gap: the bytes a reader sees cannot change under it, because it
 //! reads frozen git objects, not the mutable worktree.
 //!
-//! The tree is **tree-identity.v1**: the identity of a working State,
+//! The tree is **tree-identity.v2**: the identity of a working State,
 //! computed by the canonical procedure in `crate::tree_identity`.
 //! Toimija has one tree algorithm. Every tree it writes
 //! — snapshots, leases, repository points, session packets — is that one, and
@@ -35,13 +35,13 @@ use crate::tree_identity::{Step, TreeIdentityAlgorithm};
 
 /// The tree-identity algorithm Toimija computes. Named here, so that moving
 /// to a later version is a decision made in this file.
-pub const TREE_ALGORITHM: TreeIdentityAlgorithm = TreeIdentityAlgorithm::V1;
+pub const TREE_ALGORITHM: TreeIdentityAlgorithm = TreeIdentityAlgorithm::V2;
 
 /// What a stored tree that names no algorithm was computed with: a procedure
-/// of Toimija's own that is not tree-identity.v1, in a form nothing recorded.
+/// of Toimija's own that is not tree-identity.v2, in a form nothing recorded.
 /// Such a tree keeps
 /// exactly the meaning it had when written: it is read as this, never
-/// recomputed or relabelled as tree-identity.v1.
+/// recomputed or relabelled as tree-identity.v2.
 pub const LEGACY_TREE_ALGORITHM: &str = "toimija-legacy";
 
 fn legacy_tree_algorithm() -> String {
@@ -90,9 +90,9 @@ pub fn tree_at_token(
     Ok(tree)
 }
 
-/// Materialize the working tree as its tree-identity.v1 git tree object and
+/// Materialize the working tree as its tree-identity.v2 git tree object and
 /// return the oid: every tracked and untracked non-ignored path, without the
-/// generated namespaces `.toimija`, `.teko` and `.sykli`, with
+/// generated namespaces `.toimija` and `.sykli`, with
 /// `.toimija/repo.yaml` forced in even when ignored. Uses a throwaway index, so
 /// the real index is untouched.
 pub fn materialize(runner: &impl CommandRunner, worktree: &crate::git::Worktree) -> Result<String> {
@@ -375,11 +375,11 @@ mod tests {
         }
     }
 
-    /// tree-identity.v1 as it is frozen, written out literally: these are
+    /// tree-identity.v2 as it is frozen, written out literally: these are
     /// the git operations, in this order, that Toimija must run — and the
     /// `.sykli` namespace is in both lists.
     #[test]
-    fn materialize_runs_tree_identity_v1_step_for_step() {
+    fn materialize_runs_tree_identity_v2_step_for_step() {
         let repo = tempfile::tempdir().unwrap();
         let expected = |force_add: bool| {
             let mut calls: Vec<Vec<&str>> = vec![
@@ -390,7 +390,6 @@ mod tests {
                     "-A",
                     "--",
                     ":(exclude,top,glob)[.]toimija/**",
-                    ":(exclude,top,glob)[.]teko/**",
                     ":(exclude,top,glob)[.]sykli/**",
                 ],
                 vec![
@@ -400,7 +399,6 @@ mod tests {
                     "-q",
                     "--ignore-unmatch",
                     ".toimija",
-                    ".teko",
                     ".sykli",
                 ],
             ];
@@ -435,7 +433,7 @@ mod tests {
 
     /// A lease marker written before Toimija named its tree algorithm keeps the
     /// tree it recorded and reads as the legacy procedure's; a new one names
-    /// tree-identity.v1, and both survive a round trip unchanged.
+    /// tree-identity.v2, and both survive a round trip unchanged.
     #[test]
     fn a_lease_marker_without_an_algorithm_reads_as_legacy() {
         let old = r#"{"id":"1782951227-52574","tree":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -460,8 +458,8 @@ mod tests {
             ..lease
         };
         let json = serde_json::to_value(&new).unwrap();
-        assert_eq!(json["tree_algorithm"], "tree-identity.v1");
-        assert_eq!(json["token_algorithm"], "toimija-consistency-v3");
+        assert_eq!(json["tree_algorithm"], "tree-identity.v2");
+        assert_eq!(json["token_algorithm"], "toimija-consistency-v4");
         assert_eq!(serde_json::from_value::<SnapshotLease>(json).unwrap(), new);
     }
 

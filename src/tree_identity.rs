@@ -1,4 +1,4 @@
-//! `tree-identity.v1`: which content makes up one version of a repository's
+//! `tree-identity.v2`: which content makes up one version of a repository's
 //! work.
 //!
 //! The identity is the Git tree of every tracked and untracked non-ignored
@@ -11,7 +11,7 @@
 //! An artifact records the algorithm's [`id`](TreeIdentityAlgorithm::id), so a
 //! reader recomputes the identity under the rules that applied when it was
 //! written. The rule is stated for readers in `docs/reference.md`,
-//! "tree-identity.v1".
+//! "tree-identity.v2".
 
 /// A versioned procedure for computing repository tree identity.
 ///
@@ -21,11 +21,11 @@
 /// mean, so it requires a new variant rather than an edit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeIdentityAlgorithm {
-    /// `tree-identity.v1`.
-    V1,
+    /// `tree-identity.v2`.
+    V2,
 }
 
-/// Namespaces excluded by `tree-identity.v1`. **Frozen.**
+/// Namespaces excluded by `tree-identity.v2`. **Frozen.**
 ///
 /// A namespace is here because its owner generates repository-local derived
 /// state whose mutation must not change what work is being identified. Under
@@ -38,32 +38,32 @@ pub enum TreeIdentityAlgorithm {
 ///
 /// **The set never grows.** There is no dynamic registration: reading namespaces
 /// from configuration would let today's setup reinterpret yesterday's
-/// identities. A tool that needs a further exclusion is a `V2` decision.
-const V1_NAMESPACES: &[&str] = &[".toimija", ".teko", ".sykli"];
+/// identities. A tool that needs a further exclusion is a new version.
+const V2_NAMESPACES: &[&str] = &[".toimija", ".sykli"];
 
-/// Configuration paths force-included by `tree-identity.v1`. **Frozen**, for
-/// the same reason as [`V1_NAMESPACES`].
-const V1_CONFIG_PATHS: &[&str] = &[".toimija/repo.yaml"];
+/// Configuration paths force-included by `tree-identity.v2`. **Frozen**, for
+/// the same reason as [`V2_NAMESPACES`].
+const V2_CONFIG_PATHS: &[&str] = &[".toimija/repo.yaml"];
 
 impl TreeIdentityAlgorithm {
     /// Stable identifier recorded in artifacts.
     pub const fn id(self) -> &'static str {
         match self {
-            Self::V1 => "tree-identity.v1",
+            Self::V2 => "tree-identity.v2",
         }
     }
 
     /// Tool namespaces this algorithm excludes.
     pub const fn namespaces(self) -> &'static [&'static str] {
         match self {
-            Self::V1 => V1_NAMESPACES,
+            Self::V2 => V2_NAMESPACES,
         }
     }
 
     /// Tool configuration this algorithm force-includes.
     pub const fn config_paths(self) -> &'static [&'static str] {
         match self {
-            Self::V1 => V1_CONFIG_PATHS,
+            Self::V2 => V2_CONFIG_PATHS,
         }
     }
 
@@ -131,28 +131,27 @@ mod tests {
     use super::*;
 
     /// The test that makes "frozen" enforceable. If you are here because this
-    /// failed, you changed `tree-identity.v1`. Add `V2` instead: editing v1
-    /// silently reinterprets every tree identity recorded under it.
+    /// failed, you changed `tree-identity.v2`. Add a new version instead:
+    /// editing v2 silently reinterprets every tree identity recorded under it.
     #[test]
-    fn v1_definition_is_frozen() {
-        let v1 = TreeIdentityAlgorithm::V1;
-        assert_eq!(v1.id(), "tree-identity.v1");
-        assert_eq!(v1.namespaces(), &[".toimija", ".teko", ".sykli"]);
-        assert_eq!(v1.config_paths(), &[".toimija/repo.yaml"]);
+    fn v2_definition_is_frozen() {
+        let v2 = TreeIdentityAlgorithm::V2;
+        assert_eq!(v2.id(), "tree-identity.v2");
+        assert_eq!(v2.namespaces(), &[".toimija", ".sykli"]);
+        assert_eq!(v2.config_paths(), &[".toimija/repo.yaml"]);
         let text = |items: &[&str]| items.iter().map(|item| item.to_string()).collect();
         assert_eq!(
-            v1.plan(),
+            v2.plan(),
             vec![
                 Step::SeedFromHead,
                 Step::OverlayWorktree {
                     excludes: text(&[
                         ":(exclude,top,glob)[.]toimija/**",
-                        ":(exclude,top,glob)[.]teko/**",
                         ":(exclude,top,glob)[.]sykli/**",
                     ]),
                 },
                 Step::DropNamespaces {
-                    paths: text(&[".toimija", ".teko", ".sykli"]),
+                    paths: text(&[".toimija", ".sykli"]),
                 },
                 Step::ForceAddConfig {
                     path: ".toimija/repo.yaml".to_string(),
@@ -167,10 +166,10 @@ mod tests {
     /// reservation would silently break.
     #[test]
     fn an_unreserved_namespace_is_ordinary_work_content() {
-        let v1 = TreeIdentityAlgorithm::V1;
+        let v2 = TreeIdentityAlgorithm::V2;
         for candidate in [".widget", ".example", ".acme", ".github"] {
             assert!(
-                !v1.namespaces().contains(&candidate),
+                !v2.namespaces().contains(&candidate),
                 "{candidate} is reserved without demonstrated generated state"
             );
         }
@@ -178,8 +177,8 @@ mod tests {
 
     #[test]
     fn every_namespace_is_excluded_and_dot_is_escaped() {
-        let excludes = TreeIdentityAlgorithm::V1.excludes();
-        assert_eq!(excludes.len(), V1_NAMESPACES.len());
+        let excludes = TreeIdentityAlgorithm::V2.excludes();
+        assert_eq!(excludes.len(), V2_NAMESPACES.len());
         for exclude in &excludes {
             assert!(exclude.starts_with(":(exclude,top,glob)[.]"), "{exclude}");
             assert!(exclude.ends_with("/**"), "{exclude}");
@@ -190,10 +189,10 @@ mod tests {
     fn config_paths_live_inside_an_excluded_namespace() {
         // Configuration outside every namespace would be included anyway, so
         // listing it would misstate why it is in the tree.
-        let v1 = TreeIdentityAlgorithm::V1;
-        for path in v1.config_paths() {
+        let v2 = TreeIdentityAlgorithm::V2;
+        for path in v2.config_paths() {
             assert!(
-                v1.namespaces()
+                v2.namespaces()
                     .iter()
                     .any(|namespace| path.starts_with(&format!("{namespace}/"))),
                 "{path} is not inside a frozen namespace"
@@ -203,7 +202,7 @@ mod tests {
 
     #[test]
     fn config_is_re_added_after_namespaces_are_dropped() {
-        let plan = TreeIdentityAlgorithm::V1.plan();
+        let plan = TreeIdentityAlgorithm::V2.plan();
         let drop_at = plan
             .iter()
             .position(|step| matches!(step, Step::DropNamespaces { .. }))
