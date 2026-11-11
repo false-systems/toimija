@@ -161,3 +161,5 @@ alone.
 - [Reference](docs/reference.md): every command, the packet, sessions, workspaces and configuration.
 - [Agent guide](AGENTS.md): for agents that work on toimija itself.
 - [Licence](LICENSE): MIT.
+
+<p align="center"><sub>Part of <a href="https://false-systems.com">False Systems</a> · computing as craft</sub></p>
