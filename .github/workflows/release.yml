@@ -13,7 +13,7 @@ jobs:
   # the release build passes on the organisation's own runner.
   guard:
     name: Guard
-    runs-on: arc-arm64
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout

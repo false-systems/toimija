@@ -18,7 +18,7 @@ concurrency:
 jobs:
   rust:
     name: Rust
-    runs-on: arc-arm64
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -76,7 +76,7 @@ jobs:
   # gate until branch protection is flipped deliberately.
   sykli:
     name: Sykli
-    runs-on: arc-arm64
+    runs-on: ubuntu-latest
     continue-on-error: true
 
     steps:
