@@ -1,4 +1,4 @@
-//! Conformance tests for `tree-identity.v1`.
+//! Conformance tests for `tree-identity.v2`.
 //!
 //! These tests run the plan with real `git`, step by step and without
 //! Toimija's commands, so they prove properties of the rule itself: what moves
@@ -86,7 +86,7 @@ impl Fixture {
     /// Execute the canonical plan exactly as it is returned.
     fn canonical_tree(&self) -> String {
         let index = self.scratch_index("canonical");
-        for step in TreeIdentityAlgorithm::V1.plan() {
+        for step in TreeIdentityAlgorithm::V2.plan() {
             match step {
                 Step::SeedFromHead => {
                     // Tolerated: an unborn HEAD has no tracked files.
@@ -139,16 +139,13 @@ fn t4_canonical_identity_includes_config_whatever_the_ignore_status() {
     }
     let ignored = Fixture::new();
     ignored.write("src/main.rs", "fn main() {}\n");
-    ignored.write(".gitignore", ".toimija/\n.sykli/\n.teko/\n");
+    ignored.write(".gitignore", ".toimija/\n.sykli/\n");
     ignored.write(".toimija/repo.yaml", "repo:\n  name: fixture\n");
     ignored.commit("initial");
 
     let tracked = Fixture::new();
     tracked.write("src/main.rs", "fn main() {}\n");
-    tracked.write(
-        ".gitignore",
-        ".toimija/*\n!.toimija/repo.yaml\n.sykli/\n.teko/\n",
-    );
+    tracked.write(".gitignore", ".toimija/*\n!.toimija/repo.yaml\n.sykli/\n");
     tracked.write(".toimija/repo.yaml", "repo:\n  name: fixture\n");
     tracked.commit("initial");
 
@@ -198,7 +195,7 @@ fn t2_generated_state_in_any_namespace_does_not_change_identity() {
     fixture.commit("initial");
     let before = fixture.canonical_tree();
 
-    for namespace in TreeIdentityAlgorithm::V1.namespaces() {
+    for namespace in TreeIdentityAlgorithm::V2.namespaces() {
         fixture.write(&format!("{namespace}/generated.json"), "{\"noise\":true}\n");
     }
     fixture.write(".toimija/sessions/abc/current.json", "{\"live\":true}\n");
@@ -294,7 +291,7 @@ fn excludes_are_valid_pathspecs() {
     fixture.commit("initial");
     let index = fixture.scratch_index("pathspec");
     let mut args = vec!["add".to_string(), "-A".to_string(), "--".to_string()];
-    args.extend(TreeIdentityAlgorithm::V1.excludes());
+    args.extend(TreeIdentityAlgorithm::V2.excludes());
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
     fixture
         .git_with_index(Some(&index), &borrowed)

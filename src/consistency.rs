@@ -15,22 +15,26 @@ use sha2::{Digest, Sha256};
 use crate::git::{ChangeStatus, ChangedFile, GitState};
 use crate::tree_identity::TreeIdentityAlgorithm;
 
-/// The token Toimija computes now. v3 leaves out exactly what
-/// tree-identity.v1 leaves out ([`LEAVES_OUT_AS`]); v2 watched `.sykli/`, so
-/// a gate writing receipts there moved the token while the tree held still.
-/// The token's own hash covers this name (see `token`), so tokens of two
-/// versions never coincide.
-pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v3";
+/// The token Toimija computes now. v4 leaves out exactly what
+/// tree-identity.v2 leaves out ([`LEAVES_OUT_AS`]). What a token leaves out is
+/// part of its version: a token of another version saw other paths, so it is
+/// never compared with this one. The token's own hash covers this name (see
+/// `token`), so tokens of two versions never coincide.
+pub const CONSISTENCY_ALGORITHM: &str = "toimija-consistency-v4";
 
 /// Token versions earlier toimijas wrote. A stored token of one of these
 /// keeps the meaning it was written with: it is never recomputed or compared
 /// as if it were [`CONSISTENCY_ALGORITHM`] ([`Verdict::NotComparable`]).
-pub const EARLIER_ALGORITHMS: &[&str] = &["toimija-consistency-v1", "toimija-consistency-v2"];
+pub const EARLIER_ALGORITHMS: &[&str] = &[
+    "toimija-consistency-v1",
+    "toimija-consistency-v2",
+    "toimija-consistency-v3",
+];
 
 /// The tree algorithm whose generated namespaces the token leaves out. Pinned
-/// to v1: what a v3 token observes is
-/// fixed with v3, and a later tree algorithm is a later token version.
-const LEAVES_OUT_AS: TreeIdentityAlgorithm = TreeIdentityAlgorithm::V1;
+/// to v2: what a v4 token observes is fixed with v4, and a later tree
+/// algorithm is a later token version.
+const LEAVES_OUT_AS: TreeIdentityAlgorithm = TreeIdentityAlgorithm::V2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Consistency {
@@ -335,8 +339,8 @@ fn status(status: &ChangeStatus) -> String {
 }
 
 /// Whether a repo-relative path is generated tool state the token leaves out:
-/// a path under one of tree-identity.v1's frozen namespaces (`.toimija`,
-/// `.teko`, `.sykli`), unless it is configuration v1 forces in
+/// a path under one of tree-identity.v2's frozen namespaces (`.toimija`,
+/// `.sykli`), unless it is configuration v2 forces in
 /// (`.toimija/repo.yaml`). Exactly what the tree leaves out, read from
 /// `crate::tree_identity` rather than listed again here ([`LEAVES_OUT_AS`]), so
 /// a refresh, a session, a snapshot or a gate's receipt never moves the token
@@ -523,26 +527,29 @@ mod tests {
             .push(PathBuf::from(".toimija/runs/harness.jsonl"));
         live.untracked_files
             .push(PathBuf::from(".toimija/anything/tool-output.json"));
-        live.untracked_files.push(PathBuf::from(".teko/state.redb"));
         assert!(matches!(stored.verify(&live), Verdict::Consistent));
     }
 
-    /// The token leaves out exactly what tree-identity.v1 leaves out:
+    /// The token leaves out exactly what tree-identity.v2 leaves out:
     /// its frozen namespaces, minus the configuration it forces in. Read from
-    /// `crate::tree_identity`, so there is no second list to drift; pinned
-    /// to v1, so a later tree algorithm cannot change what a
-    /// `toimija-consistency-v3` token means.
+    /// `crate::tree_identity`, so there is no second list to drift. What a
+    /// token covers is part of its version, so the token that follows
+    /// tree-identity.v2 is `toimija-consistency-v4`, and the v3 token, which
+    /// followed the earlier tree algorithm, is an earlier version.
     #[test]
-    fn the_token_leaves_out_exactly_what_tree_identity_v1_leaves_out() {
-        let v1 = TreeIdentityAlgorithm::V1;
-        assert_eq!(v1.namespaces(), [".toimija", ".teko", ".sykli"]);
-        for namespace in v1.namespaces() {
+    fn the_token_leaves_out_exactly_what_tree_identity_v2_leaves_out() {
+        let v2 = LEAVES_OUT_AS;
+        assert_eq!(v2.id(), "tree-identity.v2");
+        assert_eq!(v2.namespaces(), [".toimija", ".sykli"]);
+        assert_eq!(CONSISTENCY_ALGORITHM, "toimija-consistency-v4");
+        assert!(EARLIER_ALGORITHMS.contains(&"toimija-consistency-v3"));
+        for namespace in v2.namespaces() {
             for path in ["", "receipt.json", "runs/r1/journal"] {
                 let path = Path::new(namespace).join(path);
                 assert!(is_generated_output(&path), "{}", path.display());
             }
         }
-        for config in v1.config_paths() {
+        for config in v2.config_paths() {
             assert!(!is_generated_output(Path::new(config)), "{config}");
         }
         // Work content, including look-alikes the tree keeps too.

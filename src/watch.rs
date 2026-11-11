@@ -2158,7 +2158,6 @@ mod tests {
     fn live_files_are_ignored() {
         assert!(is_ignored_at("/repo", "/repo/.toimija/current.md"));
         assert!(is_ignored_at("/repo", "/repo/.toimija/current.json"));
-        assert!(is_ignored_at("/repo", "/repo/.teko/state.redb"));
         // A gate's receipts: generated state the token leaves out.
         assert!(is_ignored_at("/repo", "/repo/.sykli/receipt.json"));
         assert!(is_ignored_at("/repo", "/repo/.sykli/runs/r1/journal"));

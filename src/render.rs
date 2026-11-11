@@ -214,7 +214,7 @@ fn write_path_list(output: &mut String, items: &[std::path::PathBuf], empty: &st
 
 /// A working-tree list of the repository's work, as the counts are: the
 /// generated paths among `items` (Toimija's own files, which Git lists where
-/// `init` has not run, and `.teko/`, `.sykli/`) are left out of the list and
+/// `init` has not run, and `.sykli/`) are left out of the list and
 /// counted in one line after it. The JSON lists every path.
 fn write_work_changes(output: &mut String, items: &[ChangedFile]) {
     let work: Vec<ChangedFile> = crate::git::work_files(items).cloned().collect();
@@ -233,7 +233,7 @@ fn write_generated_line(output: &mut String, generated: usize) {
     if generated > 0 {
         writeln!(
             output,
-            "- {generated} generated, not counted: Toimija's own files, `.teko/`, `.sykli/` \
+            "- {generated} generated, not counted: Toimija's own files and `.sykli/` \
              (the JSON lists them)"
         )
         .unwrap();
@@ -467,7 +467,7 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     writeln!(&mut output, "- merge-base: {}", merge_base_label(packet)).unwrap();
     writeln!(&mut output, "- dirty: {}", packet.git.dirty).unwrap();
     // The counts are the repository's work, as `dirty` is; generated paths
-    // (Toimija's own, `.teko/`, `.sykli/`) are counted apart.
+    // (Toimija's own and `.sykli/`) are counted apart.
     let git = &packet.git;
     let counts = [
         (
@@ -1156,7 +1156,7 @@ mod tests {
 
     /// The Markdown counts and lists are the repository's work, as `dirty`
     /// is: Toimija's own files (listed by Git where `init` has not run) and
-    /// `.teko/` and `.sykli/` are counted apart, never beside a `dirty: false`
+    /// `.sykli/` are counted apart, never beside a `dirty: false`
     /// as if they were work. The JSON keeps every path Git reported.
     #[test]
     fn generated_paths_are_counted_apart_from_the_work() {
@@ -1186,7 +1186,7 @@ mod tests {
             let untracked = untracked.split("###").next().unwrap();
             assert_eq!(
                 untracked,
-                "- none\n- 3 generated, not counted: Toimija's own files, `.teko/`, `.sykli/` \
+                "- none\n- 3 generated, not counted: Toimija's own files and `.sykli/` \
                  (the JSON lists them)\n",
                 "{rendered}"
             );
@@ -1502,7 +1502,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
   "for_diff": false,
   "default_budget": 4000,
   "consistency": {
-    "algorithm": "toimija-consistency-v3",
+    "algorithm": "toimija-consistency-v4",
     "head": {
       "kind": "normal",
       "branch": "main",
@@ -1518,7 +1518,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
       "has_conflicts": false,
       "files": []
     },
-    "token": "sha256:c6f9744e44db11d1ae2f503664bf7ab238b51c7171703522e9fa33a9c12659c7"
+    "token": "sha256:09043faac480f795455548934c07b09b13783d6a1f23bfb71d8472081682e470"
   }
 }"#;
         assert_eq!(rendered, expected);

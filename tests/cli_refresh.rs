@@ -231,7 +231,7 @@ fn refresh_writes_current_md_and_json() {
         md.contains(&format!("- artifact-id: {artifact_id}")),
         "the Markdown and JSON repo packets must identify the same refresh"
     );
-    assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v3");
+    assert_eq!(value["consistency"]["algorithm"], "toimija-consistency-v4");
     assert_eq!(value["seal"]["envelope"], "toimija-seal.v1");
     assert_eq!(value["seal"]["schema"], "toimija-context.v3");
     assert_eq!(value["seal"]["producer"]["tool"], "toimija");

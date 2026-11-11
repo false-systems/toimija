@@ -1,8 +1,8 @@
-//! Toimija's State identity is tree-identity.v1.
+//! Toimija's State identity is tree-identity.v2.
 //!
 //! The tree in a snapshot, a repository point and a session packet is the one
 //! the canonical procedure yields: the work content, leaving out the
-//! generated namespaces `.toimija`, `.teko` and `.sykli`, with
+//! generated namespaces `.toimija` and `.sykli`, with
 //! `.toimija/repo.yaml` forced in. These tests run that procedure here, from
 //! its plan and with real git, and hold Toimija's commands to it.
 //!
@@ -25,12 +25,13 @@ use common::{git_at, git_available, run_git};
 
 /// `.sykli/` hidden by the ignore rules, and `.sykli/` in plain view: the
 /// identity must not care either way.
-const IGNORE_RULES: [&str; 2] = [".toimija/\n.teko/\n.sykli/\n", ".toimija/\n.teko/\n"];
+const IGNORE_RULES: [&str; 2] = [".toimija/\n.sykli/\n", ".toimija/\n"];
 
 /// A repository holding every kind of content the identity must sort:
 /// committed source, an untracked source file, `.toimija/repo.yaml` that the
 /// ignore rules hide and nothing tracks, a receipt committed under `.sykli/`
-/// (a repository might), an untracked one beside it, and `.teko/` state.
+/// (a repository might), an untracked one beside it, and Toimija's own
+/// packet, which a refresh writes under `.toimija/`.
 fn fixture(gitignore: &str) -> TempDir {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path();
@@ -49,7 +50,7 @@ fn fixture(gitignore: &str) -> TempDir {
     run_git(path, &["commit", "-q", "-m", "init"]);
     write(path, "src/new.rs", "pub fn g() {}\n");
     write(path, ".sykli/receipt.json", "{\"outcome\":\"passed\"}\n");
-    write(path, ".teko/state.json", "{\"open\":true}\n");
+    write(path, ".toimija/current.json", "{\"generated\":true}\n");
     temp
 }
 
@@ -81,7 +82,7 @@ fn canonical_tree(root: &Path) -> String {
     let index = scratch.path().join("canonical.index");
     let index = Some(index.as_path());
     let mut tree = None;
-    for step in TreeIdentityAlgorithm::V1.plan() {
+    for step in TreeIdentityAlgorithm::V2.plan() {
         match step {
             Step::SeedFromHead => {
                 // Tolerated: an unborn HEAD has no tracked files.
@@ -147,7 +148,7 @@ fn point_tree(root: &Path) -> String {
 }
 
 #[test]
-fn the_tree_is_tree_identity_v1_whatever_sykli_and_the_ignore_rules_hold() {
+fn the_tree_is_tree_identity_v2_whatever_sykli_and_the_ignore_rules_hold() {
     if !git_available() {
         return;
     }
@@ -166,7 +167,7 @@ fn the_tree_is_tree_identity_v1_whatever_sykli_and_the_ignore_rules_hold() {
         assert!(
             !paths
                 .iter()
-                .any(|path| path.starts_with(".sykli/") || path.starts_with(".teko/")),
+                .any(|path| path.starts_with(".sykli/") || path == ".toimija/current.json"),
             "{paths:?}"
         );
 
@@ -217,6 +218,55 @@ fn sykli_state_never_moves_the_tree_but_work_content_does() {
     }
 }
 
+/// A dot-folder at the root that tree-identity.v2 does not name is ordinary
+/// work, however much it looks like a tool's state: it is in the tree, it
+/// is counted as untracked and makes the state dirty, and a change to it moves
+/// the token. Only the two namespaces the version names are left out.
+#[test]
+fn a_dot_folder_that_no_namespace_names_is_ordinary_work() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(root, &["config", "user.email", "toimija@example.invalid"]);
+    run_git(root, &["config", "user.name", "Toimija Test"]);
+    write(root, ".gitignore", ".toimija/\n");
+    write(root, "src/main.rs", "fn main() {}\n");
+    run_git(root, &["add", "-A"]);
+    run_git(root, &["commit", "-q", "-m", "init"]);
+    write(root, ".widget/state.json", "{\"open\":true}\n");
+
+    let packet = json(root, &["context", "--json"]);
+    assert_eq!(packet["git"]["dirty"], true, "{packet:#}");
+    assert_eq!(
+        packet["git"]["untracked_files"],
+        serde_json::json!([".widget/state.json"]),
+        "{packet:#}"
+    );
+    let markdown = toimija(root).arg("context").assert().success();
+    let markdown = String::from_utf8_lossy(&markdown.get_output().stdout).into_owned();
+    assert!(markdown.contains("- untracked: 1\n"), "{markdown}");
+    assert!(!markdown.contains("generated, not counted"), "{markdown}");
+
+    let tree = point_tree(root);
+    assert_eq!(tree, canonical_tree(root));
+    assert!(
+        tree_paths(root, &tree).contains(&".widget/state.json".to_string()),
+        "{:?}",
+        tree_paths(root, &tree)
+    );
+
+    toimija(root).arg("refresh").assert().success();
+    assert_eq!(json(root, &["verify", "--json"])["status"], "verified");
+    write(root, ".widget/state.json", "{\"open\":false}\n");
+    let assert = toimija(root).args(["verify", "--json"]).assert().failure();
+    let report: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(report["status"], "stale_packet", "{report}");
+}
+
 /// The tree in every output names the algorithm that produced it, so a reader
 /// never has to guess which rules a stored tree was computed under.
 #[test]
@@ -226,10 +276,10 @@ fn points_snapshots_and_packets_name_their_tree_algorithm() {
     }
     let temp = fixture(IGNORE_RULES[1]);
     let root = temp.path();
-    let v1 = TreeIdentityAlgorithm::V1.id();
+    let v2 = "tree-identity.v2";
 
-    assert_eq!(point(root)["extensions"]["tree_algorithm"], v1);
-    assert_eq!(snapshot(root)["tree_algorithm"], v1);
+    assert_eq!(point(root)["extensions"]["tree_algorithm"], v2);
+    assert_eq!(snapshot(root)["tree_algorithm"], v2);
 
     // Inside a session: the point file and the sealed packet's execution
     // context, whose tree is the same canonical tree.
@@ -253,16 +303,16 @@ fn points_snapshots_and_packets_name_their_tree_algorithm() {
     };
     let session_point = read("point.json");
     let execution = &read("packet.json")["session"]["execution"];
-    assert_eq!(session_point["extensions"]["tree_algorithm"], v1);
-    assert_eq!(execution["extensions"]["tree_algorithm"], v1);
+    assert_eq!(session_point["extensions"]["tree_algorithm"], v2);
+    assert_eq!(execution["extensions"]["tree_algorithm"], v2);
     assert_eq!(execution["repository"]["tree_oid"], canonical_tree(root));
 }
 
-/// A lease taken before Toimija computed tree-identity.v1 recorded no
+/// A lease taken before Toimija named its tree algorithm recorded no
 /// algorithm. Its tree is what the old procedure wrote, and it stays exactly
 /// that: listed as such, never recomputed or relabelled, and still releasable.
 #[test]
-fn a_lease_from_before_tree_identity_v1_keeps_its_tree_and_reads_as_legacy() {
+fn a_lease_that_names_no_tree_algorithm_keeps_its_tree_and_reads_as_legacy() {
     if !git_available() {
         return;
     }
@@ -289,7 +339,7 @@ fn a_lease_from_before_tree_identity_v1_keeps_its_tree_and_reads_as_legacy() {
     );
 
     let fresh = json(root, &["snapshot", "--lease", "--json"]);
-    assert_eq!(fresh["tree_algorithm"], TreeIdentityAlgorithm::V1.id());
+    assert_eq!(fresh["tree_algorithm"], "tree-identity.v2");
 
     let leases = json(root, &["snapshot", "--list", "--json"]);
     let leases = leases.as_array().unwrap();
@@ -307,7 +357,7 @@ fn a_lease_from_before_tree_identity_v1_keeps_its_tree_and_reads_as_legacy() {
         .iter()
         .find(|lease| lease["id"] == fresh["id"])
         .unwrap();
-    assert_eq!(new["tree_algorithm"], TreeIdentityAlgorithm::V1.id());
+    assert_eq!(new["tree_algorithm"], "tree-identity.v2");
 
     let listing = toimija(root)
         .args(["snapshot", "--list"])
@@ -522,7 +572,7 @@ fn the_token_is_read_again_after_the_tree_write_with_one_git_process() {
             .unwrap_or_else(|| panic!("{args:?} wrote no tree: {verbs:?}"));
 
         // Positive controls: the trace sees Toimija's own git calls — the
-        // whole v1 plan, in order, ending in the write...
+        // whole plan, in order, ending in the write...
         assert_eq!(
             verbs[write - 4..=write],
             ["read-tree", "add", "rm", "add", "write-tree"],
