@@ -128,7 +128,7 @@ receipt: /work/demo/.sykli/receipts/rcpt_515d4123….json
 
 The receipt is the proof: these checks passed on exactly this tree.
 
-## Review, then land
+## Review, then push
 
 `sykli review` starts a fresh agent that reads the change with reading tools
 only. It takes about a minute and costs tokens.
@@ -139,20 +139,28 @@ review: fine (0 blocking, 0 to look at) by codex, author agent unknown
 ```
 
 The answer is `fine`, `look` or `blocking`. A blocking review stops the
-landing. Fix what it found and commit, or a person overrules it at a terminal
+push. Fix what it found and commit, or a person overrules it at a terminal
 with `sykli review --overrule "<why>"`. An agent cannot overrule. A reviewer
 that is missing or gives no verdict is no review, never a pass.
 
-Landing pushes to the main branch, so it is a person's decision when to run
-it:
+Landing is a plain push to main, so it is a person's decision when to do it.
+The hook you installed lets it through only when the commit is proven,
+reviewed against the main it lands on, and on top of it, and it shares both
+records with the remote before the branch moves:
 
 ```console
-$ sykli land
-land: 35888107dc5d is on origin's main: proven, review fine; the receipt and the review are shared as notes on its tree
+$ git push origin HEAD:main
+sykli hook pre-push: d01050abbea9 to refs/heads/main: .sykli/receipts/rcpt_0682dcdc….json is a passing run of its tree
+sykli hook pre-push: d01050abbea9 is reviewed look against origin's main (4b8de89fe461)
+sykli hook pre-push: shared refs/notes/sykli/review and refs/notes/sykli/receipt with origin before the branch moves
+sykli hook pre-push: kept /work/demo/.git/sykli/receipts/rcpt_0682dcdc….json as evidence for d01050abbea9
+To ../origin.git
+   4b8de89..d01050a  HEAD -> main
 ```
 
-`sykli land` refuses unless the commit is proven, reviewed and on top of the
-current main.
+Without a receipt or a review the push is refused, and the hook says which
+command to run. `sykli status` shows every branch: proven or not, and how its
+review went.
 
 ## See what is cooking
 
@@ -176,7 +184,9 @@ Every packet worked out in this working copy shows it under "Last handover".
 ## Deploy
 
 A deployment is a second contract, `deploy.json`, whose tasks do the
-deploying. This one only builds a release:
+deploying. `"reuse": false` makes a task run every time: a pass taken from the
+cache would be a deployment that never happened. This one only builds a
+release:
 
 ```json
 {
@@ -185,28 +195,25 @@ deploying. This one only builds a release:
     {
       "name": "ship",
       "run": "cargo build --release",
-      "inputs": ["Cargo.lock", "Cargo.toml", "src/lib.rs"]
+      "inputs": ["Cargo.lock", "Cargo.toml", "src/lib.rs"],
+      "reuse": false
     }
   ]
 }
 ```
 
-Pin it with `sykli lock deploy.json` and commit it with the setup. Then, for a
-commit that is proven and landed:
+Pin it with `sykli lock deploy.json` and commit it with the setup. Then run it
+on the commit you landed:
 
 ```console
-$ sykli deploy --remote origin
+$ sykli run deploy.json
+run: 090102d4…
 running: ship
 passed: ship
-receipt: /work/demo/.sykli/receipts/rcpt_b2df39db….json
-deploy: 35888107dc5d deployed to default; recorded on the commit and shared with origin
-
-$ sykli deployed
-default: 35888107dc5d  Greet politely  2026-11-10 22:33:32 UTC
+receipt: /work/demo/.sykli/receipts/rcpt_8ddc0447….json
 ```
 
-`sykli deploy` refuses a commit that is not proven or not in the main branch.
-The record says the deploy contract passed for that commit, here, at that
+The receipt says the deploy contract passed for that commit, here, at that
 time. It does not say what is running anywhere now.
 
 ## See what it used
@@ -226,12 +233,19 @@ codex
 
 Vessa counts tokens. It shows no prices.
 
+To keep the thread from main back to what was asked, run `vessa hook install`
+once per clone. Every commit an agent makes then carries an `Agent-Session`
+line naming its session and how many messages a person typed in it, never the
+text. `vessa messages --commit <commit>` shows those messages, on the machine
+where the session ran.
+
 ## Most days
 
 ```bash
-toimija run claude    # start an agent as a session
-sykli run             # prove the commit
-sykli review          # a fresh agent reads the change
-sykli land            # put it on main, when you decide to
-toimija sessions      # who is working where, and why
+toimija run claude        # start an agent as a session
+sykli run                 # prove the commit
+sykli review              # a fresh agent reads the change
+git push origin HEAD:main # put it on main, when you decide to
+sykli status              # every branch: proven, reviewed
+toimija sessions          # who is working where, and why
 ```

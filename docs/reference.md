@@ -884,12 +884,12 @@ clippy and the tests, and blocks the commit when either fails.
 
 ### Landing
 
-Work lands with sykli, in three commands on the committed branch:
+Work lands with sykli's checks and a plain push, on the committed branch:
 
 ```bash
-sykli run       # prove the commit: run the declared checks, keep the receipt
-sykli review    # a fresh agent reads the change and says fine, look or blocking
-sykli land      # push to main when the commit is proven and reviewed
+sykli run                   # prove the commit: run the declared checks, keep the receipt
+sykli review                # a fresh agent reads the change and says fine, look or blocking
+git push origin HEAD:main   # sykli's pre-push hook lets it through when proven and reviewed
 ```
 
 - `sykli review` starts a fresh agent, another one than the author where one
@@ -897,11 +897,12 @@ sykli land      # push to main when the commit is proven and reviewed
   gives no verdict is no review, never a pass. The verdict is kept as a git
   note on the commit's tree. Only a person at a terminal overrules a blocking
   review, with `sykli review --overrule "<why>"`.
-- `sykli land` refuses unless `origin/main`, fetched then, is an ancestor of
-  the commit, its tree has a passing receipt, and the review of that tree
-  against that `main` is not blocking. It shares the receipt and the review
-  as git notes, then pushes. It pushes to `main`, so run it only when the
-  person you work for says so.
+- sykli's pre-push hook (`sykli hook install`) refuses a push to `main`
+  unless the remote's tip is an ancestor of the commit, its tree has a passing
+  receipt, and the review of that tree against that tip is not blocking. It
+  shares the receipt and the review as git notes, then lets the push through.
+  A push to `main` lands the work, so push only when the person you work for
+  says so.
 
 A tag `v*` builds the release binaries in CI.
 
