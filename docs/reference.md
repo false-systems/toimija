@@ -897,7 +897,8 @@ git push origin HEAD:main   # sykli's pre-push hook lets it through when proven 
   gives no verdict is no review, never a pass. The verdict is kept as a git
   note on the commit's tree. Only a person at a terminal overrules a blocking
   review, with `sykli review --overrule "<why>"`.
-- sykli's pre-push hook (`sykli hook install`) refuses a push to `main`
+- sykli's pre-push hook (`sykli hook install --pre-push`; plain `install`
+  would also take the pre-commit hook xtask installs) refuses a push to `main`
   unless the remote's tip is an ancestor of the commit, its tree has a passing
   receipt, and the review of that tree against that tip is not blocking. It
   shares the receipt and the review as git notes, then lets the push through.
