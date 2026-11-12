@@ -114,6 +114,44 @@ fn quiet_mode_suppresses_logs_without_suppressing_stdout() {
     assert_eq!(stderr, "");
 }
 
+/// A failure is said once, in words for a person. Its finish event sits at
+/// info beside the start event, so `-v` shows both; by default it does not
+/// repeat the error as a log line first.
+#[test]
+fn a_failure_is_said_once_and_its_finish_event_waits_for_verbose() {
+    let temp = tempfile::tempdir().unwrap();
+    let toimija = || {
+        let mut command = Command::cargo_bin("toimija").unwrap();
+        command
+            .current_dir(temp.path())
+            .env("GIT_CEILING_DIRECTORIES", temp.path().parent().unwrap())
+            .env_remove("RUST_LOG");
+        command
+    };
+
+    let said = toimija().arg("enter").assert().failure();
+    let stderr = String::from_utf8(said.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("not a Git repository"), "{stderr}");
+    assert_eq!(stderr.lines().count(), 1, "said more than once: {stderr}");
+
+    let verbose = toimija()
+        .args(["-v", "--log-format", "json", "enter"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(verbose.get_output().stderr.clone()).unwrap();
+    let finish = log_lines(&stderr)
+        .into_iter()
+        .find(|line| line["fields"]["event"] == "toimija.command.finish")
+        .expect("a failed command should still emit toimija.command.finish under -v");
+    assert_eq!(finish["level"], "INFO", "{finish}");
+    assert!(
+        finish["fields"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not a Git repository")),
+        "{finish}"
+    );
+}
+
 fn log_events(stderr: &str) -> Vec<String> {
     log_lines(stderr)
         .into_iter()

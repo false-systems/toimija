@@ -397,13 +397,15 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Handover(args) => run_handover(args).map(|()| 0),
     };
 
+    // A failure's finish event is at info, beside the start event: `main`
+    // says the error to the person once, and `-v` shows both bookends.
     match &result {
         Ok(exit_code) => info!(
             event = "toimija.command.finish",
             duration_ms = started.elapsed().as_millis() as u64,
             exit_code
         ),
-        Err(error) => warn!(
+        Err(error) => info!(
             event = "toimija.command.finish",
             duration_ms = started.elapsed().as_millis() as u64,
             error = %error
@@ -425,8 +427,28 @@ impl Command {
     }
 }
 
+/// The folder the command runs in. A terminal can sit in a folder that was
+/// deleted after it moved in, such as a removed worktree; that is said in
+/// words, never as the bare "No such file or directory".
 fn current_dir() -> Result<std::path::PathBuf> {
-    std::env::current_dir().context("failed to read current directory")
+    std::env::current_dir().map_err(|error| folder_unreadable(error, std::env::var_os("PWD")))
+}
+
+fn folder_unreadable(error: std::io::Error, pwd: Option<std::ffi::OsString>) -> anyhow::Error {
+    if error.kind() != std::io::ErrorKind::NotFound {
+        return anyhow::Error::new(error).context("cannot read the folder you are in");
+    }
+    // PWD is the shell's word for where it is. It is named only when that
+    // path is gone too, so a stale or unrelated PWD names nothing.
+    let folder = pwd
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute() && !path.exists())
+        .map(|path| format!(" ({})", path.display()))
+        .unwrap_or_default();
+    anyhow::anyhow!(
+        "the folder you are in{folder} no longer exists, it was deleted or moved: \
+         cd into a folder that exists and run it again"
+    )
 }
 
 /// A session may start without saying why: said once, before the agent has the
@@ -1433,6 +1455,42 @@ mod tests {
     use super::*;
     use crate::git::GitState;
     use std::path::PathBuf;
+
+    fn not_found() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::NotFound)
+    }
+
+    #[test]
+    fn a_deleted_folder_is_named_from_pwd_only_when_that_path_is_gone() {
+        let parent = tempfile::tempdir().unwrap();
+        let gone = parent.path().join("removed-worktree");
+        let said = format!("{:#}", folder_unreadable(not_found(), Some(gone.clone().into())));
+        assert_eq!(
+            said,
+            format!(
+                "the folder you are in ({}) no longer exists, it was deleted or moved: \
+                 cd into a folder that exists and run it again",
+                gone.display()
+            )
+        );
+
+        // A PWD that still exists, is relative or is missing names nothing.
+        for pwd in [Some(parent.path().as_os_str().to_owned()), Some("gone".into()), None] {
+            let said = format!("{:#}", folder_unreadable(not_found(), pwd.clone()));
+            assert!(
+                said.starts_with("the folder you are in no longer exists"),
+                "{pwd:?}: {said}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_folder_that_is_not_gone_keeps_the_os_reason() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let said = format!("{:#}", folder_unreadable(error, None));
+        assert!(said.starts_with("cannot read the folder you are in: "), "{said}");
+        assert!(!said.contains("no longer exists"), "{said}");
+    }
 
     /// `run --help` names the built-in agents twice, in the command's
     /// description and in `--task`'s: both lists are the table, in its

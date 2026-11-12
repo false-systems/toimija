@@ -735,7 +735,10 @@ workspace. `handover` needs a repository.
 Global options: `-v` and `-vv` for more log detail, `-q` for none,
 `--log-format text|json`, and `--no-color`. Logs go to stderr and command
 output goes to stdout. Text logs are coloured only when stderr is a terminal,
-and never with `--no-color` or a non-empty `NO_COLOR`.
+and never with `--no-color` or a non-empty `NO_COLOR`. A command that fails
+says why once, on stderr, and exits 1; `-v` also logs when each command
+starts and finishes. A command run in a folder that has been deleted, such as
+a removed worktree, says so and names the folder.
 
 `toimija --version` prints the version and the build: `toimija 0.9.0
 (a1b2c3d)`, the short commit the binary was built from, with `, dirty` when
