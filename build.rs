@@ -1,5 +1,5 @@
 //! Names the commit a binary was built from, for `toimija --version`:
-//! `toimija 0.2.0 (a1b2c3d)`, or `(a1b2c3d, dirty)` when the code that went
+//! `toimija 0.9.0 (a1b2c3d)`, or `(a1b2c3d, dirty)` when the code that went
 //! into the binary differs from that commit. Two builds of one version number
 //! are then told apart. Read with git when the build runs. A build from a tree
 //! that is not its own repository's root (a source archive, unpacked inside
