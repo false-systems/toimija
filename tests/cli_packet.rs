@@ -414,3 +414,139 @@ fn toimijas_own_files_are_not_the_repositorys_work() {
         [".toimija/repo.yaml", "notes.txt"]
     );
 }
+
+/// `enter --identity --json` is what a repository says it is, for a tool that
+/// asks only that (ohjaa reads each repository's role from it): the
+/// `toimija-identity.v1` document, exactly — schema, then the packet's `repo`
+/// object, its fields in this order — and nothing else. It names no session,
+/// writes nothing, and leaves a live session's marker as it was.
+#[test]
+fn enter_identity_prints_exactly_the_identity_document_and_touches_nothing() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".toimija/sessions/100-1")).unwrap();
+    fs::write(
+        temp.path().join(".toimija/repo.yaml"),
+        "repo:\n  name: widget\n  role: durable task contract\n  not:\n    - inbox\n    - tracker\n\
+         context:\n  important_docs:\n    - README.md\n    - AGENTS.md\n\
+         boundaries:\n  - Do not add network calls.\n",
+    )
+    .unwrap();
+    // A live session (this test process), whose handshake the caller has.
+    let marker = temp.path().join(".toimija/sessions/100-1/session.json");
+    let raw = serde_json::json!({
+        "id": "100-1", "pid": std::process::id(), "agent": ["claude"],
+        "worktree": temp.path(), "branch": "main", "intent": "elsewhere",
+        "scope": [], "started_at": 100, "last_seen_at": 100,
+    })
+    .to_string();
+    fs::write(&marker, &raw).unwrap();
+    let listing = || -> Vec<String> {
+        let mut paths: Vec<String> = walk(temp.path())
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(temp.path())
+                    .unwrap()
+                    .display()
+                    .to_string()
+            })
+            .collect();
+        paths.sort();
+        paths
+    };
+    let before = listing();
+
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path().join(".toimija"))
+        .env("TOIMIJA_SESSION", "100-1")
+        .args(["enter", "--identity", "--json"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&output.get_output().stdout),
+        r#"{
+  "schema": "toimija-identity.v1",
+  "repo": {
+    "name": "widget",
+    "role": "durable task contract",
+    "not_roles": [
+      "inbox",
+      "tracker"
+    ],
+    "important_docs": [
+      "README.md",
+      "AGENTS.md"
+    ],
+    "boundaries": [
+      "Do not add network calls."
+    ]
+  }
+}
+"#
+    );
+    assert_eq!(listing(), before, "enter --identity wrote something");
+    assert_eq!(fs::read_to_string(&marker).unwrap(), raw);
+
+    // It is the packet's own `repo` object.
+    let packet = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["enter", "--json"])
+        .assert()
+        .success();
+    let packet: serde_json::Value = serde_json::from_slice(&packet.get_output().stdout).unwrap();
+    let identity: serde_json::Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+    assert_eq!(identity["repo"], packet["repo"]);
+
+    // No configuration: the defaults the packet has, `role` null.
+    fs::remove_file(temp.path().join(".toimija/repo.yaml")).unwrap();
+    let bare = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["enter", "--identity", "--json"])
+        .assert()
+        .success();
+    let bare: serde_json::Value = serde_json::from_slice(&bare.get_output().stdout).unwrap();
+    assert!(bare["repo"]["role"].is_null(), "{bare}");
+    assert_eq!(
+        bare["repo"]["important_docs"],
+        serde_json::json!(["README.md"])
+    );
+
+    // A configuration that does not parse fails, as the packet does; it needs
+    // `--json`, and shapes no packet.
+    fs::write(temp.path().join(".toimija/repo.yaml"), "repo: [\n").unwrap();
+    for (args, code) in [
+        (&["enter", "--identity", "--json"][..], 1),
+        (&["enter", "--identity"], 2),
+        (&["enter", "--identity", "--json", "--for-diff"], 2),
+        (&["enter", "--identity", "--json", "--budget", "100"], 2),
+    ] {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args(args)
+            .assert()
+            .code(code);
+    }
+}
+
+/// Every path under `dir`, `.git` left out.
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().is_some_and(|name| name == ".git") {
+            continue;
+        }
+        if path.is_dir() {
+            out.extend(walk(&path));
+        }
+        out.push(path);
+    }
+    out
+}

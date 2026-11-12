@@ -144,6 +144,30 @@ impl ContextPacket {
     }
 }
 
+pub const IDENTITY_SCHEMA: &str = "toimija-identity.v1";
+
+/// What a repository says it is: the packet's `repo` object, from
+/// `.toimija/repo.yaml` alone, with no Git state collected. For a tool that
+/// asks only that (ohjaa's perimeter): `enter --identity --json`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Identity {
+    pub schema: String,
+    pub repo: RepoInfo,
+}
+
+/// The identity of the repository at `repo_root`, exactly as the packet
+/// worked out there carries it in `repo`: the same configuration, loaded the
+/// same way (a broken repo.yaml fails here as it fails the packet), and the
+/// same defaults when there is none.
+pub fn identity(repo_root: &Path) -> anyhow::Result<Identity> {
+    let config =
+        RepoConfig::load_optional(repo_root)?.unwrap_or_else(|| RepoConfig::default_for(repo_root));
+    Ok(Identity {
+        schema: IDENTITY_SCHEMA.to_string(),
+        repo: RepoInfo::from_config(&config, repo_root),
+    })
+}
+
 /// Read the Git state of `worktree` once and work the packet out from it.
 /// The packet names no session; [`for_ambient_session`] or the caller adds one.
 pub fn work_out(

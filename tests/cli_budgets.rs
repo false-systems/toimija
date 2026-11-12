@@ -134,6 +134,18 @@ fn the_packet_commands_read_the_worktree_once() {
     }
 }
 
+/// What ohjaa asks every repository: what it says it is, the packet's `repo`
+/// object, for one git process where the packet costs six.
+#[test]
+fn the_identity_costs_one_git_process() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new("dirty");
+    let calls = sandbox.assert_budget(&["enter", "--identity", "--json"], 0, 1);
+    assert_eq!(calls[0], ["rev-parse", "--show-toplevel"]);
+}
+
 #[test]
 fn the_reports_find_the_root_once() {
     if !git_available() {

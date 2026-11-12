@@ -104,7 +104,8 @@ pub enum Command {
     /// prints the workspace packet. Read-only; runs no checks, no network.
     #[command(
         after_help = "Examples:\n  toimija enter --for-diff --budget 4000   # the standard agent preflight\n  \
-        toimija enter --json                     # the whole packet as JSON"
+        toimija enter --json                     # the whole packet as JSON\n  \
+        toimija enter --identity --json          # only what the repository says it is"
     )]
     Enter(EnterArgs),
     /// List the sessions working here: who, on which branch and worktree, with
@@ -161,6 +162,11 @@ pub struct EnterArgs {
     /// Approximate output cap in UTF-8 bytes; optional sections are omitted atomically.
     #[arg(long)]
     pub budget: Option<usize>,
+    /// Emit only the packet's `repo` object — what `.toimija/repo.yaml` says
+    /// the repository is — as `toimija-identity.v1`, read without collecting
+    /// Git state or naming a session. Requires `--json`.
+    #[arg(long, requires = "json", conflicts_with_all = ["for_diff", "budget"])]
+    pub identity: bool,
 }
 
 #[derive(Debug, Args)]
@@ -437,6 +443,9 @@ fn say_no_intent(args: &RunArgs) {
 fn run_enter(args: EnterArgs) -> Result<()> {
     let cwd = current_dir()?;
     let runner = ProcessCommandRunner;
+    if args.identity {
+        return print_identity(&runner, &cwd);
+    }
     let worktree = match git::discover(&runner, &cwd) {
         Ok(worktree) => worktree,
         // Outside any repository: the workspace's packet, from files.
@@ -450,6 +459,18 @@ fn run_enter(args: EnterArgs) -> Result<()> {
     } else {
         println!("{}", render_packet(&packet, args.budget));
     }
+    Ok(())
+}
+
+/// What the repository says it is, from `.toimija/repo.yaml` alone: one git
+/// process finds the root, and nothing is written or registered. A tool that
+/// asks only that (ohjaa's perimeter) pays for no Git state.
+fn print_identity(runner: &ProcessCommandRunner, cwd: &std::path::Path) -> Result<()> {
+    let repo_root = git::discover_repo_root(runner, cwd)
+        .map_err(anyhow::Error::from)
+        .context("failed to build context packet")?;
+    let identity = context::identity(&repo_root).context("failed to build context packet")?;
+    println!("{}", serde_json::to_string_pretty(&identity)?);
     Ok(())
 }
 

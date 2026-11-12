@@ -72,7 +72,9 @@ fn every_command_and_flag_the_docs_show_exists() {
 fn the_docs_check_refuses_what_help_does_not_have() {
     let words = |line: &str| invocations(line).remove(0);
     assert!(check(&words("toimija verify --json")).is_err());
-    assert!(check(&words("toimija enter --identity")).is_err());
+    assert!(check(&words("toimija context --identity --json")).is_err());
+    assert!(check(&words("toimija intent \"x\" --spec docs/adr/1.md")).is_err());
+    assert!(check(&words("toimija enter --identity --json")).is_ok());
     assert!(check(&words("toimija sessions --prune")).is_err());
     assert!(check(&words("toimija run --spec docs/adr/1.md claude")).is_err());
     assert!(check(&words("toimija enter --for-diff --budget 4000")).is_ok());

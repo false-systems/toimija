@@ -490,6 +490,42 @@ The JSON packet names its schema in `schema`: `toimija-context.v4`.
 - Removing, renaming or changing a field gives a new schema version.
 - A reader ignores fields it does not know and accepts both path forms.
 
+### What a repository says it is: `--identity`
+
+```bash
+toimija enter --identity --json
+```
+
+```json
+{
+  "schema": "toimija-identity.v1",
+  "repo": {
+    "name": "widget",
+    "role": "durable task contract",
+    "not_roles": [
+      "inbox",
+      "tracker"
+    ],
+    "important_docs": [
+      "README.md",
+      "AGENTS.md"
+    ],
+    "boundaries": [
+      "Do not add network calls."
+    ]
+  }
+}
+```
+
+For a tool that asks only what a repository is (ohjaa reads each role from
+it), `--identity` prints the packet's `repo` object under the schema
+`toimija-identity.v1`: what `.toimija/repo.yaml` says, with the packet's
+defaults where it is absent (`role` is `null`). It costs one git process,
+which finds the root, collects no Git state, names no session and writes
+nothing. It needs `--json` and takes neither `--for-diff` nor `--budget`
+(exit 2). Outside a repository, or with a `repo.yaml` that does not parse,
+it fails with exit 1.
+
 ## Sessions
 
 Each `toimija run` opens its own session, so agents in one repository can see
@@ -689,7 +725,7 @@ workspace. `handover` needs a repository.
 | Command | What it does |
 | --- | --- |
 | `run <agent>` | Open a session, start the agent with the packet, end the session and exit with the agent's status. |
-| `enter` | Work out the packet and print it. The first step for an agent that is not under `run`, and the way to see the state again. |
+| `enter` | Work out the packet and print it. The first step for an agent that is not under `run`, and the way to see the state again. `--identity --json` prints only what the repository says it is. |
 | `sessions` | List the sessions working here, with overlap warnings. |
 | `intent "<text>"` | Declare or update this session's intent and scope. |
 | `handover` | Leave a note for the next agent in this working copy. |
@@ -709,9 +745,9 @@ repository says `unknown commit`.
 What each command costs in git processes is pinned by
 `tests/cli_budgets.rs`: `enter` finds its worktree with one `git rev-parse`,
 reads `git status` once, and reads only the refs and history its output shows,
-six in all on a feature branch. `run` costs `enter`'s six and one `git status`
-when the agent exits, however long the agent runs. `sessions` costs one, and
-`handover` two.
+six in all on a feature branch; `enter --identity --json` costs one. `run`
+costs `enter`'s six and one `git status` when the agent exits, however long
+the agent runs. `sessions` costs one, and `handover` two.
 
 ## Configuration
 
