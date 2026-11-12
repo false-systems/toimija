@@ -6,7 +6,7 @@ default-members = ["."]
 
 [package]
 name = "toimija"
-version = "0.2.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.98"
 description = "Git-aware local context for coding agents: it reports facts and refuses to decide."

@@ -737,7 +737,7 @@ Global options: `-v` and `-vv` for more log detail, `-q` for none,
 output goes to stdout. Text logs are coloured only when stderr is a terminal,
 and never with `--no-color` or a non-empty `NO_COLOR`.
 
-`toimija --version` prints the version and the build: `toimija 0.2.0
+`toimija --version` prints the version and the build: `toimija 0.9.0
 (a1b2c3d)`, the short commit the binary was built from, with `, dirty` when
 the built code differed from that commit. A build without Git or outside a
 repository says `unknown commit`.
