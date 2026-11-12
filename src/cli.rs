@@ -1464,7 +1464,10 @@ mod tests {
     fn a_deleted_folder_is_named_from_pwd_only_when_that_path_is_gone() {
         let parent = tempfile::tempdir().unwrap();
         let gone = parent.path().join("removed-worktree");
-        let said = format!("{:#}", folder_unreadable(not_found(), Some(gone.clone().into())));
+        let said = format!(
+            "{:#}",
+            folder_unreadable(not_found(), Some(gone.clone().into()))
+        );
         assert_eq!(
             said,
             format!(
@@ -1475,7 +1478,11 @@ mod tests {
         );
 
         // A PWD that still exists, is relative or is missing names nothing.
-        for pwd in [Some(parent.path().as_os_str().to_owned()), Some("gone".into()), None] {
+        for pwd in [
+            Some(parent.path().as_os_str().to_owned()),
+            Some("gone".into()),
+            None,
+        ] {
             let said = format!("{:#}", folder_unreadable(not_found(), pwd.clone()));
             assert!(
                 said.starts_with("the folder you are in no longer exists"),
@@ -1488,7 +1495,10 @@ mod tests {
     fn an_unreadable_folder_that_is_not_gone_keeps_the_os_reason() {
         let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         let said = format!("{:#}", folder_unreadable(error, None));
-        assert!(said.starts_with("cannot read the folder you are in: "), "{said}");
+        assert!(
+            said.starts_with("cannot read the folder you are in: "),
+            "{said}"
+        );
         assert!(!said.contains("no longer exists"), "{said}");
     }
 

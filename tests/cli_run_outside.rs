@@ -255,7 +255,11 @@ fn in_a_deleted_folder_every_command_says_so_once_and_starts_nothing() {
         let stderr = String::from_utf8(output.stderr).unwrap();
 
         assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
-        assert_eq!(stderr.lines().count(), 1, "{args:?} said more than once: {stderr}");
+        assert_eq!(
+            stderr.lines().count(),
+            1,
+            "{args:?} said more than once: {stderr}"
+        );
         assert!(stderr.contains("no longer exists"), "{args:?}: {stderr}");
         assert!(
             stderr.contains(&gone.display().to_string()),
@@ -263,6 +267,13 @@ fn in_a_deleted_folder_every_command_says_so_once_and_starts_nothing() {
         );
         assert!(!gone.exists(), "{args:?} recreated the folder");
     }
-    assert!(!started.exists(), "run started the agent in a deleted folder");
-    assert_eq!(fs::read_dir(state.path()).unwrap().count(), 0, "a session was recorded");
+    assert!(
+        !started.exists(),
+        "run started the agent in a deleted folder"
+    );
+    assert_eq!(
+        fs::read_dir(state.path()).unwrap().count(),
+        0,
+        "a session was recorded"
+    );
 }
