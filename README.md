@@ -116,6 +116,9 @@ toimija handover --next "tests still to write"   # a note for the next agent
 `toimija run` takes any agent command: `toimija run codex`, or
 `toimija run --intent "fix the login redirect" claude --model opus`.
 
+When a command cannot do what was asked, it says why, once. In a folder that has been deleted, such as a removed worktree, it
+names the folder and says to `cd` into one that exists. `-v` adds logs.
+
 Two optional files, both written by hand. `.toimija/repo.yaml` says what the
 repository is for and what it must not become; it is committed. In a folder
 of repositories, `.toimija/workspace.yaml` makes the folder a workspace. The

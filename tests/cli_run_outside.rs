@@ -217,3 +217,63 @@ fn an_unknown_agent_outside_a_repo_is_told_its_briefing_was_not_delivered() {
         "{listed}"
     );
 }
+
+/// A terminal can sit in a folder that was deleted after it moved in, such
+/// as a removed worktree. Every command says so in one line, names the
+/// folder, starts nothing and writes nothing.
+#[test]
+fn in_a_deleted_folder_every_command_says_so_once_and_starts_nothing() {
+    let parent = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let gone = parent.path().join("removed-worktree");
+    let started = parent.path().join("agent-started");
+    let toimija = assert_cmd::cargo::cargo_bin("toimija");
+    let commands: [Vec<&str>; 5] = [
+        vec!["run", "--", "touch", started.to_str().unwrap()],
+        vec!["enter"],
+        vec!["sessions"],
+        vec!["intent", "why"],
+        vec!["handover", "--next", "note"],
+    ];
+    for args in commands {
+        fs::create_dir(&gone).unwrap();
+        // The shell moves in, as an interactive one does (PWD exported),
+        // then the folder is deleted under it.
+        let mut shell = std::process::Command::new("sh");
+        shell
+            .arg("-c")
+            .arg(r#"cd "$1" && export PWD && rmdir "$1" && shift && exec "$@""#)
+            .arg("sh")
+            .arg(&gone)
+            .arg(&toimija)
+            .args(&args)
+            .env("TOIMIJA_STATE_DIR", state.path());
+        for var in SCRUBBED {
+            shell.env_remove(var);
+        }
+        let output = shell.output().unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
+        assert_eq!(
+            stderr.lines().count(),
+            1,
+            "{args:?} said more than once: {stderr}"
+        );
+        assert!(stderr.contains("no longer exists"), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(&gone.display().to_string()),
+            "{args:?} should name the folder: {stderr}"
+        );
+        assert!(!gone.exists(), "{args:?} recreated the folder");
+    }
+    assert!(
+        !started.exists(),
+        "run started the agent in a deleted folder"
+    );
+    assert_eq!(
+        fs::read_dir(state.path()).unwrap().count(),
+        0,
+        "a session was recorded"
+    );
+}
