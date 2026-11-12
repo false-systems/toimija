@@ -125,12 +125,12 @@ fn three_repositories() -> Sandbox {
 }
 
 #[test]
-fn context_in_a_workspace_prints_the_workspace_packet() {
+fn enter_in_a_workspace_prints_the_workspace_packet() {
     if !git_available() {
         return;
     }
     let sandbox = three_repositories();
-    let packet = sandbox.stdout(&sandbox.root, &["context"]);
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
 
     assert!(packet.starts_with("# Toimija Workspace\n"), "{packet}");
     assert!(
@@ -178,7 +178,7 @@ fn context_in_a_workspace_prints_the_workspace_packet() {
     assert!(not_read.contains("gamma: role"), "{packet}");
 
     assert!(
-        packet.contains("run `toimija context` inside a repository"),
+        packet.contains("run `toimija enter` inside a repository"),
         "{packet}"
     );
 }
@@ -190,7 +190,7 @@ fn the_json_packet_names_its_schema_and_holds_the_same_facts() {
     }
     let sandbox = three_repositories();
     let packet: serde_json::Value =
-        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["context", "--json"])).unwrap();
+        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
 
     assert_eq!(packet["schema"], "toimija-workspace.v1");
     assert_eq!(
@@ -239,7 +239,7 @@ fn the_nearest_workspace_file_above_the_current_directory_wins() {
     let below = sandbox.root.join("plain-folder");
     assert!(
         sandbox
-            .stdout(&below, &["context"])
+            .stdout(&below, &["enter"])
             .contains("- role: the services of one product\n")
     );
 
@@ -250,7 +250,7 @@ fn the_nearest_workspace_file_above_the_current_directory_wins() {
         "role: the inner one\n",
     )
     .unwrap();
-    let inner = sandbox.stdout(&below, &["context"]);
+    let inner = sandbox.stdout(&below, &["enter"]);
     assert!(inner.contains("- role: the inner one\n"), "{inner}");
     assert!(
         inner.contains(&format!("- folder: {}\n", below.display())),
@@ -284,12 +284,12 @@ fn inside_a_repository_the_repository_wins_over_a_workspace_above_it() {
         ],
     );
 
-    let packet = sandbox.stdout(&repo, &["context"]);
+    let packet = sandbox.stdout(&repo, &["enter"]);
     assert!(packet.starts_with("# Toimija Context\n"), "{packet}");
     assert!(!packet.contains("Toimija Workspace"), "{packet}");
 
     // And the real repository shows up in the workspace, on its branch.
-    let workspace = sandbox.stdout(&sandbox.root, &["context"]);
+    let workspace = sandbox.stdout(&sandbox.root, &["enter"]);
     assert!(
         workspace.contains("- real\n  - role: not set\n  - branch: main\n"),
         "{workspace}"
@@ -297,18 +297,18 @@ fn inside_a_repository_the_repository_wins_over_a_workspace_above_it() {
 }
 
 #[test]
-fn outside_a_repository_and_a_workspace_context_fails_and_names_the_way_in() {
+fn outside_a_repository_and_a_workspace_enter_fails_and_names_the_way_in() {
     if !git_available() {
         return;
     }
     let sandbox = Sandbox::new();
     sandbox
         .toimija(&sandbox.root)
-        .arg("context")
+        .arg("enter")
         .assert()
         .failure()
         .stderr(predicate::str::contains("not a Git repository"))
-        .stderr(predicate::str::contains("toimija init --workspace"));
+        .stderr(predicate::str::contains(".toimija/workspace.yaml"));
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn an_empty_workspace_file_is_a_workspace_and_an_unknown_field_is_named() {
     }
     let sandbox = Sandbox::new();
     sandbox.workspace_file("");
-    let packet = sandbox.stdout(&sandbox.root, &["context"]);
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
     assert!(packet.contains("- role: not set\n"), "{packet}");
     assert!(packet.contains("## Read first\n- none\n"), "{packet}");
     assert!(packet.contains("## Repositories\n- none\n"), "{packet}");
@@ -326,54 +326,11 @@ fn an_empty_workspace_file_is_a_workspace_and_an_unknown_field_is_named() {
     sandbox.workspace_file("role: x\nrepositories:\n  - a\n");
     sandbox
         .toimija(&sandbox.root)
-        .arg("context")
+        .arg("enter")
         .assert()
         .failure()
         .stderr(predicate::str::contains("workspace.yaml"))
         .stderr(predicate::str::contains("repositories"));
-}
-
-#[test]
-fn init_workspace_writes_the_file_once_and_refuses_inside_a_repository() {
-    if !git_available() {
-        return;
-    }
-    let sandbox = Sandbox::new();
-    let out = sandbox.stdout(&sandbox.root, &["init", "--workspace"]);
-    assert!(out.contains("workspace.yaml"), "{out}");
-    let file = sandbox.root.join(".toimija/workspace.yaml");
-    let template = fs::read_to_string(&file).unwrap();
-    assert!(template.contains("# role:"), "{template}");
-    assert!(template.contains("# read_first:"), "{template}");
-    assert!(sandbox.root.join(".toimija/.gitignore").is_file());
-    // The template as written is a valid, empty workspace.
-    assert!(
-        sandbox
-            .stdout(&sandbox.root, &["context"])
-            .contains("# Toimija Workspace")
-    );
-
-    // A second init changes nothing and says it refused.
-    fs::write(&file, "role: mine\n").unwrap();
-    sandbox
-        .toimija(&sandbox.root)
-        .args(["init", "--workspace"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("already exists"));
-    assert_eq!(fs::read_to_string(&file).unwrap(), "role: mine\n");
-
-    // Inside a repository, `init` is the repository form.
-    let repo = sandbox.root.join("real");
-    fs::create_dir_all(&repo).unwrap();
-    run_git(&repo, &["init", "-q", "-b", "main"]);
-    sandbox
-        .toimija(&repo)
-        .args(["init", "--workspace"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("inside a Git repository"));
-    assert!(!repo.join(".toimija").exists());
 }
 
 fn listing(root: &Path) -> Vec<String> {
@@ -403,8 +360,8 @@ fn enter_in_a_workspace_prints_the_packet_and_writes_nothing() {
     assert!(entered.contains("# Toimija Workspace\n"), "{entered}");
     assert_eq!(
         entered,
-        sandbox.stdout(&sandbox.root, &["context"]),
-        "enter prints the packet context prints"
+        sandbox.stdout(&sandbox.root, &["enter"]),
+        "the packet is worked out the same way each time"
     );
     let json: serde_json::Value =
         serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
@@ -414,13 +371,13 @@ fn enter_in_a_workspace_prints_the_packet_and_writes_nothing() {
 
 /// A stand-in agent named `claude` (a known agent, so it gets a launch
 /// prompt): it saves its last argument, the prompt, and what `toimija
-/// context` prints while it runs.
+/// enter` prints while it runs.
 fn fake_claude(sandbox: &Sandbox) -> PathBuf {
     let bin = sandbox.ceiling.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let toimija = assert_cmd::cargo::cargo_bin("toimija");
     let script = format!(
-        "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > \"$OUT/prompt.txt\"\n'{}' -q context > \"$OUT/during.md\" 2> \"$OUT/during.err\"\nexit 0\n",
+        "#!/bin/sh\nfor last; do :; done\nprintf '%s' \"$last\" > \"$OUT/prompt.txt\"\n'{}' -q enter > \"$OUT/during.md\" 2> \"$OUT/during.err\"\nexit 0\n",
         toimija.display()
     );
     let path = bin.join("claude");
@@ -508,56 +465,25 @@ fn run_in_a_folder_with_no_workspace_file_is_as_it_was() {
              When work is assigned, declare why you are here and what you will touch \
              (`toimija intent \"<why>\" --scope <path>`); `toimija sessions --outside-repos` \
              lists you. With no concrete task, acknowledge and wait instead of running \
-             discovery or bookkeeping tools. Once a repository is selected, read its \
-             Toimija context once and use that workset instead of scanning the workspace.\n",
+             discovery or bookkeeping tools. Once a repository is selected, run `toimija enter` \
+             inside it once and use that workset instead of scanning the workspace.\n",
             sandbox.root.display()
         )
     );
-    // And `context` there still fails.
+    // And `enter` there still fails.
     let error = fs::read_to_string(out.join("during.err")).unwrap();
     assert!(error.contains("not a Git repository"), "{error}");
     assert!(!sandbox.root.join(".toimija").exists());
 }
 
-#[test]
-fn doctor_in_a_workspace_checks_the_file_and_its_read_first_paths() {
-    if !git_available() {
-        return;
-    }
-    let sandbox = Sandbox::new();
-    sandbox.workspace_file("role: x\nread_first:\n  - NOTES.md\n");
-    sandbox.write("NOTES.md", "# notes\n");
-    let report = sandbox.stdout(&sandbox.root, &["doctor"]);
-    assert!(report.contains("ok: workspace file"), "{report}");
-    assert!(report.contains("ok: read first"), "{report}");
-
-    fs::remove_file(sandbox.root.join("NOTES.md")).unwrap();
-    sandbox
-        .toimija(&sandbox.root)
-        .arg("doctor")
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("fail: read first"))
-        .stdout(predicate::str::contains("NOTES.md"));
-
-    sandbox.workspace_file("rolee: x\n");
-    sandbox
-        .toimija(&sandbox.root)
-        .arg("doctor")
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("fail: workspace file"))
-        .stdout(predicate::str::contains("rolee"));
-}
-
-/// Every git process `toimija context` starts in `cwd`, by Git's own trace.
+/// Every git process `toimija enter` starts in `cwd`, by Git's own trace.
 fn git_processes(sandbox: &Sandbox, cwd: &Path) -> Vec<Vec<String>> {
     let trace = sandbox.ceiling.join("trace.json");
     let _ = fs::remove_file(&trace);
     let output = sandbox
         .toimija(cwd)
         .env("GIT_TRACE2_EVENT", &trace)
-        .arg("context")
+        .arg("enter")
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -576,7 +502,7 @@ fn git_processes(sandbox: &Sandbox, cwd: &Path) -> Vec<Vec<String>> {
 }
 
 /// The workspace packet is built from files: no git process per repository,
-/// and none for the packet at all. The one process a `context` starts is the
+/// and none for the packet at all. The one process `enter` starts is the
 /// question every command asks first, "is this folder inside a repository?",
 /// and its count does not grow with the number of repositories.
 #[test]
@@ -612,8 +538,8 @@ fn the_workspace_packet_starts_no_git_process_however_many_repositories() {
 }
 
 /// A session marker as `run` writes it in a repository, for this test
-/// process's own pid (alive) or closed.
-fn marker(sandbox: &Sandbox, repo: &str, id: &str, intent: &str, status: &str) {
+/// process's own pid: alive, or, `ended`, with a start this process never had.
+fn marker(sandbox: &Sandbox, repo: &str, id: &str, intent: &str, ended: bool) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -629,8 +555,7 @@ fn marker(sandbox: &Sandbox, repo: &str, id: &str, intent: &str, status: &str) {
             "intent": intent,
             "started_at": now,
             "last_seen_at": now,
-            "status": status,
-            "closed_at": null,
+            "pid_start": if ended { Some(1) } else { None },
         })
         .to_string(),
     );
@@ -645,12 +570,12 @@ fn a_repository_with_an_open_session_is_listed_first_with_that_session() {
     sandbox.workspace_file("");
     sandbox.repo("alpha", "ref: refs/heads/main\n");
     sandbox.repo("zeta", "ref: refs/heads/fix/redirect\n");
-    marker(&sandbox, "zeta", "100-1", "fix the redirect", "active");
-    marker(&sandbox, "alpha", "100-2", "done long ago", "closed");
+    marker(&sandbox, "zeta", "100-1", "fix the redirect", false);
+    marker(&sandbox, "alpha", "100-2", "done long ago", true);
     // A marker that cannot be read is named, not dropped.
     sandbox.write("alpha/.toimija/sessions/100-3/session.json", "not json");
 
-    let packet = sandbox.stdout(&sandbox.root, &["context"]);
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
     let zeta = packet.find("\n- zeta\n").unwrap();
     let alpha = packet.find("\n- alpha\n").unwrap();
     assert!(zeta < alpha, "{packet}");

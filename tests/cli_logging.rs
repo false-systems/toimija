@@ -36,7 +36,7 @@ fn verbose_json_logs_go_to_stderr_and_keep_stdout_parseable() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["-v", "--log-format", "json", "context", "--json"])
+        .args(["-v", "--log-format", "json", "enter", "--json"])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
@@ -103,7 +103,7 @@ fn quiet_mode_suppresses_logs_without_suppressing_stdout() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["--quiet", "--log-format", "json", "context", "--json"])
+        .args(["--quiet", "--log-format", "json", "enter", "--json"])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();

@@ -12,8 +12,8 @@ fn main() -> ExitCode {
     match cli::run(cli) {
         Ok(0) => ExitCode::SUCCESS,
         Ok(code) => {
-            // `run`/`verify` picked a specific code (wrapped-command status,
-            // stale-packet gate). `process::exit` preserves the full i32 range
+            // `run` picked a specific code (the wrapped command's status).
+            // `process::exit` preserves the full i32 range
             // but skips destructors, so flush buffered output first.
             std::io::stdout().flush().ok();
             std::io::stderr().flush().ok();

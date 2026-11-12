@@ -2,8 +2,8 @@
 
 # toimija
 
-Toimija is a command-line tool that gives a coding agent the facts of the Git
-repository it works in.
+Toimija is a command-line tool with one job: it tells a coding agent where the
+work stands in the Git repository it works in.
 
 It is for a person who works with coding agents such as Claude Code, Codex, pi
 or opencode, at the moment they start one in a repository and want it to know
@@ -12,21 +12,22 @@ where it is. It needs `git`, an agent CLI, and Rust for a source install.
 > We do not ask the model to understand the repo first. We ask Git what state the repo is in.
 
 A coding agent usually enters a repository by listing, searching and guessing.
-That is slow, every agent repeats it, and the result is out of date as soon as
-the repository moves. Toimija reads the repository's state once and writes a
-short packet: the branch, the changed files, what to read first and how to
-validate. It starts the agent with that packet and keeps it current while the
-agent works. It shows which other sessions are in the same repository, and
-carries a note from one agent to the next. In a folder that holds several
-repositories, it gives the agent the facts of the folder instead: each
-repository, its branch, and who is working where.
+That is slow, and every agent repeats it. Toimija asks Git instead and works
+out a short packet: the branch, the changed files, what to read first, how to
+validate, and the note the last agent left. It starts the agent with that
+packet in its prompt, shows which other sessions are working in the same
+repository and why, and carries a note from one agent to the next. The packet
+is worked out each time it is asked for and never saved, so it cannot go
+stale. In a folder that holds several repositories, it gives the agent the
+facts of the folder instead: each repository, its branch, and who is working
+where.
 
 Git is not a save button here. Git is the substrate.
 Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
 
 ## See it
 
-<img src="docs/assets/see-it.svg" alt="One terminal runs an agent with toimija run. In another, toimija sessions lists the session as live with its branch and intent, and toimija graph shows that branch as proven and not yet reviewed, with the session on it, above the main branch." width="100%">
+<img src="docs/assets/see-it.svg" alt="One terminal runs an agent with toimija run. In another, toimija sessions lists the session as live with its branch and intent, and toimija handover leaves a note for the next agent." width="100%">
 
 <details><summary>The same, as text</summary>
 
@@ -39,17 +40,16 @@ LIVE
     branch: tidy-readme
     intent: tidy the README
 
-$ toimija graph
-* 4191206  tidy-readme  proven    review: none       claude live: "tidy the README"
-* 3588810  origin/main  proven    review: fine
+$ toimija handover --next "the intro is done; the examples still to check"
+Handover written for the next agent in /work/demo: for the next agent
 ```
 
 </details>
 
-The packet a session reads (shortened here):
+The packet an agent reads (shortened here):
 
 ```console
-$ toimija context
+$ toimija enter
 # Toimija Context
 - compiled-from: 2 changed file(s), 3 recent commit(s) — reading this replaces that discovery
 
@@ -102,32 +102,25 @@ build; native Windows is not supported.
 
 ## Use
 
-From nothing to an agent that knows where it is:
+Toimija needs no setup: it works in any Git repository. Five commands, in the
+order you meet them:
 
 ```bash
-cd your-repository
-toimija init          # once: write .toimija/repo.yaml; fill in role and boundaries
-toimija run claude    # start the agent as a session, with the packet in its prompt
-toimija sessions      # from another terminal: see it working
-```
-
-The fuller list, in the order you meet the commands:
-
-```bash
-toimija init               # once per repository: write .toimija/repo.yaml
-toimija init --workspace   # or once per folder of repositories
-toimija run claude         # start an agent as a session, with its packet
-toimija run --spec docs/adr/0007-login.md claude   # start it from a spec
-toimija sessions           # who is working in this repository
-toimija graph              # branches in progress: proven, reviewed, who is there
+toimija run claude         # start an agent as a session, with the packet in its prompt
+toimija enter              # the packet now, for an agent started some other way
+toimija sessions           # who is working in this repository, and why
 toimija intent "fix the login redirect"          # a session says why it is here
-toimija verify             # before a commit: does the packet still match?
 toimija handover --next "tests still to write"   # a note for the next agent
 ```
 
 `toimija run` takes any agent command: `toimija run codex`, or
-`toimija run --intent "fix the login redirect" claude --model opus`. An agent
-that is started some other way gets the same packet with `toimija enter`.
+`toimija run --intent "fix the login redirect" claude --model opus`.
+
+Two optional files, both written by hand. `.toimija/repo.yaml` says what the
+repository is for and what it must not become; it is committed. In a folder
+of repositories, `.toimija/workspace.yaml` makes the folder a workspace. The
+rest of `.toimija/` is toimija's own: keep it out of Git with `/.toimija/*`
+and `!/.toimija/repo.yaml` in `.gitignore`.
 
 ## How it fits
 
@@ -136,7 +129,7 @@ alone.
 
 <img src="docs/assets/loop.svg" alt="A piece of work moves through five steps: start, check, review, land, deploy. toimija starts it, sykli does the other four, ohjaa holds what agents know, and vessa counts what agents used." width="100%">
 
-- **toimija** starts the session and gives the agent the facts of the repository.
+- **toimija** starts the session and tells the agent where the work stands.
 - **sykli** runs the declared checks, keeps the proof, and reviews, lands and deploys the work.
 - **ohjaa** holds what agents are told. A person decides it.
 - **vessa** counts what agents used.
@@ -146,12 +139,14 @@ alone.
 ## What it does not do
 
 - It does not decide. It assigns no work, judges no result and closes nothing.
-- It runs no checks. `toimija validate --plan` prints the commands and never
-  runs them.
+- It runs no checks. The packet names the validation commands and toimija
+  never runs them.
 - It does not coordinate agents. Overlap between sessions is a warning, never
   a lock.
+- It keeps no copy of the packet. Ask again, with `toimija enter`, to see the
+  state as it is now.
 - It makes no network calls and leaves no process running after a command
-  ends.
+  ends. While an agent runs under `toimija run`, it starts no git process.
 - It does not parse source code or keep an index. What to read first comes
   from file paths.
 

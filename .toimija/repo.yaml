@@ -1,12 +1,13 @@
 repo:
   name: toimija
-  role: CLI that compiles local Git context for coding agents
+  role: CLI that tells a coding agent where the work stands
   not:
     - platform
     - dashboard
     - dispatcher
     - graph database
     - MCP server
+    - check runner
 
 context:
   default_budget: 4000
@@ -27,9 +28,9 @@ validation:
   privileged: []
 
 boundaries:
-  - Keep v0.0 as one Rust crate.
-  - Do not add MCP, LSP, SCIP, Tree-sitter, or Kythe integration yet. Sykli is in scope as this repo's CI pipeline (the sykli.json contract and its CI job) and as two reads, where `graph` asks `sykli status --commit` what its receipts say of a commit and reads the reviews sykli keeps as git notes. Running or judging checks inside toimija's own commands stays out of scope.
-  - Do not add network calls or background daemons; the watch and run commands run only while explicitly invoked.
-  - Agent coordination — per-session live packets and sibling-session awareness — is in scope, but only as synchronous reads and writes during an explicitly-invoked command. Still no background daemons, no network, no task dispatch or assignment.
-  - 'A session outside any Git repository is in scope: `run` opens a visible session (marker, heartbeat, handshake; no packet) in the machine-local state directory, never a `.toimija/` folder where the agent works. A workspace declared by `.toimija/workspace.yaml` is in scope as a read of files only, with no git process, no network, and nothing written outside `init --workspace`.'
-  - Toimija reports facts and refuses to decide. No gates, checks, or receipts (Evidence belongs to Sykli), no work providers or plugins, and no dispatch, assignment, or closure of work.
+  - 'Keep Toimija one Rust crate with one job: where the work stands — Git state, changed files, who else is working here and why, and the last handover. A command outside that job does not belong here.'
+  - Work the packet out when it is asked for; never write it to disk. Nothing Toimija says may need refreshing or verifying.
+  - Start no git process while an agent runs under `run`, and keep git processes per command minimal; `tests/cli_budgets.rs` pins them.
+  - No network calls, no background daemons. `run` lives only as long as its agent, and a session's marker only as long as its `run`.
+  - 'Sessions outside any Git repository live in the machine-local state directory, never a `.toimija/` folder where the agent works. A workspace (`.toimija/workspace.yaml`) is read from files only: no git process per repository, nothing written.'
+  - No MCP, LSP, SCIP, Tree-sitter or Kythe integration. Toimija runs no checks and writes no receipts (that is sykli's), and does no dispatch, assignment or closure of work.

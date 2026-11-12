@@ -15,7 +15,7 @@ fn init_git_repo(path: &Path) {
     run_git(path, &["config", "user.name", "Toimija Test"]);
 }
 
-fn write_marker(repo: &Path, id: &str, status: &str) {
+fn write_marker(repo: &Path, id: &str) {
     let dir = repo.join(".toimija/sessions").join(id);
     fs::create_dir_all(&dir).unwrap();
     fs::write(
@@ -25,8 +25,7 @@ fn write_marker(repo: &Path, id: &str, status: &str) {
                 "id": "{id}", "pid": 1, "agent": ["claude"],
                 "worktree": "/repo", "branch": "main", "head": null,
                 "intent": null, "scope": ["src/a.rs"],
-                "started_at": 100, "status": "{status}",
-                "closed_at": null, "exit_status": null
+                "started_at": 100
             }}"#
         ),
     )
@@ -46,7 +45,7 @@ fn intent_updates_own_marker_via_the_env_handshake() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_git_repo(temp.path());
-    write_marker(temp.path(), "100-1", "active");
+    write_marker(temp.path(), "100-1");
 
     Command::cargo_bin("toimija")
         .unwrap()
@@ -81,23 +80,25 @@ fn intent_outside_a_run_session_fails_with_guidance() {
         .stderr(predicates::str::contains("TOIMIJA_SESSION is not set"));
 }
 
+/// A session that has ended left no marker: there is nothing to speak for.
 #[test]
-fn intent_refuses_a_closed_session() {
+fn intent_refuses_an_ended_session() {
     if !git_available() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
     init_git_repo(temp.path());
-    write_marker(temp.path(), "100-1", "closed");
+    let state = tempfile::tempdir().unwrap();
 
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
         .env("TOIMIJA_SESSION", "100-1")
+        .env("TOIMIJA_STATE_DIR", state.path())
         .args(["intent", "too late"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("closed"));
+        .stderr(predicates::str::contains("is the session still open?"));
 }
 
 #[test]

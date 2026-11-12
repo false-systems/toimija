@@ -5,32 +5,36 @@ use predicates::prelude::*;
 // subcommand and flag carries a description, so empty help cannot silently
 // return.
 
+/// The commands toimija has, and no others: its one job is to tell an agent
+/// where the work stands.
+const COMMANDS: [&str; 5] = ["run", "enter", "sessions", "intent", "handover"];
+
 #[test]
-fn top_level_help_describes_every_subcommand() {
-    Command::cargo_bin("toimija")
+fn top_level_help_describes_every_subcommand_and_no_other() {
+    let help = Command::cargo_bin("toimija")
         .unwrap()
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Create .toimija/repo.yaml"))
-        .stdout(predicate::str::contains("Check Toimija setup"))
+        .stdout(predicate::str::contains("Start an agent as a session"))
+        .stdout(predicate::str::contains("Work out the packet and print it"))
+        .stdout(predicate::str::contains("List the sessions working here"))
         .stdout(predicate::str::contains(
-            "Compile the current Git work state",
-        ))
-        .stdout(predicate::str::contains("Recompute the live packet"))
-        .stdout(predicate::str::contains("Agent entry"))
-        .stdout(predicate::str::contains("Watch the repo"))
-        .stdout(predicate::str::contains(
-            "Enter, watch while an agent command runs",
+            "Declare or update this session's intent",
         ))
         .stdout(predicate::str::contains(
-            "List durable records of concluded sessions",
-        ))
-        .stdout(predicate::str::contains("Reclaim expired Toimija sessions"))
-        .stdout(predicate::str::contains(
-            "Check whether this branch's work has landed",
-        ))
-        .stdout(predicate::str::contains("Print the validation plan"));
+            "Leave a handover for the next agent",
+        ));
+    let help = String::from_utf8_lossy(&help.get_output().stdout).into_owned();
+    let listed: Vec<&str> = help
+        .lines()
+        .skip_while(|line| !line.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| *name != "help")
+        .collect();
+    assert_eq!(listed, COMMANDS, "{help}");
 }
 
 #[test]
@@ -54,12 +58,8 @@ fn top_level_help_shows_the_agent_workflow_and_boundaries() {
 #[test]
 fn every_subcommand_help_says_when_to_use_it() {
     // Each subcommand's long help must carry a "use this …" orientation line so
-    // an agent can pick between siblings (enter vs context vs refresh, …).
-    for subcommand in [
-        "init", "doctor", "context", "refresh", "enter", "watch", "run", "intent", "handover",
-        "history", "clean", "landed", "graph", "sessions", "validate", "verify", "snapshot",
-        "spec",
-    ] {
+    // an agent can pick between them.
+    for subcommand in COMMANDS {
         Command::cargo_bin("toimija")
             .unwrap()
             .args([subcommand, "--help"])
@@ -74,24 +74,13 @@ fn every_subcommand_help_says_when_to_use_it() {
 }
 
 #[test]
-fn high_traffic_subcommands_carry_examples() {
+fn every_subcommand_carries_examples() {
     for (subcommand, example) in [
-        ("init", "toimija init --workspace"),
         ("enter", "toimija enter --for-diff --budget 4000"),
         ("run", "toimija run --intent"),
-        ("sessions", "toimija sessions --prune"),
-        ("intent", "toimija intent --spec"),
-        ("spec", "toimija spec new"),
-        ("run", "toimija run --spec docs/adr/0007-login.md claude"),
+        ("sessions", "toimija sessions --outside-repos"),
+        ("intent", "toimija intent \"fix the redirect\" --scope"),
         ("handover", "toimija handover --unfinished"),
-        ("history", "toimija history --json"),
-        ("clean", "toimija clean --dry-run"),
-        ("verify", "toimija verify --json"),
-        ("landed", "toimija landed"),
-        ("graph", "toimija graph --base"),
-        ("doctor", "toimija doctor --strict"),
-        ("snapshot", "toimija snapshot --lease"),
-        ("context", "toimija context --for-diff"),
     ] {
         Command::cargo_bin("toimija")
             .unwrap()
@@ -103,54 +92,16 @@ fn high_traffic_subcommands_carry_examples() {
     }
 }
 
-/// A session can start from a spec: the flag and the subcommands that make
-/// one are described where an agent looks for them.
 #[test]
-fn spec_help_describes_the_flag_and_the_subcommands() {
-    for (args, text) in [
-        (vec!["--help"], "Create or list specs"),
-        (vec!["run", "--help"], "--spec <REF>"),
-        (vec!["intent", "--help"], "--spec <REF>"),
-        (vec!["spec", "--help"], "Create the next numbered spec file"),
-        (vec!["spec", "--help"], "List the numbered spec files"),
-        (vec!["spec", "new", "--help"], "<TITLE>"),
-    ] {
-        Command::cargo_bin("toimija")
-            .unwrap()
-            .args(&args)
-            .assert()
-            .success()
-            .stdout(predicate::str::contains(text));
-    }
-}
-
-#[test]
-fn context_help_describes_every_flag() {
+fn enter_help_describes_every_flag() {
     Command::cargo_bin("toimija")
         .unwrap()
-        .args(["context", "--help"])
+        .args(["enter", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Emit the packet as JSON"))
         .stdout(predicate::str::contains("Add a diff-focused section"))
         .stdout(predicate::str::contains("Approximate output cap"));
-}
-
-#[test]
-fn verify_json_help_describes_the_shape_verify_emits() {
-    // `verify --json` emits `{ "status": ..., "packet_path": ... }`; the help
-    // must not promise `{ "consistent": bool, "reasons": [...] }`, a shape no
-    // command emits.
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .args(["verify", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"consistent\"").not())
-        .stdout(predicate::str::contains("\"reasons\"").not())
-        .stdout(predicate::str::contains("\"status\""))
-        .stdout(predicate::str::contains("\"verified\""))
-        .stdout(predicate::str::contains("session_not_live"));
 }
 
 #[test]
@@ -185,7 +136,7 @@ fn every_command_the_source_names_exists() {
         .filter_map(|line| line.split_whitespace().next())
         .map(str::to_string)
         .collect();
-    assert!(commands.contains("refresh"), "{help}");
+    assert!(commands.contains("enter"), "{help}");
 
     fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {

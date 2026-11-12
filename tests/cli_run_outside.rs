@@ -86,21 +86,15 @@ fn run_outside_a_repo_opens_a_visible_session_and_leaves_no_folder_behind() {
     let live = &during["sessions"][0];
     assert_eq!(live["liveness"], "active", "{during}");
     assert_eq!(live["worktree"], folder_path.display().to_string());
+    assert_eq!(live["intent"], "declared inside");
+    assert_eq!(live["scope"], serde_json::json!(["/x", "/y"]));
 
+    // The agent is gone, and so is its session: no marker is left behind.
     let after = outside_sessions(folder.path(), state.path());
     assert_eq!(after["coverage"]["status"], "available", "{after}");
-    let closed = &after["sessions"][0];
-    assert_eq!(closed["liveness"], "closed", "{after}");
-    assert_eq!(closed["exit_status"], 7);
-    assert_eq!(closed["intent"], "declared inside");
-    assert_eq!(closed["scope"], serde_json::json!(["/x", "/y"]));
-    let packet = state.path().join(closed["packet"].as_str().unwrap());
-    assert!(
-        fs::read_to_string(&packet)
-            .unwrap()
-            .contains("not inside a Git repository"),
-        "the listed packet path is a real file that says why there is no packet"
-    );
+    assert_eq!(after["sessions"], serde_json::json!([]), "{after}");
+    let id = live["id"].as_str().unwrap();
+    assert!(!state.path().join(".toimija/sessions").join(id).exists());
 }
 
 #[cfg(unix)]
@@ -189,6 +183,12 @@ fn an_unknown_agent_outside_a_repo_is_told_its_briefing_was_not_delivered() {
     }
     let folder = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
+    let toimija = assert_cmd::cargo::cargo_bin("toimija");
+    // The agent lists the sessions while it runs: the marker records the loss.
+    let script = format!(
+        "'{}' sessions --json --outside-repos > during.json",
+        toimija.display()
+    );
 
     toimija_outside(folder.path(), state.path())
         .args([
@@ -200,7 +200,7 @@ fn an_unknown_agent_outside_a_repo_is_told_its_briefing_was_not_delivered() {
             "--",
             "sh",
             "-c",
-            "true",
+            &script,
         ])
         .assert()
         .success()
@@ -208,7 +208,8 @@ fn an_unknown_agent_outside_a_repo_is_told_its_briefing_was_not_delivered() {
             "toimija run: warning: `sh` is not a known agent; not delivered: briefing",
         ));
 
-    let listed = outside_sessions(folder.path(), state.path());
+    let listed: serde_json::Value =
+        serde_json::from_slice(&fs::read(folder.path().join("during.json")).unwrap()).unwrap();
     let session = &listed["sessions"][0];
     assert_eq!(
         session["undelivered"],

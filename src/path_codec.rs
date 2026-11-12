@@ -1,9 +1,7 @@
 //! How a filesystem path becomes JSON, and back.
 //!
-//! This is part of the canonical form: these encoders sit behind
-//! `#[serde(with = ...)]` on sealed structs, so the bytes they produce are the
-//! bytes that get digested. A path encoded another way gives another digest
-//! for the same artifact.
+//! These encoders sit behind `#[serde(with = ...)]` on the packet, so a path
+//! that is not UTF-8 survives into the JSON instead of being lost.
 //!
 //! A valid-UTF-8 path is a plain JSON string. On Unix a path that is not valid
 //! UTF-8 still has to round-trip exactly, so it serializes as
@@ -189,25 +187,6 @@ pub fn display(path: &Path) -> String {
     }
 }
 
-pub fn fingerprint(path: &Path) -> String {
-    if path.to_str().is_some() {
-        return path
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-        format!("bytes:{}", hex(path.as_os_str().as_bytes()))
-    }
-    #[cfg(not(unix))]
-    {
-        path.to_string_lossy().into_owned()
-    }
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().fold(String::new(), |mut output, byte| {
         let _ = write!(output, "{byte:02x}");
@@ -244,6 +223,5 @@ mod tests {
         let decoded = decode::<serde_json::Error>(serde_json::from_str(&json).unwrap()).unwrap();
         assert_eq!(decoded, path);
         assert_eq!(display(&path), r"a\xff\x0a");
-        assert_eq!(fingerprint(&path), "bytes:61ff0a");
     }
 }

@@ -4,10 +4,10 @@ use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// `enter` is the recommended agent preflight: it refreshes the live packet
-// (`.toimija/current.*`) and prints it, framed as agent entry. These lock in the
-// packet rendering, the JSON form, and that it writes only the live files — never
-// agent policy docs.
+// `enter` is the agent preflight: it works out the packet from Git when asked
+// and prints it. These lock in the packet rendering, the JSON form, the
+// session it names under `run`, and that it writes nothing at all — no packet
+// file to go stale, and never agent policy docs.
 
 mod common;
 use common::{git_available, run_git};
@@ -19,6 +19,26 @@ fn init_git_repo(path: &Path) {
     fs::write(path.join("README.md"), "# Demo\n").unwrap();
     run_git(path, &["add", "README.md"]);
     run_git(path, &["commit", "-m", "initial"]);
+}
+
+/// Every path under `root`, relative to it, sorted: what a command wrote.
+fn tree(root: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().is_some_and(|name| name == ".git") {
+                continue;
+            }
+            out.push(path.strip_prefix(root).unwrap().display().to_string());
+            if path.is_dir() {
+                walk(root, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
 }
 
 #[test]
@@ -35,7 +55,7 @@ fn enter_renders_the_context_packet() {
         .args(["enter", "--for-diff", "--budget", "4000"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("# Toimija Context"))
+        .stdout(predicate::str::starts_with("# Toimija Context"))
         .stdout(predicate::str::contains("## Git"))
         .stdout(predicate::str::contains("## Validation plan"));
 }
@@ -60,11 +80,41 @@ fn enter_json_is_valid() {
 
     let value: serde_json::Value =
         serde_json::from_slice(&output).expect("enter --json must emit valid JSON");
-    assert!(value.is_object(), "packet should be a JSON object");
+    assert_eq!(value["schema"], "toimija-context.v4");
 }
 
+/// The packet is worked out when it is asked for and never written: nothing
+/// under `.toimija/` can go stale, and the human-owned agent docs are never
+/// touched.
 #[test]
-fn enter_inside_a_run_session_targets_the_session_packet() {
+fn enter_writes_nothing() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let before = tree(temp.path());
+
+    for args in [
+        &["enter"][..],
+        &["enter", "--json"],
+        &["enter", "--for-diff"],
+    ] {
+        Command::cargo_bin("toimija")
+            .unwrap()
+            .current_dir(temp.path())
+            .args(args)
+            .assert()
+            .success();
+    }
+    assert_eq!(tree(temp.path()), before);
+    assert!(!temp.path().join(".toimija").exists());
+}
+
+/// Under `toimija run`, `enter` names the session: its intent and scope as
+/// the marker says now, and the branch it started on, so drift shows.
+#[test]
+fn enter_inside_a_run_session_names_the_session() {
     if !git_available() {
         return;
     }
@@ -72,244 +122,52 @@ fn enter_inside_a_run_session_targets_the_session_packet() {
     init_git_repo(temp.path());
     let dir = temp.path().join(".toimija/sessions/100-1");
     fs::create_dir_all(&dir).unwrap();
+    // This test process stands in for the session's `run`: alive, so the
+    // session is too.
     fs::write(
         dir.join("session.json"),
-        r#"{
-            "id": "100-1", "pid": 1, "agent": ["claude"],
-            "worktree": "/repo", "branch": "main", "head": null,
-            "intent": null, "scope": [],
-            "started_at": 100, "status": "active",
-            "closed_at": null, "exit_status": null
-        }"#,
+        serde_json::json!({
+            "id": "100-1", "pid": std::process::id(), "agent": ["claude"],
+            "worktree": "/repo", "branch": "feat/elsewhere", "head": null,
+            "intent": "fix the redirect", "scope": ["src/auth.rs"],
+            "started_at": 100,
+        })
+        .to_string(),
     )
     .unwrap();
 
-    // A wrapped agent following the docs' `toimija enter` preflight must
-    // update its own session packet (the one $TOIMIJA_LIVE points at), not
-    // just the repo-level summary.
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .env("TOIMIJA_SESSION", "100-1")
-        .arg("enter")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "also written to .toimija/sessions/100-1/current.md",
-        ));
-    assert!(dir.join("current.md").exists());
-    assert!(temp.path().join(".toimija/current.md").exists());
-}
-
-#[test]
-fn enter_writes_the_live_packet_but_not_agent_docs() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("enter")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Toimija agent entry"));
-
-    // enter refreshes the live packet ...
-    assert!(temp.path().join(".toimija/current.md").exists());
-    assert!(temp.path().join(".toimija/current.json").exists());
-    // ... but never writes human-owned agent policy.
-    assert!(!temp.path().join("AGENTS.md").exists());
-    assert!(!temp.path().join("CLAUDE.md").exists());
-}
-
-#[test]
-fn enter_succeeds_when_automatic_cleanup_fails() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    let dir = temp.path().join(".toimija/sessions/old-closed");
-    fs::create_dir_all(&dir).unwrap();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    fs::write(
-        dir.join("session.json"),
-        format!(
-            r#"{{
-                "id": "old-closed", "pid": 1, "agent": ["codex"],
-                "worktree": "/repo", "branch": "main", "head": null,
-                "intent": null, "scope": [], "started_at": {started},
-                "status": "closed", "closed_at": {closed}, "exit_status": 0
-            }}"#,
-            started = now - 9 * 24 * 60 * 60,
-            closed = now - 8 * 24 * 60 * 60,
-        ),
-    )
-    .unwrap();
-    // The journal cannot be opened, forcing the opportunistic sweep to fail.
-    fs::create_dir_all(temp.path().join(".toimija/history.jsonl")).unwrap();
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("enter")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Toimija agent entry"));
-    assert!(dir.exists(), "failed journaling must preserve the session");
-}
-
-#[test]
-fn enter_respects_disabled_automatic_cleanup() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    let toimija = temp.path().join(".toimija");
-    fs::create_dir_all(&toimija).unwrap();
-    fs::write(
-        toimija.join("repo.yaml"),
-        "stewardship:\n  auto_sweep: false\n",
-    )
-    .unwrap();
-    let orphan = toimija.join("current.json.tmp-123-4");
-    fs::write(&orphan, b"old").unwrap();
-    fs::File::options()
-        .write(true)
-        .open(&orphan)
-        .unwrap()
-        .set_times(
-            std::fs::FileTimes::new()
-                .set_modified(SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60)),
-        )
-        .unwrap();
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("enter")
-        .assert()
-        .success();
-    assert!(orphan.exists());
-}
-
-/// Age a file or directory. A read-only handle is enough: the owner may set
-/// times on any descriptor, and directories cannot be opened for writing.
-fn set_age(path: &Path, age: std::time::Duration) {
-    fs::File::open(path)
-        .unwrap()
-        .set_times(std::fs::FileTimes::new().set_modified(SystemTime::now() - age))
-        .unwrap();
-}
-
-/// A repository can commit `.toimija/runs` (or `.toimija/sessions`, or
-/// `.toimija` itself) as a symlink. The footprint sweep deletes what it finds
-/// there, so following that link would delete whatever the committer pointed
-/// it at. Both the opportunistic sweep in `enter` and an explicit `clean` must
-/// leave everything outside the repository alone. (`tests/symlink_escape.rs`
-/// covers the writers.)
-#[cfg(unix)]
-#[test]
-fn the_sweep_never_follows_a_committed_symlink_out_of_the_repository() {
-    if !git_available() {
-        return;
-    }
-    let ancient = std::time::Duration::from_secs(365 * 24 * 60 * 60);
-    for link in [".toimija/runs", ".toimija/sessions", ".toimija"] {
-        let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
-        let outside = temp.path().join("outside");
-        fs::create_dir_all(&repo).unwrap();
-        init_git_repo(&repo);
-
-        // Everything a sweep would take, were it inside `.toimija`: an old
-        // transcript directory, an old transcript, an old orphaned temp file,
-        // and a closed session long past retention.
-        let victim_dir = outside.join("victim-dir");
-        fs::create_dir_all(&victim_dir).unwrap();
-        fs::write(victim_dir.join("keep.txt"), "keep\n").unwrap();
-        fs::write(outside.join("victim.jsonl"), "keep\n").unwrap();
-        fs::write(outside.join("current.json.tmp-1-1"), "keep\n").unwrap();
-        let session_dir = outside.join("100-1");
-        fs::create_dir_all(&session_dir).unwrap();
-        fs::write(
-            session_dir.join("session.json"),
-            serde_json::json!({
-                "id": "100-1",
-                "pid": 1,
-                "agent": ["claude"],
-                "branch": null,
-                "started_at": 100,
-                "status": "closed",
-                "closed_at": 100,
-            })
-            .to_string(),
-        )
-        .unwrap();
-        for path in [
-            victim_dir.as_path(),
-            &outside.join("victim.jsonl"),
-            &outside.join("current.json.tmp-1-1"),
-            &session_dir,
-        ] {
-            set_age(path, ancient);
-        }
-
-        let link_path = repo.join(link);
-        fs::create_dir_all(link_path.parent().unwrap()).unwrap();
-        let depth = Path::new(link).components().count();
-        let target = format!("{}outside", "../".repeat(depth));
-        std::os::unix::fs::symlink(&target, &link_path).unwrap();
-        run_git(&repo, &["add", "-f", link]);
-        run_git(&repo, &["commit", "-m", "commit a symlink under .toimija"]);
-
-        // `enter` writes the packet into `.toimija/` itself, so a symlinked
-        // `.toimija` is refused outright; below it, only the sweep is at
-        // stake, and `enter` carries on with a warning.
-        let enter = Command::cargo_bin("toimija")
-            .unwrap()
-            .current_dir(&repo)
-            .arg("enter")
-            .assert();
-        if link == ".toimija" {
-            enter.failure().stderr(predicate::str::contains("symlink"));
-        } else {
-            enter.success();
-        }
+    let enter = || {
         Command::cargo_bin("toimija")
             .unwrap()
-            .current_dir(&repo)
-            .arg("clean")
+            .current_dir(temp.path())
+            .env("TOIMIJA_SESSION", "100-1")
+            .arg("enter")
             .assert()
-            .failure()
-            .stderr(predicate::str::contains("refusing to sweep"));
+            .success()
+    };
+    enter()
+        .stdout(predicate::str::contains("## Session\n- id: 100-1\n"))
+        .stdout(predicate::str::contains("- intent: fix the redirect\n"))
+        .stdout(predicate::str::contains("- declared scope: src/auth.rs\n"))
+        .stdout(predicate::str::contains(
+            "## Session drift\n- branch: feat/elsewhere → ",
+        ));
+    assert!(!dir.join("current.md").exists());
 
-        for survivor in [
-            victim_dir.join("keep.txt"),
-            outside.join("victim.jsonl"),
-            outside.join("current.json.tmp-1-1"),
-            session_dir.join("session.json"),
-        ] {
-            assert!(
-                survivor.exists(),
-                "{} was deleted through the committed symlink {link} -> {target}",
-                survivor.display()
-            );
-        }
-    }
+    // Another session's id, or none, names no session.
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("TOIMIJA_SESSION", "100-2")
+        .arg("enter")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Session").not());
 }
 
 /// `toimija handover` leaves a note for the next agent in this working copy:
-/// no session needed, shown under "Last handover" in every
-/// packet built here, the live `.toimija/current.md` included at once, and
-/// replaced by the next one.
+/// no session needed, shown under "Last handover" in every packet worked out
+/// here, and replaced by the next one.
 #[test]
 fn a_handover_is_shown_to_the_next_agent_on_entering() {
     if !git_available() {
@@ -372,21 +230,18 @@ fn a_handover_is_shown_to_the_next_agent_on_entering() {
         .as_secs();
     assert!(now.abs_diff(written["written_at"].as_u64().unwrap()) < 60);
 
-    // The live packet shows it now, before anyone refreshes.
     let shown = |text: &str| {
         text.contains("## Last handover\n- written: ")
             && text.contains("- unfinished: the parser's error tests\n")
             && text.contains("- for the next agent: the lexer is done; start at src/parse.rs\n")
             && !text.contains("- surprised by:")
     };
-    let current = fs::read_to_string(repo.join(".toimija/current.md")).unwrap();
-    assert!(shown(&current), "{current}");
     let (ok, entered, stderr) = toimija(&["enter"]);
     assert!(ok, "{stderr}");
     assert!(shown(&entered), "{entered}");
     // Early: before the workset contract and the Git state.
     assert!(entered.find("## Last handover") < entered.find("## Workset contract"));
-    let (ok, json, stderr) = toimija(&["context", "--json"]);
+    let (ok, json, stderr) = toimija(&["enter", "--json"]);
     assert!(ok, "{stderr}");
     let packet: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(

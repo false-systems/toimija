@@ -29,7 +29,7 @@ fn assert_packet_contains(path: &Path, needles: &[&str]) {
     let mut assertion = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(path)
-        .arg("context")
+        .arg("enter")
         .assert()
         .success();
     for needle in needles {
@@ -181,7 +181,7 @@ fn secondary_languages_are_reported_without_changing_the_primary_plan() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains(

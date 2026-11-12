@@ -1,121 +1,9 @@
 use std::fmt::Write;
 
-use crate::config::InitReport;
-use crate::context::{ChangedSurfaceSource, ContextPacket};
+use crate::context::{ChangedSurfaceSource, ContextPacket, GitOperation};
 use crate::git::{ChangeStatus, ChangedFile};
-use crate::landed::{LandedReport, LandedStatus};
-use crate::repo::{DoctorReport, DoctorStatus, RepoKind};
+use crate::repo::RepoKind;
 use crate::validate::{ValidationPlan, ValidationSource};
-
-pub fn render_init_report(report: &InitReport) -> String {
-    let mut output = String::new();
-    writeln!(&mut output, "Toimija init").unwrap();
-    if report.created.is_empty() {
-        writeln!(&mut output, "\nCreated: none").unwrap();
-    } else {
-        writeln!(&mut output, "\nCreated:").unwrap();
-        for path in &report.created {
-            writeln!(&mut output, "- {}", crate::path_codec::display(path)).unwrap();
-        }
-    }
-    if !report.existing.is_empty() {
-        writeln!(&mut output, "\nRefused to overwrite:").unwrap();
-        for path in &report.existing {
-            writeln!(&mut output, "- {}", crate::path_codec::display(path)).unwrap();
-        }
-    }
-    if !report.guidance.is_empty() {
-        writeln!(&mut output, "\nNext steps:").unwrap();
-        for step in &report.guidance {
-            writeln!(&mut output, "- {step}").unwrap();
-        }
-    }
-    output
-}
-
-pub fn render_doctor_report(report: &DoctorReport) -> String {
-    let mut output = String::new();
-    let header = if report.strict {
-        "Toimija doctor (strict)"
-    } else {
-        "Toimija doctor"
-    };
-    writeln!(&mut output, "{header}\n").unwrap();
-    for check in &report.checks {
-        let status = match check.status {
-            DoctorStatus::Ok => "ok",
-            DoctorStatus::Warning => "warn",
-            DoctorStatus::Fail => "fail",
-        };
-        writeln!(
-            &mut output,
-            "- {status}: {} - {}",
-            check.name, check.message
-        )
-        .unwrap();
-    }
-    output
-}
-
-/// Cap on differing paths listed in the landed report before summarizing the
-/// remainder — keeps the output scannable on a wide branch.
-const MAX_DIFFERING_SHOWN: usize = 25;
-
-pub fn render_landed_report(report: &LandedReport) -> String {
-    let mut output = String::new();
-    writeln!(&mut output, "Toimija landed\n").unwrap();
-    let status = match report.status {
-        LandedStatus::Landed => "landed",
-        LandedStatus::NotLanded => "not landed",
-        LandedStatus::Partial => "partially landed",
-        LandedStatus::Ambiguous => "ambiguous",
-        LandedStatus::Unknown => "unknown",
-    };
-    writeln!(&mut output, "- base: {}", report.base).unwrap();
-    let head = report.head.as_deref().unwrap_or("unknown");
-    writeln!(&mut output, "- branch: {} ({head})", report.branch).unwrap();
-    writeln!(&mut output, "- status: {status}").unwrap();
-    writeln!(&mut output, "- reason: {}", report.reason).unwrap();
-    if report.touched > 0 {
-        writeln!(
-            &mut output,
-            "- reflected: {}/{}",
-            report.reflected, report.touched
-        )
-        .unwrap();
-    }
-    if !report.differing.is_empty() {
-        writeln!(&mut output, "\nNot yet reflected:").unwrap();
-        for path in report.differing.iter().take(MAX_DIFFERING_SHOWN) {
-            writeln!(&mut output, "- {path}").unwrap();
-        }
-        let remaining = report.differing.len().saturating_sub(MAX_DIFFERING_SHOWN);
-        if remaining > 0 {
-            writeln!(&mut output, "- … +{remaining} more").unwrap();
-        }
-    }
-    if !report.ambiguous.is_empty() {
-        writeln!(
-            &mut output,
-            "\nAmbiguous (Git could not prove the branch patch is reflected):"
-        )
-        .unwrap();
-        for entry in report.ambiguous.iter().take(MAX_DIFFERING_SHOWN) {
-            // The heuristic is reported as evidence, never as a landed decision.
-            let evidence = if entry.line_containment {
-                "added lines appear present and removed lines appear absent (textual heuristic)"
-            } else {
-                "added lines are not all present in base (textual heuristic)"
-            };
-            writeln!(&mut output, "- {} — {evidence}", entry.path).unwrap();
-        }
-        let remaining = report.ambiguous.len().saturating_sub(MAX_DIFFERING_SHOWN);
-        if remaining > 0 {
-            writeln!(&mut output, "- … +{remaining} more").unwrap();
-        }
-    }
-    output
-}
 
 /// Hint for identity fields (`role`, `not`) that come from `.toimija/repo.yaml`,
 /// never from Git. When empty they are *unset* (user-fillable), not
@@ -214,7 +102,7 @@ fn write_path_list(output: &mut String, items: &[std::path::PathBuf], empty: &st
 
 /// A working-tree list of the repository's work, as the counts are: the
 /// generated paths among `items` (Toimija's own files, which Git lists where
-/// `init` has not run, and `.sykli/`) are left out of the list and
+/// the repository does not ignore them, and `.sykli/`) are left out of the list and
 /// counted in one line after it. The JSON lists every path.
 fn write_work_changes(output: &mut String, items: &[ChangedFile]) {
     let work: Vec<ChangedFile> = crate::git::work_files(items).cloned().collect();
@@ -334,9 +222,6 @@ fn primary_language_evidence(kind: RepoKind) -> &'static str {
 pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String {
     let mut output = String::new();
     writeln!(&mut output, "# Toimija Context").unwrap();
-    if let Some(artifact_id) = &packet.artifact_id {
-        writeln!(&mut output, "- artifact-id: {artifact_id}").unwrap();
-    }
     // Demonstrate, not just assert, that reading the packet is
     // cheaper than rediscovery. Honest counts from data already computed.
     writeln!(
@@ -403,8 +288,8 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         );
     }
 
-    // The session block renders only on per-session packets — the wrapped
-    // agent reads its own declared identity back; repo-level packets skip it.
+    // The session block renders only under `toimija run`: the agent reads its
+    // own declared identity back.
     if let Some(session) = &packet.session {
         write_h2(&mut output, "Session");
         writeln!(&mut output, "- id: {}", session.id).unwrap();
@@ -424,9 +309,6 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
             }
         )
         .unwrap();
-        if let Some(spec) = &session.spec {
-            write_spec(&mut output, spec);
-        }
     }
 
     // What the last agent here left for the next, early: it is
@@ -465,6 +347,23 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
     )
     .unwrap();
     writeln!(&mut output, "- merge-base: {}", merge_base_label(packet)).unwrap();
+    // Said only when Git is part-way through something: what an agent must
+    // know before it touches the tree.
+    let in_progress = match &packet.git_operation {
+        GitOperation::None => None,
+        GitOperation::Merge => Some("merge"),
+        GitOperation::Rebase => Some("rebase"),
+        GitOperation::CherryPick => Some("cherry-pick"),
+        GitOperation::Revert => Some("revert"),
+        GitOperation::Bisect => Some("bisect"),
+        GitOperation::Unverifiable { reason } => {
+            writeln!(&mut output, "- operation: unknown ({reason})").unwrap();
+            None
+        }
+    };
+    if let Some(operation) = in_progress {
+        writeln!(&mut output, "- operation: {operation} in progress").unwrap();
+    }
     writeln!(&mut output, "- dirty: {}", packet.git.dirty).unwrap();
     // The counts are the repository's work, as `dirty` is; generated paths
     // (Toimija's own and `.sykli/`) are counted apart.
@@ -575,7 +474,7 @@ fn append_optional_sections(
     }
     writeln!(
         output,
-        "- full evidence: use the companion JSON packet or `toimija context --json`\n\n\
+        "- full evidence: `toimija enter --json`\n\n\
          Output truncated to fit approximate budget."
     )
     .unwrap();
@@ -585,51 +484,16 @@ fn append_optional_sections(
 /// first, however many there are; the changed files and their tests fill what
 /// is left of the list's cap, so a wide branch cannot push the owner's
 /// "read this first" out of the packet.
-/// The session's spec: for a file, what the file itself states; for an issue
-/// reference, the reference and that it is not read.
-fn write_spec(output: &mut String, spec: &crate::spec::SpecBlock) {
-    write_h2(output, "Spec");
-    match spec.kind {
-        crate::spec::SpecKind::File => {
-            writeln!(output, "- file: {}", spec.reference).unwrap();
-            if let Some(reason) = &spec.unreadable {
-                writeln!(output, "- cannot be read: {reason}").unwrap();
-                return;
-            }
-            let stated = |value: &Option<String>| value.clone().unwrap_or("not stated".to_string());
-            writeln!(output, "- title: {}", stated(&spec.title)).unwrap();
-            writeln!(output, "- status: {}", stated(&spec.status)).unwrap();
-        }
-        crate::spec::SpecKind::Issue => {
-            writeln!(output, "- reference: {}", spec.reference).unwrap();
-            writeln!(output, "- an issue reference: toimija does not read issues").unwrap();
-        }
-    }
-}
-
 fn write_read_first(output: &mut String, packet: &ContextPacket) {
     write_h2(output, "Read first");
     if packet.read_first.is_empty() {
         writeln!(output, "- none").unwrap();
         return;
     }
-    // The session's file spec is always shown, and first, whatever reason
-    // it is listed for: it may be a changed file or a configured document too.
-    let spec = packet
-        .session
-        .as_ref()
-        .and_then(|session| session.spec.as_ref())
-        .filter(|spec| spec.kind == crate::spec::SpecKind::File)
-        .map(|spec| std::path::Path::new(&spec.reference));
-    let is_spec = |entry: &&crate::context::ReadFirstEntry| Some(entry.path.as_path()) == spec;
     let configured = |entry: &&crate::context::ReadFirstEntry| {
-        entry.reason == "repo config"
-            || entry.reason == "important doc"
-            || entry.reason == crate::spec::READ_FIRST_REASON
+        entry.reason == "repo config" || entry.reason == "important doc"
     };
-    let (first, rest): (Vec<_>, Vec<_>) = packet.read_first.iter().partition(is_spec);
-    let (owned, derived): (Vec<_>, Vec<_>) = rest.into_iter().partition(configured);
-    let owned: Vec<_> = first.into_iter().chain(owned).collect();
+    let (owned, derived): (Vec<_>, Vec<_>) = packet.read_first.iter().partition(configured);
     let room = MAX_LIST_SHOWN.saturating_sub(owned.len());
     for entry in owned.iter().chain(derived.iter().take(room)) {
         writeln!(
@@ -892,7 +756,6 @@ mod tests {
     fn packet() -> ContextPacket {
         ContextPacket {
             schema: crate::context::CONTEXT_SCHEMA.to_string(),
-            artifact_id: None,
             repo: RepoInfo {
                 name: "demo".to_string(),
                 role: Some("tool".to_string()),
@@ -902,7 +765,6 @@ mod tests {
             },
             repo_kind: RepoKind::Rust,
             secondary_languages: Vec::new(),
-            refresh_token: None,
             git: GitState {
                 repo_root: PathBuf::from("/repo"),
                 git_dir: None,
@@ -935,33 +797,11 @@ mod tests {
                 RepoKind::Rust,
             ),
             warnings: vec!["No upstream detected. Branch divergence is unavailable.".to_string()],
+            git_operation: crate::context::GitOperation::None,
             for_diff: false,
             default_budget: Some(4000),
-            consistency: crate::consistency::Consistency::fingerprint(&GitState {
-                repo_root: PathBuf::from("/repo"),
-                git_dir: Some(PathBuf::from("/repo/.git")),
-                branch: Some("main".to_string()),
-                head_oid: Some("abc".to_string()),
-                upstream: None,
-                ahead: None,
-                behind: None,
-                ahead_behind_ref: None,
-                base: None,
-                merge_base: None,
-                detached: false,
-                dirty: false,
-                staged_files: Vec::new(),
-                unstaged_files: Vec::new(),
-                untracked_files: Vec::new(),
-                conflicted_files: Vec::new(),
-                conflict_entries: Vec::new(),
-                branch_files: Vec::new(),
-                branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
-                recent_commits: Vec::new(),
-            }),
             session: None,
             handover: None,
-            seal: None,
         }
     }
 
@@ -1011,9 +851,7 @@ mod tests {
         with_session.session = Some(crate::context::SessionBlock {
             id: "100-1".to_string(),
             intent: None,
-            spec: None,
             scope: Vec::new(),
-            execution: None,
             entry_branch: None,
             entry_head: None,
         });
@@ -1029,9 +867,7 @@ mod tests {
         packet.session = Some(crate::context::SessionBlock {
             id: "100-1".to_string(),
             intent: Some("test drive 2".to_string()),
-            spec: None,
             scope: vec!["src/a.rs".to_string()],
-            execution: None,
             entry_branch: None,
             entry_head: None,
         });
@@ -1050,9 +886,7 @@ mod tests {
         packet.session = Some(crate::context::SessionBlock {
             id: "100-1".to_string(),
             intent: Some("move safely".to_string()),
-            spec: None,
             scope: Vec::new(),
-            execution: None,
             entry_branch: Some("feat/before".to_string()),
             entry_head: Some("aaaaaaa111".to_string()),
         });
@@ -1155,7 +989,7 @@ mod tests {
     }
 
     /// The Markdown counts and lists are the repository's work, as `dirty`
-    /// is: Toimija's own files (listed by Git where `init` has not run) and
+    /// is: Toimija's own files (listed by Git where they are not ignored) and
     /// `.sykli/` are counted apart, never beside a `dirty: false`
     /// as if they were work. The JSON keeps every path Git reported.
     #[test]
@@ -1163,7 +997,7 @@ mod tests {
         let mut packet = packet();
         packet.git.untracked_files = vec![
             PathBuf::from(".sykli/receipt.json"),
-            PathBuf::from(".toimija/current.json"),
+            PathBuf::from(".toimija/handover.json"),
             PathBuf::from(".toimija/sessions/1-1/session.json"),
         ];
         packet.git.unstaged_files = vec![ChangedFile {
@@ -1439,7 +1273,7 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
     fn json_context_snapshot_is_stable() {
         let rendered = serde_json::to_string_pretty(&packet()).unwrap();
         let expected = r#"{
-  "schema": "toimija-context.v3",
+  "schema": "toimija-context.v4",
   "repo": {
     "name": "demo",
     "role": "tool",
@@ -1499,27 +1333,11 @@ Toimija starts from Git’s state machine: HEAD, index, working tree, branch, an
   "warnings": [
     "No upstream detected. Branch divergence is unavailable."
   ],
+  "git_operation": {
+    "kind": "none"
+  },
   "for_diff": false,
-  "default_budget": 4000,
-  "consistency": {
-    "algorithm": "toimija-consistency-v4",
-    "head": {
-      "kind": "normal",
-      "branch": "main",
-      "oid": "abc"
-    },
-    "index_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "worktree_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "untracked_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "git_operation": {
-      "kind": "none"
-    },
-    "conflict_state": {
-      "has_conflicts": false,
-      "files": []
-    },
-    "token": "sha256:09043faac480f795455548934c07b09b13783d6a1f23bfb71d8472081682e470"
-  }
+  "default_budget": 4000
 }"#;
         assert_eq!(rendered, expected);
     }

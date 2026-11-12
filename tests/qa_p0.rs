@@ -1,5 +1,5 @@
-//! Public-interface P0 tests: state preservation, interrupted Git safety, and
-//! structured-output hygiene.
+//! Public-interface P0 tests: state preservation, an interrupted Git
+//! operation shown, and structured-output hygiene.
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -34,7 +34,7 @@ fn public_json_preserves_staged_unstaged_and_untracked_intent() {
 
     let value = json_output(
         toimija(repo.path())
-            .args(["context", "--json"])
+            .args(["enter", "--json"])
             .assert()
             .success(),
     );
@@ -47,7 +47,7 @@ fn public_json_preserves_staged_unstaged_and_untracked_intent() {
 }
 
 #[test]
-fn interrupted_merge_is_visible_and_verification_is_unsafe() {
+fn an_interrupted_merge_is_visible_in_the_packet() {
     if !git_available() {
         return;
     }
@@ -66,11 +66,11 @@ fn interrupted_merge_is_visible_and_verification_is_unsafe() {
 
     let value = json_output(
         toimija(repo.path())
-            .args(["context", "--json"])
+            .args(["enter", "--json"])
             .assert()
             .success(),
     );
-    assert_eq!(value["consistency"]["git_operation"]["kind"], "merge");
+    assert_eq!(value["git_operation"]["kind"], "merge");
     assert!(
         value["warnings"]
             .as_array()
@@ -79,14 +79,12 @@ fn interrupted_merge_is_visible_and_verification_is_unsafe() {
             .any(|warning| warning.as_str().unwrap().contains("Conflicted"))
     );
 
-    toimija(repo.path()).arg("refresh").assert().success();
-    let verify = json_output(
-        toimija(repo.path())
-            .args(["verify", "--json"])
-            .assert()
-            .failure(),
+    let markdown = toimija(repo.path()).arg("enter").assert().success();
+    let markdown = String::from_utf8_lossy(&markdown.get_output().stdout).into_owned();
+    assert!(
+        markdown.contains("- operation: merge in progress\n"),
+        "{markdown}"
     );
-    assert_eq!(verify["status"], "unsafe_git_operation");
 }
 
 #[test]
@@ -98,7 +96,7 @@ fn json_stdout_stays_parseable_when_diagnostics_are_enabled() {
     repo.write("README.md", "# QA\n");
     repo.commit("initial");
     let output = toimija(repo.path())
-        .args(["-v", "context", "--json"])
+        .args(["-v", "enter", "--json"])
         .assert()
         .success()
         .get_output()
@@ -118,18 +116,18 @@ fn identical_context_json_has_stable_semantic_ordering() {
     repo.commit("initial");
     let first = json_output(
         toimija(repo.path())
-            .args(["context", "--json"])
+            .args(["enter", "--json"])
             .assert()
             .success(),
     );
     let second = json_output(
         toimija(repo.path())
-            .args(["context", "--json"])
+            .args(["enter", "--json"])
             .assert()
             .success(),
     );
     assert_eq!(first["git"], second["git"]);
     assert_eq!(first["validation_plan"], second["validation_plan"]);
     assert_eq!(first["read_first"], second["read_first"]);
-    assert_eq!(first["consistency"], second["consistency"]);
+    assert_eq!(first["git_operation"], second["git_operation"]);
 }

@@ -40,9 +40,8 @@ fn git_at_scrubs_the_redirecting_environment() {
     }
 }
 
-/// A repository whose `trunk` is the base and whose `work` branch adds one
-/// file, the change not yet on `trunk`.
-fn repository_with_unlanded_work(path: &Path) {
+/// A repository on a `work` branch that adds one file to `trunk`.
+fn repository_on_a_work_branch(path: &Path) {
     common::run_git(path, &["init", "-q", "-b", "trunk"]);
     common::run_git(path, &["config", "user.email", "a@example.invalid"]);
     common::run_git(path, &["config", "user.name", "Fixture A"]);
@@ -72,7 +71,7 @@ fn a_child_git_never_sees_the_repository_its_environment_names() {
     let b = temp.path().join("b");
     std::fs::create_dir_all(&a).unwrap();
     std::fs::create_dir_all(&b).unwrap();
-    repository_with_unlanded_work(&a);
+    repository_on_a_work_branch(&a);
     // B: another repository, with config A's git would show if it read it.
     common::run_git(&b, &["init", "-q", "-b", "other"]);
     common::run_git(&b, &["config", "core.abbrev", "20"]);
@@ -94,27 +93,7 @@ fn a_child_git_never_sees_the_repository_its_environment_names() {
         .env("GIT_WORK_TREE", &b)
         .env("GIT_INDEX_FILE", b.join(".git/index"))
         .env("GIT_COMMON_DIR", b.join(".git"))
-        .args(["landed", "--base", "trunk", "--json"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(report["branch"], "work", "{report}");
-    assert_eq!(report["status"], "not_landed", "{report}");
-    assert_eq!(report["touched"], 1, "{report}");
-    // A's HEAD, abbreviated by A's config, not B's `core.abbrev = 20`.
-    let short = report["head"].as_str().unwrap();
-    assert!(head.starts_with(short) && short.len() < 20, "{report}");
-
-    let output = assert_cmd::Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(&a)
-        .env("GIT_DIR", b.join(".git"))
-        .env("GIT_WORK_TREE", &b)
-        .env("GIT_INDEX_FILE", b.join(".git/index"))
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .assert()
         .success()
         .get_output()
@@ -123,4 +102,5 @@ fn a_child_git_never_sees_the_repository_its_environment_names() {
     let packet: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(packet["git"]["branch"], "work", "{}", packet["git"]);
     assert_eq!(packet["git"]["head_oid"], head.as_str());
+    assert_eq!(packet["repo"]["name"], "a", "{}", packet["repo"]);
 }

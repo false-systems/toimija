@@ -44,19 +44,16 @@ later, when a person accepts a proposal.
 The repository here is a small Rust crate with one function and one test, and
 `origin` set.
 
+Toimija needs no setup. Its own files under `.toimija/` (session markers, the
+handover) are not for Git, so keep them out; `.toimija/repo.yaml`, written by
+hand if you want one, says what the repository is for and is committed:
+
 ```console
-$ toimija init
-Toimija init
+$ printf '/.toimija/*\n!/.toimija/repo.yaml\n' >> .gitignore
+$ mkdir -p .toimija && printf 'repo:\n  name: demo\n  role: a crate that greets\n' > .toimija/repo.yaml
+```
 
-Created:
-- /work/demo/.toimija
-- /work/demo/.toimija/repo.yaml
-- /work/demo/.toimija/.gitignore
-
-Next steps:
-- Fill role, not, and boundaries in .toimija/repo.yaml so the packet can orient an agent.
-- Tell agents in your AGENTS.md/CLAUDE.md to run `toimija enter` first, or launch them with `toimija run`.
-
+```console
 $ sykli init
 wrote sykli.json (3 tasks, 4 inputs) and ./sykli.lock
 
@@ -77,31 +74,20 @@ sykli hook pre-commit: the staged tree passed
 [main e5a73d4] Set up toimija and sykli
 ```
 
-## Optionally, write the spec first
-
-A spec is a short decision file the session starts from.
-
-```console
-$ git checkout -b greet-politely
-$ toimija spec new "Greet politely"
-docs/adr/0001-greet-politely.md
-```
-
-The file has a title, `Status: proposed`, and three empty headings: Context,
-Decision, Consequences. Fill it in, or let the agent do it.
-
 ## Start the agent
 
 ```console
-$ toimija run --spec docs/adr/0001-greet-politely.md claude
-toimija run: watcher armed (native)
+$ git checkout -b greet-politely
+$ toimija run --intent "greet politely" claude
 toimija run: delivery: launch prompt with the packet inlined for `claude`
-toimija run: launching `claude` (session 1794349981-90012, watching for changes)
+toimija run: launching `claude` (session 1794349981-90012)
 ```
 
-The agent starts with the packet in its prompt: the branch, what changed, the
-spec first under Read first, and how to validate. `codex` works the same way.
-Add `--intent "<why>"` so that other sessions see why this one is here.
+The agent starts with the packet in its prompt: the branch, what changed, what
+to read first, and how to validate. `codex` works the same way. `--intent`
+says why this session is here, so other sessions see it. While the agent
+works, toimija starts no git process; the agent runs `toimija enter` when it
+wants the state as it is now.
 
 From another terminal, while it works:
 
@@ -111,8 +97,10 @@ LIVE
   claude  1794349981-90012
     branch: greet-politely
     worktree: /work/demo
-    intent: unknown
-    spec: docs/adr/0001-greet-politely.md
+    intent: greet politely
+    scope: unknown
+    started: 2m ago
+    seen: 1m ago
 ```
 
 The agent makes its change and commits. The hook runs the checks on that
@@ -123,8 +111,11 @@ toimija run: session summary
   branch:    greet-politely
   HEAD:      e5a73d4 → 3588810 (moved)
   worktree:  0 staged, 0 unstaged, 0 untracked
-  scope:     2 file(s) changed on this branch since merge-base
+  intent:    "greet politely" (declared at launch)
+  expansions: none declared
 ```
+
+The session ends with the agent: `toimija sessions` no longer lists it.
 
 ## Prove it
 
@@ -163,20 +154,14 @@ land: 35888107dc5d is on origin's main: proven, review fine; the receipt and the
 `sykli land` refuses unless the commit is proven, reviewed and on top of the
 current main.
 
-## See where things stand
+## See what is cooking
+
+`toimija sessions` lists who is working in this repository, on which branch,
+and why; run it in each repository you care about. With no agent at work:
 
 ```console
-$ toimija graph
-* 3588810  greet-politely     proven    review: fine
-* e5a73d4  origin/main, main  proven    review: none
-```
-
-That is the graph just before landing: one branch in progress, proven and
-reviewed, above the main branch. After landing, the branch is part of main:
-
-```console
-$ toimija graph
-* 3588810  origin/main, greet-politely  proven    review: fine
+$ toimija sessions
+No open sessions under .toimija/sessions/.
 ```
 
 Leave a note for whoever works here next, a person or an agent:
@@ -186,7 +171,7 @@ $ toimija handover --next "greeting is polite now; the README still says hello"
 Handover written for the next agent in /work/demo: for the next agent
 ```
 
-Every packet built in this working copy shows it under "Last handover".
+Every packet worked out in this working copy shows it under "Last handover".
 
 ## Deploy
 
@@ -248,5 +233,5 @@ toimija run claude    # start an agent as a session
 sykli run             # prove the commit
 sykli review          # a fresh agent reads the change
 sykli land            # put it on main, when you decide to
-toimija graph         # where every branch stands
+toimija sessions      # who is working where, and why
 ```

@@ -140,10 +140,7 @@ pub struct Worktree {
     /// `git rev-parse --git-common-dir`, joined to the root: the refs and the
     /// config every worktree shares.
     pub common_dir: Option<PathBuf>,
-    /// `git rev-parse --is-shallow-repository`, read with the discovery. A
-    /// fetch can deepen or unshallow a repository while its worktree stays
-    /// where it is, so only a command that has just discovered carries this;
-    /// a long-lived watch drops it ([`Worktree::lasting`]).
+    /// `git rev-parse --is-shallow-repository`, read with the discovery.
     pub shallow: Option<bool>,
 }
 
@@ -171,15 +168,6 @@ impl Worktree {
             absolute_git_dir: None,
             common_dir: None,
             shallow: None,
-        }
-    }
-
-    /// The facts that hold for as long as the worktree exists: everything
-    /// but whether the repository is shallow.
-    pub fn lasting(&self) -> Self {
-        Self {
-            shallow: None,
-            ..self.clone()
         }
     }
 }
@@ -269,15 +257,15 @@ pub fn discover_repo_root(
     )))
 }
 
-/// One `git status` in porcelain v2 with branch headers: every file a token
-/// fingerprints, and HEAD and the branch in `# branch.oid` / `# branch.head`.
+/// One `git status` in porcelain v2 with branch headers: every changed file,
+/// and HEAD and the branch in `# branch.oid` / `# branch.head`.
 fn read_status(
     runner: &impl CommandRunner,
     repo_root: &Path,
 ) -> Result<(ParsedStatus, u128), ToimijaError> {
     let status_started = Instant::now();
-    // Native watchers see Git's optional index-refresh lock. Disable it for
-    // this read-only status so refreshing a packet cannot trigger itself.
+    // A read must not take Git's optional index-refresh lock: another
+    // process (an agent's own git) may hold it.
     let status_output = run_git_required_bytes(
         runner,
         repo_root,
@@ -317,12 +305,10 @@ fn is_dirty(parsed: &ParsedStatus) -> bool {
 }
 
 /// Whether any listed path is the repository's own work: one outside the
-/// generated namespaces the consistency token and tree-identity.v2 leave out
-/// (`.toimija/` and `.sykli/`; `.toimija/repo.yaml` is work). `dirty`
-/// is read from these lists filtered as the token filters them, so a packet
-/// never calls a state dirty that its token and its point id call unchanged,
-/// and a gate's receipt counts the same on every machine, whatever its global
-/// ignore file hides. The lists themselves stay what `git status` reported.
+/// folders of generated tool state (`.toimija/` and `.sykli/`;
+/// `.toimija/repo.yaml` is work). So a session marker, a handover or a gate's
+/// receipt never makes a state dirty, whatever the repository's ignore files
+/// say. The lists themselves stay what `git status` reported.
 pub(crate) fn has_work(
     staged: &[ChangedFile],
     unstaged: &[ChangedFile],
@@ -339,11 +325,21 @@ pub(crate) fn has_work(
             .is_some()
 }
 
-/// Whether `path` is the repository's own work rather than generated tool
-/// state: Toimija's own files under `.toimija/` (but not `.toimija/repo.yaml`),
-/// and `.sykli/`, which the token and the tree leave out too.
+/// The folders at the repository root that hold generated tool state:
+/// Toimija's own, and sykli's receipts.
+const GENERATED: [&str; 2] = [".toimija", ".sykli"];
+
+/// Configuration inside a generated folder, which is the repository's work.
+const CONFIGURATION: &str = crate::config::CONFIG_PATH;
+
+/// Whether `path` (relative to the repository root) is the repository's own
+/// work rather than generated tool state: Toimija's own files under
+/// `.toimija/`, except its configuration, and `.sykli/`.
 pub(crate) fn is_work(path: &Path) -> bool {
-    !crate::consistency::is_generated_output(path)
+    let Some(std::path::Component::Normal(first)) = path.components().next() else {
+        return true;
+    };
+    !GENERATED.iter().any(|folder| first == *folder) || path == Path::new(CONFIGURATION)
 }
 
 /// The files of `files` that are the repository's own work ([`is_work`]).
@@ -356,9 +352,8 @@ pub(crate) fn work_paths(paths: &[PathBuf]) -> impl Iterator<Item = &PathBuf> {
     paths.iter().filter(|path| is_work(path))
 }
 
-/// One read of `git status` for a worktree: what a consistency token
-/// fingerprints ([`Status::token_state`]), and what [`complete`] builds the
-/// whole Git state from without reading it again.
+/// One read of `git status` for a worktree: what [`complete`] builds the whole
+/// Git state from without reading it again.
 #[derive(Debug, Clone)]
 pub struct Status {
     repo_root: PathBuf,
@@ -382,16 +377,7 @@ pub fn read_status_of(
     })
 }
 
-impl Status {
-    /// The Git state a consistency token fingerprints, and nothing more: the
-    /// fields a token does not read are empty. `status` itself names HEAD
-    /// (`# branch.oid`) and the branch (`# branch.head`).
-    pub fn token_state(&self) -> GitState {
-        token_state_from(&self.repo_root, self.git_dir.clone(), self.parsed.clone())
-    }
-}
-
-fn token_state_from(repo_root: &Path, git_dir: Option<PathBuf>, parsed: ParsedStatus) -> GitState {
+fn state_from_status(repo_root: &Path, git_dir: Option<PathBuf>, parsed: ParsedStatus) -> GitState {
     let dirty = is_dirty(&parsed);
     let detached = parsed.detached || (parsed.branch.is_none() && parsed.head_oid.is_some());
     GitState {
@@ -418,52 +404,35 @@ fn token_state_from(repo_root: &Path, git_dir: Option<PathBuf>, parsed: ParsedSt
     }
 }
 
-/// The Git state a consistency token fingerprints, for the worktree found at
-/// `worktree`: one `status` (and the git dir, when the discovery did not
-/// establish it).
-pub fn token_state(
+/// What one `git status` tells of `worktree`: HEAD, the branch and the working
+/// tree, and nothing read from refs or history. One git process: what `run`
+/// reads when its agent exits.
+pub fn status_state(
     runner: &impl CommandRunner,
     worktree: &Worktree,
 ) -> Result<GitState, ToimijaError> {
-    Ok(read_status_of(runner, worktree)?.token_state())
-}
-
-/// The Git state a consistency token fingerprints, read with one git process
-/// for a repository whose root and git dir are already known: a worktree's
-/// git dir does not move, and `status` itself names HEAD (`# branch.oid`) and
-/// the branch (`# branch.head`). Reading the token again around a tree write
-/// uses this. [`collect`] builds the whole state from the same one `status`,
-/// so a token from either is the same token (tested).
-pub fn token_state_at(
-    runner: &impl CommandRunner,
-    repo_root: &Path,
-    git_dir: Option<PathBuf>,
-) -> Result<GitState, ToimijaError> {
-    let (parsed, _duration) = read_status(runner, repo_root)?;
-    Ok(token_state_from(repo_root, git_dir, parsed))
+    let (parsed, _duration) = read_status(runner, &worktree.root)?;
+    Ok(state_from_status(
+        &worktree.root,
+        worktree.git_dir.clone(),
+        parsed,
+    ))
 }
 
 /// One collection of a worktree's Git state: the state, the warnings the
-/// collection raised, and the ref-derived facts behind both, which a later
-/// `status` can carry while the refs hold still ([`restatus`]).
+/// collection raised.
 #[derive(Debug, Clone)]
 pub struct Collected {
     pub state: GitState,
     pub warnings: Vec<String>,
-    refs: RefFacts,
 }
 
 /// What a collection reads from refs and history rather than from `status`:
 /// the base, the merge-base and the branch diff from it, the recent commits,
 /// ahead/behind counted against the base, and whether the repository is
-/// shallow. They hold while the refs hold still and HEAD and the upstream are
-/// where they were read from ([`RefFacts::hold_for`]).
+/// shallow.
 #[derive(Debug, Clone)]
 struct RefFacts {
-    head_oid: Option<String>,
-    upstream: Option<String>,
-    /// `status` counted ahead/behind against the upstream (`# branch.ab`).
-    upstream_counted: bool,
     base: Option<String>,
     merge_base: Option<String>,
     branch_files: Vec<ChangedFile>,
@@ -472,17 +441,6 @@ struct RefFacts {
     /// Ahead/behind counted against the base, when `status` counted none.
     base_counted: Option<((u32, u32), String)>,
     shallow: bool,
-}
-
-impl RefFacts {
-    /// Whether these facts are still the ones a fresh read would find, for a
-    /// `status` read while the refs are known not to have moved: HEAD, the
-    /// upstream and whether `status` counted against it are where they were.
-    fn hold_for(&self, parsed: &ParsedStatus) -> bool {
-        self.head_oid == parsed.head_oid
-            && self.upstream == parsed.upstream
-            && self.upstream_counted == upstream_counted(parsed)
-    }
 }
 
 fn upstream_counted(parsed: &ParsedStatus) -> bool {
@@ -518,29 +476,6 @@ pub fn collect(
 pub fn complete(runner: &impl CommandRunner, worktree: &Worktree, status: Status) -> Collected {
     let refs = read_ref_facts(runner, &status.repo_root, &status.parsed, worktree.shallow);
     assemble(status, refs)
-}
-
-/// The Git state now, from one `status`, carrying `previous`'s ref-derived
-/// facts: for a caller that knows the refs have not moved since `previous`
-/// was read (the watch's stamp of them). When HEAD or the upstream moved
-/// anyway, the facts are read again.
-pub fn restatus(
-    runner: &impl CommandRunner,
-    worktree: &Worktree,
-    previous: &Collected,
-) -> Result<Collected, ToimijaError> {
-    let (parsed, duration_ms) = read_status(runner, &worktree.root)?;
-    let status = Status {
-        repo_root: previous.state.repo_root.clone(),
-        git_dir: previous.state.git_dir.clone(),
-        parsed,
-        duration_ms,
-    };
-    if previous.refs.hold_for(&status.parsed) {
-        Ok(assemble(status, previous.refs.clone()))
-    } else {
-        Ok(complete(runner, worktree, status))
-    }
 }
 
 /// Read the refs and history the packet shows, for HEAD and the upstream as
@@ -621,9 +556,6 @@ fn read_ref_facts(
             .is_some_and(|text| text.trim() == "true")
     });
     RefFacts {
-        head_oid: parsed.head_oid.clone(),
-        upstream: parsed.upstream.clone(),
-        upstream_counted: upstream_counted(parsed),
         base,
         merge_base,
         branch_files,
@@ -698,8 +630,8 @@ fn assemble(status: Status, refs: RefFacts) -> Collected {
         warnings.push("Conflicted files exist. Resolve conflicts before continuing.".to_string());
     }
     // Toimija's own files, and the other generated namespaces, are not the
-    // repository's work: in a repository without `toimija init` Git lists
-    // every packet and marker, and they would warn on every refresh.
+    // repository's work: in a repository that does not ignore them Git lists
+    // every marker and handover, and they would warn on every packet.
     if work_files(&parsed.unstaged_files).next().is_some() {
         warnings.push("Working tree has unstaged changes.".to_string());
     }
@@ -734,15 +666,11 @@ fn assemble(status: Status, refs: RefFacts) -> Collected {
         untracked_files: parsed.untracked_files,
         conflicted_files: parsed.conflicted_files,
         conflict_entries: parsed.conflict_entries,
-        branch_files: refs.branch_files.clone(),
-        branch_diff_coverage: refs.branch_diff_coverage.clone(),
-        recent_commits: refs.recent_commits.clone(),
+        branch_files: refs.branch_files,
+        branch_diff_coverage: refs.branch_diff_coverage,
+        recent_commits: refs.recent_commits,
     };
-    Collected {
-        state,
-        warnings,
-        refs,
-    }
+    Collected { state, warnings }
 }
 
 /// `(ahead, behind)` of HEAD against `other`, from local refs only.
@@ -916,9 +844,10 @@ pub(crate) fn run_git_observed(
     }
 }
 
-/// Compatibility parser for callers that provide line-delimited porcelain v2.
-/// Git collection uses [`parse_porcelain_v2_bytes`] so paths remain lossless.
-pub fn parse_porcelain_v2(text: &str) -> ParsedStatus {
+/// Line-delimited porcelain v2, for tests. Git collection uses
+/// [`parse_porcelain_v2_bytes`] so paths remain lossless.
+#[cfg(test)]
+fn parse_porcelain_v2(text: &str) -> ParsedStatus {
     let nul = text.replace(['\n', '\t'], "\0");
     parse_porcelain_v2_bytes(nul.as_bytes())
 }
@@ -1059,9 +988,10 @@ fn status_from_char(value: char) -> ChangeStatus {
 /// Parse `git diff --name-status` output. Each line is a status column
 /// followed by tab-separated path(s); renames and copies (`R100`, `C075`)
 /// carry an old and a new path, and we keep the new one.
-/// Compatibility parser for callers that provide line-delimited name-status.
-/// Git collection uses [`parse_name_status_bytes`] so paths remain lossless.
-pub fn parse_name_status(text: &str) -> Vec<ChangedFile> {
+/// Line-delimited name-status, for tests. Git collection uses
+/// [`parse_name_status_bytes`] so paths remain lossless.
+#[cfg(test)]
+fn parse_name_status(text: &str) -> Vec<ChangedFile> {
     let nul = text.replace(['\n', '\t'], "\0");
     parse_name_status_bytes(nul.as_bytes())
 }
@@ -1703,51 +1633,6 @@ R094\tsrc/old.rs\tsrc/renamed.rs
     }
 
     #[test]
-    fn a_status_carries_the_ref_facts_only_while_head_and_the_upstream_hold() {
-        let status = "# branch.oid headoid\0# branch.head feat/x\0\
-                      # branch.upstream origin/feat/x\0# branch.ab +1 -0\0";
-        let worktree = discover(&runner_with_merge_base(), Path::new("/repo")).unwrap();
-        let read = |status: &str| {
-            let runner = runner_with_merge_base().with(&STATUS, 0, status).with(
-                &["log", "-n", "10", "--oneline"],
-                0,
-                "headoid feat\n",
-            );
-            collect(&runner, &worktree).unwrap()
-        };
-        let previous = read(status);
-        assert_eq!(previous.state.merge_base.as_deref(), Some("baseoid"));
-
-        // HEAD and the upstream where they were: one `status`, and the facts
-        // carried are the ones a full read finds.
-        let edited = format!("{status}? notes.txt\0");
-        let runner = WhereRunner::default().with("/repo", &STATUS, &edited);
-        let carried = restatus(&runner, &worktree, &previous).unwrap();
-        assert_eq!(runner.calls.borrow().len(), 1);
-        let fresh = read(&edited);
-        assert_eq!(carried.state, fresh.state);
-        assert_eq!(carried.warnings, fresh.warnings);
-
-        // HEAD moved: the facts are read again.
-        let moved = "# branch.oid otheroid\0# branch.head feat/x\0\
-                     # branch.upstream origin/feat/x\0# branch.ab +2 -0\0";
-        let runner = WhereRunner::default().with("/repo", &STATUS, moved);
-        let reread = restatus(&runner, &worktree, &previous).unwrap();
-        assert!(runner.calls.borrow().len() > 1);
-        assert_eq!(reread.state.head_oid.as_deref(), Some("otheroid"));
-        assert_eq!(
-            reread.state.merge_base, None,
-            "nothing answered the re-read"
-        );
-
-        // The upstream gone: ahead/behind are no longer `status`'s to count.
-        let gone = "# branch.oid headoid\0# branch.head feat/x\0# branch.upstream origin/feat/x\0";
-        let runner = WhereRunner::default().with("/repo", &STATUS, gone);
-        restatus(&runner, &worktree, &previous).unwrap();
-        assert!(runner.calls.borrow().len() > 1);
-    }
-
-    #[test]
     fn an_unborn_head_has_no_history_to_read() {
         let runner = FakeRunner::default().with(&DISCOVERY, 0, DISCOVERED).with(
             &STATUS,
@@ -1778,14 +1663,12 @@ R094\tsrc/old.rs\tsrc/renamed.rs
 }
 
 #[cfg(test)]
-mod token_state_tests {
+mod real_git_tests {
     use std::path::Path;
     use std::process::Command;
 
-    use super::{Worktree, collect_git_state, token_state, token_state_at};
+    use super::{Worktree, collect_git_state, status_state};
     use crate::command::ProcessCommandRunner;
-    use crate::consistency::Consistency;
-    use crate::context::normalize_git_state;
 
     /// `git` pinned to `dir`, with the variables that would point it at
     /// another repository removed and an identity of its own.
@@ -1814,80 +1697,12 @@ mod token_state_tests {
         );
     }
 
-    /// The token from the full collector, and from each lean one: the read a
-    /// snapshot starts from (here of a worktree only its root names, so the
-    /// git dir is asked too), and the one-process re-read that follows a tree
-    /// write. Their HEAD fields must agree too.
-    fn tokens(root: &Path) -> (String, String) {
-        let runner = ProcessCommandRunner;
-        let (mut full, _warnings) = collect_git_state(&runner, root).unwrap();
-        normalize_git_state(&mut full);
-        let mut lean = token_state(&runner, &Worktree::at_root(full.repo_root.clone())).unwrap();
-        normalize_git_state(&mut lean);
-        let mut reread = token_state_at(&runner, &full.repo_root, full.git_dir.clone()).unwrap();
-        normalize_git_state(&mut reread);
-        for state in [&lean, &reread] {
-            assert_eq!(state.branch, full.branch);
-            assert_eq!(state.head_oid, full.head_oid);
-            assert_eq!(state.detached, full.detached);
-            assert_eq!(state.dirty, full.dirty);
-            assert_eq!(state.git_dir, full.git_dir);
-        }
-        assert_eq!(
-            Consistency::fingerprint(&lean).token,
-            Consistency::fingerprint(&reread).token
-        );
-        (
-            Consistency::fingerprint(&full).token,
-            Consistency::fingerprint(&reread).token,
-        )
-    }
-
-    /// The re-read around a tree write uses a lean collector, and the token
-    /// it compares against came from the full one. They must agree in every
-    /// state a worktree can be in, or a quiet repository would never settle.
+    /// `dirty` leaves out generated tool state: a session marker, a handover
+    /// or a gate's receipt in `.sykli/` does not make the state dirty, whether
+    /// this machine's ignore rules hide it or not. `.toimija/repo.yaml` is
+    /// work. The one-`status` read `run` makes at exit agrees with the full one.
     #[test]
-    fn the_lean_token_read_agrees_with_the_full_one() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        git(root, &["init", "-q", "-b", "main"]);
-
-        // Unborn HEAD, one untracked file.
-        std::fs::write(root.join("a.txt"), "a\n").unwrap();
-        let (full, lean) = tokens(root);
-        assert_eq!(full, lean, "unborn");
-
-        git(root, &["add", "a.txt"]);
-        git(root, &["commit", "-q", "-m", "init"]);
-        std::fs::write(root.join("b.txt"), "b\n").unwrap();
-        git(root, &["add", "b.txt"]);
-        git(root, &["commit", "-q", "-m", "second"]);
-
-        // Staged, unstaged, untracked and deleted at once, on a branch.
-        std::fs::write(root.join("a.txt"), "staged\n").unwrap();
-        git(root, &["add", "a.txt"]);
-        std::fs::write(root.join("a.txt"), "staged then edited\n").unwrap();
-        std::fs::remove_file(root.join("b.txt")).unwrap();
-        std::fs::write(root.join("c.txt"), "untracked\n").unwrap();
-        let (full, lean) = tokens(root);
-        assert_eq!(full, lean, "dirty on a branch");
-
-        // Detached.
-        git(root, &["stash", "-q", "-u"]);
-        git(root, &["checkout", "-q", "--detach", "HEAD~1"]);
-        let (full, lean) = tokens(root);
-        assert_eq!(full, lean, "detached");
-    }
-
-    /// `dirty` reads the lists the token fingerprints, filtered as the token
-    /// and the tree filter them: a gate's receipt in a `.sykli/` git can see
-    /// moves neither the token nor the point id, so it does not make the
-    /// state dirty either, and it counts the same whether this machine's
-    /// ignore rules hide it or not. `.toimija/repo.yaml` is work.
-    #[test]
-    fn dirty_leaves_out_what_the_token_leaves_out() {
-        use super::collect_git_state;
-
+    fn dirty_leaves_out_generated_tool_state() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         git(root, &["init", "-q", "-b", "main"]);
@@ -1899,19 +1714,20 @@ mod token_state_tests {
         git(root, &["config", "core.excludesFile", "/dev/null"]);
         let runner = ProcessCommandRunner;
         let read = || {
-            let (mut full, _warnings) = collect_git_state(&runner, root).unwrap();
-            normalize_git_state(&mut full);
-            let mut lean =
-                token_state(&runner, &Worktree::at_root(full.repo_root.clone())).unwrap();
-            normalize_git_state(&mut lean);
+            let (full, _warnings) = collect_git_state(&runner, root).unwrap();
+            let lean = status_state(&runner, &Worktree::at_root(full.repo_root.clone())).unwrap();
             assert_eq!(lean.dirty, full.dirty);
+            assert_eq!(lean.branch, full.branch);
+            assert_eq!(lean.head_oid, full.head_oid);
             full
         };
-        let clean = read();
-        assert!(!clean.dirty);
-        let token = Consistency::fingerprint(&clean).token;
+        assert!(!read().dirty);
 
-        for generated in [".sykli/receipt.json", ".toimija/current.json"] {
+        for generated in [
+            ".sykli/receipt.json",
+            ".toimija/handover.json",
+            ".toimija/sessions/100-1/session.json",
+        ] {
             let path = root.join(generated);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "generated\n").unwrap();
@@ -1930,68 +1746,9 @@ mod token_state_tests {
         );
         for state in [&hidden, &visible] {
             assert!(!state.dirty, "{:?}", state.untracked_files);
-            assert_eq!(Consistency::fingerprint(state).token, token);
         }
 
         std::fs::write(root.join(".toimija/repo.yaml"), "repo:\n  name: x\n").unwrap();
         assert!(read().dirty, "repo.yaml is the repository's own");
-    }
-
-    /// A refresh that carries the ref-derived facts must compile the packet a
-    /// fresh read would: in every state reached from the last read without a
-    /// ref moving — and, where HEAD or the upstream did move, by reading them
-    /// again.
-    #[test]
-    fn a_carried_collection_is_what_a_fresh_read_finds() {
-        use super::{collect, discover, restatus};
-
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let origin = root.join("origin");
-        let repo = root.join("repo");
-        std::fs::create_dir_all(&origin).unwrap();
-        git(&origin, &["init", "-q", "-b", "main"]);
-        std::fs::write(origin.join("a.txt"), "a\n").unwrap();
-        git(&origin, &["add", "a.txt"]);
-        git(&origin, &["commit", "-q", "-m", "init"]);
-        git(&root, &["clone", "-q", "origin", "repo"]);
-        git(
-            &repo,
-            &["switch", "-q", "-c", "feat", "--track", "origin/main"],
-        );
-        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
-        git(&repo, &["add", "b.txt"]);
-        git(&repo, &["commit", "-q", "-m", "feat"]);
-
-        let runner = ProcessCommandRunner;
-        let worktree = discover(&runner, &repo).unwrap();
-        let mut previous = collect(&runner, &worktree).unwrap();
-        let check = |what: &str, previous: &super::Collected| {
-            let carried = restatus(&runner, &worktree, previous).unwrap();
-            let fresh = collect(&runner, &worktree).unwrap();
-            assert_eq!(carried.state, fresh.state, "{what}");
-            assert_eq!(carried.warnings, fresh.warnings, "{what}");
-            fresh
-        };
-
-        // The worktree moves; HEAD and the refs do not.
-        std::fs::write(repo.join("a.txt"), "edited\n").unwrap();
-        std::fs::write(repo.join("c.txt"), "untracked\n").unwrap();
-        std::fs::write(repo.join("b.txt"), "staged\n").unwrap();
-        git(&repo, &["add", "b.txt"]);
-        previous = check("dirty", &previous);
-        // Detached at the same commit: no upstream to count against.
-        git(&repo, &["checkout", "-q", "--detach"]);
-        previous = check("detached in place", &previous);
-        git(&repo, &["stash", "-q", "-u"]);
-        previous = check("stashed", &previous);
-        // HEAD moved and no ref with it.
-        git(&repo, &["checkout", "-q", "--detach", "HEAD~1"]);
-        previous = check("detached elsewhere", &previous);
-        // Back on the branch, where a commit moves HEAD and the ref.
-        git(&repo, &["checkout", "-q", "feat"]);
-        previous = check("back on the branch", &previous);
-        git(&repo, &["commit", "-q", "--allow-empty", "-m", "more"]);
-        check("committed", &previous);
     }
 }
