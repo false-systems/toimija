@@ -11,17 +11,14 @@ receipt names are shortened with `…`, and the repository sits at `/work/demo`.
 
 ## Once per machine
 
-`ohjaa apply` writes what agents are told into each agent's own instruction
-file, adds one line to `~/.zshrc`, and adds two ignore rules to Git's global
-excludes. Look first, with `--dry-run`:
+`ohjaa apply` adds two ignore rules to Git's global excludes, and writes what
+agents are told into each agent's own instruction file that exists, here
+Claude Code's. Look first, with `--dry-run`:
 
 ```console
 $ ohjaa apply --dry-run
-ohjaa apply: would write ~/.config/ohjaa/roots with /work, where ohjaa looks for repositories
 ohjaa apply: would add .sykli/ .ohjaa/ to ~/.config/git/ignore (git's global excludes), in a block marked "ohjaa apply"
-ohjaa apply: would change ~/.zshrc:
-  + # What needs your attention, as a terminal opens (written by `ohjaa apply`).
-  + [[ -x '~/.cargo/bin/ohjaa' ]] && eval "$('~/.cargo/bin/ohjaa' shell-init zsh)"
+ohjaa apply: would write the knowledge block (0 nodes) into ~/.claude/CLAUDE.md, Claude Code's own instructions
 ohjaa apply: dry run; nothing was changed
 ```
 
@@ -29,15 +26,13 @@ Then apply. `ohjaa apply --undo` takes it all back.
 
 ```console
 $ ohjaa apply
-ohjaa apply: wrote ~/.config/ohjaa/roots with /work, where ohjaa looks for repositories
 ohjaa apply: added .sykli/ .ohjaa/ to ~/.config/git/ignore (git's global excludes), in a block marked "ohjaa apply"
-ohjaa apply: changed ~/.zshrc:
-  …
-ohjaa apply: committed in ~/.config/ohjaa: apply: 3 changes
+ohjaa apply: wrote the knowledge block (0 nodes) into ~/.claude/CLAUDE.md, Claude Code's own instructions
+ohjaa apply: committed in ~/.config/ohjaa: apply: 2 changes
 ```
 
-On a machine with no knowledge yet, that is all it writes. Knowledge arrives
-later, when a person accepts a proposal.
+On a machine with no knowledge yet, the block says so and nothing more.
+Knowledge arrives later, when a person accepts a proposal.
 
 ## Once per repository
 
