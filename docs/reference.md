@@ -877,7 +877,7 @@ with `sykli run`. A task whose inputs have not changed is served from cache.
 | Task | Runs | After | Reads |
 | --- | --- | --- | --- |
 | `fmt` | `cargo fmt --check` | | every `.rs` and `Cargo.toml` |
-| `clippy` | `cargo clippy --all-targets -- -D warnings` | `fmt` | the code: `.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/` |
+| `clippy` | `cargo clippy --all-targets -- -D warnings` | `fmt` | the code: `.rs`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, and every file a target reads with `include_str!` |
 | `test` | `cargo test` | `fmt` | every tracked file |
 | `xtask-test` | `cargo test -p xtask` | `fmt` | every tracked file |
 | `installer` | `sh -n install.sh && sh installer/test.sh` | | the installer and its test |
@@ -886,5 +886,6 @@ Inputs are exact paths, not patterns. A new tracked file goes into `test` and
 `xtask-test`, and into `fmt` and `clippy` when it is code. Then `git add -A &&
 sykli lock sykli.json` pins the contract again. An input that is not declared
 would be served from cache, so `test` declares every tracked file except the
-contract and its lock. `tests/docs.rs` checks that every command and flag
-these docs show is one `toimija --help` has.
+contract and its lock. `tests/contract.rs` checks that every file read with
+`include_str!` is an input of `clippy` and `test`, and `tests/docs.rs` that
+every command and flag these docs show is one `toimija --help` has.
