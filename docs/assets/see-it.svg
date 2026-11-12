@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" fill="none" role="img" aria-labelledby="t d">
-<title id="t">toimija sessions, then toimija graph</title>
-<desc id="d">One terminal runs an agent as a session with toimija run. In another, toimija sessions lists that session as live, with its branch and intent, and toimija graph shows the branch as proven, not reviewed, with the session working on it, above the main branch, which is proven and reviewed fine.</desc>
+<title id="t">toimija sessions, then toimija handover</title>
+<desc id="d">One terminal runs an agent as a session with toimija run. In another, toimija sessions lists that session as live, with its branch and intent, and toimija handover leaves a note that the next agent reads first.</desc>
 <rect width="1200" height="480" fill="#f1ebdc"/>
 <g stroke="#171715" stroke-width="2"><path d="M40 40H56M48 32V48M1144 440H1160M1152 432V448"/></g>
 <g stroke="#b9b3a5" stroke-width="1"><path d="M64 96H1136M64 132H1136M64 168H1136M64 204H1136M64 240H1136M64 276H1136M64 312H1136M64 348H1136M64 384H1136M64 420H1136M64 456H1136"/></g>
@@ -12,8 +12,7 @@
 <text x="84" y="230" fill="#57594f">  claude  1794350046-58479</text>
 <text x="84" y="266" fill="#57594f">    branch: tidy-readme</text>
 <text x="84" y="302" fill="#57594f">    intent: tidy the README</text>
-<text x="84" y="374" fill="#171715" font-weight="600"><tspan fill="#c75b36">$</tspan> toimija graph</text>
-<text x="84" y="410" fill="#171715">* 4191206  tidy-readme  proven    review: none       claude live: "tidy the README"</text>
-<text x="84" y="446" fill="#57594f">* 3588810  origin/main  proven    review: fine</text>
+<text x="84" y="374" fill="#171715" font-weight="600"><tspan fill="#c75b36">$</tspan> toimija handover --next "the intro is done; the examples still to check"</text>
+<text x="84" y="410" fill="#171715">Handover written for the next agent in /work/demo: for the next agent</text>
 </g>
 </svg>
