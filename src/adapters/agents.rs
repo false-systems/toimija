@@ -25,7 +25,7 @@ pub enum PromptStyle {
 
 impl PromptStyle {
     /// Parse an `agents:<name>.prompt` value. Validated at config load so a
-    /// broken entry fails at `toimija doctor`/first command, not mid-launch.
+    /// broken entry fails at the first command, not mid-launch.
     pub fn from_config(prompt: &str) -> Result<Self, String> {
         if prompt == POSITIONAL_PROMPT {
             return Ok(PromptStyle::Positional);
@@ -61,6 +61,7 @@ const KNOWN_AGENTS: &[(&str, Option<&str>)] = &[
 ];
 
 /// The built-in agents, in table order: what `toimija run --help` names.
+#[cfg(test)]
 pub fn builtin_agents() -> impl Iterator<Item = &'static str> {
     KNOWN_AGENTS.iter().map(|(name, _)| *name)
 }
@@ -86,7 +87,8 @@ pub fn prompt_style(
         })
 }
 
-pub fn is_known_agent(program: &str, configured: &BTreeMap<String, AgentPromptConfig>) -> bool {
+#[cfg(test)]
+fn is_known_agent(program: &str, configured: &BTreeMap<String, AgentPromptConfig>) -> bool {
     prompt_style(program, configured).is_some()
 }
 
@@ -344,13 +346,12 @@ pub fn prepend_alerts(prompt: &mut String, alerts: &[String], cut: usize) {
 }
 
 /// Compose the launch prompt for a known or configured agent: contract
-/// framing, the entry packet inlined (already rendered at the session
-/// budget), the live packet path for re-reads, then the human's task. `None`
-/// for agents without a resolved delivery style.
+/// framing, the packet inlined (already rendered at the session budget), how
+/// to see the state again, then the human's task. `None` for agents without
+/// a resolved delivery style.
 pub fn compose_launch_prompt(
     program: &str,
     packet_markdown: &str,
-    live_packet: &Path,
     task: Option<&str>,
     configured: &BTreeMap<String, AgentPromptConfig>,
 ) -> Option<String> {
@@ -363,12 +364,11 @@ pub fn compose_launch_prompt(
          do not repeat discovery unless a fact is missing, stale or contradicted. \
          Read the named files to answer the task's remaining questions.\n",
     );
-    prompt.push_str(&format!(
-        "Live packet (re-read after HEAD, branch, index, or unfamiliar worktree changes; \
-         your own expected source edits do not require a full re-read; run `toimija verify` \
-         before commit or handoff): {}\n\n",
-        live_packet.display()
-    ));
+    prompt.push_str(
+        "The packet is the state at launch. For the state now (after HEAD, branch, index, \
+         or unfamiliar worktree changes; your own expected source edits need none), run \
+         `toimija enter` again.\n\n",
+    );
     prompt.push_str(packet_markdown.trim_end());
     prompt.push('\n');
     if let Some(task) = task {
@@ -398,8 +398,8 @@ pub fn compose_outside_prompt(
              files. Use these facts instead of repeating discovery. When work is assigned, \
              declare why you are here and what you will touch (`toimija intent \"<why>\" \
              --scope <path>`); `toimija sessions --outside-repos` lists you. With no concrete \
-             task, acknowledge and wait. Once a repository is selected, run `toimija context` \
-             inside it once and use that workset. `toimija context` here prints this packet \
+             task, acknowledge and wait. Once a repository is selected, run `toimija enter` \
+             inside it once and use that workset. `toimija enter` here prints this packet \
              afresh.\n\n{packet}",
             folder.display()
         );
@@ -414,8 +414,8 @@ pub fn compose_outside_prompt(
          When work is assigned, declare why you are here and what you will touch \
          (`toimija intent \"<why>\" --scope <path>`); `toimija sessions --outside-repos` \
          lists you. With no concrete task, acknowledge and wait instead of running \
-         discovery or bookkeeping tools. Once a repository is selected, read its \
-         Toimija context once and use that workset instead of scanning the workspace.\n",
+         discovery or bookkeeping tools. Once a repository is selected, run `toimija enter` \
+         inside it once and use that workset instead of scanning the workspace.\n",
         folder.display()
     );
     if let Some(task) = task {
@@ -427,7 +427,6 @@ pub fn compose_outside_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn no_config() -> BTreeMap<String, AgentPromptConfig> {
         BTreeMap::new()
@@ -595,7 +594,7 @@ mod tests {
         assert!(!encoded.contains('\u{7f}'), "{encoded:?}");
         assert!(encoded.contains("\\u007f"), "{encoded:?}");
         assert_eq!(serde_json::from_str::<String>(encoded).unwrap(), value);
-        let env = [("TOIMIJA_LIVE", OsString::from(value))];
+        let env = [("TOIMIJA_REPO_ROOT", OsString::from(value))];
         let set = shell_env_args("codex", &env, &[]).unwrap();
         assert!(!set[1].contains('\u{7f}'), "{:?}", set[1]);
     }
@@ -627,11 +626,11 @@ mod tests {
     #[test]
     fn codex_carries_dynamic_handshake_without_changing_environment_policy() {
         let value = "/tmp/session with \"quotes\"/back\\slash\nand-newline";
-        let env = [("TOIMIJA_LIVE", OsString::from(value))];
+        let env = [("TOIMIJA_REPO_ROOT", OsString::from(value))];
         let args = shell_env_args("/tools/codex", &env, &[]).unwrap();
         assert_eq!(args[0], "-c");
         let encoded = args[1]
-            .strip_prefix("shell_environment_policy.set.TOIMIJA_LIVE=")
+            .strip_prefix("shell_environment_policy.set.TOIMIJA_REPO_ROOT=")
             .unwrap();
         assert_eq!(serde_json::from_str::<String>(encoded).unwrap(), value);
         assert!(shell_env_args("claude", &env, &["X"]).unwrap().is_empty());
@@ -643,7 +642,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;
-            let invalid = [("TOIMIJA_LIVE", OsString::from_vec(vec![0xff]))];
+            let invalid = [("TOIMIJA_REPO_ROOT", OsString::from_vec(vec![0xff]))];
             assert!(shell_env_args("codex", &invalid, &[]).is_err());
         }
     }
@@ -725,12 +724,10 @@ mod tests {
     }
 
     #[test]
-    fn composed_prompt_carries_contract_packet_path_and_task() {
-        let live = PathBuf::from(".toimija/sessions/1-1/current.md");
+    fn composed_prompt_carries_contract_packet_and_task() {
         let prompt = compose_launch_prompt(
             "codex",
             "# Toimija Context\n\nbody\n",
-            &live,
             Some("fix the redirect"),
             &no_config(),
         )
@@ -744,23 +741,39 @@ mod tests {
                 "do not repeat discovery unless a fact is missing, stale or contradicted"
             )
         );
-        assert!(prompt.contains("your own expected source edits do not require a full re-read"));
-        assert!(prompt.contains("run `toimija verify` before commit or handoff"));
-        assert!(prompt.contains(".toimija/sessions/1-1/current.md"));
+        assert!(prompt.contains("your own expected source edits need none"));
+        // The packet is worked out when asked for: no file to re-read, and
+        // nothing to verify.
+        assert!(prompt.contains("run `toimija enter` again"));
+        assert!(!prompt.contains("current.md"), "{prompt}");
+        assert!(!prompt.contains("toimija verify"), "{prompt}");
         assert!(prompt.contains("# Toimija Context"));
         assert!(prompt.ends_with("Task: fix the redirect\n"));
     }
 
+    /// vessa recognises a launch prompt by its fixed opening, inside a
+    /// repository and outside one: both stay word for word.
+    #[test]
+    fn the_launch_prompts_open_as_vessa_recognises_them() {
+        let inside = compose_launch_prompt("claude", "packet", None, &no_config()).unwrap();
+        assert!(
+            inside
+                .starts_with("Your toimija session packet is below. It is your workset contract:")
+        );
+        let outside =
+            compose_outside_prompt("claude", Path::new("/p"), None, None, &no_config()).unwrap();
+        assert!(outside.starts_with("You are in a toimija session outside any Git repository ("));
+    }
+
     #[test]
     fn task_section_is_omitted_when_absent_and_unknown_agents_get_none() {
-        let live = PathBuf::from("p.md");
-        let prompt = compose_launch_prompt("claude", "packet", &live, None, &no_config()).unwrap();
+        let prompt = compose_launch_prompt("claude", "packet", None, &no_config()).unwrap();
         assert!(!prompt.contains("Task:"));
-        assert!(compose_launch_prompt("bash", "packet", &live, None, &no_config()).is_none());
+        assert!(compose_launch_prompt("bash", "packet", None, &no_config()).is_none());
         // A configured agent composes the same prompt; only the argv shape
         // differs (resolved in workers::prepare, not here).
         let configured = config(&[("aider", "--message")]);
-        assert!(compose_launch_prompt("aider", "packet", &live, None, &configured).is_some());
+        assert!(compose_launch_prompt("aider", "packet", None, &configured).is_some());
     }
 
     #[test]

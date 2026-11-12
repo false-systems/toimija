@@ -72,7 +72,6 @@ mod tests {
         for pack in pack::LANGUAGES {
             assert_eq!(for_kind(pack.kind).kind(), pack.kind);
             assert!(!pack.root_evidence.is_empty());
-            assert!(!pack.doctor_message.is_empty());
         }
 
         let temp = tempfile::tempdir().unwrap();

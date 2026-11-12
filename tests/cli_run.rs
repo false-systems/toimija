@@ -3,8 +3,10 @@ use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
 
-// `run -- <command>` enters (refresh + print), watches while the command runs,
-// then exits with the command's status. It never executes the validation plan.
+// `run -- <command>` works out the packet, opens a session, launches the
+// command with the packet in its launch prompt, starts no git process while
+// the command runs, ends the session when it exits, and exits with its
+// status. It never executes the validation plan.
 
 mod common;
 use common::{git_available, run_git};
@@ -23,42 +25,6 @@ fn run_git_expect_failure(path: &Path, args: &[&str]) {
     assert!(
         !output.status.success(),
         "git {args:?} unexpectedly succeeded"
-    );
-}
-
-fn assert_run_refuses(path: &Path) {
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(path)
-        .args([
-            "run",
-            "--intent",
-            "test",
-            "--",
-            "sh",
-            "-c",
-            "touch CHILD_RAN",
-        ])
-        .assert()
-        .failure()
-        .stdout(predicate::str::contains("Toimija agent entry").not())
-        .stderr(predicate::str::contains(
-            "refusing to launch in unsafe Git state",
-        ));
-    assert!(
-        !path.join("CHILD_RAN").exists(),
-        "the wrapped child must not run from an unsafe entry packet"
-    );
-    let session_dir = fs::read_dir(path.join(".toimija/sessions"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let marker = fs::read_to_string(session_dir.join("session.json")).unwrap();
-    assert!(
-        marker.contains("\"status\": \"closed\""),
-        "a refused startup must close its session marker: {marker}"
     );
 }
 
@@ -106,15 +72,15 @@ fn run_preserves_signal_termination_as_128_plus_signal() {
         .code(143);
 }
 
-/// An interrupted run must not leave its session marker `active`.
+/// An interrupted run must not leave its session marker behind.
 ///
-/// Termination is caught from the moment the marker exists, so toimija survives
+/// Termination is caught from before the marker exists, so toimija survives
 /// the signal, forwards it to any agent it has launched, and still reaches the
-/// teardown that closes the marker. These assert the marker rather than the
-/// mechanism: a regression that registers too late, unregisters early, or
-/// returns past step 7 brings back the stale-session wall.
+/// teardown that removes the marker. These assert the marker rather than the
+/// mechanism: a regression that registers too late or unregisters early
+/// leaves the marker of a session that is over.
 #[cfg(unix)]
-fn interrupted_run_closes_marker(wait_for_agent: bool) {
+fn interrupted_run_removes_marker(wait_for_agent: bool) {
     if !git_available() {
         return;
     }
@@ -151,7 +117,7 @@ fn interrupted_run_closes_marker(wait_for_agent: bool) {
     };
 
     // Signalling before the marker is written would prove nothing about
-    // closing it.
+    // removing it.
     let marker = || {
         fs::read_dir(&sessions).ok().and_then(|entries| {
             entries
@@ -188,21 +154,19 @@ fn interrupted_run_closes_marker(wait_for_agent: bool) {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    let marker = marker().expect("the session marker survives");
-    let marker: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
-    assert_ne!(
-        marker["status"], "active",
-        "the session marker stayed active after an interrupted run: {marker}"
+    assert_eq!(
+        marker(),
+        None,
+        "the session marker stayed behind after an interrupted run"
     );
 }
 
-/// Interrupted during entry/watcher arming: handlers registered only around
-/// the agent would let steps 2-4 kill the wrapper outright.
+/// Interrupted while the session opens: handlers registered only around the
+/// agent would let the signal kill the wrapper outright.
 #[test]
 #[cfg(unix)]
-fn an_interrupted_run_still_closes_its_session_marker() {
-    interrupted_run_closes_marker(false);
+fn an_interrupted_run_still_removes_its_session_marker() {
+    interrupted_run_removes_marker(false);
 }
 
 /// Interrupted while the agent is running — the window supervise_agent already
@@ -210,8 +174,8 @@ fn an_interrupted_run_still_closes_its_session_marker() {
 /// drop this one.
 #[test]
 #[cfg(unix)]
-fn interrupting_a_running_agent_still_closes_its_session_marker() {
-    interrupted_run_closes_marker(true);
+fn interrupting_a_running_agent_still_removes_its_session_marker() {
+    interrupted_run_removes_marker(true);
 }
 
 #[test]
@@ -236,14 +200,11 @@ fn run_enters_then_launches_the_command() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Toimija agent entry"))
-        .stderr(
-            predicate::str::contains("toimija run: watcher armed (native)").or(
-                predicate::str::contains("toimija run: watcher armed (poll fallback)").or(
-                    predicate::str::contains("toimija run: watcher armed (git polling)"),
-                ),
-            ),
-        );
+        .stdout(predicate::str::starts_with("# Toimija Context"))
+        .stderr(predicate::str::contains(
+            "toimija run: launching `sh` (session ",
+        ))
+        .stderr(predicate::str::contains("watcher").not());
 
     // The command ran ...
     assert_eq!(
@@ -252,52 +213,11 @@ fn run_enters_then_launches_the_command() {
             .trim(),
         "hi"
     );
-    // ... and entry refreshed the live packet.
-    assert!(temp.path().join(".toimija/current.md").exists());
-    assert!(temp.path().join(".toimija/current.json").exists());
-}
-
-#[test]
-fn run_captures_recoverable_watcher_diagnostics_off_terminal() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .args([
-            "run",
-            "--intent",
-            "test",
-            "--",
-            "sh",
-            "-c",
-            "mv .git .git-away; sleep 1; mv .git-away .git; sleep 1",
-        ])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "diagnostic line(s) while the wrapped command ran",
-        ))
-        .stderr(predicate::str::contains("packet may be stale").not())
-        .stderr(predicate::str::contains("the packet now says it is stale").not());
-
-    let session_dir = fs::read_dir(temp.path().join(".toimija/sessions"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let diagnostics = fs::read_to_string(session_dir.join("diagnostics.log")).unwrap();
-    // With `.git` gone the stamp moves on every backend, so the refresh fails
-    // and marks the packet itself stale before any poll could warn.
-    assert!(
-        diagnostics.contains("the packet now says it is stale"),
-        "{diagnostics}"
-    );
+    // ... and no packet file was written, and no marker is left.
+    assert!(!temp.path().join(".toimija/current.md").exists());
+    assert!(!temp.path().join(".toimija/current.json").exists());
+    let sessions = temp.path().join(".toimija/sessions");
+    assert_eq!(fs::read_dir(&sessions).unwrap().count(), 0);
 }
 
 #[test]
@@ -317,7 +237,7 @@ fn run_launches_without_an_intent_and_says_none_was_given() {
         // Said once, before the agent has the terminal, with how to say it.
         .stderr(
             predicate::str::contains(
-                "toimija run: no intent given: sibling sessions see `unknown` until one is \
+                "toimija run: no intent given: other sessions see `unknown` until one is \
                  declared (`toimija intent \"<why>\"`, or `--intent` at launch)",
             )
             .count(1),
@@ -402,7 +322,8 @@ fn run_inlines_the_packet_into_a_known_agents_launch_prompt() {
     );
     assert!(arg.contains("# Toimija Context"), "{arg}");
     assert!(arg.contains("## Workset contract"), "{arg}");
-    assert!(arg.contains(".toimija/sessions/"), "{arg}");
+    assert!(arg.contains("run `toimija enter` again"), "{arg}");
+    assert!(arg.contains("## Session\n- id: "), "{arg}");
     assert!(arg.trim_end().ends_with("Task: paint it beige"), "{arg}");
 }
 
@@ -595,8 +516,33 @@ fn run_exit_summary_reports_consumption() {
         .stderr(predicate::str::contains("expansions: none declared"));
 }
 
+/// `run` launches whatever state Git is in, and the packet says it plainly:
+/// an operation stopped part-way and conflicted files are facts the agent
+/// reads first, never a refusal toimija decides.
+fn assert_run_launches_and_says(path: &Path, lines: &[&str]) {
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(path)
+        .args([
+            "run",
+            "--intent",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "touch CHILD_RAN",
+        ])
+        .assert()
+        .success();
+    let packet = String::from_utf8_lossy(&output.get_output().stdout).into_owned();
+    for line in lines {
+        assert!(packet.contains(line), "no {line:?} in:\n{packet}");
+    }
+    assert!(path.join("CHILD_RAN").exists(), "the agent did not launch");
+}
+
 #[test]
-fn run_refuses_a_merge_in_progress() {
+fn run_launches_mid_merge_and_the_packet_says_so() {
     if !git_available() {
         return;
     }
@@ -612,11 +558,11 @@ fn run_refuses_a_merge_in_progress() {
     run_git(temp.path(), &["commit", "-m", "main"]);
     run_git(temp.path(), &["merge", "--no-commit", "feature"]);
 
-    assert_run_refuses(temp.path());
+    assert_run_launches_and_says(temp.path(), &["- operation: merge in progress\n"]);
 }
 
 #[test]
-fn run_refuses_conflicted_files() {
+fn run_launches_with_conflicted_files_and_the_packet_says_so() {
     if !git_available() {
         return;
     }
@@ -630,11 +576,18 @@ fn run_refuses_conflicted_files() {
     run_git(temp.path(), &["commit", "-am", "main"]);
     run_git_expect_failure(temp.path(), &["merge", "feature"]);
 
-    assert_run_refuses(temp.path());
+    assert_run_launches_and_says(
+        temp.path(),
+        &[
+            "- operation: merge in progress\n",
+            "- conflicts: 1\n",
+            "Conflicted files exist.",
+        ],
+    );
 }
 
 #[test]
-fn run_refuses_a_rebase_in_progress() {
+fn run_launches_mid_rebase_and_the_packet_says_so() {
     if !git_available() {
         return;
     }
@@ -649,106 +602,13 @@ fn run_refuses_a_rebase_in_progress() {
     run_git(temp.path(), &["switch", "feature"]);
     run_git_expect_failure(temp.path(), &["rebase", "-"]);
 
-    assert_run_refuses(temp.path());
+    assert_run_launches_and_says(temp.path(), &["- operation: rebase in progress\n"]);
 }
 
+/// The marker lives exactly as long as the session: the agent sees it while
+/// it runs, and when it exits nothing is left — no marker, no packet file.
 #[test]
-fn run_writes_a_per_session_packet_and_closes_the_marker() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .args(["run", "--intent", "test", "--", "true"])
-        .assert()
-        .success();
-
-    // Exactly one session directory, with its own packet and a closed marker.
-    let sessions = temp.path().join(".toimija/sessions");
-    assert!(sessions.is_dir(), "sessions dir should exist");
-    let dirs: Vec<_> = fs::read_dir(&sessions)
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .collect();
-    assert_eq!(dirs.len(), 1, "exactly one session dir expected");
-    let session_dir = &dirs[0];
-    assert!(session_dir.join("current.md").exists());
-    assert!(session_dir.join("current.json").exists());
-
-    let marker = fs::read_to_string(session_dir.join("session.json")).unwrap();
-    assert!(
-        marker.contains("\"status\": \"closed\""),
-        "marker should be auto-closed on exit: {marker}"
-    );
-    assert!(
-        marker.contains("\"agent\""),
-        "marker records the agent argv"
-    );
-
-    // The repo-level summary is still written (demoted, last-writer-wins).
-    assert!(temp.path().join(".toimija/current.md").exists());
-}
-
-#[test]
-fn run_intent_reaches_the_session_packet() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-
-    // A wrapped harness infers intent from the packet, so the launch-time
-    // declaration must land there — not only on the marker.
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .args([
-            "run",
-            "--intent",
-            "test drive 2",
-            "--scope",
-            "src/a.rs",
-            "--",
-            "true",
-        ])
-        .assert()
-        .success();
-
-    let sessions = temp.path().join(".toimija/sessions");
-    let session_dir = fs::read_dir(&sessions)
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .next()
-        .expect("one session dir");
-    let json: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(session_dir.join("current.json")).unwrap())
-            .unwrap();
-    assert_eq!(json["session"]["intent"], "test drive 2");
-    assert_eq!(json["session"]["scope"][0], "src/a.rs");
-    assert_eq!(json["session"]["entry_branch"], json["git"]["branch"]);
-    assert_eq!(json["session"]["entry_head"], json["git"]["head_oid"]);
-    let md = fs::read_to_string(session_dir.join("current.md")).unwrap();
-    assert!(md.contains("## Session"));
-    assert!(md.contains("- intent: test drive 2"));
-
-    // The repo-level summary mirrors the session packet only while the session
-    // runs. Once it has ended, the repo packet carries no session block:
-    // the next agent must not read a dead session's brief as its own.
-    let repo_json: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(repo_json["session"].is_null(), "{}", repo_json["session"]);
-}
-
-#[test]
-fn a_session_that_ends_leaves_no_brief_in_the_repo_packet() {
+fn run_leaves_no_marker_or_packet_behind() {
     if !git_available() {
         return;
     }
@@ -757,7 +617,6 @@ fn a_session_that_ends_leaves_no_brief_in_the_repo_packet() {
     let outside = tempfile::tempdir().unwrap();
     let during = outside.path().join("during.json");
 
-    // While the agent works, the repo-level packet mirrors its session.
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
@@ -765,41 +624,83 @@ fn a_session_that_ends_leaves_no_brief_in_the_repo_packet() {
         .args([
             "run",
             "--intent",
-            "dead brief",
+            "test",
+            "--",
+            "sh",
+            "-c",
+            "cat .toimija/sessions/*/session.json > \"$DURING\"",
+        ])
+        .assert()
+        .success();
+
+    let marker: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&during).unwrap()).unwrap();
+    assert_eq!(marker["agent"][0], "sh", "{marker}");
+    assert_eq!(marker["intent"], "test", "{marker}");
+    assert!(marker["branch"].is_string(), "{marker}");
+    let sessions = temp.path().join(".toimija/sessions");
+    assert_eq!(fs::read_dir(&sessions).unwrap().count(), 0);
+    assert!(!temp.path().join(".toimija/current.md").exists());
+    assert!(!temp.path().join(".toimija/current.json").exists());
+}
+
+/// The launch packet names the session, and so does `toimija enter` inside
+/// it, with what the session declared and where it started. Once the session
+/// has ended, its id names nothing: the next agent never reads a dead
+/// session's brief as its own.
+#[test]
+fn run_intent_reaches_the_packet_and_ends_with_the_session() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let outside = tempfile::tempdir().unwrap();
+    let during = outside.path().join("during.json");
+    let toimija = assert_cmd::cargo::cargo_bin("toimija");
+
+    let output = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("DURING", &during)
+        .args([
+            "run",
+            "--intent",
+            "test drive 2",
             "--scope",
             "src/a.rs",
             "--",
             "sh",
             "-c",
-            "cp .toimija/current.json \"$DURING\"",
         ])
+        .arg(format!(
+            "'{}' enter --json > \"$DURING\" && printf '%s' \"$TOIMIJA_SESSION\" > id",
+            toimija.display()
+        ))
         .assert()
         .success();
-    let while_live: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&during).unwrap()).unwrap();
-    assert_eq!(while_live["session"]["intent"], "dead brief");
+    let launch = String::from_utf8_lossy(&output.get_output().stdout).into_owned();
+    assert!(launch.contains("## Session\n- id: "), "{launch}");
+    assert!(launch.contains("- intent: test drive 2\n"), "{launch}");
+    assert!(launch.contains("- declared scope: src/a.rs\n"), "{launch}");
 
-    // After it exits, the repo packet has the final Git facts and no brief.
-    let md = fs::read_to_string(temp.path().join(".toimija/current.md")).unwrap();
-    assert!(!md.contains("## Session"), "{md}");
-    assert!(!md.contains("dead brief"), "{md}");
-    let json: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(json["session"].is_null(), "{}", json["session"]);
-    assert!(
-        json["seal"]["producer"]["run"].is_null(),
-        "{}",
-        json["seal"]
-    );
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&during).unwrap()).unwrap();
+    assert_eq!(json["session"]["intent"], "test drive 2");
+    assert_eq!(json["session"]["scope"][0], "src/a.rs");
+    assert_eq!(json["session"]["entry_branch"], json["git"]["branch"]);
+    assert_eq!(json["session"]["entry_head"], json["git"]["head_oid"]);
+
+    let id = fs::read_to_string(temp.path().join("id")).unwrap();
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .env_remove("TOIMIJA_SESSION")
-        .arg("verify")
+        .env("TOIMIJA_SESSION", &id)
+        .arg("enter")
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("## Session").not())
+        .stdout(predicate::str::contains("test drive 2").not());
 }
 
 #[test]
@@ -821,7 +722,7 @@ fn run_hands_the_child_a_per_session_handshake() {
             "--",
             "sh",
             "-c",
-            "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s' \"$TOIMIJA_RUN\" \"$TOIMIJA_SESSION\" \"$TOIMIJA_LIVE\" \"$TOIMIJA_LIVE_JSON\" \"$TOIMIJA_REPO_LIVE\" \"$TOIMIJA_CURRENT_MD\" \"$TOIMIJA_CURRENT_JSON\" \"$TOIMIJA_REPO_ROOT\" \"$TOIMIJA_RUN_ID\" > env.txt",
+            "printf '%s\\n%s\\n%s\\n%s\\n%s' \"$TOIMIJA_RUN\" \"$TOIMIJA_SESSION\" \"$TOIMIJA_REPO_ROOT\" \"$TOIMIJA_RUN_ID\" \"${TOIMIJA_LIVE-unset}\" > env.txt",
         ])
         .assert()
         .success();
@@ -829,30 +730,13 @@ fn run_hands_the_child_a_per_session_handshake() {
     let captured = fs::read_to_string(temp.path().join("env.txt")).unwrap();
     let mut lines = captured.lines();
     assert_eq!(lines.next(), Some("1"), "TOIMIJA_RUN should be 1");
-    assert!(
-        !lines.next().unwrap_or_default().is_empty(),
-        "TOIMIJA_SESSION should be set"
-    );
-    let live = lines.next().unwrap_or_default();
-    assert!(
-        live.contains(".toimija/sessions/") && live.ends_with("current.md"),
-        "TOIMIJA_LIVE should point at the per-session packet: {live}"
-    );
-    let live_json = lines.next().unwrap_or_default();
-    assert!(
-        live_json.contains(".toimija/sessions/") && live_json.ends_with("current.json"),
-        "TOIMIJA_LIVE_JSON should point at the per-session packet: {live_json}"
-    );
-    let repo_live = lines.next().unwrap_or_default();
-    assert!(
-        repo_live.ends_with(".toimija/current.md"),
-        "TOIMIJA_REPO_LIVE should point at the repo-level summary: {repo_live}"
-    );
-    assert_eq!(lines.next(), Some(live));
-    assert_eq!(lines.next(), Some(live_json));
+    let session = lines.next().unwrap_or_default();
+    assert!(!session.is_empty(), "TOIMIJA_SESSION should be set");
     let repo_root = std::fs::canonicalize(lines.next().unwrap()).unwrap();
     assert_eq!(repo_root, std::fs::canonicalize(temp.path()).unwrap());
-    assert_eq!(lines.next(), captured.lines().nth(1));
+    assert_eq!(lines.next(), Some(session), "TOIMIJA_RUN_ID is the session");
+    // No packet file, so no variable that names one.
+    assert_eq!(lines.next(), Some("unset"));
 }
 
 #[cfg(unix)]
@@ -868,7 +752,7 @@ fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
         let stub = folder.path().join("codex");
         fs::write(
             &stub,
-            "#!/bin/sh\nprintf '%s\\n' \"$TOIMIJA_SESSION\" \"$TOIMIJA_LIVE\" \"$@\" > captured-handshake\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$TOIMIJA_SESSION\" \"$TOIMIJA_RUN_ID\" \"$@\" > captured-handshake\n",
         )
         .unwrap();
         fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
@@ -896,7 +780,7 @@ fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
         );
         let stdout = fs::read_to_string(folder.path().join("captured-handshake")).unwrap();
         let lines: Vec<_> = stdout.lines().collect();
-        for (key, expected) in [("TOIMIJA_SESSION", lines[0]), ("TOIMIJA_LIVE", lines[1])] {
+        for (key, expected) in [("TOIMIJA_SESSION", lines[0]), ("TOIMIJA_RUN_ID", lines[1])] {
             let prefix = format!("shell_environment_policy.set.{key}=");
             let encoded = lines
                 .iter()
@@ -926,13 +810,7 @@ fn codex_receives_the_same_handshake_in_argv_inside_and_outside_repositories() {
         // variables, so what the child loses is set empty for the tools too.
         let mut cleared: Vec<&str> = Vec::new();
         if !in_repo {
-            cleared.extend([
-                "TOIMIJA_LIVE_JSON",
-                "TOIMIJA_CURRENT_JSON",
-                "TOIMIJA_REPO_ROOT",
-                "TOIMIJA_REPO_LIVE",
-                "FALSE_SYSTEMS_REPOSITORY_POINT_PATH",
-            ]);
+            cleared.push("TOIMIJA_REPO_ROOT");
         }
         for key in cleared {
             let line = format!("shell_environment_policy.set.{key}=\"\"");
@@ -1067,138 +945,8 @@ fn a_users_own_developer_instructions_survive_and_the_packet_goes_first() {
     assert!(prompt.ends_with("Brief.\n"), "{prompt}");
 }
 
-/// The facts a wrapped command can read about where it stands: the session's
-/// repository point at `FALSE_SYSTEMS_REPOSITORY_POINT_PATH`, and the same
-/// point inside the sealed session packet (`session.execution.repository`),
-/// which a reader uses to bind evidence to a session.
 #[test]
-fn run_hands_the_child_its_repository_point() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    // Captured outside the repository, so capturing cannot move the point.
-    let out = tempfile::tempdir().unwrap();
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .env("OUT", out.path())
-        .args([
-            "run",
-            "--intent",
-            "test",
-            "--",
-            "sh",
-            "-c",
-            "cp \"$FALSE_SYSTEMS_REPOSITORY_POINT_PATH\" \"$OUT/point.json\" && \
-             cp \"$TOIMIJA_LIVE_JSON\" \"$OUT/packet.json\"",
-        ])
-        .assert()
-        .success();
-
-    let read = |name: &str| -> serde_json::Value {
-        serde_json::from_str(&fs::read_to_string(out.path().join(name)).unwrap()).unwrap()
-    };
-    let point = read("point.json");
-    let packet = read("packet.json");
-    let id = point["repository"]["id"].as_str().unwrap();
-    assert!(id.starts_with("rpoint_"), "{point}");
-    assert!(point["repository"]["tree_oid"].is_string(), "{point}");
-    assert_eq!(packet["schema"], "toimija-context.v3");
-    assert_eq!(packet["session"]["execution"]["repository"]["id"], id);
-}
-
-/// The last check before launch runs after the watcher is armed. If it
-/// refuses — here because a merge started while `run` was preparing — `run`
-/// must close the session it opened, not leave an `active` marker and a
-/// stale repository point behind for siblings to trip over.
-#[cfg(unix)]
-#[test]
-fn run_closes_the_session_when_the_last_launch_check_refuses() {
-    use std::os::unix::fs::PermissionsExt;
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    // `run` records the entry HEAD on the session marker right after its
-    // first pre-launch check passes. This `git` starts a merge on its first
-    // call after that, so the merge lands between the first check and the
-    // last one, whatever git runs in between.
-    let real_git = String::from_utf8(
-        std::process::Command::new("sh")
-            .args(["-c", "command -v git"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    let bin = tempfile::tempdir().unwrap();
-    let git = bin.path().join("git");
-    fs::write(
-        &git,
-        format!(
-            "#!/bin/sh\n\
-             if [ ! -e \"$MERGE_STARTED\" ] && \
-             grep -qs '\"head\": \"' \"$REPO\"/.toimija/sessions/*/session.json; then\n\
-             \x20 : > \"$MERGE_STARTED\"\n\
-             \x20 '{real}' -C \"$REPO\" rev-parse HEAD > \"$REPO/.git/MERGE_HEAD\"\n\
-             fi\n\
-             exec '{real}' \"$@\"\n",
-            real = real_git.trim()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!(
-        "{}:{}",
-        bin.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .env("PATH", path)
-        .env("REPO", temp.path())
-        .env("MERGE_STARTED", bin.path().join("merge-started"))
-        .env_remove("TOIMIJA_SESSION")
-        .args([
-            "run",
-            "--intent",
-            "test",
-            "--",
-            "sh",
-            "-c",
-            "touch launched",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unsafe Git state"));
-
-    assert!(!temp.path().join("launched").exists(), "the agent launched");
-    let sessions: Vec<_> = fs::read_dir(temp.path().join(".toimija/sessions"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
-    assert_eq!(sessions.len(), 1, "{sessions:?}");
-    let marker: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(sessions[0].join("session.json")).unwrap())
-            .unwrap();
-    assert_eq!(marker["status"], "closed", "{marker}");
-    // The entry HEAD was recorded: the first check passed, and the last one refused.
-    assert!(marker["head"].is_string(), "{marker}");
-    assert!(bin.path().join("merge-started").exists());
-    assert!(
-        !sessions[0].join("semantic-point.json").exists(),
-        "a closed session still publishes a repository point"
-    );
-}
-
-#[test]
-fn run_closes_the_session_marker_when_the_child_fails_to_launch() {
+fn run_ends_the_session_when_the_child_fails_to_launch() {
     if !git_available() {
         return;
     }
@@ -1219,16 +967,10 @@ fn run_closes_the_session_marker_when_the_child_fails_to_launch() {
         .failure();
 
     let sessions = temp.path().join(".toimija/sessions");
-    let dirs: Vec<_> = fs::read_dir(&sessions)
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .collect();
-    assert_eq!(dirs.len(), 1, "exactly one session dir expected");
-    let marker = fs::read_to_string(dirs[0].join("session.json")).unwrap();
-    assert!(
-        marker.contains("\"status\": \"closed\""),
-        "failed launch should still auto-close the session marker: {marker}"
+    assert_eq!(
+        fs::read_dir(&sessions).unwrap().count(),
+        0,
+        "a failed launch must still remove the session marker"
     );
 }
 
@@ -1252,14 +994,14 @@ fn run_does_not_execute_the_validation_plan() {
         .current_dir(temp.path())
         .args(["run", "--intent", "test", "--", "true"])
         .assert()
-        .success();
+        .success()
+        // The plan is in the packet, to read, never to run.
+        .stdout(predicate::str::contains("- touch VALIDATION_RAN"));
 
     assert!(
         !temp.path().join("VALIDATION_RAN").exists(),
         "run must never execute the configured validation plan"
     );
-    // It still entered (refreshed the live packet).
-    assert!(temp.path().join(".toimija/current.json").exists());
 }
 
 /// The instructions an idle Codex stub was launched with.
@@ -1313,15 +1055,11 @@ fn a_briefing_may_start_with_a_hyphen_and_a_blank_one_is_dropped() {
     assert!(!blank.trim_end_matches('\n').ends_with(' '), "{blank:?}");
 }
 
-fn only_marker(path: &Path) -> serde_json::Value {
-    let sessions = path.join(".toimija/sessions");
-    let dirs: Vec<_> = fs::read_dir(&sessions)
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .collect();
-    assert_eq!(dirs.len(), 1, "{dirs:?}");
-    serde_json::from_str(&fs::read_to_string(dirs[0].join("session.json")).unwrap()).unwrap()
+/// The agent command that saves the session's marker as the agent sees it.
+const SAVE_MARKER: &str = "cat .toimija/sessions/*/session.json > marker.json";
+
+fn marker_seen_by_the_agent(path: &Path) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(path.join("marker.json")).unwrap()).unwrap()
 }
 
 #[test]
@@ -1346,7 +1084,7 @@ fn an_unknown_agent_is_told_its_briefing_was_not_delivered_and_the_session_recor
             "--",
             "sh",
             "-c",
-            "true",
+            SAVE_MARKER,
         ])
         .assert()
         .success()
@@ -1356,7 +1094,7 @@ fn an_unknown_agent_is_told_its_briefing_was_not_delivered_and_the_session_recor
         ))
         .stderr(predicate::str::contains("agents:"));
 
-    let marker = only_marker(temp.path());
+    let marker = marker_seen_by_the_agent(temp.path());
     assert_eq!(
         marker["undelivered"],
         serde_json::json!(["packet", "task", "briefing"])
@@ -1374,13 +1112,13 @@ fn an_unknown_agent_without_task_or_briefing_still_hears_its_packet_was_not_deli
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--intent", "test", "--", "sh", "-c", "true"])
+        .args(["run", "--intent", "test", "--", "sh", "-c", SAVE_MARKER])
         .assert()
         .success()
         .stderr(predicate::str::contains("not delivered: packet"));
 
     assert_eq!(
-        only_marker(temp.path())["undelivered"],
+        marker_seen_by_the_agent(temp.path())["undelivered"],
         serde_json::json!(["packet"])
     );
 }
@@ -1651,8 +1389,8 @@ fn run_takes_the_flags_ohjaa_launches_with_and_sessions_reports_what_it_reads() 
         .assert()
         .success();
     let after: serde_json::Value = serde_json::from_slice(&after.get_output().stdout).unwrap();
-    assert_eq!(after["sessions"][0]["id"], id);
-    assert_eq!(after["sessions"][0]["liveness"], "closed");
+    // The session ended with its agent: it is no longer listed.
+    assert_eq!(after["sessions"], serde_json::json!([]), "{after}");
 }
 
 /// `--task`, `--briefing` and `--alert` take text that may start
@@ -1726,8 +1464,8 @@ fn a_flag_where_a_value_belongs_is_a_missing_value_and_nothing_launches() {
 }
 
 /// The session summary counts the work the session leaves behind, never
-/// Toimija's own files: in a repository without `toimija init` its packets,
-/// markers and history are visible to Git, and were counted as untracked.
+/// Toimija's own files: where the repository does not ignore them, the
+/// handover is visible to Git, and must not count as untracked work.
 #[test]
 fn the_exit_summary_does_not_count_toimijas_own_files() {
     if !git_available() {
@@ -1735,6 +1473,12 @@ fn the_exit_summary_does_not_count_toimijas_own_files() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_git_repo(temp.path());
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["handover", "--next", "visible to git"])
+        .assert()
+        .success();
     for _ in 0..2 {
         Command::cargo_bin("toimija")
             .unwrap()

@@ -114,15 +114,6 @@ fn real_dir(repo_root: &Path, path: &Path, create: bool) -> Result<bool> {
     }
 }
 
-/// Open `path`, a file under `.toimija/`, with `options`. Its directory must
-/// already exist as a real one ([`ensure_dir`] creates it), and the file
-/// itself is opened with `O_NOFOLLOW`. A missing directory is reported as
-/// `NotFound`, so callers can tell "gone" from "refused".
-pub fn open(repo_root: &Path, path: &Path, options: &mut OpenOptions) -> Result<File> {
-    require_parent(repo_root, path)?;
-    open_nofollow(path, options).map_err(|error| refusal_or(repo_root, path, error, "open"))
-}
-
 /// Atomically replace `path`, a file under `.toimija/`, with `contents`. Its
 /// directory must already exist as a real one ([`ensure_dir`] creates it). A
 /// symlink at `path` is replaced, never written through. The bytes are staged
@@ -187,17 +178,17 @@ fn staging_dir(repo_root: &Path) -> Result<PathBuf> {
     Ok(staging)
 }
 
-/// Remove `path`, a file under `.toimija/`. Already gone is fine, including
-/// its directory; a symlinked directory on the way is refused.
-pub fn remove_file(repo_root: &Path, path: &Path) -> Result<()> {
-    let parent = path.parent().context("a file has a parent")?;
-    if !dir_exists(repo_root, parent)? {
+/// Remove `dir`, a directory under `.toimija/`, and everything in it. Already
+/// gone is fine; a symlink on the way to it, or at it, is refused, never
+/// followed. Inside it, a symlink is removed as a link, not followed.
+pub fn remove_dir(repo_root: &Path, dir: &Path) -> Result<()> {
+    if !dir_exists(repo_root, dir)? {
         return Ok(());
     }
-    match fs::remove_file(path) {
+    match fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", dir.display())),
     }
 }
 
@@ -267,9 +258,36 @@ mod tests {
         assert!(error.contains("symlink"), "{error}");
         assert!(!outside.join("100-1").exists());
         assert!(dir_exists(&repo, &dir).is_err());
-        assert!(ensure_dir(&repo, &repo.join(".toimija/runs")).is_ok());
-        assert!(dir_exists(&repo, &repo.join(".toimija/runs")).unwrap());
-        assert!(!dir_exists(&repo, &repo.join(".toimija/snapshots")).unwrap());
+        assert!(ensure_dir(&repo, &repo.join(".toimija/tmp")).is_ok());
+        assert!(dir_exists(&repo, &repo.join(".toimija/tmp")).unwrap());
+        assert!(!dir_exists(&repo, &repo.join(".toimija/other")).unwrap());
+    }
+
+    #[test]
+    fn removing_a_directory_follows_no_symlink_on_the_way_or_inside() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep"), "keep\n").unwrap();
+
+        // A symlink inside the directory is removed as a link.
+        let session = repo.join(".toimija/sessions/100-1");
+        fs::create_dir_all(&session).unwrap();
+        fs::write(session.join("session.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, session.join("link")).unwrap();
+        remove_dir(&repo, &session).unwrap();
+        assert!(!session.exists());
+        assert!(outside.join("keep").exists());
+        // Gone already is fine.
+        remove_dir(&repo, &session).unwrap();
+
+        // A symlink on the way is refused.
+        fs::remove_dir_all(repo.join(".toimija/sessions")).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".toimija/sessions")).unwrap();
+        let error = remove_dir(&repo, &repo.join(".toimija/sessions/keep")).unwrap_err();
+        assert!(error.to_string().contains("symlink"), "{error}");
+        assert!(outside.join("keep").exists());
     }
 
     #[test]
@@ -282,25 +300,29 @@ mod tests {
     }
 
     #[test]
-    fn a_file_symlink_is_never_opened_and_a_missing_directory_reads_as_not_found() {
+    fn a_file_symlink_is_replaced_not_written_through_and_a_missing_directory_reads_as_not_found() {
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         fs::create_dir_all(repo.join(".toimija")).unwrap();
         let victim = temp.path().join("victim");
         fs::write(&victim, "keep\n").unwrap();
-        let link = repo.join(".toimija/history.jsonl");
+        let link = repo.join(".toimija/handover.json");
         std::os::unix::fs::symlink(&victim, &link).unwrap();
 
-        let error = open(&repo, &link, OpenOptions::new().create(true).append(true))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("symlink"), "{error}");
+        replace(&repo, &link, b"{}\n").unwrap();
         assert_eq!(fs::read_to_string(&victim).unwrap(), "keep\n");
+        assert!(
+            !fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(&link).unwrap(), "{}\n");
 
-        let missing = open(
+        let missing = replace(
             &repo,
             &repo.join(".toimija/sessions/100-1/session.json"),
-            OpenOptions::new().create(true).append(true),
+            b"{}\n",
         )
         .unwrap_err();
         assert!(
@@ -319,7 +341,7 @@ mod staging_tests {
     /// Sykli (`git add --all` on a scratch index) and every other Git reader
     /// list untracked files, then stat them. A temp file Git can list
     /// vanishes under it at the rename: `fatal: unable to stat
-    /// '.toimija/current.json.tmp-…'`.
+    /// '.toimija/handover.json.tmp-…'`.
     #[test]
     fn git_never_lists_a_replacement_in_flight() {
         let runner = ProcessCommandRunner;
@@ -333,8 +355,8 @@ mod staging_tests {
         }
         ensure_dir(repo, &repo.join(".toimija/sessions/100-1")).unwrap();
         for target in [
-            repo.join(".toimija/current.json"),
-            repo.join(".toimija/sessions/100-1/current.json"),
+            repo.join(".toimija/handover.json"),
+            repo.join(".toimija/sessions/100-1/session.json"),
         ] {
             let mut listed = String::new();
             let mut staged_at = PathBuf::new();
@@ -387,7 +409,7 @@ mod staging_tests {
         fs::write(&ignore, b"").unwrap();
 
         let mut listed = String::new();
-        replace_staged(repo, &repo.join(".toimija/current.md"), b"x", |_| {
+        replace_staged(repo, &repo.join(".toimija/handover.json"), b"x", |_| {
             listed = runner
                 .run(repo, "git", &["ls-files", "--others", "--exclude-standard"])
                 .unwrap()
@@ -412,11 +434,11 @@ mod staging_tests {
 
         let error = format!(
             "{:#}",
-            replace(&repo, &repo.join(".toimija/current.json"), b"{}").unwrap_err()
+            replace(&repo, &repo.join(".toimija/handover.json"), b"{}").unwrap_err()
         );
 
         assert!(error.contains("symlink"), "{error}");
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
-        assert!(!repo.join(".toimija/current.json").exists());
+        assert!(!repo.join(".toimija/handover.json").exists());
     }
 }

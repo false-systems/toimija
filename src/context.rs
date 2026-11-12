@@ -1,42 +1,30 @@
+//! The packet: where the work stands, worked out from Git when it is asked
+//! for and never written to disk, so it cannot go stale.
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::adapters::LanguageAdapter;
 use crate::command::CommandRunner;
 use crate::config::RepoConfig;
-use crate::consistency::Consistency;
 use crate::git::{self, ChangedFile, GitState};
 use crate::repo::{self, RepoInfo, RepoKind};
-use crate::seal::{self, Envelope, Provenance};
+use crate::session::SessionMarker;
 use crate::validate::ValidationPlan;
 
-pub const CONTEXT_SCHEMA: &str = "toimija-context.v3";
-
-/// Packet schemas earlier toimijas wrote. A packet of one is not read under
-/// this schema's rules: `verify` refuses it, and a refresh replaces it.
-pub const EARLIER_CONTEXT_SCHEMAS: &[&str] = &["toimija-context.v1", "toimija-context.v2"];
-
-fn default_context_schema() -> String {
-    CONTEXT_SCHEMA.to_string()
-}
+pub const CONTEXT_SCHEMA: &str = "toimija-context.v4";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextPacket {
-    #[serde(default = "default_context_schema")]
     pub schema: String,
-    /// Identifies the two files produced by one persisted refresh.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_id: Option<String>,
     pub repo: RepoInfo,
     pub repo_kind: RepoKind,
     #[serde(default)]
     pub secondary_languages: Vec<repo::DetectedLanguage>,
-    /// Refresh key for the collected, packet-visible Git state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
     pub git: GitState,
     #[serde(with = "crate::path_codec::vec")]
     pub changed_surface: Vec<PathBuf>,
@@ -46,53 +34,47 @@ pub struct ContextPacket {
     pub safe_to_ignore: Vec<PathBuf>,
     pub validation_plan: ValidationPlan,
     pub warnings: Vec<String>,
+    /// A Git operation stopped part-way: a merge, rebase, cherry-pick, revert
+    /// or bisect, as the files in the git dir say.
+    pub git_operation: GitOperation,
     pub for_diff: bool,
     pub default_budget: Option<usize>,
-    /// Verifiable fingerprint of the Git state this packet was compiled from. A
-    /// reader (e.g. the harness) checks it against the live repo before trusting
-    /// the packet, instead of re-deriving repo state itself.
-    pub consistency: Consistency,
-    /// Session identity on a per-session packet: the wrapped
-    /// agent's declared intent and scope, read from the session marker at
-    /// refresh time — so `run --intent` reaches the harness, and a mid-session
-    /// `toimija intent` update propagates on the next refresh. `None` on
-    /// repo-level packets. Additive per the packet contract's evolution rule.
+    /// Under `toimija run`: the session's declared intent and scope, read
+    /// from its marker when the packet is worked out. `None` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionBlock>,
     /// What the last agent in this working copy left for the next one
-    /// (`toimija handover`), read at refresh time. Additive per the
-    /// packet contract's evolution rule.
+    /// (`toimija handover`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover: Option<crate::session::Handover>,
-    /// The packet's seal (`crate::seal`) over the
-    /// serialized packet. The
-    /// option remains only so an unsealed document can deserialize before the
-    /// verification boundary rejects it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seal: Option<Envelope>,
 }
 
-/// The session half of a per-session packet: who this packet is for and why
-/// that session says it is here. `scope` is the agent's declaration, distinct
-/// from the Git-derived `changed_surface`. Advisory, like the marker it
-/// mirrors.
+/// The session a packet is worked out for: who it is and why that session
+/// says it is here. `scope` is the agent's declaration, distinct from the
+/// Git-derived `changed_surface`. Advisory, like the marker it mirrors.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionBlock {
     pub id: String,
     pub intent: Option<String>,
-    /// The spec the session starts from, when it declared one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spec: Option<crate::spec::SpecBlock>,
     pub scope: Vec<String>,
-    /// Ephemeral execution context: the session's repository point and changed surface.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution: Option<false_agent_protocol::context::ExecutionContextEnvelope>,
-    /// Branch and HEAD captured when `run` entered the session. They stay fixed
-    /// so later packets can report drift instead of overwriting the baseline.
+    /// Branch and HEAD when `run` started the session. They stay fixed so a
+    /// later packet can report drift instead of overwriting the baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_head: Option<String>,
+}
+
+impl SessionBlock {
+    pub fn of(marker: &SessionMarker) -> Self {
+        Self {
+            id: marker.id.clone(),
+            intent: marker.intent.clone(),
+            scope: marker.scope.clone(),
+            entry_branch: marker.branch.clone(),
+            entry_head: marker.head.clone(),
+        }
+    }
 }
 
 /// Where the changed surface came from. Named honestly: the surface either
@@ -109,6 +91,46 @@ pub enum ChangedSurfaceSource {
     Unknown,
 }
 
+/// Whether Git is in the middle of an operation, read from the marker files
+/// in the git dir; no git process is started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GitOperation {
+    None,
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+    Bisect,
+    /// The git dir is not known, so neither is whether an operation runs.
+    Unverifiable {
+        reason: String,
+    },
+}
+
+impl GitOperation {
+    fn of(git: &GitState) -> Self {
+        let Some(git_dir) = git.git_dir.as_ref().map(|dir| git.repo_root.join(dir)) else {
+            return Self::Unverifiable {
+                reason: "git_dir_unavailable".to_string(),
+            };
+        };
+        if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+            Self::Rebase
+        } else if git_dir.join("MERGE_HEAD").exists() {
+            Self::Merge
+        } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
+            Self::CherryPick
+        } else if git_dir.join("REVERT_HEAD").exists() {
+            Self::Revert
+        } else if git_dir.join("BISECT_LOG").exists() {
+            Self::Bisect
+        } else {
+            Self::None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReadFirstEntry {
     #[serde(with = "crate::path_codec::one")]
@@ -120,59 +142,32 @@ impl ContextPacket {
     pub fn config_default_budget(&self) -> Option<usize> {
         self.default_budget
     }
-
-    pub fn attach_seal(&mut self, run: Option<String>) -> serde_json::Result<()> {
-        let provenance = self
-            .git
-            .head_oid
-            .iter()
-            .cloned()
-            .map(|oid| Provenance::Git { oid })
-            .collect();
-        let token = self.consistency.token.clone();
-        seal::attach(self, CONTEXT_SCHEMA, provenance, &token, run)
-    }
 }
 
-impl seal::Sealed for ContextPacket {
-    fn seal_mut(&mut self) -> &mut Option<Envelope> {
-        &mut self.seal
-    }
-}
-
-pub const IDENTITY_SCHEMA: &str = "toimija-identity.v1";
-
-/// What a repository says it is: the packet's `repo` object, from
-/// `.toimija/repo.yaml` alone, with no Git state collected. For a tool that
-/// asks only that (ohjaa's system view): `context --identity --json`.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct Identity {
-    pub schema: String,
-    pub repo: RepoInfo,
-}
-
-/// The identity of the repository at `repo_root`, exactly as the packet
-/// compiled there would carry it in `repo`: the same configuration, loaded the
-/// same way (a broken repo.yaml fails here as it fails the packet), and the
-/// same defaults when there is none.
-pub fn identity(repo_root: &Path) -> anyhow::Result<Identity> {
-    let config =
-        RepoConfig::load_optional(repo_root)?.unwrap_or_else(|| RepoConfig::default_for(repo_root));
-    Ok(Identity {
-        schema: IDENTITY_SCHEMA.to_string(),
-        repo: RepoInfo::from_config(&config, repo_root),
-    })
-}
-
-/// Discover the worktree at `cwd`, collect its Git state, and compile the
-/// packet from it.
-pub fn build_context_packet(
+/// Read the Git state of `worktree` once and work the packet out from it.
+/// The packet names no session; [`for_ambient_session`] or the caller adds one.
+pub fn work_out(
     runner: &impl CommandRunner,
-    cwd: &Path,
+    worktree: &git::Worktree,
     for_diff: bool,
 ) -> anyhow::Result<ContextPacket> {
-    let worktree = git::discover(runner, cwd)?;
-    compile_packet(&git::collect(runner, &worktree)?, for_diff)
+    let collected = git::collect(runner, worktree).context("failed to read the Git state")?;
+    compile_packet(&collected, for_diff).context("failed to work out the packet")
+}
+
+/// Under `toimija run`, the session this process runs in, as its marker in
+/// this repository says now: its intent, scope and entry branch and HEAD.
+/// `None` outside a session, and for a session whose process is gone.
+pub fn for_ambient_session(packet: &mut ContextPacket) {
+    let Some((_, dir)) = crate::session::ambient_session(&packet.git.repo_root) else {
+        return;
+    };
+    match crate::session::load_marker(&dir) {
+        Ok(marker) => packet.session = Some(SessionBlock::of(&marker)),
+        Err(error) => {
+            tracing::warn!(event = "toimija.session.marker_unreadable", error = %format!("{error:#}"))
+        }
+    }
 }
 
 /// Compile the packet from one collection of the Git state. The
@@ -182,16 +177,11 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
     let mut git = collected.state.clone();
     let mut warnings = collected.warnings.clone();
     normalize_git_state(&mut git);
-    let config = match RepoConfig::load_optional(&git.repo_root)? {
-        Some(config) => config,
-        None => {
-            warnings.push("Missing repo.yaml; run `toimija init`.".to_string());
-            RepoConfig::default_for(&git.repo_root)
-        }
-    };
+    let config = RepoConfig::load_optional(&git.repo_root)?
+        .unwrap_or_else(|| RepoConfig::default_for(&git.repo_root));
     let repo_kind = repo::detect_repo_kind(&git.repo_root);
     // What the last agent here left for the next: every packet
-    // built in this working copy carries it.
+    // worked out in this working copy carries it.
     let handover = crate::session::read_handover(&git.repo_root);
     let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
     let ignore_rules = effective_ignore_rules(&safe_to_ignore);
@@ -225,7 +215,6 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
             warnings.push(note.clone());
         }
     }
-    let refresh_token = refresh_token(&git);
     // Effective ignore set = the repo's configured rules plus a small built-in
     // set of build/vendor dirs. Applied live (derived each run), not seeded into
     // repo.yaml, so it tracks the repo as it changes and never drifts. The
@@ -254,16 +243,12 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         &mut warnings,
     );
     warnings = stable_strings(warnings);
-    // Fingerprint the Git state this packet is compiled from, before it moves
-    // into the packet, so a reader can verify the packet against the live repo.
-    let consistency = Consistency::fingerprint(&git);
+    let git_operation = GitOperation::of(&git);
     let packet = ContextPacket {
         schema: CONTEXT_SCHEMA.to_string(),
-        artifact_id: None,
         repo: RepoInfo::from_config(&config, &git.repo_root),
         repo_kind,
         secondary_languages: secondary_scan.languages,
-        refresh_token: Some(refresh_token),
         git,
         changed_surface,
         changed_surface_source,
@@ -271,15 +256,11 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         safe_to_ignore,
         validation_plan,
         warnings,
+        git_operation,
         for_diff,
         default_budget: Some(config.context.default_budget),
-        consistency,
-        // Session identity is injected by the per-session refresh writer
-        // (`refresh::refresh_session`), which knows the session directory;
-        // packet compilation itself is session-agnostic.
         session: None,
         handover,
-        seal: None,
     };
     debug!(
         event = "toimija.context.git_section.rendered",
@@ -292,34 +273,6 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         warnings = packet.warnings.len()
     );
     Ok(packet)
-}
-
-/// Version key over the packet-visible repository state, including the Git-ref
-/// surface (base, upstream, merge-base, branch files, recent commits) that the
-/// consistency token deliberately omits. Repository state only: anything read
-/// from the process environment (PATH, HOME, config files outside the repo) is
-/// banned from this input, or two honest observers of the same repo would
-/// compute different versions and staleness would never converge.
-pub(crate) fn refresh_token(git: &GitState) -> String {
-    let mut git = git.clone();
-    git.staged_files
-        .retain(|file| !crate::consistency::is_generated_output(&file.path));
-    git.unstaged_files
-        .retain(|file| !crate::consistency::is_generated_output(&file.path));
-    git.untracked_files
-        .retain(|path| !crate::consistency::is_generated_output(path));
-    git.conflicted_files
-        .retain(|path| !crate::consistency::is_generated_output(path));
-    git.conflict_entries
-        .retain(|entry| !crate::consistency::is_generated_output(&entry.path));
-    git.dirty = git::has_work(
-        &git.staged_files,
-        &git.unstaged_files,
-        &git.untracked_files,
-        &git.conflicted_files,
-    );
-    let state = serde_json::to_vec(&git).expect("refresh state serializes");
-    crate::consistency::hash_bytes(&state)
 }
 
 /// Decide how to describe the changed surface. A merge-base means we can speak
@@ -369,7 +322,7 @@ fn all_changed(git: &GitState) -> Vec<ChangedFile> {
 
 /// The changed files that are the repository's work: not under a configured
 /// or built-in exclusion, and not generated tool state (Toimija's own files,
-/// which Git lists in a repository without `toimija init`, and `.sykli/`), so neither the changed surface nor Read first sends an agent
+/// which Git lists where the repository does not ignore them, and `.sykli/`), so neither the changed surface nor Read first sends an agent
 /// to a packet or a receipt.
 fn filter_ignored(files: Vec<ChangedFile>, safe_to_ignore: &[PathBuf]) -> Vec<ChangedFile> {
     files
@@ -530,245 +483,6 @@ mod tests {
     use super::*;
     use crate::adapters::generic::GenericAdapter;
     use crate::git::{ChangeStatus, ChangedFile};
-
-    #[test]
-    fn refresh_token_covers_git_state_and_ignores_observer_environment() {
-        let mut git = GitState {
-            repo_root: PathBuf::from("/repo"),
-            git_dir: Some(PathBuf::from(".git")),
-            branch: Some("feature".to_string()),
-            head_oid: Some("abc".to_string()),
-            upstream: None,
-            ahead: None,
-            behind: None,
-            ahead_behind_ref: None,
-            base: None,
-            merge_base: None,
-            detached: false,
-            dirty: false,
-            staged_files: Vec::new(),
-            unstaged_files: Vec::new(),
-            untracked_files: Vec::new(),
-            conflicted_files: Vec::new(),
-            conflict_entries: Vec::new(),
-            branch_files: Vec::new(),
-            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
-            recent_commits: Vec::new(),
-        };
-        let original = refresh_token(&git);
-
-        // Ref movement is repository state: it must change the token.
-        git.base = Some("origin/main".to_string());
-        assert_ne!(refresh_token(&git), original);
-        git.base = None;
-
-        // The token is a pure function of repository state:
-        // nothing read from the observer's environment is an input to it, so
-        // the same repo always yields the same token.
-        assert_eq!(refresh_token(&git), original);
-    }
-
-    #[test]
-    fn context_packet_serializes_to_json() {
-        let git = GitState {
-            repo_root: PathBuf::from("/repo"),
-            git_dir: Some(PathBuf::from(".git")),
-            branch: Some("main".to_string()),
-            head_oid: Some("abc".to_string()),
-            upstream: None,
-            ahead: None,
-            behind: None,
-            ahead_behind_ref: None,
-            base: None,
-            merge_base: None,
-            detached: false,
-            dirty: false,
-            staged_files: Vec::new(),
-            unstaged_files: Vec::new(),
-            untracked_files: Vec::new(),
-            conflicted_files: Vec::new(),
-            conflict_entries: Vec::new(),
-            branch_files: Vec::new(),
-            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
-            recent_commits: Vec::new(),
-        };
-        let consistency = Consistency::fingerprint(&git);
-        let packet = ContextPacket {
-            schema: CONTEXT_SCHEMA.to_string(),
-            artifact_id: None,
-            repo: RepoInfo {
-                name: "repo".to_string(),
-                role: None,
-                not_roles: Vec::new(),
-                important_docs: vec![PathBuf::from("README.md")],
-                boundaries: Vec::new(),
-            },
-            repo_kind: RepoKind::Generic,
-            secondary_languages: Vec::new(),
-            refresh_token: None,
-            git,
-            changed_surface: Vec::new(),
-            changed_surface_source: ChangedSurfaceSource::Unknown,
-            read_first: Vec::new(),
-            safe_to_ignore: Vec::new(),
-            validation_plan: crate::validate::validation_plan(
-                Path::new("/repo"),
-                &RepoConfig::default(),
-                RepoKind::Generic,
-            ),
-            warnings: Vec::new(),
-            for_diff: false,
-            default_budget: Some(4000),
-            consistency,
-            session: None,
-            handover: None,
-            seal: None,
-        };
-        let json = serde_json::to_string(&packet).unwrap();
-        assert!(json.contains("\"repo\""));
-    }
-
-    #[test]
-    fn context_packet_defaults_missing_schema() {
-        let git = GitState {
-            repo_root: PathBuf::from("/repo"),
-            git_dir: Some(PathBuf::from(".git")),
-            branch: Some("main".to_string()),
-            head_oid: Some("abc".to_string()),
-            upstream: None,
-            ahead: None,
-            behind: None,
-            ahead_behind_ref: None,
-            base: None,
-            merge_base: None,
-            detached: false,
-            dirty: false,
-            staged_files: Vec::new(),
-            unstaged_files: Vec::new(),
-            untracked_files: Vec::new(),
-            conflicted_files: Vec::new(),
-            conflict_entries: Vec::new(),
-            branch_files: Vec::new(),
-            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
-            recent_commits: Vec::new(),
-        };
-        let packet = ContextPacket {
-            schema: CONTEXT_SCHEMA.to_string(),
-            artifact_id: None,
-            repo: RepoInfo {
-                name: "repo".to_string(),
-                role: None,
-                not_roles: Vec::new(),
-                important_docs: Vec::new(),
-                boundaries: Vec::new(),
-            },
-            repo_kind: RepoKind::Generic,
-            secondary_languages: Vec::new(),
-            refresh_token: None,
-            git: git.clone(),
-            changed_surface: Vec::new(),
-            changed_surface_source: ChangedSurfaceSource::Unknown,
-            read_first: Vec::new(),
-            safe_to_ignore: Vec::new(),
-            validation_plan: crate::validate::validation_plan(
-                Path::new("/repo"),
-                &RepoConfig::default(),
-                RepoKind::Generic,
-            ),
-            warnings: Vec::new(),
-            for_diff: false,
-            default_budget: Some(4000),
-            consistency: Consistency::fingerprint(&git),
-            session: None,
-            handover: None,
-            seal: None,
-        };
-        let mut value = serde_json::to_value(packet).unwrap();
-        value.as_object_mut().unwrap().remove("schema");
-        let decoded: ContextPacket = serde_json::from_value(value).unwrap();
-        assert_eq!(decoded.schema, CONTEXT_SCHEMA);
-    }
-
-    #[test]
-    fn packet_seal_digest_round_trips_without_self_reference() {
-        let git = GitState {
-            repo_root: PathBuf::from("/repo"),
-            git_dir: Some(PathBuf::from(".git")),
-            branch: Some("main".to_string()),
-            head_oid: Some("abc".to_string()),
-            upstream: None,
-            ahead: None,
-            behind: None,
-            ahead_behind_ref: None,
-            base: None,
-            merge_base: None,
-            detached: false,
-            dirty: false,
-            staged_files: Vec::new(),
-            unstaged_files: Vec::new(),
-            untracked_files: Vec::new(),
-            conflicted_files: Vec::new(),
-            conflict_entries: Vec::new(),
-            branch_files: Vec::new(),
-            branch_diff_coverage: crate::coverage::Coverage::unrecorded(),
-            recent_commits: Vec::new(),
-        };
-        let consistency = Consistency::fingerprint(&git);
-        let mut packet = ContextPacket {
-            schema: CONTEXT_SCHEMA.to_string(),
-            artifact_id: None,
-            repo: RepoInfo {
-                name: "repo".to_string(),
-                role: None,
-                not_roles: Vec::new(),
-                important_docs: Vec::new(),
-                boundaries: Vec::new(),
-            },
-            repo_kind: RepoKind::Generic,
-            secondary_languages: Vec::new(),
-            refresh_token: None,
-            git,
-            changed_surface: Vec::new(),
-            changed_surface_source: ChangedSurfaceSource::Unknown,
-            read_first: Vec::new(),
-            safe_to_ignore: Vec::new(),
-            validation_plan: crate::validate::validation_plan(
-                Path::new("/repo"),
-                &RepoConfig::default(),
-                RepoKind::Generic,
-            ),
-            warnings: Vec::new(),
-            for_diff: false,
-            default_budget: Some(4000),
-            consistency,
-            handover: None,
-            session: Some(SessionBlock {
-                id: "100-1".to_string(),
-                intent: None,
-                spec: None,
-                scope: Vec::new(),
-                execution: None,
-                entry_branch: None,
-                entry_head: None,
-            }),
-            seal: None,
-        };
-
-        packet.attach_seal(Some("100-1".to_string())).unwrap();
-        let envelope = packet.seal.as_ref().unwrap();
-        let digest = envelope.digest.clone();
-        let value = serde_json::to_value(&packet).unwrap();
-
-        assert_eq!(crate::seal::digest_of(&value), digest);
-        assert_eq!(envelope.schema, CONTEXT_SCHEMA);
-        assert_eq!(envelope.producer.run.as_deref(), Some("100-1"));
-        assert_eq!(
-            envelope.provenance,
-            vec![Provenance::Git {
-                oid: "abc".to_string()
-            }]
-        );
-    }
 
     #[test]
     fn read_first_lists_configured_docs_before_changed_files() {

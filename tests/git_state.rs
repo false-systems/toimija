@@ -22,76 +22,12 @@ fn init_unborn_repo(path: &Path) {
 }
 
 #[test]
-fn init_creates_config_without_overwrite() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_repo(temp.path());
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("init")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(".toimija/repo.yaml"))
-        // A fresh config prints next-steps guidance to fill identity fields.
-        .stdout(predicate::str::contains("Next steps:"));
-    let first = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("init")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Refused to overwrite"))
-        // Nothing was created, so there is no guidance the second time.
-        .stdout(predicate::str::contains("Next steps:").not());
-    let second = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
-    assert_eq!(first, second);
-
-    // Toimija owns `.toimija/`, not root agent policy. init must not create
-    // AGENTS.md or CLAUDE.md — it only says what they should carry.
-    assert!(!temp.path().join("AGENTS.md").exists());
-    assert!(!temp.path().join("CLAUDE.md").exists());
-}
-
-#[test]
-fn init_says_what_the_agent_docs_should_carry() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_repo(temp.path());
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("init")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("run `toimija enter` first"));
-}
-
-#[test]
 fn build_artifacts_are_filtered_live_without_config() {
     if !git_available() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
     init_repo(temp.path());
-    // Create the Toimija config via `toimija init`.
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("init")
-        .assert()
-        .success();
-    // A fresh config does not seed safe_to_ignore — build noise is filtered live.
-    let config = fs::read_to_string(temp.path().join(".toimija/repo.yaml")).unwrap();
-    assert!(
-        config.contains("safe_to_ignore: []"),
-        "fresh config should not seed safe_to_ignore; got:\n{config}"
-    );
     // Nested build output, no safe_to_ignore configured. The built-in artifact
     // filter is applied live, so a nested `target/` is kept out of the changed
     // surface regardless of repo kind.
@@ -106,7 +42,7 @@ fn build_artifacts_are_filtered_live_without_config() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
@@ -128,7 +64,7 @@ fn build_artifacts_are_filtered_live_without_config() {
 }
 
 #[test]
-fn validate_plan_does_not_run_commands() {
+fn the_validation_plan_is_printed_not_run() {
     if !git_available() {
         return;
     }
@@ -142,7 +78,7 @@ fn validate_plan_does_not_run_commands() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["validate", "--plan"])
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains("mix test"));
@@ -160,7 +96,7 @@ fn staged_file_appears_in_context() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains("staged: 1"))
@@ -184,7 +120,7 @@ fn committed_branch_change_appears_in_surface_with_clean_tree() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains("dirty: false"))
@@ -225,7 +161,7 @@ fn branch_surface_uses_trunk_not_feature_upstream() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains("upstream: origin/feature"))
@@ -264,7 +200,7 @@ fn context_reads_the_changed_file_then_its_companion_test_first() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -282,7 +218,7 @@ fn unborn_branch_reports_head_and_merge_base_unavailable() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains("HEAD: unavailable"))
@@ -313,7 +249,7 @@ fn detached_head_warns_and_renders() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains("detached: true"))
@@ -333,7 +269,7 @@ fn untracked_file_warns() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains("untracked: 1"))
@@ -357,7 +293,7 @@ fn changed_surface_falls_back_to_working_tree_without_a_base() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .stdout(predicate::str::contains("source: working tree and index"))
@@ -382,7 +318,7 @@ fn working_tree_dirt_at_base_is_not_labelled_branch_diff() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
@@ -422,7 +358,7 @@ fn adversarial_git_paths_round_trip_without_forging_markdown() {
     let json = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .output()
         .unwrap();
     assert!(json.status.success());
@@ -451,7 +387,7 @@ fn adversarial_git_paths_round_trip_without_forging_markdown() {
     let markdown = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .output()
         .unwrap();
     assert!(markdown.status.success());
@@ -484,7 +420,7 @@ fn staged_rename_keeps_old_and_new_paths_in_json() {
     let output = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -525,7 +461,7 @@ fn conflict_json_keeps_index_stages_for_a_spaced_path() {
     let output = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -545,18 +481,18 @@ fn context_json(path: &Path) -> serde_json::Value {
     let output = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(path)
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .output()
         .unwrap();
     assert!(output.status.success());
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-fn context_markdown(path: &Path) -> String {
+fn packet_markdown(path: &Path) -> String {
     let output = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(path)
-        .arg("context")
+        .arg("enter")
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -623,7 +559,7 @@ fn ahead_and_behind_are_counted_against_the_upstream_without_fetching() {
     let after_fetch = context_json(&work);
     assert_eq!(after_fetch["git"]["ahead"], 1);
     assert_eq!(after_fetch["git"]["behind"], 1);
-    let markdown = context_markdown(&work);
+    let markdown = packet_markdown(&work);
     assert!(
         markdown.contains("- ahead/behind: 1 ahead, 1 behind origin/main (upstream)"),
         "{markdown}"
@@ -653,7 +589,7 @@ fn without_an_upstream_ahead_and_behind_use_the_remote_default_branch() {
     assert_eq!(packet["git"]["ahead"], 2);
     assert_eq!(packet["git"]["behind"], 0);
     assert_eq!(packet["git"]["ahead_behind_ref"], "origin/main");
-    let markdown = context_markdown(temp.path());
+    let markdown = packet_markdown(temp.path());
     assert!(
         markdown.contains("- ahead/behind: 2 ahead, 0 behind origin/main (no upstream)"),
         "{markdown}"
@@ -671,7 +607,7 @@ fn ahead_and_behind_are_unknown_with_nothing_to_compare_against() {
     let packet = context_json(temp.path());
     assert!(packet["git"]["ahead"].is_null());
     assert!(packet["git"]["behind"].is_null());
-    let markdown = context_markdown(temp.path());
+    let markdown = packet_markdown(temp.path());
     assert!(
         markdown.contains("- ahead/behind: unknown — no upstream and no remote default branch"),
         "{markdown}"
@@ -718,7 +654,7 @@ fn a_shallow_repository_leaves_ahead_and_behind_unknown() {
     assert!(packet["git"]["ahead"].is_null(), "{}", packet["git"]);
     assert!(packet["git"]["behind"].is_null(), "{}", packet["git"]);
     assert_eq!(packet["git"]["ahead_behind_ref"], "origin/main");
-    let markdown = context_markdown(&shallow);
+    let markdown = packet_markdown(&shallow);
     assert!(
         markdown.contains("- ahead/behind: unknown — the repository is shallow"),
         "{markdown}"
@@ -765,7 +701,7 @@ fn a_remote_not_named_origin_is_the_base_and_counts_ahead_and_behind() {
         assert_eq!(packet["git"]["ahead"], 1, "{}", packet["git"]);
         assert_eq!(packet["git"]["behind"], 0, "{}", packet["git"]);
         assert_eq!(packet["git"]["ahead_behind_ref"], base.as_str());
-        let markdown = context_markdown(&repo);
+        let markdown = packet_markdown(&repo);
         assert!(
             markdown.contains(&format!(
                 "- ahead/behind: 1 ahead, 0 behind {base} (no upstream)"
@@ -773,56 +709,6 @@ fn a_remote_not_named_origin_is_the_base_and_counts_ahead_and_behind() {
             "{markdown}"
         );
     }
-}
-
-#[test]
-fn init_ignores_the_packet_so_the_first_refresh_leaves_the_tree_clean() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_repo(temp.path());
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("init")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(".toimija/.gitignore"));
-    // What init writes is committed with the repo; what refresh writes is not.
-    run_git(temp.path(), &["add", ".toimija"]);
-    run_git(temp.path(), &["commit", "-m", "adopt toimija"]);
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("refresh")
-        .assert()
-        .success();
-
-    let status = common::git_at(temp.path())
-        .args(["status", "--porcelain", "--untracked-files=all"])
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&status.stdout), "");
-    let packet: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(".toimija/current.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(packet["git"]["dirty"], false, "{}", packet["git"]);
-
-    // A second init keeps the file as it is.
-    let first = fs::read_to_string(temp.path().join(".toimija/.gitignore")).unwrap();
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .arg("init")
-        .assert()
-        .success();
-    assert_eq!(
-        fs::read_to_string(temp.path().join(".toimija/.gitignore")).unwrap(),
-        first
-    );
 }
 
 /// The repo owner's "read this first" (`context.read_first` and
@@ -866,7 +752,7 @@ fn read_first_keeps_the_configured_docs_first_on_a_wide_branch() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();

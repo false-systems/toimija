@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-/// Stable marker shared with footprint classification for orphaned atomic
-/// writes. The full suffix is `.tmp-<pid>-<sequence>`.
+/// The marker in the name of a file an atomic write stages. The full suffix
+/// is `.tmp-<pid>-<sequence>`.
 pub(crate) const TEMP_MARKER: &str = ".tmp-";
 
 /// Atomically replace `path` with `contents`. The bytes are written and synced
@@ -71,7 +71,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let staging = temp.path().join("staging");
         fs::create_dir(&staging).unwrap();
-        let path = temp.path().join("current.json");
+        let path = temp.path().join("handover.json");
         fs::write(&path, b"old complete json").unwrap();
 
         let error = replace_before_rename(&path, &staging, b"new complete json", |_| {
@@ -89,7 +89,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let staging = temp.path().join("staging");
         fs::create_dir(&staging).unwrap();
-        let path = temp.path().join("current.json");
+        let path = temp.path().join("handover.json");
 
         replace_before_rename(&path, &staging, b"{}", |temp_file| {
             assert_eq!(temp_file.parent(), Some(staging.as_path()));
@@ -99,7 +99,7 @@ mod tests {
                     .unwrap()
                     .to_str()
                     .unwrap()
-                    .starts_with("current.json.tmp-")
+                    .starts_with("handover.json.tmp-")
             );
             Ok(())
         })

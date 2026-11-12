@@ -33,8 +33,6 @@ pub struct LanguagePack {
     pub name: &'static str,
     /// Root-manifest evidence rendered in context packets.
     pub root_evidence: &'static str,
-    /// Repository-kind result rendered by `toimija doctor`.
-    pub doctor_message: &'static str,
     /// Any of these at the repo root claims the repo, checked in table order.
     pub manifests: &'static [&'static str],
     /// A root file with any of these extensions claims repos without a
@@ -65,7 +63,6 @@ pub const LANGUAGES: &[LanguagePack] = &[
         proof: ValidationProof::Manifest,
         name: "Rust",
         root_evidence: "Cargo.toml at root",
-        doctor_message: "Rust repo detected",
         manifests: &["Cargo.toml"],
         root_extensions: &[],
         fast: &["cargo test --workspace"],
@@ -83,7 +80,6 @@ pub const LANGUAGES: &[LanguagePack] = &[
         proof: ValidationProof::Manifest,
         name: "Elixir",
         root_evidence: "mix.exs at root",
-        doctor_message: "Elixir repo detected",
         manifests: &["mix.exs"],
         root_extensions: &[],
         fast: &["mix test"],
@@ -98,7 +94,6 @@ pub const LANGUAGES: &[LanguagePack] = &[
         proof: ValidationProof::Manifest,
         name: "Go",
         root_evidence: "go.mod at root",
-        doctor_message: "Go repo detected (minimum language pack)",
         manifests: &["go.mod"],
         root_extensions: &[],
         fast: &["go test ./..."],
@@ -113,7 +108,6 @@ pub const LANGUAGES: &[LanguagePack] = &[
         proof: ValidationProof::PythonTools,
         name: "Python",
         root_evidence: "pyproject.toml or setup.py at root",
-        doctor_message: "Python repo detected (minimum language pack)",
         manifests: &["pyproject.toml", "setup.py"],
         root_extensions: &[],
         fast: &["pytest"],
@@ -128,7 +122,6 @@ pub const LANGUAGES: &[LanguagePack] = &[
         proof: ValidationProof::NodeScripts,
         name: "JS/TS",
         root_evidence: "package.json at root",
-        doctor_message: "JS/TS repo detected (minimum language pack)",
         manifests: &["package.json"],
         root_extensions: &[],
         fast: &["npm test"],
@@ -143,7 +136,6 @@ pub const LANGUAGES: &[LanguagePack] = &[
         proof: ValidationProof::Manifest,
         name: "Terraform",
         root_evidence: ".tf file at root",
-        doctor_message: "Terraform repo detected (minimum language pack)",
         manifests: &[],
         root_extensions: &["tf"],
         fast: &[],

@@ -4,10 +4,15 @@
 //! Scope answers: what might they touch?  Overlap answers: should another agent
 //! be careful?
 //!
-//! This command only *reads* `.toimija/sessions/*/session.json`, checks
+//! Listing only *reads* `.toimija/sessions/*/session.json`, checks
 //! best-effort process liveness, and renders. It assigns nothing, signals
 //! nothing, kills nothing, and touches no network. Toimija coordinates
 //! visibility, not decisions; the human remains the orchestrator.
+//!
+//! A marker lives as long as its `run`, which removes it when its agent
+//! exits. A `run` killed before it could do so leaves a marker whose process
+//! is provably gone: that session is over, so it is not listed, and the next
+//! `run` beside it removes it ([`prune_ended`]).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,25 +25,22 @@ use tracing::{debug, info};
 
 use crate::command::{CommandOutput, CommandRunner};
 use crate::coverage::Coverage;
-use crate::session::{SESSIONS_SUBDIR, SessionMarker, SessionStatus};
+use crate::session::{SESSIONS_SUBDIR, SessionMarker};
 
-/// A session open longer than this with no live process is treated as stale.
-/// 90 minutes (decision: start simple; config can come later, not a project).
-pub const DEFAULT_STALE_AFTER_SECS: u64 = 90 * 60;
+/// A session whose `run` has not stamped its marker for this long is stale:
+/// its process is not provably gone, but it has not been seen. `run` stamps
+/// once a minute while its agent runs, so a stale session's `run` is stopped,
+/// or runs where this machine cannot see it.
+pub const STALE_AFTER_SECS: u64 = 90 * 60;
 
-/// Closed or stale sessions older than this are removed by `prune`. 7 days —
-/// long enough that recent history stays visible in listings, short enough that
-/// a busy repo does not accumulate session directories without bound.
-pub const DEFAULT_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
-
-/// What a `kill -0 <pid>` probe actually proved. Three-valued because a
+/// What a `kill -0` probe actually proved. Three-valued because a
 /// nonzero exit alone proves nothing: `kill -0` fails with EPERM when the
 /// process *exists* under another user, and the probe itself can fail to
 /// spawn. Only ESRCH ("no such process") proves death.
 ///
-/// The asymmetry is deliberate and one-directional: display may give
-/// `Unknown` the benefit of the doubt, but deletion (`prunable`) demands
-/// `Dead` specifically — "not provably alive" is never "provably dead".
+/// The asymmetry is deliberate and one-directional: a session is left out of
+/// the listing, and its marker removed, only on `Dead` — "not provably
+/// alive" is never "provably dead".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PidCheck {
@@ -54,17 +56,16 @@ pub enum PidCheck {
     Unknown,
 }
 
-/// Resolved liveness of a session, derived from its marker plus a best-effort
-/// process check — never stored, always recomputed when listing.
+/// Resolved liveness of a listed session, derived from its marker — never
+/// stored, always recomputed when listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Liveness {
-    /// Marker open and the pid appears alive.
+    /// Its `run` stamped the marker within [`STALE_AFTER_SECS`].
     Active,
-    /// Marker open but the pid is gone, or it has been open past the threshold.
+    /// Its process is not provably gone, but its `run` has not stamped the
+    /// marker for [`STALE_AFTER_SECS`].
     Stale,
-    /// Marker explicitly closed.
-    Closed,
 }
 
 /// Severity of an overlap warning. Deliberately only two levels, and both are
@@ -84,16 +85,16 @@ pub struct Warning {
     pub message: String,
 }
 
-/// A session as presented by `toimija sessions`: its marker, resolved liveness,
-/// and the path to its live packet.
+/// A session as presented by `toimija sessions`: its marker and resolved
+/// liveness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionView {
     #[serde(flatten)]
     pub marker: SessionMarker,
     pub liveness: Liveness,
-    /// The process probe, distinct from heartbeat age. Never persisted in the marker.
+    /// The process probe, distinct from heartbeat age. Never persisted in the
+    /// marker. A listed session is never `dead`.
     pub pid_check: PidCheck,
-    pub packet: String,
 }
 
 impl SessionView {
@@ -118,33 +119,30 @@ pub struct SessionsReport {
     pub coverage: Coverage,
 }
 
-/// Read every session marker under `.toimija/sessions/`, resolve liveness, and
-/// compute overlap warnings. Read-only; a single malformed marker is skipped
-/// (logged), not fatal — one bad file must not blind an agent to its siblings.
-pub fn report(
-    runner: &dyn CommandRunner,
-    repo_root: &Path,
-    stale_after_secs: u64,
-) -> Result<SessionsReport> {
+/// Read every session marker under `.toimija/sessions/`, leave out those
+/// whose process is provably gone, resolve liveness, and compute overlap
+/// warnings. Read-only; a single malformed marker is reported, not fatal —
+/// one bad file must not blind an agent to its siblings.
+pub fn report(runner: &dyn CommandRunner, root: &Path) -> Result<SessionsReport> {
     let now = now_secs();
     let mut sessions = Vec::new();
-    let scan = read_markers(repo_root)?;
+    let scan = read_markers(root)?;
     for (_dir, marker) in scan.markers {
-        let pid_check = check_marker(runner, repo_root, &marker);
-        let liveness = liveness(&marker, now, pid_check, stale_after_secs);
+        let pid_check = check_marker(runner, root, &marker);
         debug!(
             event = "toimija.session.liveness_checked",
             id = %marker.id,
             pid = marker.pid,
-            pid_check = ?pid_check,
-            liveness = ?liveness
+            pid_check = ?pid_check
         );
-        let packet = packet_path(repo_root, &marker.id);
+        if pid_check == PidCheck::Dead {
+            continue;
+        }
+        let liveness = liveness(&marker, now);
         sessions.push(SessionView {
             marker,
             liveness,
             pid_check,
-            packet,
         });
     }
     // Stable order: newest first by start time, then id.
@@ -181,17 +179,32 @@ pub fn report(
         warnings = warnings.len(),
         unreadable = scan.unreadable.len()
     );
-    if !warnings.is_empty() {
-        info!(
-            event = "toimija.sessions.overlap_detected",
-            count = warnings.len()
-        );
-    }
     Ok(SessionsReport {
         sessions,
         warnings,
         coverage,
     })
+}
+
+/// Remove the session directories under `root` whose marker's process is
+/// provably gone: sessions whose `run` was killed before it could remove its
+/// own marker. A marker that cannot be read, or whose probe gives no certain
+/// answer, is kept: removal demands proof. This process's own marker is never
+/// probed. Returns how many were removed.
+pub fn prune_ended(runner: &dyn CommandRunner, root: &Path) -> Result<usize> {
+    let mut removed = 0;
+    for (dir, marker) in read_markers(root)?.markers {
+        if marker.pid == std::process::id() {
+            continue;
+        }
+        if check_marker(runner, root, &marker) != PidCheck::Dead {
+            continue;
+        }
+        crate::owned::remove_dir(root, &dir)?;
+        removed += 1;
+        info!(event = "toimija.session.pruned", session = %marker.id, pid = marker.pid);
+    }
+    Ok(removed)
 }
 
 /// The coverage source label for the sibling-marker scan.
@@ -208,8 +221,8 @@ struct MarkerScan {
 
 /// Read and parse all `session.json` markers, each with the session directory
 /// it was found in. Missing directory → empty scan.
-fn read_markers(repo_root: &Path) -> Result<MarkerScan> {
-    let dir = repo_root.join(SESSIONS_SUBDIR);
+fn read_markers(root: &Path) -> Result<MarkerScan> {
+    let dir = root.join(SESSIONS_SUBDIR);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -265,186 +278,24 @@ fn read_markers(repo_root: &Path) -> Result<MarkerScan> {
     })
 }
 
-/// Resolve liveness from the marker, the pid probe's verdict, and the staleness
-/// threshold. Pure, so the staleness/active/closed transitions are unit-tested
-/// without touching the OS or the clock.
-///
-/// The window measures **inactivity**, not lifetime: a
-/// day-long session whose watcher keeps stamping `last_seen_at` stays active;
-/// one whose heartbeat froze goes stale within the window even if a recycled
-/// pid looks alive. A marker with no heartbeat falls back to
-/// `started_at`.
-///
-/// Only a *provably* dead pid downgrades an active marker: a sibling session
-/// under another user (EPERM → `Alive`) and a probe that gave no answer
-/// (`Unknown`) both leave the heartbeat as the deciding signal, so a
-/// transient spawn failure cannot mark every session stale at once.
-pub fn liveness(
-    marker: &SessionMarker,
-    now_secs: u64,
-    pid: PidCheck,
-    stale_after_secs: u64,
-) -> Liveness {
-    match marker.status {
-        SessionStatus::Closed => Liveness::Closed,
-        SessionStatus::Active => {
-            let last_seen = marker.last_seen_at.unwrap_or(marker.started_at);
-            let idle = now_secs.saturating_sub(last_seen);
-            if pid == PidCheck::Dead || idle > stale_after_secs {
-                Liveness::Stale
-            } else {
-                Liveness::Active
-            }
-        }
-    }
-}
-
-pub(crate) struct ReapCandidate {
-    pub dir: PathBuf,
-    pub marker: SessionMarker,
-    pub liveness: Liveness,
-}
-
-pub(crate) struct ReapPlan {
-    pub candidates: Vec<ReapCandidate>,
-    pub kept: usize,
-    /// Markers whose pid probe returned [`PidCheck::Unknown`]. A persistently
-    /// failing probe (no `kill` on PATH, a broken runner) silently blocks
-    /// stale pruning; the sweep surfaces this count so the stall is a visible
-    /// signal, not a quiet accumulation of session directories.
-    pub unknown_probes: usize,
-}
-
-/// Identify session directories the footprint sweep may safely reclaim.
-/// The sweep owns mutation; this module remains the single owner of liveness.
-pub(crate) fn reap_plan(
-    runner: &dyn CommandRunner,
-    repo_root: &Path,
-    stale_after_secs: u64,
-    retention_secs: u64,
-) -> Result<ReapPlan> {
-    let now = now_secs();
-    let mut candidates = Vec::new();
-    // Unreadable markers are never pruned: deletion demands the certain
-    // signal, and an unreadable marker gives none. They count as kept.
-    let scan = read_markers(repo_root)?;
-    let mut kept = scan.unreadable.len();
-    let mut unknown_probes = 0;
-    for (dir, marker) in scan.markers {
-        let pid_check = check_marker(runner, repo_root, &marker);
-        if pid_check == PidCheck::Unknown {
-            unknown_probes += 1;
-        }
-        let liveness = liveness(&marker, now, pid_check, stale_after_secs);
-        if prunable(liveness, &marker, pid_check, now, retention_secs) {
-            candidates.push(ReapCandidate {
-                dir,
-                marker,
-                liveness,
-            });
-        } else {
-            kept += 1;
-        }
-    }
-    candidates.sort_by(|a, b| a.marker.id.cmp(&b.marker.id));
-    Ok(ReapPlan {
-        candidates,
-        kept,
-        unknown_probes,
-    })
-}
-
-/// Whether a session directory may be removed. Pure, so the retention decision
-/// is unit-tested without a filesystem or clock. Age is measured from the most
-/// honest timestamp available: `closed_at` for a clean close, `started_at` for
-/// a stale marker that never closed.
-///
-/// Stale-by-TTL is a *display* judgment ("looks abandoned"); deletion demands
-/// the certain signal. A marker can be reported stale purely because it has
-/// been open past the TTL while its process — a long interactive session — is
-/// alive and mid-work; removing its directory would pull the live packet out
-/// from under a running watcher. So a stale marker is prunable only when its
-/// pid is *provably* gone (`PidCheck::Dead`): an EPERM answer means a live
-/// session under another user, and an `Unknown` probe proves nothing — both
-/// keep the directory. A pid recycled by another process reads `Dead` when the
-/// marker recorded its own process start (`check_marker`); without that record
-/// the caveat holds in the safe direction: the recycled pid reads `Alive`, the
-/// session is kept, and retention resumes only once that pid exits.
-/// `Closed` is an explicit end-of-life record and ages out regardless of the
-/// pid verdict, which by then may point at a recycled pid.
-pub fn prunable(
-    liveness: Liveness,
-    marker: &SessionMarker,
-    pid: PidCheck,
-    now_secs: u64,
-    retention_secs: u64,
-) -> bool {
-    let reference = match liveness {
-        Liveness::Active => return false,
-        Liveness::Closed => marker.closed_at.unwrap_or(marker.started_at),
-        Liveness::Stale if pid != PidCheck::Dead => return false,
-        // Retention counts from when the session was last seen alive, not
-        // from its birth.
-        Liveness::Stale => marker.last_seen_at.unwrap_or(marker.started_at),
-    };
-    now_secs.saturating_sub(reference) > retention_secs
-}
-
-/// Whether the session a packet names is still running, as `verify` asks it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NamedSession {
-    /// The marker is open and its process is not provably gone.
-    Live,
-    /// The marker was closed: the session ended normally.
-    Closed,
-    /// The marker is still open but its process is provably gone: the session
-    /// was killed before it could close.
-    Ended,
-    /// No readable marker for that id in this repository.
-    Unknown,
-}
-
-impl NamedSession {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Live => "live",
-            Self::Closed => "closed",
-            Self::Ended => "ended",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-/// Resolve the session `id` that a packet names. Unlike [`liveness`], an idle
-/// marker is not judged here: an agent that has not touched a file for a while
-/// is still the session it was, and its packet still briefs it. Only a closed
-/// marker, a provably dead process, or no marker at all ends it.
-pub fn named_session(runner: &dyn CommandRunner, repo_root: &Path, id: &str) -> NamedSession {
-    if !crate::session::is_valid_session_id(id) {
-        return NamedSession::Unknown;
-    }
-    let dir = repo_root.join(SESSIONS_SUBDIR).join(id);
-    let Ok(marker) = crate::session::load_marker(&dir) else {
-        return NamedSession::Unknown;
-    };
-    if marker.id != id {
-        return NamedSession::Unknown;
-    }
-    match marker.status {
-        SessionStatus::Closed => NamedSession::Closed,
-        SessionStatus::Active if check_marker(runner, repo_root, &marker) == PidCheck::Dead => {
-            NamedSession::Ended
-        }
-        SessionStatus::Active => NamedSession::Live,
+/// Resolve the liveness of a session whose process is not provably gone,
+/// from when its `run` last stamped the marker. Pure, so the transition is
+/// unit-tested without touching the OS or the clock. A marker with no stamp
+/// falls back to `started_at`.
+pub fn liveness(marker: &SessionMarker, now_secs: u64) -> Liveness {
+    let last_seen = marker.last_seen_at.unwrap_or(marker.started_at);
+    if now_secs.saturating_sub(last_seen) > STALE_AFTER_SECS {
+        Liveness::Stale
+    } else {
+        Liveness::Active
     }
 }
 
 /// Whether the session marker's process is provably gone: a `run` killed
-/// before it could close its marker. This process's own marker is never
+/// before it could remove its marker. This process's own marker is never
 /// probed. Only `Dead` counts; an unanswered probe proves nothing.
 pub fn process_gone(cwd: &Path, marker: &SessionMarker) -> bool {
-    marker.status == SessionStatus::Active
-        && marker.pid != std::process::id()
+    marker.pid != std::process::id()
         && check_marker(&crate::command::ProcessCommandRunner, cwd, marker) == PidCheck::Dead
 }
 
@@ -591,17 +442,6 @@ fn classify_kill_probe(result: std::io::Result<CommandOutput>) -> PidCheck {
     }
 }
 
-/// Path to a session's live packet, as a display string for the listing.
-fn packet_path(repo_root: &Path, id: &str) -> String {
-    PathBuf::from(SESSIONS_SUBDIR)
-        .join(id)
-        .join("current.md")
-        .display()
-        .to_string()
-        // Render relative to the repo, matching how Toimija paths read elsewhere.
-        .replace(&format!("{}/", repo_root.display()), "")
-}
-
 /// Advisory overlap detection across the session set.
 ///
 /// Every warning here is **descriptive** — it reports a situation ("two live
@@ -699,7 +539,8 @@ fn overlap_warnings(sessions: &[SessionView]) -> Vec<Warning> {
         }
     }
 
-    // Sessions still marked open whose process is gone (or open past the window).
+    // Sessions whose process is not provably gone, but whose `run` has not
+    // stamped the marker within the window.
     for view in sessions
         .iter()
         .filter(|view| view.liveness == Liveness::Stale)
@@ -707,7 +548,7 @@ fn overlap_warnings(sessions: &[SessionView]) -> Vec<Warning> {
         warnings.push(Warning {
             severity: Severity::Warning,
             message: format!(
-                "{} is marked open but looks stale (its process is gone or it has shown no activity past the staleness window)",
+                "{} is open but has not been seen for 90 minutes (its `toimija run` is stopped, or runs where this machine cannot see it)",
                 session_label(view)
             ),
         });
@@ -778,19 +619,15 @@ fn join_labels(group: &[&SessionView]) -> String {
 }
 
 /// Render the report as the default human-readable listing: live sessions
-/// first, then stale, then closed, then a `WARNINGS` block. Empty repo → a
-/// single honest line so the agent knows it was answered, not skipped.
+/// first, then stale, then a `WARNINGS` block. No session → a single honest
+/// line so the agent knows it was answered, not skipped.
 pub fn render_text(report: &SessionsReport) -> String {
+    let mut out = String::new();
     if report.sessions.is_empty() {
-        return "No sessions recorded under .toimija/sessions/.\n".to_string();
+        out.push_str("No open sessions under .toimija/sessions/.\n");
     }
     let now = now_secs();
-    let mut out = String::new();
-    for (heading, want) in [
-        ("LIVE", Liveness::Active),
-        ("STALE", Liveness::Stale),
-        ("CLOSED", Liveness::Closed),
-    ] {
+    for (heading, want) in [("LIVE", Liveness::Active), ("STALE", Liveness::Stale)] {
         let group: Vec<&SessionView> = report
             .sessions
             .iter()
@@ -813,9 +650,6 @@ pub fn render_text(report: &SessionsReport) -> String {
                 "    intent: {}\n",
                 m.intent.as_deref().unwrap_or("unknown")
             ));
-            if let Some(spec) = &m.spec {
-                out.push_str(&format!("    spec: {spec}\n"));
-            }
             let scope = if m.scope.is_empty() {
                 "unknown".to_string()
             } else {
@@ -832,7 +666,6 @@ pub fn render_text(report: &SessionsReport) -> String {
                     humanize_age(now.saturating_sub(last_seen))
                 ));
             }
-            out.push_str(&format!("    packet: {}\n", view.packet));
         }
         out.push('\n');
     }
@@ -868,7 +701,7 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
 
-    fn marker(id: &str, status: SessionStatus, started_at: u64) -> SessionMarker {
+    fn marker(id: &str, started_at: u64) -> SessionMarker {
         SessionMarker {
             id: id.to_string(),
             pid: 4242,
@@ -878,17 +711,42 @@ mod tests {
             branch: Some("feat/x".to_string()),
             head: None,
             intent: None,
-            spec: None,
             scope: Vec::new(),
             started_at,
             last_seen_at: None,
-            status,
-            closed_at: None,
-            exit_status: None,
-
             undelivered: Vec::new(),
-            packet: None,
         }
+    }
+
+    /// Answers every `kill -0` with one exit status and stderr.
+    struct ProbeRunner(i32, &'static str);
+
+    impl CommandRunner for ProbeRunner {
+        fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<CommandOutput> {
+            assert_eq!(program, "kill");
+            assert_eq!(args, ["-0", "4242"]);
+            probe(self.0, self.1)
+        }
+        fn run_with_env(
+            &self,
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            _env: &[(&str, &std::ffi::OsStr)],
+        ) -> std::io::Result<CommandOutput> {
+            self.run(cwd, program, args)
+        }
+    }
+
+    fn write_marker(root: &Path, marker: &SessionMarker) -> PathBuf {
+        let dir = root.join(SESSIONS_SUBDIR).join(&marker.id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("session.json"),
+            serde_json::to_string(marker).unwrap(),
+        )
+        .unwrap();
+        dir
     }
 
     #[test]
@@ -899,7 +757,7 @@ mod tests {
         fs::create_dir_all(&good).unwrap();
         fs::write(
             good.join("session.json"),
-            serde_json::to_string(&marker("100-1", SessionStatus::Closed, 100)).unwrap(),
+            serde_json::to_string(&marker("100-1", 100)).unwrap(),
         )
         .unwrap();
         let bad = sessions_dir.join("100-2");
@@ -927,52 +785,74 @@ mod tests {
     }
 
     #[test]
-    fn report_preserves_process_evidence_without_rewriting_the_marker() {
-        struct ProbeRunner(i32, &'static str);
-        impl CommandRunner for ProbeRunner {
-            fn run(
-                &self,
-                _cwd: &Path,
-                program: &str,
-                args: &[&str],
-            ) -> std::io::Result<CommandOutput> {
-                assert_eq!(program, "kill");
-                assert_eq!(args, ["-0", "4242"]);
-                probe(self.0, self.1)
-            }
-            fn run_with_env(
-                &self,
-                cwd: &Path,
-                program: &str,
-                args: &[&str],
-                _env: &[(&str, &std::ffi::OsStr)],
-            ) -> std::io::Result<CommandOutput> {
-                self.run(cwd, program, args)
-            }
-        }
+    fn report_keeps_process_evidence_and_leaves_out_only_a_provably_ended_session() {
         let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join(SESSIONS_SUBDIR).join("100-1");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("session.json");
-        let raw = serde_json::to_string(&marker("100-1", SessionStatus::Active, 100)).unwrap();
-        fs::write(&path, &raw).unwrap();
+        let mut seen = marker("100-1", 100);
+        seen.last_seen_at = Some(now_secs());
+        let dir = write_marker(temp.path(), &seen);
+        let raw = fs::read_to_string(dir.join("session.json")).unwrap();
         for (status, stderr, expected) in [
-            (0, "", "alive"),
-            (1, "kill: No such process", "dead"),
-            (1, "kill: Operation not permitted", "alive"),
-            (1, "unexpected failure", "unknown"),
+            (0, "", Some("alive")),
+            (1, "kill: No such process", None),
+            (1, "kill: Operation not permitted", Some("alive")),
+            (1, "unexpected failure", Some("unknown")),
         ] {
-            let report = report(
-                &ProbeRunner(status, stderr),
-                temp.path(),
-                DEFAULT_STALE_AFTER_SECS,
-            )
-            .unwrap();
-            let json = serde_json::to_value(report).unwrap();
-            assert_eq!(json["sessions"][0]["liveness"], "stale");
-            assert_eq!(json["sessions"][0]["pid_check"], expected);
-            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+            let report = report(&ProbeRunner(status, stderr), temp.path()).unwrap();
+            let json = serde_json::to_value(&report).unwrap();
+            match expected {
+                Some(pid_check) => {
+                    assert_eq!(json["sessions"][0]["liveness"], "active", "{json}");
+                    assert_eq!(json["sessions"][0]["pid_check"], pid_check, "{json}");
+                }
+                // Its process is gone: the session is over, so it is not listed.
+                None => assert!(report.sessions.is_empty(), "{json}"),
+            }
+            // Listing never rewrites or removes a marker.
+            assert_eq!(fs::read_to_string(dir.join("session.json")).unwrap(), raw);
         }
+    }
+
+    #[test]
+    fn prune_removes_only_markers_whose_process_is_provably_gone() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = write_marker(temp.path(), &marker("100-1", 100));
+        // A directory with no marker, and an unreadable one, are not sessions
+        // this can prove ended: they stay.
+        let empty = temp.path().join(SESSIONS_SUBDIR).join("100-2");
+        fs::create_dir_all(&empty).unwrap();
+        let broken = temp.path().join(SESSIONS_SUBDIR).join("100-3");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("session.json"), "{not json").unwrap();
+
+        for (status, stderr) in [
+            (0, ""),
+            (1, "kill: Operation not permitted"),
+            (1, "unexpected failure"),
+        ] {
+            assert_eq!(
+                prune_ended(&ProbeRunner(status, stderr), temp.path()).unwrap(),
+                0
+            );
+            assert!(dir.exists(), "{stderr:?} proves nothing");
+        }
+        assert_eq!(
+            prune_ended(&ProbeRunner(1, "kill: No such process"), temp.path()).unwrap(),
+            1
+        );
+        assert!(!dir.exists());
+        assert!(empty.exists() && broken.exists());
+    }
+
+    #[test]
+    fn a_session_seen_within_the_window_is_active_and_after_it_stale() {
+        let mut m = marker("a", 1_000);
+        // No stamp: the start counts.
+        assert_eq!(liveness(&m, 1_000 + STALE_AFTER_SECS), Liveness::Active);
+        assert_eq!(liveness(&m, 1_000 + STALE_AFTER_SECS + 1), Liveness::Stale);
+        // A session open for days whose `run` keeps stamping stays active.
+        let now = 1_000 + 30 * STALE_AFTER_SECS;
+        m.last_seen_at = Some(now - 60);
+        assert_eq!(liveness(&m, now), Liveness::Active);
     }
 
     #[test]
@@ -1127,101 +1007,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn closed_marker_is_always_closed() {
-        let m = marker("a", SessionStatus::Closed, 0);
-        assert_eq!(
-            liveness(&m, 1_000, PidCheck::Alive, DEFAULT_STALE_AFTER_SECS),
-            Liveness::Closed
-        );
-    }
-
-    #[test]
-    fn open_marker_with_live_pid_is_active() {
-        let m = marker("a", SessionStatus::Active, 1_000);
-        assert_eq!(
-            liveness(&m, 1_100, PidCheck::Alive, DEFAULT_STALE_AFTER_SECS),
-            Liveness::Active
-        );
-    }
-
-    #[test]
-    fn open_marker_with_dead_pid_is_stale() {
-        let m = marker("a", SessionStatus::Active, 1_000);
-        assert_eq!(
-            liveness(&m, 1_100, PidCheck::Dead, DEFAULT_STALE_AFTER_SECS),
-            Liveness::Stale
-        );
-    }
-
-    #[test]
-    fn open_marker_past_threshold_is_stale_even_if_pid_alive() {
-        // No heartbeat recorded: inactivity falls back to started_at.
-        let m = marker("a", SessionStatus::Active, 1_000);
-        // now is well past started_at + threshold.
-        assert_eq!(
-            liveness(
-                &m,
-                1_000 + DEFAULT_STALE_AFTER_SECS + 1,
-                PidCheck::Alive,
-                DEFAULT_STALE_AFTER_SECS
-            ),
-            Liveness::Stale
-        );
-    }
-
-    #[test]
-    fn long_session_with_a_recent_heartbeat_stays_active() {
-        // A session open for days whose
-        // watcher keeps stamping last_seen_at is LIVE, not stale.
-        let mut m = marker("a", SessionStatus::Active, 1_000);
-        let now = 1_000 + 30 * DEFAULT_STALE_AFTER_SECS;
-        m.last_seen_at = Some(now - 60);
-        assert_eq!(
-            liveness(&m, now, PidCheck::Alive, DEFAULT_STALE_AFTER_SECS),
-            Liveness::Active
-        );
-    }
-
-    #[test]
-    fn frozen_heartbeat_goes_stale_even_with_a_live_pid() {
-        // A recycled pid can look alive; a frozen heartbeat tells the truth.
-        let mut m = marker("a", SessionStatus::Active, 1_000);
-        m.last_seen_at = Some(2_000);
-        assert_eq!(
-            liveness(
-                &m,
-                2_000 + DEFAULT_STALE_AFTER_SECS + 1,
-                PidCheck::Alive,
-                DEFAULT_STALE_AFTER_SECS
-            ),
-            Liveness::Stale
-        );
-    }
-
-    #[test]
-    fn stale_retention_ages_from_the_last_heartbeat_when_present() {
-        let mut m = marker("a", SessionStatus::Active, 1_000);
-        let last_seen = 1_000 + 5_000;
-        m.last_seen_at = Some(last_seen);
-        let retention = DEFAULT_RETENTION_SECS;
-        // Past retention from started_at but not from last_seen_at → kept.
-        assert!(!prunable(
-            Liveness::Stale,
-            &m,
-            PidCheck::Dead,
-            last_seen + retention,
-            retention
-        ));
-        assert!(prunable(
-            Liveness::Stale,
-            &m,
-            PidCheck::Dead,
-            last_seen + retention + 1,
-            retention
-        ));
-    }
-
     fn view(
         id: &str,
         agent: &str,
@@ -1240,22 +1025,13 @@ mod tests {
                 branch: Some(branch.to_string()),
                 head: None,
                 intent: intent.map(str::to_string),
-                spec: None,
                 scope: scope.iter().map(|s| s.to_string()).collect(),
                 started_at: 0,
                 last_seen_at: None,
-                status: match liveness {
-                    Liveness::Closed => SessionStatus::Closed,
-                    _ => SessionStatus::Active,
-                },
-                closed_at: None,
-                exit_status: None,
                 undelivered: Vec::new(),
-                packet: None,
             },
             liveness,
             pid_check: PidCheck::Unknown,
-            packet: format!(".toimija/sessions/{id}/current.md"),
         }
     }
 
@@ -1395,136 +1171,6 @@ mod tests {
     }
 
     #[test]
-    fn active_sessions_are_never_prunable() {
-        let m = marker("a", SessionStatus::Active, 0);
-        // Even at an absurd age, Active means hands off.
-        assert!(!prunable(
-            Liveness::Active,
-            &m,
-            PidCheck::Alive,
-            u64::MAX,
-            0
-        ));
-    }
-
-    #[test]
-    fn stale_by_ttl_with_a_live_pid_is_never_prunable() {
-        // The long-interactive-session case: open past the TTL (reported
-        // stale) but the process is alive and mid-work. Deleting its directory
-        // would pull the live packet out from under a running watcher — never,
-        // at any age.
-        let m = marker("a", SessionStatus::Active, 1_000);
-        assert!(!prunable(Liveness::Stale, &m, PidCheck::Alive, u64::MAX, 0));
-    }
-
-    #[test]
-    fn stale_session_with_an_unknown_pid_is_never_prunable() {
-        // A probe that failed to spawn (or answered unintelligibly) proves
-        // nothing; `remove_dir_all` demands proof. Even at an absurd age.
-        let m = marker("a", SessionStatus::Active, 1_000);
-        assert!(!prunable(
-            Liveness::Stale,
-            &m,
-            PidCheck::Unknown,
-            u64::MAX,
-            0
-        ));
-    }
-
-    #[test]
-    fn unknown_probe_leaves_the_heartbeat_deciding() {
-        // A transient spawn failure must not mark every session stale at
-        // once: with a fresh heartbeat the session stays active...
-        let mut m = marker("a", SessionStatus::Active, 1_000);
-        let now = 10_000;
-        m.last_seen_at = Some(now - 60);
-        assert_eq!(
-            liveness(&m, now, PidCheck::Unknown, DEFAULT_STALE_AFTER_SECS),
-            Liveness::Active
-        );
-        // ...while a frozen heartbeat still goes stale on its own.
-        m.last_seen_at = Some(1_000);
-        assert_eq!(
-            liveness(
-                &m,
-                1_000 + DEFAULT_STALE_AFTER_SECS + 1,
-                PidCheck::Unknown,
-                DEFAULT_STALE_AFTER_SECS
-            ),
-            Liveness::Stale
-        );
-    }
-
-    #[test]
-    fn closed_session_is_prunable_only_past_retention() {
-        let mut m = marker("a", SessionStatus::Closed, 1_000);
-        m.closed_at = Some(2_000);
-        let retention = DEFAULT_RETENTION_SECS;
-        assert!(!prunable(
-            Liveness::Closed,
-            &m,
-            PidCheck::Dead,
-            2_000 + retention,
-            retention
-        ));
-        assert!(prunable(
-            Liveness::Closed,
-            &m,
-            PidCheck::Dead,
-            2_000 + retention + 1,
-            retention
-        ));
-    }
-
-    #[test]
-    fn closed_session_ages_out_even_if_its_pid_was_recycled() {
-        // Closed is an explicit end-of-life record; a recycled pid that
-        // happens to be alive must not keep the directory forever.
-        let mut m = marker("a", SessionStatus::Closed, 1_000);
-        m.closed_at = Some(2_000);
-        assert!(prunable(
-            Liveness::Closed,
-            &m,
-            PidCheck::Alive,
-            2_000 + DEFAULT_RETENTION_SECS + 1,
-            DEFAULT_RETENTION_SECS
-        ));
-    }
-
-    #[test]
-    fn closed_session_without_closed_at_ages_from_start() {
-        // Old markers predate `closed_at`; fall back to started_at.
-        let m = marker("a", SessionStatus::Closed, 1_000);
-        assert!(prunable(
-            Liveness::Closed,
-            &m,
-            PidCheck::Dead,
-            1_000 + DEFAULT_RETENTION_SECS + 1,
-            DEFAULT_RETENTION_SECS
-        ));
-    }
-
-    #[test]
-    fn stale_session_with_a_dead_pid_ages_from_start() {
-        let m = marker("a", SessionStatus::Active, 1_000);
-        let retention = DEFAULT_RETENTION_SECS;
-        assert!(!prunable(
-            Liveness::Stale,
-            &m,
-            PidCheck::Dead,
-            1_000 + retention,
-            retention
-        ));
-        assert!(prunable(
-            Liveness::Stale,
-            &m,
-            PidCheck::Dead,
-            1_000 + retention + 1,
-            retention
-        ));
-    }
-
-    #[test]
     fn stale_but_open_session_is_flagged() {
         let views = [view(
             "1-1",
@@ -1535,6 +1181,6 @@ mod tests {
             &[],
         )];
         let warnings = overlap_warnings(&views);
-        assert!(has_message(&warnings, "marked open but looks stale"));
+        assert!(has_message(&warnings, "has not been seen for 90 minutes"));
     }
 }

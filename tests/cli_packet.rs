@@ -20,7 +20,7 @@ fn init_git_repo(path: &Path) {
 }
 
 #[test]
-fn context_markdown_reports_dirty_repo() {
+fn the_packet_reports_a_dirty_repo() {
     if !git_available() {
         return;
     }
@@ -43,7 +43,7 @@ fn context_markdown_reports_dirty_repo() {
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--for-diff", "--budget", "4000"])
+        .args(["enter", "--for-diff", "--budget", "4000"])
         .assert()
         .success()
         .stdout(predicate::str::contains("# Toimija Context"))
@@ -58,7 +58,7 @@ fn context_markdown_reports_dirty_repo() {
 }
 
 #[test]
-fn context_json_is_valid() {
+fn the_json_packet_names_its_schema_and_repo() {
     if !git_available() {
         return;
     }
@@ -69,7 +69,7 @@ fn context_json_is_valid() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
@@ -78,14 +78,15 @@ fn context_json_is_valid() {
         value["repo"]["name"].as_str(),
         Some(temp.path().file_name().unwrap().to_string_lossy().as_ref())
     );
-    assert_eq!(value["schema"], "toimija-context.v3");
-    assert_eq!(value["seal"]["schema"], "toimija-context.v3");
-    let mut packet: toimija::context::ContextPacket = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(toimija::seal::verify(&mut packet).unwrap(), None);
+    assert_eq!(value["schema"], "toimija-context.v4");
+    // Worked out when asked for: nothing to verify it against later.
+    for gone in ["seal", "consistency", "refresh_token", "artifact_id"] {
+        assert!(value.get(gone).is_none(), "{gone}: {value:#}");
+    }
 }
 
 #[test]
-fn context_json_applies_configured_read_first_and_ignore_rules() {
+fn the_json_packet_applies_configured_read_first_and_ignore_rules() {
     if !git_available() {
         return;
     }
@@ -109,7 +110,7 @@ fn context_json_applies_configured_read_first_and_ignore_rules() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
@@ -127,7 +128,7 @@ fn context_json_applies_configured_read_first_and_ignore_rules() {
 }
 
 #[test]
-fn context_json_has_stable_ordering_in_real_repo() {
+fn the_json_packet_has_stable_ordering_in_real_repo() {
     if !git_available() {
         return;
     }
@@ -165,7 +166,7 @@ fn context_json_has_stable_ordering_in_real_repo() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
@@ -223,7 +224,7 @@ fn context_json_has_stable_ordering_in_real_repo() {
 }
 
 #[test]
-fn context_budget_truncates_markdown_output() {
+fn the_budget_truncates_markdown_output() {
     if !git_available() {
         return;
     }
@@ -246,7 +247,7 @@ fn context_budget_truncates_markdown_output() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--budget", "240"])
+        .args(["enter", "--budget", "240"])
         .assert()
         .success()
         .stdout(predicate::str::contains("# Toimija Context"))
@@ -259,12 +260,12 @@ fn context_budget_truncates_markdown_output() {
 }
 
 #[test]
-fn context_outside_git_repo_fails_clearly() {
+fn enter_outside_git_repo_fails_clearly() {
     let temp = tempfile::tempdir().unwrap();
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .failure()
         .stderr(predicate::str::contains("not a Git repository"));
@@ -294,10 +295,10 @@ fn read_first_paths(value: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// Ohjaa learns what each repo is from `toimija context --json`, and reads
-/// exactly `repo.name`, `repo.role` and `repo.not_roles` from it.
+/// The packet says what the repository is: `repo.name`, `repo.role` and
+/// `repo.not_roles`, from `.toimija/repo.yaml`.
 #[test]
-fn context_json_carries_the_repo_identity_ohjaa_reads() {
+fn the_json_packet_carries_the_repo_identity() {
     if !git_available() {
         return;
     }
@@ -313,7 +314,7 @@ fn context_json_carries_the_repo_identity_ohjaa_reads() {
     let assert = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["context", "--json"])
+        .args(["enter", "--json"])
         .assert()
         .success();
     let value: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
@@ -325,9 +326,8 @@ fn context_json_carries_the_repo_identity_ohjaa_reads() {
     );
 }
 
-/// In a repository without `toimija init`, nothing keeps Git away from
-/// Toimija's own files, so `git status` lists every packet, marker and
-/// history line under `.toimija/`. They are Toimija's, not the repository's
+/// In a repository that does not ignore them, `git status` lists Toimija's
+/// own files under `.toimija/`, such as the handover. They are Toimija's, not the repository's
 /// work: the packet still lists them as Git reported them, but they are not
 /// in the changed surface or Read first, raise no warning, and leave the
 /// state clean. `.toimija/repo.yaml` is the repository's own.
@@ -338,18 +338,18 @@ fn toimijas_own_files_are_not_the_repositorys_work() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_git_repo(temp.path());
-    // No `.toimija/.gitignore`: a run leaves its files visible to Git.
+    // Nothing ignores `.toimija/`: the handover is visible to Git.
     Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .args(["run", "--intent", "leave files", "--", "true"])
+        .args(["handover", "--next", "leave files"])
         .assert()
         .success();
     let context = || -> serde_json::Value {
         let output = Command::cargo_bin("toimija")
             .unwrap()
             .current_dir(temp.path())
-            .args(["context", "--json"])
+            .args(["enter", "--json"])
             .assert()
             .success()
             .get_output()
@@ -361,7 +361,9 @@ fn toimijas_own_files_are_not_the_repositorys_work() {
     let value = context();
     let untracked = strings_at(&value, "/git/untracked_files");
     assert!(
-        untracked.iter().any(|path| path == ".toimija/current.json"),
+        untracked
+            .iter()
+            .any(|path| path == ".toimija/handover.json"),
         "Git lists Toimija's own files here: {untracked:?}"
     );
     assert_eq!(value["git"]["dirty"], false, "{untracked:?}");
@@ -385,7 +387,7 @@ fn toimijas_own_files_are_not_the_repositorys_work() {
     let markdown = Command::cargo_bin("toimija")
         .unwrap()
         .current_dir(temp.path())
-        .arg("context")
+        .arg("enter")
         .assert()
         .success()
         .get_output()
@@ -395,7 +397,7 @@ fn toimijas_own_files_are_not_the_repositorys_work() {
     assert!(markdown.contains("- dirty: false\n"), "{markdown}");
     assert!(markdown.contains("- untracked: 0 (+"), "{markdown}");
     assert!(
-        !markdown.contains("- .toimija/current.json\n"),
+        !markdown.contains("- .toimija/handover.json\n"),
         "{markdown}"
     );
 

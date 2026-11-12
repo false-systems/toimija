@@ -40,8 +40,60 @@ fn sessions_json(repo: &Path) -> serde_json::Value {
     serde_json::from_str(&stdout).expect("sessions --json must emit valid JSON")
 }
 
+/// A marker for this test process: alive, and seen `idle` seconds ago.
+fn live_marker(id: &str, intent: &str, idle: u64) -> String {
+    let now = now_secs();
+    serde_json::json!({
+        "id": id,
+        "pid": std::process::id(),
+        "agent": ["codex"],
+        "worktree": "/repo",
+        "branch": "feat/x",
+        "head": "abc123",
+        "intent": intent,
+        "scope": ["src/a.rs"],
+        "started_at": now - idle - 5,
+        "last_seen_at": now - idle,
+    })
+    .to_string()
+}
+
 #[test]
-fn lists_a_closed_marker_with_its_intent_and_scope() {
+fn lists_a_live_marker_with_its_intent_and_scope() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    write_marker(temp.path(), "100-1", &live_marker("100-1", "ship it", 0));
+
+    let value = sessions_json(temp.path());
+    let session = &value["sessions"][0];
+    assert_eq!(session["liveness"], "active");
+    assert_eq!(session["pid_check"], "alive");
+    assert_eq!(session["intent"], "ship it");
+    assert_eq!(session["scope"][0], "src/a.rs");
+    // The fields ohjaa reads, and no packet path: there is no packet file.
+    for field in ["id", "agent", "worktree", "branch", "last_seen_at"] {
+        assert!(!session[field].is_null(), "{field}: {session}");
+    }
+    assert!(session.get("packet").is_none(), "{session}");
+
+    let text = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("sessions")
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
+    assert!(text.starts_with("LIVE\n  codex  100-1\n"), "{text}");
+    assert!(text.contains("    intent: ship it\n"), "{text}");
+}
+
+/// A session whose process is not provably gone but whose `run` has not
+/// stamped its marker for 90 minutes is stale, and said so.
+#[test]
+fn a_session_not_seen_for_ninety_minutes_is_stale_and_warned() {
     if !git_available() {
         return;
     }
@@ -50,230 +102,57 @@ fn lists_a_closed_marker_with_its_intent_and_scope() {
     write_marker(
         temp.path(),
         "100-1",
-        r#"{
-            "id": "100-1",
-            "pid": 1,
-            "agent": ["codex"],
-            "worktree": "/repo",
-            "branch": "feat/x",
-            "head": "abc123",
-            "intent": "ship it",
-            "scope": ["src/a.rs"],
-            "started_at": 100,
-            "status": "closed",
-            "closed_at": 200,
-            "exit_status": 0
-        }"#,
-    );
-
-    let value = sessions_json(temp.path());
-    let session = &value["sessions"][0];
-    assert_eq!(session["liveness"], "closed");
-    assert_eq!(session["intent"], "ship it");
-    assert_eq!(session["scope"][0], "src/a.rs");
-    assert_eq!(session["packet"], ".toimija/sessions/100-1/current.md");
-}
-
-#[test]
-fn an_open_marker_with_a_live_pid_is_active() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    // This test process is certainly alive; a recent start keeps it inside the
-    // staleness window.
-    let pid = std::process::id();
-    let started = now_secs().saturating_sub(5);
-    write_marker(
-        temp.path(),
-        &format!("{started}-{pid}"),
-        &format!(
-            r#"{{
-                "id": "{started}-{pid}",
-                "pid": {pid},
-                "agent": ["claude"],
-                "worktree": "/repo",
-                "branch": "feat/x",
-                "head": null,
-                "intent": "live work",
-                "scope": [],
-                "started_at": {started},
-                "status": "active",
-                "closed_at": null,
-                "exit_status": null
-            }}"#
-        ),
-    );
-
-    let value = sessions_json(temp.path());
-    assert_eq!(value["sessions"][0]["liveness"], "active");
-}
-
-#[test]
-fn prune_removes_old_closed_sessions_and_keeps_live_and_recent_ones() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    let now = now_secs();
-    let eight_days = 8 * 24 * 60 * 60;
-
-    // Closed 8 days ago → prunable.
-    write_marker(
-        temp.path(),
-        "old-closed",
-        &format!(
-            r#"{{
-                "id": "old-closed", "pid": 1, "agent": ["codex"],
-                "worktree": "/repo", "branch": "feat/x", "head": null,
-                "intent": null, "scope": [],
-                "started_at": {start}, "status": "closed",
-                "closed_at": {closed}, "exit_status": 0
-            }}"#,
-            start = now - eight_days - 100,
-            closed = now - eight_days,
-        ),
-    );
-    // Closed an hour ago → inside retention, kept.
-    write_marker(
-        temp.path(),
-        "fresh-closed",
-        &format!(
-            r#"{{
-                "id": "fresh-closed", "pid": 1, "agent": ["codex"],
-                "worktree": "/repo", "branch": "feat/x", "head": null,
-                "intent": null, "scope": [],
-                "started_at": {start}, "status": "closed",
-                "closed_at": {closed}, "exit_status": 0
-            }}"#,
-            start = now - 7200,
-            closed = now - 3600,
-        ),
-    );
-    // Live session (this test's pid, recent start) → never touched.
-    let pid = std::process::id();
-    write_marker(
-        temp.path(),
-        "live",
-        &format!(
-            r#"{{
-                "id": "live", "pid": {pid}, "agent": ["claude"],
-                "worktree": "/repo", "branch": "feat/x", "head": null,
-                "intent": "live work", "scope": [],
-                "started_at": {start}, "status": "active",
-                "closed_at": null, "exit_status": null
-            }}"#,
-            start = now - 5,
-        ),
-    );
-
-    let assert = Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .args(["sessions", "--prune", "--json"])
-        .assert()
-        .success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
-    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(
-        report["sessions_removed"],
-        serde_json::json!(["old-closed"])
-    );
-    assert_eq!(report["kept"], 2);
-
-    let sessions_dir = temp.path().join(".toimija/sessions");
-    assert!(!sessions_dir.join("old-closed").exists());
-    assert!(sessions_dir.join("fresh-closed").exists());
-    assert!(sessions_dir.join("live").exists());
-    let history = fs::read_to_string(temp.path().join(".toimija/history.jsonl")).unwrap();
-    let records: Vec<serde_json::Value> = history
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["id"], "old-closed");
-    assert_eq!(records[0]["end"], "closed");
-}
-
-#[test]
-fn prune_keeps_the_session_when_the_history_journal_cannot_be_opened() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    let now = now_secs();
-    let id = "old-closed";
-    write_marker(
-        temp.path(),
-        id,
-        &format!(
-            r#"{{
-                "id": "{id}", "pid": 1, "agent": ["codex"],
-                "worktree": "/repo", "branch": "main", "head": null,
-                "intent": null, "scope": [],
-                "started_at": {started}, "status": "closed",
-                "closed_at": {closed}, "exit_status": 0
-            }}"#,
-            started = now - 9 * 24 * 60 * 60,
-            closed = now - 8 * 24 * 60 * 60,
-        ),
-    );
-    // A directory at the journal path makes append fail on every platform.
-    fs::create_dir_all(temp.path().join(".toimija/history.jsonl")).unwrap();
-
-    Command::cargo_bin("toimija")
-        .unwrap()
-        .current_dir(temp.path())
-        .args(["sessions", "--prune"])
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("history.jsonl"));
-
-    assert!(temp.path().join(".toimija/sessions").join(id).exists());
-}
-
-#[test]
-fn an_open_marker_with_a_dead_pid_is_stale_and_warned() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    // A pid far above any real process: `kill -0` fails, so liveness is stale.
-    let started = now_secs().saturating_sub(5);
-    write_marker(
-        temp.path(),
-        "dead",
-        &format!(
-            r#"{{
-                "id": "dead",
-                "pid": 2000000000,
-                "agent": ["codex"],
-                "worktree": "/repo",
-                "branch": "feat/x",
-                "head": null,
-                "intent": "abandoned",
-                "scope": [],
-                "started_at": {started},
-                "status": "active",
-                "closed_at": null,
-                "exit_status": null
-            }}"#
-        ),
+        &live_marker("100-1", "thinking", 91 * 60),
     );
 
     let value = sessions_json(temp.path());
     assert_eq!(value["sessions"][0]["liveness"], "stale");
     let warnings = value["warnings"].as_array().unwrap();
     assert!(
-        warnings
-            .iter()
-            .any(|w| w["message"].as_str().unwrap().contains("looks stale")),
-        "a stale-but-open session should produce a descriptive warning"
+        warnings.iter().any(|w| w["message"]
+            .as_str()
+            .unwrap()
+            .contains("has not been seen for 90 minutes")),
+        "{warnings:?}"
     );
+}
+
+/// A session whose process is gone has ended: it is not listed. Gone means
+/// proven: no such process, or the pid held by a process that started at
+/// another time (a pid outlives its process).
+#[test]
+fn a_session_whose_process_is_gone_is_not_listed() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let mut gone: serde_json::Value = serde_json::from_str(&live_marker("100-1", "x", 0)).unwrap();
+    gone["pid"] = serde_json::json!(2_000_000_000u32);
+    write_marker(temp.path(), "100-1", &gone.to_string());
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut reused: serde_json::Value =
+            serde_json::from_str(&live_marker("100-2", "y", 0)).unwrap();
+        reused["pid_start"] = serde_json::json!(1);
+        write_marker(temp.path(), "100-2", &reused.to_string());
+    }
+
+    let value = sessions_json(temp.path());
+    assert_eq!(value["sessions"], serde_json::json!([]), "{value:#}");
+    assert_eq!(value["coverage"]["status"], "available");
+    let text = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .arg("sessions")
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&text.get_output().stdout),
+        "No open sessions under .toimija/sessions/.\n"
+    );
+    // Listing is read-only: the markers are still there.
+    assert!(temp.path().join(".toimija/sessions/100-1").exists());
 }
 
 #[test]
@@ -283,24 +162,7 @@ fn a_malformed_sibling_marker_is_visible_not_silent() {
     }
     let temp = tempfile::tempdir().unwrap();
     init_git_repo(temp.path());
-    write_marker(
-        temp.path(),
-        "100-1",
-        r#"{
-            "id": "100-1",
-            "pid": 1,
-            "agent": ["codex"],
-            "worktree": "/repo",
-            "branch": "feat/x",
-            "head": null,
-            "intent": "ship it",
-            "scope": [],
-            "started_at": 100,
-            "status": "closed",
-            "closed_at": 200,
-            "exit_status": 0
-        }"#,
-    );
+    write_marker(temp.path(), "100-1", &live_marker("100-1", "ship it", 0));
     // A sibling whose marker is corrupt: it must degrade the scan coverage and
     // produce a warning naming the file — never shrink the listing silently.
     write_marker(temp.path(), "100-2", "{corrupt");
@@ -349,55 +211,12 @@ fn a_healthy_scan_reports_available_coverage() {
     assert_eq!(value["coverage"]["status"], "available");
 }
 
-/// A pid outlives its process: once a killed session's pid is handed to
-/// another process, `kill -0` answers for that one. The marker records when
-/// its own process started, so a live pid that started at another time is not
-/// the session's process, and the session is over.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[test]
-fn a_live_pid_that_started_at_another_time_is_not_the_sessions_process() {
-    if !git_available() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    init_git_repo(temp.path());
-    // This test process is certainly alive, but it did not start at time 1.
-    let pid = std::process::id();
-    let started = now_secs().saturating_sub(5);
-    write_marker(
-        temp.path(),
-        &format!("{started}-{pid}"),
-        &format!(
-            r#"{{
-                "id": "{started}-{pid}",
-                "pid": {pid},
-                "pid_start": 1,
-                "agent": ["claude"],
-                "worktree": "/repo",
-                "branch": "feat/x",
-                "head": null,
-                "intent": "killed long ago",
-                "scope": [],
-                "started_at": {started},
-                "last_seen_at": {started},
-                "status": "active",
-                "closed_at": null,
-                "exit_status": null
-            }}"#
-        ),
-    );
-
-    let value = sessions_json(temp.path());
-    let session = &value["sessions"][0];
-    assert_eq!(session["pid_check"], "dead", "{session}");
-    assert_eq!(session["liveness"], "stale", "{session}");
-}
-
 /// `run` records when its own process started, and its session reads as live
-/// while it runs: the recorded start is the one a later check reads.
+/// while it runs: the recorded start is the one a later check reads. When the
+/// agent exits, the session ends and its marker is gone.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn a_run_records_when_its_process_started_and_reads_as_live() {
+fn a_run_reads_as_live_while_it_runs_and_leaves_no_marker() {
     use std::os::unix::fs::PermissionsExt;
     if !git_available() {
         return;
@@ -430,4 +249,42 @@ fn a_run_records_when_its_process_started_and_reads_as_live() {
     assert!(session["pid_start"].as_u64().is_some(), "{session}");
     assert_eq!(session["pid_check"], "alive", "{session}");
     assert_eq!(session["liveness"], "active", "{session}");
+    assert_eq!(session["intent"], "start time", "{session}");
+
+    let id = session["id"].as_str().unwrap();
+    assert!(!temp.path().join(".toimija/sessions").join(id).exists());
+    assert_eq!(
+        sessions_json(temp.path())["sessions"],
+        serde_json::json!([])
+    );
+}
+
+/// A `run` killed before it could remove its marker leaves one whose process
+/// is gone. The next `run` beside it removes it; a session whose process is
+/// alive, or that cannot be proven gone, is kept.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn run_removes_the_markers_of_sessions_that_ended_without_removing_them() {
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    init_git_repo(temp.path());
+    let mut ended: serde_json::Value = serde_json::from_str(&live_marker("100-1", "x", 0)).unwrap();
+    ended["pid_start"] = serde_json::json!(1);
+    write_marker(temp.path(), "100-1", &ended.to_string());
+    write_marker(temp.path(), "100-2", &live_marker("100-2", "alive", 0));
+    write_marker(temp.path(), "100-3", "{corrupt");
+
+    Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(temp.path())
+        .env_remove("TOIMIJA_SESSION")
+        .args(["run", "--intent", "prune", "--", "true"])
+        .assert()
+        .success();
+    let sessions = temp.path().join(".toimija/sessions");
+    assert!(!sessions.join("100-1").exists());
+    assert!(sessions.join("100-2").exists());
+    assert!(sessions.join("100-3").exists());
 }

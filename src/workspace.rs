@@ -7,17 +7,17 @@
 //! session markers and handover. No git process is started for it, so the
 //! cost does not grow with a git call per repository. What a file cannot
 //! tell (uncommitted work, validation) is not in the packet; `toimija
-//! context` inside a repository has it.
+//! enter` inside a repository has it.
 
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::command::CommandRunner;
-use crate::config::{InitReport, RepoConfig};
+use crate::config::RepoConfig;
 use crate::session::{self, Handover};
 use crate::sessions::{self, Liveness, SessionView};
 
@@ -27,23 +27,9 @@ pub const WORKSPACE_PATH: &str = ".toimija/workspace.yaml";
 /// The schema of the JSON workspace packet.
 pub const SCHEMA: &str = "toimija-workspace.v1";
 
-/// What `init --workspace` writes: comments only, which is an empty and
-/// valid workspace.
-pub const TEMPLATE: &str = "\
-# This folder is a toimija workspace: a folder that holds repositories.
-# Both fields are optional.
-#
-# What this folder is for, in one line:
-# role: the services of one product
-#
-# What an agent starting here reads first, relative to this folder:
-# read_first:
-#   - NOTES.md
-";
-
 /// One line saying what the packet leaves out and where it is.
 pub const NOT_INCLUDED: &str = "Uncommitted work and validation are per repository: \
-run `toimija context` inside a repository for them.";
+run `toimija enter` inside a repository for them.";
 
 /// `.toimija/workspace.yaml`. Every field is optional, and an empty file is
 /// a workspace. A field this version does not know is refused by name.
@@ -75,63 +61,6 @@ pub fn load(root: &Path) -> Result<WorkspaceFile> {
     let file: Option<WorkspaceFile> = serde_yaml::from_str(&text)
         .with_context(|| format!("invalid workspace file at {}", path.display()))?;
     Ok(file.unwrap_or_default())
-}
-
-/// Seed `.toimija/workspace.yaml` and `.toimija/.gitignore` in `folder`.
-/// Refuses when the workspace file is already there; never writes through a
-/// symlink.
-pub fn init(folder: &Path) -> Result<InitReport> {
-    use std::io::Write as _;
-    let path = folder.join(WORKSPACE_PATH);
-    if fs::symlink_metadata(&path).is_ok() {
-        bail!(
-            "{} already exists: edit it, or remove it first",
-            path.display()
-        );
-    }
-    let mut report = InitReport {
-        created: Vec::new(),
-        existing: Vec::new(),
-        guidance: Vec::new(),
-    };
-    let dir = folder.join(crate::owned::TOIMIJA_DIR);
-    if crate::owned::dir_exists(folder, &dir).context("failed to initialize")? {
-        report.existing.push(dir.clone());
-    } else {
-        crate::owned::ensure_dir(folder, &dir).context("failed to initialize")?;
-        report.created.push(dir.clone());
-    }
-    crate::owned::open(
-        folder,
-        &path,
-        fs::OpenOptions::new().write(true).create_new(true),
-    )
-    .and_then(|mut file| Ok(file.write_all(TEMPLATE.as_bytes())?))
-    .context("failed to initialize")?;
-    report.created.push(path);
-    report.guidance.push(
-        "Fill role and read_first in .toimija/workspace.yaml so the packet can orient an agent."
-            .to_string(),
-    );
-    report.guidance.push(
-        "Run `toimija context` here to see the workspace, or `toimija run <agent>` to start one in it."
-            .to_string(),
-    );
-
-    let ignore_path = folder.join(crate::config::IGNORE_PATH);
-    if fs::symlink_metadata(&ignore_path).is_ok() {
-        report.existing.push(ignore_path);
-    } else {
-        crate::owned::open(
-            folder,
-            &ignore_path,
-            fs::OpenOptions::new().write(true).create_new(true),
-        )
-        .and_then(|mut file| Ok(file.write_all(crate::config::IGNORE_RULES.as_bytes())?))
-        .context("failed to initialize")?;
-        report.created.push(ignore_path);
-    }
-    Ok(report)
 }
 
 /// The workspace packet. Paths are strings as a person reads them.
@@ -186,9 +115,6 @@ pub struct OpenSession {
     /// `live` or `stale`.
     pub liveness: &'static str,
     pub intent: Option<String>,
-    /// The spec the session starts from, when it declared one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spec: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -301,12 +227,12 @@ fn repository(runner: &dyn CommandRunner, dir: &Path, not_read: &mut Vec<NotRead
         }
     };
 
-    let sessions = match sessions::report(runner, dir, sessions::DEFAULT_STALE_AFTER_SECS) {
+    let sessions = match sessions::report(runner, dir) {
         Ok(report) => {
             if let Some(reason) = report.coverage.reason.as_deref() {
                 note("sessions", reason.to_string());
             }
-            report.sessions.iter().filter_map(open_session).collect()
+            report.sessions.iter().map(open_session).collect()
         }
         Err(error) => {
             note("sessions", format!("{error:#}"));
@@ -370,20 +296,17 @@ fn branch(dir: &Path) -> std::result::Result<String, String> {
     Err("HEAD is neither a ref nor a commit id".to_string())
 }
 
-/// A session that is still open: live or stale, never a closed one.
-fn open_session(view: &SessionView) -> Option<OpenSession> {
-    let liveness = match view.liveness {
-        Liveness::Active => "live",
-        Liveness::Stale => "stale",
-        Liveness::Closed => return None,
-    };
-    Some(OpenSession {
+/// A listed session: live or stale.
+fn open_session(view: &SessionView) -> OpenSession {
+    OpenSession {
         id: view.marker.id.clone(),
         agent: view.agent_label().to_string(),
-        liveness,
+        liveness: match view.liveness {
+            Liveness::Active => "live",
+            Liveness::Stale => "stale",
+        },
         intent: view.marker.intent.clone(),
-        spec: view.marker.spec.clone(),
-    })
+    }
 }
 
 /// The handover waiting in `dir`, with its first line. A missing file is no
@@ -428,7 +351,7 @@ fn folder_sessions(
         });
         return Vec::new();
     };
-    let report = match sessions::report(runner, &state, sessions::DEFAULT_STALE_AFTER_SECS) {
+    let report = match sessions::report(runner, &state) {
         Ok(report) => report,
         Err(error) => {
             not_read.push(NotRead {
@@ -448,7 +371,7 @@ fn folder_sessions(
         .sessions
         .iter()
         .filter(|view| in_workspace_outside_repositories(Path::new(&view.marker.worktree), root))
-        .filter_map(open_session)
+        .map(open_session)
         .collect()
 }
 
@@ -547,16 +470,12 @@ fn brief(text: &str) -> String {
 }
 
 fn session_line(session: &OpenSession) -> String {
-    let mut line = format!(
+    format!(
         "{} ({}): {}",
         session.agent,
         session.liveness,
         brief(session.intent.as_deref().unwrap_or("unknown"))
-    );
-    if let Some(spec) = &session.spec {
-        line.push_str(&format!(" [spec: {spec}]"));
-    }
-    line
+    )
 }
 
 #[cfg(test)]
@@ -611,9 +530,13 @@ mod tests {
     }
 
     #[test]
-    fn a_file_of_comments_is_an_empty_workspace_and_the_template_is_one() {
+    fn a_file_of_comments_or_nothing_is_an_empty_workspace() {
         let temp = tempfile::tempdir().unwrap();
-        write(temp.path(), WORKSPACE_PATH, TEMPLATE);
+        write(
+            temp.path(),
+            WORKSPACE_PATH,
+            "# What this folder is for:\n# role: the services of one product\n",
+        );
         assert_eq!(load(temp.path()).unwrap(), WorkspaceFile::default());
         write(temp.path(), WORKSPACE_PATH, "");
         assert_eq!(load(temp.path()).unwrap(), WorkspaceFile::default());

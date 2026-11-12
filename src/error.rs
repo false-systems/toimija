@@ -6,15 +6,13 @@ use thiserror::Error;
 pub enum ToimijaError {
     #[error("not a Git repository: run `git init` or move into a repo")]
     NotGitRepo,
-    #[error("missing Toimija config: run `toimija init`")]
+    #[error("no .toimija/repo.yaml")]
     MissingConfig,
     #[error("invalid repo config at {path}: {source}")]
     InvalidConfig {
         path: PathBuf,
         source: serde_yaml::Error,
     },
-    #[error("invalid stewardship config at {path}: {message}")]
-    InvalidStewardship { path: PathBuf, message: String },
     #[error("invalid agents config at {path}: {message}")]
     InvalidAgents { path: PathBuf, message: String },
     #[error("invalid validation config at {path}: {message}")]
@@ -29,5 +27,3 @@ pub enum ToimijaError {
     #[error("required command not found: {0}")]
     CommandNotFound(String),
 }
-
-pub type Result<T> = std::result::Result<T, ToimijaError>;

@@ -105,18 +105,21 @@ impl Fixture {
     }
 }
 
-fn marker(id: &str, status: &str) -> String {
-    serde_json::json!({
+/// A marker for session `id`, held by this test process. `pid_start` set to a
+/// start this process never had makes the session provably ended.
+fn marker(id: &str, ended: bool) -> String {
+    let mut marker = serde_json::json!({
         "id": id,
-        "pid": 1,
+        "pid": std::process::id(),
         "agent": ["claude"],
         "worktree": "/repo",
         "branch": "main",
         "started_at": 100,
-        "status": status,
-        "closed_at": if status == "closed" { Some(100) } else { None },
-    })
-    .to_string()
+    });
+    if ended {
+        marker["pid_start"] = serde_json::json!(1);
+    }
+    marker.to_string()
 }
 
 #[test]
@@ -128,12 +131,8 @@ fn a_symlinked_toimija_dir_is_refused_by_every_writer() {
     fx.link(".toimija", "");
 
     for args in [
-        &["enter"][..],
-        &["refresh"],
-        &["init"],
-        &["clean"],
-        &["snapshot", "--lease"],
-        &["run", "--intent", "test", "--", "true"],
+        &["run", "--intent", "test", "--", "true"][..],
+        &["handover", "--next", "hijacked"],
     ] {
         fx.assert_refused(args, &[]);
     }
@@ -150,7 +149,7 @@ fn a_symlinked_sessions_dir_is_refused_by_run() {
 }
 
 #[test]
-fn a_symlinked_session_dir_is_refused_by_the_session_writers() {
+fn a_symlinked_session_dir_is_refused_by_intent() {
     if !git_available() {
         return;
     }
@@ -158,43 +157,36 @@ fn a_symlinked_session_dir_is_refused_by_the_session_writers() {
     fs::create_dir_all(fx.outside.join("session")).unwrap();
     fs::write(
         fx.outside.join("session/session.json"),
-        marker("100-1", "active"),
+        marker("100-1", false),
     )
     .unwrap();
     fx.link(".toimija/sessions/100-1", "session");
 
-    let session = [("TOIMIJA_SESSION", "100-1")];
-    fx.assert_refused(&["intent", "hijacked"], &session);
-    fx.assert_refused(&["enter"], &session);
-    fx.assert_refused(&["refresh"], &session);
+    fx.assert_refused(&["intent", "hijacked"], &[("TOIMIJA_SESSION", "100-1")]);
 }
 
+/// `run` removes the markers of sessions that provably ended beside it. One
+/// behind a committed symlink is never removed through it: `run` carries on,
+/// and the outside directory is untouched.
 #[test]
-fn a_symlinked_history_journal_or_lock_is_never_appended_to() {
-    if !git_available() {
-        return;
-    }
-    for link in [".toimija/history.jsonl", ".toimija/history.lock"] {
-        let fx = fixture();
-        // A closed session long past retention, so `clean` journals it.
-        let dir = fx.repo.join(".toimija/sessions/100-1");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("session.json"), marker("100-1", "closed")).unwrap();
-        fx.link(link, "sentinel.txt");
-
-        fx.assert_refused(&["clean"], &[]);
-    }
-}
-
-#[test]
-fn a_symlinked_snapshots_dir_is_refused_by_lease_and_release() {
+fn an_ended_session_behind_a_symlink_is_never_removed_through_it() {
     if !git_available() {
         return;
     }
     let fx = fixture();
-    fs::write(fx.outside.join("victim.json"), "{}\n").unwrap();
-    fx.link(".toimija/snapshots", "");
+    fs::create_dir_all(fx.outside.join("session")).unwrap();
+    fs::write(
+        fx.outside.join("session/session.json"),
+        marker("100-1", true),
+    )
+    .unwrap();
+    fx.link(".toimija/sessions/100-1", "session");
+    let before = fx.outside_state();
 
-    fx.assert_refused(&["snapshot", "--lease"], &[]);
-    fx.assert_refused(&["snapshot", "--release", "victim"], &[]);
+    fx.toimija()
+        .args(["run", "--intent", "test", "--", "true"])
+        .assert()
+        .success();
+    assert_eq!(fx.outside_state(), before);
+    assert!(fx.outside.join("session/session.json").exists());
 }

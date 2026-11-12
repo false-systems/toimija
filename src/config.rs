@@ -11,27 +11,6 @@ use crate::error::ToimijaError;
 /// names none. A real repository's packet stays well under it.
 pub const DEFAULT_BUDGET: usize = 8000;
 pub const CONFIG_PATH: &str = ".toimija/repo.yaml";
-pub const DAY_SECS: u64 = 24 * 60 * 60;
-
-/// Where `init` keeps Git away from what Toimija generates.
-pub const IGNORE_PATH: &str = ".toimija/.gitignore";
-
-/// What `init` writes to [`IGNORE_PATH`]: everything a refresh, a session,
-/// `clean` or `snapshot` writes, so none of it shows up as untracked work —
-/// least of all in the packet that reports the working tree. Patterns are
-/// relative to `.toimija/`; `repo.yaml` and this file stay tracked.
-pub const IGNORE_RULES: &str = "\
-# Written by `toimija init`. Commit this file and repo.yaml; Toimija regenerates the rest.
-/current.md
-/current.json
-/sessions/
-/history.jsonl
-/history.lock
-/handover.json
-/runs/
-/snapshots/
-/tmp/
-";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -39,12 +18,7 @@ pub struct RepoConfig {
     pub repo: RepoSection,
     pub context: ContextSection,
     pub validation: ValidationSection,
-    pub stewardship: StewardshipSection,
     pub agents: BTreeMap<String, AgentPromptConfig>,
-    /// The folder `spec new` and `spec list` use, relative to the repository
-    /// root. `docs/adr` when not named.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub specs: Option<PathBuf>,
     pub boundaries: Vec<String>,
 }
 
@@ -113,35 +87,6 @@ impl GateSetting {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct StewardshipSection {
-    pub auto_sweep: bool,
-    pub sessions_retention_days: u64,
-    pub runs_retention_days: u64,
-    pub history_max_records: usize,
-}
-
-impl Default for StewardshipSection {
-    fn default() -> Self {
-        Self {
-            auto_sweep: true,
-            sessions_retention_days: crate::sessions::DEFAULT_RETENTION_SECS / DAY_SECS,
-            runs_retention_days: crate::footprint::DEFAULT_RUNS_RETENTION_SECS / DAY_SECS,
-            history_max_records: crate::footprint::DEFAULT_HISTORY_MAX_RECORDS,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InitReport {
-    pub created: Vec<PathBuf>,
-    pub existing: Vec<PathBuf>,
-    /// Next steps a human must take so the packet can orient an agent. Populated
-    /// only when a fresh `repo.yaml` was written (its identity fields are blank).
-    pub guidance: Vec<String>,
-}
-
 impl Default for ContextSection {
     fn default() -> Self {
         Self {
@@ -171,7 +116,6 @@ impl RepoConfig {
                 path: path.clone(),
                 source,
             })?;
-        config.validate_stewardship(&path)?;
         config.validate_agents(&path)?;
         config.validate_gate(&path)?;
         info!(event = "toimija.config.loaded", path = %path.display());
@@ -210,37 +154,10 @@ impl RepoConfig {
             || !self.validation.privileged.is_empty()
     }
 
-    fn validate_stewardship(&self, path: &Path) -> Result<(), ToimijaError> {
-        for (name, value) in [
-            (
-                "sessions_retention_days",
-                self.stewardship.sessions_retention_days,
-            ),
-            ("runs_retention_days", self.stewardship.runs_retention_days),
-        ] {
-            if value == 0 || value > u64::MAX / DAY_SECS {
-                return Err(ToimijaError::InvalidStewardship {
-                    path: path.to_path_buf(),
-                    message: format!(
-                        "stewardship.{name} must be between 1 and {}",
-                        u64::MAX / DAY_SECS
-                    ),
-                });
-            }
-        }
-        if self.stewardship.history_max_records == 0 {
-            return Err(ToimijaError::InvalidStewardship {
-                path: path.to_path_buf(),
-                message: "stewardship.history_max_records must be greater than zero".to_string(),
-            });
-        }
-        Ok(())
-    }
-
     /// `agents:` entries teach `run` how a user-named CLI accepts the composed
     /// launch prompt: `positional`, or a flag starting with `-`. Anything else
     /// would build a broken argv at launch, so it is rejected here, named —
-    /// the same fail-fast contract as the stewardship checks above.
+    /// the same fail-fast contract as a file that does not parse.
     fn validate_agents(&self, path: &Path) -> Result<(), ToimijaError> {
         for (name, agent) in &self.agents {
             if let Err(message) = crate::adapters::agents::PromptStyle::from_config(&agent.prompt) {
@@ -270,82 +187,13 @@ impl RepoConfig {
     }
 }
 
-/// Seed `.toimija/repo.yaml` and `.toimija/.gitignore`, never overwriting
-/// either and never writing through a symlink.
-pub fn init_repo(repo_root: &Path) -> anyhow::Result<InitReport> {
-    use anyhow::Context as _;
-    let mut report = InitReport {
-        created: Vec::new(),
-        existing: Vec::new(),
-        guidance: Vec::new(),
-    };
-    let dir = repo_root.join(crate::owned::TOIMIJA_DIR);
-    if crate::owned::dir_exists(repo_root, &dir).context("failed to initialize")? {
-        report.existing.push(dir.clone());
-    } else {
-        crate::owned::ensure_dir(repo_root, &dir).context("failed to initialize")?;
-        report.created.push(dir.clone());
-    }
-
-    let config_path = repo_root.join(CONFIG_PATH);
-    if config_path.exists() {
-        report.existing.push(config_path);
-    } else {
-        // Build/vendor noise is filtered live at context time (see
-        // BUILTIN_ARTIFACT_DIRS), so the fresh config is left clean —
-        // safe_to_ignore is for the repo's own additions only.
-        let text =
-            serde_yaml::to_string(&RepoConfig::default_for(repo_root)).expect("config serializes");
-        use std::io::Write as _;
-        crate::owned::open(
-            repo_root,
-            &config_path,
-            fs::OpenOptions::new().write(true).create_new(true),
-        )
-        .and_then(|mut file| Ok(file.write_all(text.as_bytes())?))
-        .context("failed to initialize")?;
-        report.created.push(config_path);
-        // A fresh config has blank identity fields; point the human at them.
-        report.guidance.push(
-            "Fill role, not, and boundaries in .toimija/repo.yaml so the packet can orient an agent."
-                .to_string(),
-        );
-        // Toimija owns `.toimija/`, not root agent policy: it never writes the
-        // human-owned AGENTS.md/CLAUDE.md, so it says what they should carry.
-        report.guidance.push(
-            "Tell agents in your AGENTS.md/CLAUDE.md to run `toimija enter` first, or launch them with `toimija run`."
-                .to_string(),
-        );
-    }
-
-    // Keep Git away from what Toimija generates, inside the directory Toimija
-    // owns — so the first refresh does not report its own packet as dirty.
-    // An existing file, or a symlink in its place, is left alone.
-    let ignore_path = repo_root.join(IGNORE_PATH);
-    if fs::symlink_metadata(&ignore_path).is_ok() {
-        report.existing.push(ignore_path);
-    } else {
-        use std::io::Write as _;
-        crate::owned::open(
-            repo_root,
-            &ignore_path,
-            fs::OpenOptions::new().write(true).create_new(true),
-        )
-        .and_then(|mut file| Ok(file.write_all(IGNORE_RULES.as_bytes())?))
-        .context("failed to initialize")?;
-        report.created.push(ignore_path);
-    }
-
-    Ok(report)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A configuration may carry `gates:`, `gate_groups:` and `composition:`
-    /// sections. Toimija does not read them, and must not refuse to load a config because they
-    /// are there.
+    /// A configuration may carry sections an earlier toimija read (`gates:`,
+    /// `stewardship:`, `specs:`). Toimija does not read them, and must not
+    /// refuse to load a config because they are there.
     #[test]
     fn a_config_with_retired_sections_still_loads() {
         let temp = tempfile::tempdir().unwrap();
@@ -356,7 +204,9 @@ mod tests {
             "repo:\n  name: legacy\n\
              gates:\n  rust-test:\n    program: cargo\n    args: [test]\n\
              gate_groups:\n  full:\n    gates: [rust-test]\n\
-             composition:\n  work: widget\n  require_work: false\n",
+             composition:\n  work: widget\n  require_work: false\n\
+             stewardship:\n  auto_sweep: false\n  sessions_retention_days: 0\n\
+             specs: docs/adr\n",
         )
         .unwrap();
         let config = RepoConfig::load(temp.path()).unwrap();
@@ -384,7 +234,6 @@ mod tests {
         assert!(config.context.read_first.is_empty());
         assert!(config.context.safe_to_ignore.is_empty());
         assert!(!config.validation.replace_inferred);
-        assert_eq!(config.stewardship, StewardshipSection::default());
         assert!(config.agents.is_empty());
     }
 
@@ -451,24 +300,6 @@ mod tests {
     }
 
     #[test]
-    fn loads_stewardship_overrides() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join(".toimija");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("repo.yaml"),
-            "stewardship:\n  auto_sweep: false\n  sessions_retention_days: 2\n  runs_retention_days: 3\n  history_max_records: 4\n",
-        )
-        .unwrap();
-
-        let config = RepoConfig::load(temp.path()).unwrap();
-        assert!(!config.stewardship.auto_sweep);
-        assert_eq!(config.stewardship.sessions_retention_days, 2);
-        assert_eq!(config.stewardship.runs_retention_days, 3);
-        assert_eq!(config.stewardship.history_max_records, 4);
-    }
-
-    #[test]
     fn invalid_yaml_is_actionable() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join(".toimija");
@@ -477,21 +308,5 @@ mod tests {
 
         let error = RepoConfig::load(temp.path()).unwrap_err();
         assert!(matches!(error, ToimijaError::InvalidConfig { .. }));
-    }
-
-    #[test]
-    fn zero_stewardship_values_are_rejected() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join(".toimija");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("repo.yaml"),
-            "stewardship:\n  sessions_retention_days: 0\n",
-        )
-        .unwrap();
-
-        let error = RepoConfig::load(temp.path()).unwrap_err();
-        assert!(matches!(error, ToimijaError::InvalidStewardship { .. }));
-        assert!(error.to_string().contains("must be between 1 and"));
     }
 }
