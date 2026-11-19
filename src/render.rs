@@ -402,6 +402,9 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
             .unwrap();
         }
     }
+    if let Some(line) = crate::worktrees::packet_line(&packet.finished_worktrees) {
+        writeln!(&mut output, "{line}").unwrap();
+    }
 
     write_h2(&mut output, "Git state");
     writeln!(
@@ -802,6 +805,7 @@ mod tests {
             default_budget: Some(4000),
             session: None,
             handover: None,
+            finished_worktrees: Vec::new(),
         }
     }
 

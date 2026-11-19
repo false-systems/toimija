@@ -288,3 +288,185 @@ fn run_removes_the_markers_of_sessions_that_ended_without_removing_them() {
     assert!(sessions.join("100-2").exists());
     assert!(sessions.join("100-3").exists());
 }
+
+/// The `finished-worktrees` scenario under a fresh temporary folder, and the
+/// canonical folder it was built in: Git records a worktree's real path.
+fn finished_scenario() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let repo = common::scenarios::build("finished-worktrees", &root);
+    (temp, root, repo)
+}
+
+/// `toimija <args>` in `dir`, with Git's configuration hermetic as the
+/// scenario's, and its stdout. An empty home too: Git reads a default
+/// ignore file from it (`~/.config/git/ignore`) whatever the configuration
+/// says, and one that ignores `.sykli/` would hide the tool state a case
+/// leaves untracked.
+fn toimija_out(dir: &Path, args: &[&str]) -> String {
+    let home = tempfile::tempdir().unwrap();
+    let assert = Command::cargo_bin("toimija")
+        .unwrap()
+        .current_dir(dir)
+        .envs(common::scenarios::HERMETIC_GIT_ENV)
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .env_remove("TOIMIJA_SESSION")
+        .args(args)
+        .assert()
+        .success();
+    String::from_utf8(assert.get_output().stdout.clone()).unwrap()
+}
+
+/// Each listed worktree as (folder name, reason, branch, against).
+fn listed(value: &serde_json::Value, root: &Path) -> Vec<(String, String, Option<String>, String)> {
+    value["finished_worktrees"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    let path = Path::new(item["path"].as_str().unwrap());
+                    assert_eq!(path.parent(), Some(root.join("wt").as_path()), "{item}");
+                    (
+                        path.file_name().unwrap().to_string_lossy().into_owned(),
+                        item["reason"].as_str().unwrap().to_owned(),
+                        item["branch"].as_str().map(str::to_owned),
+                        item["against"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A finished worktree: not the main one, its branch gone on origin or
+/// nothing `origin/main` lacks, nothing uncommitted or untracked but tool
+/// state, not locked, its folder there, and no live session in it.
+#[test]
+fn sessions_lists_the_finished_worktrees_and_only_those() {
+    if !git_available() {
+        return;
+    }
+    let (_temp, root, repo) = finished_scenario();
+    let value: serde_json::Value =
+        serde_json::from_str(&toimija_out(&repo, &["sessions", "--json"])).unwrap();
+    let expected: Vec<(String, String, Option<String>, String)> = common::scenarios::FINISHED
+        .iter()
+        .map(|(name, reason)| {
+            let branch = (*name != "detached").then(|| name.to_string());
+            let against = match *reason {
+                "branch_gone" => format!("origin/{name}"),
+                _ => "origin/main".to_string(),
+            };
+            (name.to_string(), reason.to_string(), branch, against)
+        })
+        .collect();
+    assert_eq!(listed(&value, &root), expected, "{value:#}");
+}
+
+/// The listing says how to remove each one, and what to check first. It
+/// removes nothing itself.
+#[test]
+fn sessions_says_how_to_remove_each_and_removes_nothing() {
+    if !git_available() {
+        return;
+    }
+    let (_temp, root, repo) = finished_scenario();
+    let before = toimija_git(&repo, &["worktree", "list", "--porcelain"]);
+    let text = toimija_out(&repo, &["sessions"]);
+    assert!(text.contains("\nFINISHED WORKTREES"), "{text}");
+    for (name, _) in common::scenarios::FINISHED {
+        let path = root.join("wt").join(name);
+        assert!(
+            text.contains(&format!("    git worktree remove {}\n", path.display())),
+            "{name}: {text}"
+        );
+    }
+    assert!(text.contains("(gone: branch gone on origin)"), "{text}");
+    assert!(
+        text.contains("(detached: nothing origin/main lacks)"),
+        "{text}"
+    );
+    assert!(text.contains("no terminal is inside"), "{text}");
+    for kept in [
+        "gone-dirty",
+        "gone-untracked",
+        "gone-locked",
+        "gone-session",
+        "gone-removed",
+        "open",
+        "unpushed",
+    ] {
+        assert!(!text.contains(&format!("/wt/{kept}")), "{kept}: {text}");
+    }
+    assert_eq!(
+        toimija_git(&repo, &["worktree", "list", "--porcelain"]),
+        before
+    );
+}
+
+/// The worktree the command runs in is never listed: no one removes the
+/// folder they stand in.
+#[test]
+fn a_worktree_does_not_list_itself() {
+    if !git_available() {
+        return;
+    }
+    let (_temp, root, _repo) = finished_scenario();
+    let value: serde_json::Value =
+        serde_json::from_str(&toimija_out(&root.join("wt/gone"), &["sessions", "--json"])).unwrap();
+    let names: Vec<String> = listed(&value, &root)
+        .into_iter()
+        .map(|item| item.0)
+        .collect();
+    assert_eq!(
+        names,
+        ["detached", "gone-generated", "in-base"],
+        "{value:#}"
+    );
+}
+
+/// The packet says it in one line, and only when there is something to say.
+#[test]
+fn the_packet_counts_finished_worktrees_in_one_line() {
+    if !git_available() {
+        return;
+    }
+    let (_temp, _root, repo) = finished_scenario();
+    let text = toimija_out(&repo, &["enter"]);
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("finished worktree"))
+        .collect();
+    assert_eq!(
+        lines,
+        ["- finished worktrees: 4 elsewhere (`toimija sessions` lists them)"],
+        "{text}"
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(&toimija_out(&repo, &["enter", "--json"])).unwrap();
+    assert_eq!(
+        value["finished_worktrees"].as_array().map(Vec::len),
+        Some(4)
+    );
+
+    let clean = tempfile::tempdir().unwrap();
+    let clean_root = clean.path().canonicalize().unwrap();
+    let plain = common::scenarios::build("linked-worktree", &clean_root);
+    assert!(!toimija_out(&plain, &["enter"]).contains("finished worktree"));
+    let value: serde_json::Value =
+        serde_json::from_str(&toimija_out(&plain, &["enter", "--json"])).unwrap();
+    assert!(value.get("finished_worktrees").is_none(), "{value:#}");
+}
+
+/// Fixture git's stdout in `dir`, hermetic.
+fn toimija_git(dir: &Path, args: &[&str]) -> String {
+    let output = common::git_at(dir)
+        .envs(common::scenarios::HERMETIC_GIT_ENV)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap()
+}

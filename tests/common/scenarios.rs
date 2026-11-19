@@ -284,7 +284,11 @@ fn finished_worktrees(root: &Path) -> PathBuf {
     // Tool state is not work: an untracked sykli receipt leaves it finished.
     write(&wt("gone-generated"), ".sykli/receipt.json", "{}\n");
     // Work not committed, or not tracked, keeps a worktree.
-    write(&wt("gone-dirty"), "src/main.rs", "fn main() { edited(); }\n");
+    write(
+        &wt("gone-dirty"),
+        "src/main.rs",
+        "fn main() { edited(); }\n",
+    );
     write(&wt("gone-untracked"), "notes.txt", "mine\n");
     // A locked worktree is one someone asked Git to keep.
     git(&repo, &["worktree", "lock", "../wt/gone-locked"]);
@@ -325,7 +329,14 @@ fn finished_worktrees(root: &Path) -> PathBuf {
     add("in-base", &["-b", "in-base"]);
     git(
         &repo,
-        &["worktree", "add", "-q", "--detach", "../wt/detached", "HEAD~1"],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            "../wt/detached",
+            "HEAD~1",
+        ],
     );
     repo
 }

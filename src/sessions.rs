@@ -117,6 +117,26 @@ pub struct SessionsReport {
     /// every sibling marker was read; `degraded` means at least one marker is
     /// unreadable or malformed, so the listing may be missing a live sibling.
     pub coverage: Coverage,
+    /// The repository's other worktrees whose work is done here
+    /// ([`crate::worktrees`]). Absent outside a repository and when there
+    /// are none; a listing that could not be worked out whole adds a warning.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub finished_worktrees: Vec<crate::worktrees::FinishedWorktree>,
+}
+
+impl SessionsReport {
+    /// Add the finished worktrees, and a warning when they were not all
+    /// worked out.
+    pub fn with_finished(mut self, finished: crate::worktrees::Finished) -> Self {
+        if let Some(message) = finished.warning() {
+            self.warnings.push(Warning {
+                severity: Severity::Warning,
+                message,
+            });
+        }
+        self.finished_worktrees = finished.worktrees;
+        self
+    }
 }
 
 /// Read every session marker under `.toimija/sessions/`, leave out those
@@ -183,6 +203,7 @@ pub fn report(runner: &dyn CommandRunner, root: &Path) -> Result<SessionsReport>
         sessions,
         warnings,
         coverage,
+        finished_worktrees: Vec::new(),
     })
 }
 
@@ -667,6 +688,14 @@ pub fn render_text(report: &SessionsReport) -> String {
                 ));
             }
         }
+        out.push('\n');
+    }
+    let finished = crate::worktrees::render_text(&report.finished_worktrees);
+    if !finished.is_empty() {
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(&finished);
         out.push('\n');
     }
     if !report.warnings.is_empty() {

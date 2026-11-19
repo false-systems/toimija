@@ -252,7 +252,9 @@ and conflicted files apart, and `--budget` caps the Markdown.
   first with `toimija intent "<why>" --scope <path>`.
 - **Git**: branch, HEAD, upstream, ahead and behind, merge-base, recent
   commits, and an operation in progress: a merge, rebase, cherry-pick, revert
-  or bisect.
+  or bisect. When the repository's other worktrees include finished ones, one
+  line counts them (`- finished worktrees: 2 elsewhere (`toimija sessions`
+  lists them)`); see [Finished worktrees](#finished-worktrees).
 - **Working tree**: staged, unstaged, untracked, renamed and conflicted paths,
   with rename origins and conflict stages where Git reports them.
 - **Changed surface**: working-tree changes together with the files changed by
@@ -574,6 +576,44 @@ and Toimija never signals or stops an agent.
   repository, and says so.
 
 Separate worktrees give real isolation: the same code, separate sessions.
+
+#### Finished worktrees
+
+A worktree outlives its work: the branch is merged and deleted on the forge,
+and the folder stays, with its build output. In a repository, `sessions` ends
+with the worktrees whose work is done, each with the command that removes it:
+
+```text
+FINISHED WORKTREES (nothing uncommitted, no live session)
+  /work/demo-login  (fix/login-redirect: branch gone on origin)
+    git worktree remove /work/demo-login
+  /work/demo-review  (detached: nothing origin/main lacks)
+    git worktree remove /work/demo-review
+  Check that no terminal is inside one before removing it. Its branch stays; ignored files such as build output go with the folder.
+```
+
+A worktree is listed when all of these hold:
+
+- It is a linked worktree: not the main one, and not the one the command runs
+  in.
+- Its branch's upstream is gone on origin (Git's `[gone]`: deleted there and
+  pruned here by a fetch), or the remote default branch already has its HEAD.
+  "Branch gone on origin" is what Git shows, not proof of a merge.
+- Nothing in it is the repository's work left uncommitted, counted as the
+  packet counts `dirty`: tool state under `.toimija/` and `.sykli/` is not.
+- It is not locked, and its folder is there.
+- No session that is not provably over has a marker in it.
+
+Toimija removes nothing. `--json` lists them under `finished_worktrees`, each
+with `path`, `branch` (null when detached), `reason` (`branch_gone` or
+`in_base`) and `against` (the gone upstream, or the default branch). A listing
+that could not be worked out whole adds a warning instead of looking complete.
+
+Whether there are other worktrees at all is read from the files in the common
+git dir, so a repository with none pays no git process for this. With some,
+it costs one `git worktree list`, one `for-each-ref`, one `rev-list` and one
+`git status` per worktree that could be finished. A workspace packet does not
+list them: it runs no git process per repository.
 
 ### `intent`
 
