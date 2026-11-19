@@ -890,7 +890,7 @@ fn git_named_mix_packages_do_not_hide_locked_git_sources() {
     sandbox.write(
         "app/mix.lock",
         r#"%{
-  "git_ops": {:hex, :git_ops, "2.0.0", "checksum", [:mix], [{:git_cli, "~> 0.2", [hex: :git_cli, repo: "hexpm", optional: false]}], "hexpm", "checksum"},
+  "git_ops": {:hex, :git_ops, "2.0.0", "checksum", [:mix], [{:git_cli, "~> 0.2", [hex: :git_cli, repo: "hexpm", optional: false]}, {:git, "~> 1.0", [hex: :git, repo: "hexpm", optional: false]}], "hexpm", "checksum"},
   "wire": {:git, "https://example.org/wire.git", "abc", []}
 }
 "#,

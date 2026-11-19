@@ -395,6 +395,18 @@ fn locked_git_sources(text: &str, comment: char) -> Result<Vec<String>, &'static
                 }
             }
             fields.push(&tokens[begin..ends[i]]);
+            // A Hex dependency can itself be named `git`; its third field
+            // is package options, not a source revision.
+            if comment == '#'
+                && fields.len() == 3
+                && fields[2].first() == Some(&Token::Mark('['))
+                && fields[2].last() == Some(&Token::Mark(']'))
+                && fields[2].windows(4).any(|part| {
+                    matches!(part, [Token::Word(key), Token::Mark(':'), Token::Mark(':'), Token::Word(_)] if key == "hex")
+                })
+            {
+                continue;
+            }
             let expected = if comment == '#' { 4 } else { 3 };
             if fields.len() != expected || fields.iter().any(|field| field.is_empty()) {
                 return Err("incomplete or malformed Git tuple in lockfile");
