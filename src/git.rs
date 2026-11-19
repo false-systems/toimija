@@ -257,6 +257,53 @@ pub fn discover_repo_root(
     )))
 }
 
+/// Find the worktree at `cwd` and the folders every worktree of its
+/// repository shares, with one git process from anywhere inside it:
+/// `--path-format=absolute` makes the answers absolute, so no second process
+/// at the root is needed. What a report needs to see the other worktrees,
+/// and no more. A path Git prints with a newline in it cannot be split from
+/// its neighbours: then only the root is read, as [`discover_repo_root`]
+/// reads it.
+pub fn locate(runner: &impl CommandRunner, cwd: &Path) -> Result<Worktree, ToimijaError> {
+    let output = runner
+        .run(cwd, "git", &LOCATE)
+        .map_err(|_| ToimijaError::CommandNotFound("git".to_string()))?;
+    if output.status != 0 {
+        return Err(ToimijaError::NotGitRepo);
+    }
+    let lines: Vec<&[u8]> = trim_ascii_end(&output.stdout)
+        .split(|byte| *byte == b'\n')
+        .collect();
+    match lines[..] {
+        [root, git_dir, common_dir] => Ok(Worktree {
+            root: crate::path_codec::from_git_bytes(root),
+            git_dir: None,
+            absolute_git_dir: Some(crate::path_codec::from_git_bytes(git_dir)),
+            common_dir: Some(crate::path_codec::from_git_bytes(common_dir)),
+            shallow: None,
+        }),
+        _ => discover_repo_root(runner, cwd).map(Worktree::at_root),
+    }
+}
+
+/// [`locate`]'s one process.
+const LOCATE: [&str; 5] = [
+    "rev-parse",
+    "--show-toplevel",
+    "--path-format=absolute",
+    "--absolute-git-dir",
+    "--git-common-dir",
+];
+
+/// One `git status` of the worktree at `root`, parsed: what a report reads of
+/// a worktree other than its own.
+pub(crate) fn read_parsed_status(
+    runner: &impl CommandRunner,
+    root: &Path,
+) -> Result<ParsedStatus, ToimijaError> {
+    read_status(runner, root).map(|(parsed, _duration)| parsed)
+}
+
 /// One `git status` in porcelain v2 with branch headers: every changed file,
 /// and HEAD and the branch in `# branch.oid` / `# branch.head`.
 fn read_status(
@@ -295,7 +342,7 @@ fn git_dir_of(runner: &impl CommandRunner, worktree: &Worktree) -> Option<PathBu
         .or_else(|| read_git_dir(runner, &worktree.root))
 }
 
-fn is_dirty(parsed: &ParsedStatus) -> bool {
+pub(crate) fn is_dirty(parsed: &ParsedStatus) -> bool {
     has_work(
         &parsed.staged_files,
         &parsed.unstaged_files,
@@ -766,7 +813,7 @@ fn discover_base(runner: &impl CommandRunner, repo_root: &Path) -> Option<Base> 
 /// Toimija never picks between two remotes that are not `origin`. The `*` of
 /// the listing's patterns does not cross a `/`, so a remote whose name holds
 /// one is not listed.
-fn remote_default_branch(listing: &str) -> Option<String> {
+pub(crate) fn remote_default_branch(listing: &str) -> Option<String> {
     let mut remotes: BTreeMap<&str, [Option<String>; 3]> = BTreeMap::new();
     for line in listing.lines() {
         let (refname, target) = line.split_once(' ').unwrap_or((line, ""));

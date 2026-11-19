@@ -16,3 +16,4 @@ mod session;
 mod sessions;
 mod validate;
 mod workspace;
+mod worktrees;
