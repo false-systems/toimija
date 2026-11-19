@@ -31,16 +31,34 @@ pub fn collect(
     declared: &[DeclaredRelationship],
     gaps: &mut Vec<NotRead>,
 ) -> Vec<Relationship> {
-    let repositories: Vec<_> = entries
+    let mut listed_names = BTreeSet::new();
+    let mut repositories = Vec::new();
+    for path in entries
         .iter()
         .filter(|path| fs::symlink_metadata(path.join(".git")).is_ok())
-        .filter_map(|path| {
-            Some((
-                path.file_name()?.to_str()?.to_owned(),
-                path.canonicalize().ok()?,
-            ))
-        })
-        .collect();
+    {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        listed_names.insert(name.to_string_lossy().into_owned());
+        let source = crate::path_codec::display(path);
+        let Some(name) = name.to_str() else {
+            gap(
+                gaps,
+                &source,
+                "non-UTF-8 repository name; dependencies not inferred",
+            );
+            continue;
+        };
+        match path.canonicalize() {
+            Ok(root) => repositories.push((name.to_owned(), root)),
+            Err(error) => gap(
+                gaps,
+                &source,
+                &format!("cannot resolve repository: {error}"),
+            ),
+        }
+    }
     let mut found = BTreeSet::new();
     for relation in declared {
         if [&relation.from, &relation.to, &relation.kind]
@@ -55,7 +73,7 @@ pub fn collect(
             continue;
         }
         for endpoint in [&relation.from, &relation.to] {
-            if !repositories.iter().any(|(name, _)| name == endpoint) {
+            if !listed_names.contains(endpoint) {
                 gap(
                     gaps,
                     super::WORKSPACE_PATH,
@@ -357,6 +375,9 @@ fn locked_git_sources(text: &str, comment: char) -> Result<Vec<String>, &'static
             continue;
         }
         let start = i + 1 + usize::from(tokens.get(i + 1) == Some(&Token::Mark(':')));
+        if matches!(tokens.get(start), Some(Token::Word(kind)) if kind.starts_with("git_")) {
+            return Err("unsupported Git lock source");
+        }
         if tokens.get(start) == Some(&Token::Word("git".into())) {
             let mut fields = Vec::new();
             let mut begin = i + 1;

@@ -730,6 +730,9 @@ is reported when `mix.exs` or `rebar.config` exists.
 Unbalanced containers and incomplete Git tuples are read gaps, not locked
 dependencies. Inference requires a literal URL and revision and the expected
 Git tuple shape; this structural check does not evaluate either language.
+Unsupported Git source variants (such as Rebar's `git_subdir`), non-UTF-8
+repository names and unresolvable repository paths are also read gaps.
+Declared connections still refer to every listed repository.
 
 Coverage is always explicitly **partial**: registry packages, nested manifests,
 dynamic path declarations, vendored provenance and runtime connections are not

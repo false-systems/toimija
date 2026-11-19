@@ -841,3 +841,43 @@ fn malformed_git_locks_are_gaps_not_locked_dependencies() {
         fs::remove_file(sandbox.root.join("app").join(file)).unwrap();
     }
 }
+
+// macOS filesystems reject this filename before Toimija can read it.
+#[cfg(target_os = "linux")]
+#[test]
+fn unsupported_repository_names_are_reported_not_silently_absent() {
+    use std::os::unix::ffi::OsStringExt;
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("relationships:\n  - from: app\n    to: odd�\n    kind: calls\n");
+    sandbox.repo("app", "ref: refs/heads/main\n");
+    let odd = sandbox
+        .root
+        .join(std::ffi::OsString::from_vec(b"odd\xff".to_vec()));
+    fs::create_dir_all(odd.join(".git")).unwrap();
+    fs::write(odd.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let packet = sandbox.stdout(&sandbox.root, &["enter", "--json"]);
+    assert!(packet.contains("non-UTF-8"), "{packet}");
+    assert!(!packet.contains("not present"), "{packet}");
+}
+
+#[test]
+fn unsupported_git_lock_sources_are_read_gaps() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("");
+    sandbox.repo("app", "ref: refs/heads/main\n");
+    sandbox.write("app/rebar.lock", r#"{"1.2.0", [{wire, {git_subdir, "https://example.org/wire.git", {ref, "abc"}, "subdir"}, 0}]}.
+"#);
+    let packet: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
+    assert_eq!(
+        packet["not_read"].as_array().unwrap().len(),
+        1,
+        "{packet:#}"
+    );
+    assert!(
+        packet["not_read"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported Git lock source")
+    );
+}
