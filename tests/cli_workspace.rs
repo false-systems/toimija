@@ -764,3 +764,80 @@ fn relationship_text_cannot_forge_packet_headings() {
     assert!(!packet.contains("\n## Forged heading"), "{packet}");
     assert!(packet.contains("calls\\n## Forged heading"), "{packet}");
 }
+
+#[test]
+fn unused_cargo_patches_and_workspace_templates_are_only_candidates() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("");
+    for name in ["app", "override", "template", "direct"] {
+        sandbox.repo(name, "ref: refs/heads/main\n");
+    }
+    sandbox.write(
+        "app/Cargo.toml",
+        r#"
+[dependencies]
+direct = { path = "../direct" }
+[patch.crates-io]
+unused = { path = "../override" }
+[workspace.dependencies]
+template = { path = "../template" }
+"#,
+    );
+    let packet: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
+    let relations = packet["relationships"].as_array().unwrap();
+    let kind = |target| {
+        relations.iter().find(|r| r["to"] == target).unwrap()["kind"]
+            .as_str()
+            .unwrap()
+    };
+    assert_eq!(kind("direct"), "dependencies");
+    assert_eq!(kind("override"), "patch candidate (may be unused)");
+    assert_eq!(
+        kind("template"),
+        "workspace dependency candidate (may be unused)"
+    );
+}
+
+#[test]
+fn malformed_git_locks_are_gaps_not_locked_dependencies() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("");
+    sandbox.repo("app", "ref: refs/heads/main\n");
+    for (file, invalid) in [
+        (
+            "mix.lock",
+            "%{\"wire\" => {:git, \"https://example.org/wire.git\",",
+        ),
+        (
+            "mix.lock",
+            "%{\"wire\" => {:git, \"https://example.org/wire.git\", \"abc\", []] }",
+        ),
+        (
+            "mix.lock",
+            "%{\"wire\" => {:git, \"https://example.org/wire.git\",}}",
+        ),
+        (
+            "rebar.lock",
+            "{\"1.2.0\", [{wire, {git, \"https://example.org/wire.git\",",
+        ),
+        (
+            "rebar.lock",
+            "[{wire, {git, \"https://example.org/wire.git\",}, 0}].",
+        ),
+    ] {
+        sandbox.write(&format!("app/{file}"), invalid);
+        let packet: serde_json::Value =
+            serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
+        assert!(
+            packet["relationships"].as_array().unwrap().is_empty(),
+            "{invalid}: {packet:#}"
+        );
+        assert_eq!(
+            packet["not_read"].as_array().unwrap().len(),
+            1,
+            "{invalid}: {packet:#}"
+        );
+        fs::remove_file(sandbox.root.join("app").join(file)).unwrap();
+    }
+}

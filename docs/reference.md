@@ -721,10 +721,15 @@ Cargo path dependencies are resolved against the manifest folder and matched
 to the listed repositories on canonical paths. Git dependencies are shown as
 repository URLs, without credentials or revision selectors. Cargo's root
 dependency tables, including workspace, target and patch tables, are read;
-lockfile Git sources may be transitive and say so. Mix and Rebar lockfiles
+workspace templates and patch overrides are labelled as candidates that may
+be unused, not as dependencies of the package declaring them.
+Lockfile Git sources may be transitive and say so. Mix and Rebar lockfiles
 contribute only literal Git source tuples, never text inside comments or
 quoted examples. Their build definitions are not executed; a missing lockfile
 is reported when `mix.exs` or `rebar.config` exists.
+Unbalanced containers and incomplete Git tuples are read gaps, not locked
+dependencies. Inference requires a literal URL and revision and the expected
+Git tuple shape; this structural check does not evaluate either language.
 
 Coverage is always explicitly **partial**: registry packages, nested manifests,
 dynamic path declarations, vendored provenance and runtime connections are not

@@ -109,7 +109,15 @@ pub fn collect(
                         }
                     }
                 } else {
-                    cargo_dependencies(&value, repository, &repositories, &source, gaps, &mut add);
+                    cargo_dependencies(
+                        &value,
+                        repository,
+                        &repositories,
+                        &source,
+                        None,
+                        gaps,
+                        &mut add,
+                    );
                 }
             } else {
                 match locked_git_sources(&text, if file == "mix.lock" { '#' } else { '%' }) {
@@ -176,6 +184,7 @@ fn cargo_dependencies(
     repository: &Path,
     repositories: &[(String, PathBuf)],
     source: &str,
+    candidate: Option<&str>,
     gaps: &mut Vec<NotRead>,
     add: &mut impl FnMut(String, &str),
 ) {
@@ -183,7 +192,7 @@ fn cargo_dependencies(
         if let Some(deps) = value.get(section).and_then(toml::Value::as_table) {
             for (name, dependency) in deps {
                 if let Some(url) = dependency.get("git").and_then(toml::Value::as_str) {
-                    add(public_git_url(url), section);
+                    add(public_git_url(url), candidate.unwrap_or(section));
                 }
                 if let Some(path) = dependency.get("path").and_then(toml::Value::as_str) {
                     match repository.join(path).canonicalize() {
@@ -193,7 +202,7 @@ fn cargo_dependencies(
                                 .filter(|(_, root)| path.starts_with(root))
                                 .max_by_key(|(_, root)| root.components().count())
                             {
-                                add(name.clone(), section);
+                                add(name.clone(), candidate.unwrap_or(section));
                             } else {
                                 gap(
                                     gaps,
@@ -215,11 +224,27 @@ fn cargo_dependencies(
         }
     }
     if let Some(workspace) = value.get("workspace") {
-        cargo_dependencies(workspace, repository, repositories, source, gaps, add);
+        cargo_dependencies(
+            workspace,
+            repository,
+            repositories,
+            source,
+            Some("workspace dependency candidate (may be unused)"),
+            gaps,
+            add,
+        );
     }
     if let Some(targets) = value.get("target").and_then(toml::Value::as_table) {
         for target in targets.values() {
-            cargo_dependencies(target, repository, repositories, source, gaps, add);
+            cargo_dependencies(
+                target,
+                repository,
+                repositories,
+                source,
+                candidate,
+                gaps,
+                add,
+            );
         }
     }
     if let Some(patches) = value.get("patch").and_then(toml::Value::as_table) {
@@ -231,6 +256,7 @@ fn cargo_dependencies(
                 repository,
                 repositories,
                 source,
+                Some("patch candidate (may be unused)"),
                 gaps,
                 add,
             );
@@ -303,17 +329,68 @@ fn locked_git_sources(text: &str, comment: char) -> Result<Vec<String>, &'static
             tokens.push(Token::Mark(c));
         }
     }
+    // Keep matching delimiters so a complete URL in a truncated file does
+    // not become a claim that the dependency was successfully locked.
+    let mut stack = Vec::new();
+    let mut ends = vec![0; tokens.len()];
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Mark(open @ ('{' | '[' | '(')) => stack.push((i, *open)),
+            Token::Mark(close @ ('}' | ']' | ')')) => {
+                let Some((start, open)) = stack.pop() else {
+                    return Err("unmatched closing delimiter in lockfile");
+                };
+                if !matches!((open, close), ('{', '}') | ('[', ']') | ('(', ')')) {
+                    return Err("mismatched delimiters in lockfile");
+                }
+                ends[start] = i;
+            }
+            _ => {}
+        }
+    }
+    if !stack.is_empty() {
+        return Err("unfinished container in lockfile");
+    }
     let mut urls = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
         if *token != Token::Mark('{') {
             continue;
         }
         let start = i + 1 + usize::from(tokens.get(i + 1) == Some(&Token::Mark(':')));
-        if tokens.get(start) == Some(&Token::Word("git".into()))
-            && tokens.get(start + 1) == Some(&Token::Mark(','))
-            && let Some(Token::Text(url)) = tokens.get(start + 2)
-            && tokens.get(start + 3) == Some(&Token::Mark(','))
-        {
+        if tokens.get(start) == Some(&Token::Word("git".into())) {
+            let mut fields = Vec::new();
+            let mut begin = i + 1;
+            let mut at = begin;
+            while at < ends[i] {
+                if ends[at] > at {
+                    at = ends[at] + 1;
+                } else if tokens[at] == Token::Mark(',') {
+                    fields.push(&tokens[begin..at]);
+                    begin = at + 1;
+                    at += 1;
+                } else {
+                    at += 1;
+                }
+            }
+            fields.push(&tokens[begin..ends[i]]);
+            let expected = if comment == '#' { 4 } else { 3 };
+            if fields.len() != expected || fields.iter().any(|field| field.is_empty()) {
+                return Err("incomplete or malformed Git tuple in lockfile");
+            }
+            let [Token::Text(url)] = fields[1] else {
+                return Err("Git source is not a literal URL");
+            };
+            let revision = if comment == '#' {
+                matches!(fields[2], [Token::Text(value)] if !value.is_empty())
+                    && fields[3].first() == Some(&Token::Mark('['))
+                    && fields[3].last() == Some(&Token::Mark(']'))
+            } else {
+                matches!(fields[2], [Token::Mark('{'), Token::Word(kind), Token::Mark(','), Token::Text(value), Token::Mark('}')]
+                    if matches!(kind.as_str(), "ref" | "tag" | "branch") && !value.is_empty())
+            };
+            if !revision || url.is_empty() {
+                return Err("Git tuple lacks a literal revision or valid options");
+            }
             if url.contains("#{") {
                 return Err("interpolated Git source is not a literal dependency");
             }
