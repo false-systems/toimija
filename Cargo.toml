@@ -32,6 +32,7 @@ libc = "0.2"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+toml = { version = "1.2.1", default-features = false, features = ["parse", "serde", "std"] }
 
 [dev-dependencies]
 assert_cmd = "2"

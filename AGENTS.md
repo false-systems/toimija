@@ -12,7 +12,7 @@ Keep changes small and reviewable. Toimija has five commands: `run`, `enter`, `s
 - Work the packet out when it is asked for; never write it to disk. Nothing Toimija says may need refreshing or verifying.
 - Start no git process while an agent runs under `run`, and keep git processes per command minimal; `tests/cli_budgets.rs` pins them.
 - No network calls, no background daemons. `run` lives only as long as its agent, and a session's marker only as long as its `run`.
-- Sessions outside any Git repository live in the machine-local state directory, never a `.toimija/` folder where the agent works. A workspace (`.toimija/workspace.yaml`) is read from files only: no git process per repository, nothing written.
+- Sessions outside any Git repository live in the machine-local state directory, never a `.toimija/` folder where the agent works. A workspace (`.toimija/workspace.yaml`) reports repositories, session scopes and declared or inferred relationships from bounded file reads: no git process per repository, build execution or persistent index. Dependency evidence is partial, with sources and read gaps, never an ownership decision.
 - No MCP, LSP, SCIP, Tree-sitter or Kythe integration. Toimija runs no checks and writes no receipts (that is sykli's), and does no dispatch, assignment or closure of work.
 
 ## Checks
