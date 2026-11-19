@@ -479,7 +479,7 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
     if !packet.not_read.is_empty() {
         writeln!(out, "\n## Not read").unwrap();
         for item in &packet.not_read {
-            writeln!(out, "- {}: {}", item.what, item.reason).unwrap();
+            writeln!(out, "- {}: {}", escaped(&item.what), escaped(&item.reason)).unwrap();
         }
     }
 

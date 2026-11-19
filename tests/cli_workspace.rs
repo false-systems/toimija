@@ -766,6 +766,21 @@ fn relationship_text_cannot_forge_packet_headings() {
 }
 
 #[test]
+fn dependency_read_gaps_cannot_forge_packet_headings() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("");
+    sandbox.repo("app\n## Forged heading", "ref: refs/heads/main\n");
+    sandbox.write("app\n## Forged heading/Cargo.toml", "[invalid");
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
+    let gaps = packet.split_once("\n## Not read\n").unwrap().1;
+    assert!(!gaps.contains("\n## Forged heading"), "{gaps}");
+    assert!(
+        gaps.contains("app\\n## Forged heading/Cargo.toml"),
+        "{gaps}"
+    );
+}
+
+#[test]
 fn unused_cargo_patches_and_workspace_templates_are_only_candidates() {
     let sandbox = Sandbox::new();
     sandbox.workspace_file("");
@@ -923,6 +938,8 @@ fn ambiguous_git_urls_are_gaps_without_credential_fragments() {
         "https://user:test-secret/remaining?query@host/wire.git",
         "https://user:test-secret?query@host/wire.git",
         "https://user:123/test-secret?query@host/wire.git",
+        "https://user:123#test-secret@host/wire.git",
+        "https://user:123?test-secret@host/wire.git",
     ] {
         sandbox.write(
             "app/Cargo.toml",

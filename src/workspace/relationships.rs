@@ -289,6 +289,10 @@ fn cargo_dependencies(
 /// URL identity only: credentials, revision selectors and fragments are not
 /// needed to describe a repository connection and must not enter the packet.
 fn public_git_url(raw: &str, source: &str, gaps: &mut Vec<NotRead>) -> Option<String> {
+    let ambiguous_userinfo = raw
+        .split_once("://")
+        .and_then(|(_, rest)| rest.rsplit_once('@'))
+        .is_some_and(|(prefix, _)| prefix.contains(['/', '?', '#']));
     let url = raw.split(['?', '#']).next().unwrap_or(raw);
     if let Some((scheme, rest)) = url.split_once("://") {
         let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
@@ -299,11 +303,7 @@ fn public_git_url(raw: &str, source: &str, gaps: &mut Vec<NotRead>) -> Option<St
             && host.rsplit_once(':').is_some_and(|(_, port)| {
                 port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit())
             });
-        let ambiguous_path = raw
-            .split_once("://")
-            .and_then(|(_, rest)| rest.split_once('/'))
-            .is_some_and(|(_, path)| path.contains('@'));
-        if ambiguous_path || invalid_port {
+        if ambiguous_userinfo || invalid_port {
             gap(
                 gaps,
                 source,
