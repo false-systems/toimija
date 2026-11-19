@@ -237,12 +237,25 @@ pub fn build(name: &str, root: &Path) -> PathBuf {
 }
 
 /// The worktrees `finished-worktrees` lists from the main checkout, and why:
-/// a branch gone on origin, or nothing `origin/main` lacks.
-pub const FINISHED: [(&str, &str); 4] = [
-    ("detached", "in_base"),
+/// a branch gone on origin, or a branch still on origin whose every commit
+/// `origin/main` has.
+pub const FINISHED: [(&str, &str); 3] = [
     ("gone", "branch_gone"),
     ("gone-generated", "branch_gone"),
-    ("in-base", "in_base"),
+    ("merged", "in_base"),
+];
+
+/// The worktrees `finished-worktrees` keeps out of the listing.
+pub const KEPT: [&str; 9] = [
+    "gone-dirty",
+    "gone-untracked",
+    "gone-locked",
+    "gone-session",
+    "gone-removed",
+    "open",
+    "unpushed",
+    "in-base",
+    "detached",
 ];
 
 /// A clone on `main` with linked worktrees under `root/wt/`, one per case a
@@ -325,7 +338,16 @@ fn finished_worktrees(root: &Path) -> PathBuf {
     // A commit never pushed, on a branch tracking origin/main.
     add("unpushed", &["-b", "unpushed"]);
     commit("unpushed");
-    // Nothing of its own: a branch at origin/main, and a detached checkout.
+    // Pushed to a branch of its own, then merged into main by fast-forward,
+    // and the branch kept on origin.
+    add("merged", &["-b", "merged"]);
+    commit("merged");
+    git(&wt("merged"), &["push", "-q", "-u", "origin", "merged"]);
+    git(&wt("merged"), &["push", "-q", "origin", "merged:main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    // Nothing of its own: a branch made from origin/main and still tracking
+    // it, and a detached checkout. By Git's state alone, each could be one
+    // made a minute ago for work about to start, so neither is listed.
     add("in-base", &["-b", "in-base"]);
     git(
         &repo,

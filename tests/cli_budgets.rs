@@ -172,7 +172,7 @@ const LOCATE: [&str; 5] = [
 /// there is one is read from the files in the common git dir. Where there
 /// are some, three processes name them, their branches' upstreams and what
 /// the remote default branch already has, and one `status` reads each that
-/// could be finished and has no live session in it. The scenario has six such.
+/// could be finished and has no live session in it. The scenario has five such.
 #[test]
 fn finished_worktrees_cost_three_and_a_status_per_candidate() {
     if !git_available() {
@@ -187,14 +187,13 @@ fn finished_worktrees_cost_three_and_a_status_per_candidate() {
         "status",
         "status",
         "status",
-        "status",
     ];
     let sandbox = Sandbox::new("finished-worktrees");
-    let calls = sandbox.assert_budget(&["sessions", "--json"], 0, 10);
+    let calls = sandbox.assert_budget(&["sessions", "--json"], 0, 9);
     assert_eq!(calls[0], LOCATE, "{calls:#?}");
     assert_eq!(verbs(&calls)[1..], finished, "{calls:#?}");
-    // The packet: the clean checkout's five, then the same nine.
-    let calls = sandbox.assert_budget(&["enter", "--json"], 0, 14);
+    // The packet: the clean checkout's five, then the same eight.
+    let calls = sandbox.assert_budget(&["enter", "--json"], 0, 13);
     assert_eq!(verbs(&calls)[5..], finished, "{calls:#?}");
 }
 

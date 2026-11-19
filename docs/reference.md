@@ -587,8 +587,8 @@ with the worktrees whose work is done, each with the command that removes it:
 FINISHED WORKTREES (nothing uncommitted, no live session)
   /work/demo-login  (fix/login-redirect: branch gone on origin)
     git worktree remove /work/demo-login
-  /work/demo-review  (detached: nothing origin/main lacks)
-    git worktree remove /work/demo-review
+  /work/demo-docs  (docs/setup: nothing origin/main lacks)
+    git worktree remove /work/demo-docs
   Check that no terminal is inside one before removing it. Its branch stays; ignored files such as build output go with the folder.
 ```
 
@@ -597,15 +597,21 @@ A worktree is listed when all of these hold:
 - It is a linked worktree: not the main one, and not the one the command runs
   in.
 - Its branch's upstream is gone on origin (Git's `[gone]`: deleted there and
-  pruned here by a fetch), or the remote default branch already has its HEAD.
-  "Branch gone on origin" is what Git shows, not proof of a merge.
+  pruned here by a fetch). "Branch gone on origin" is what Git shows, not
+  proof of a merge.
+- Or its branch was pushed to an upstream of its own that is still there, and
+  the remote default branch already has its HEAD: a merge that kept the
+  branch.
+- Never a branch that still tracks the default branch or has no upstream, nor
+  a detached HEAD: by Git's state alone, such a worktree cannot be told from
+  one made a minute ago for work about to start.
 - Nothing in it is the repository's work left uncommitted, counted as the
   packet counts `dirty`: tool state under `.toimija/` and `.sykli/` is not.
 - It is not locked, and its folder is there.
 - No session that is not provably over has a marker in it.
 
 Toimija removes nothing. `--json` lists them under `finished_worktrees`, each
-with `path`, `branch` (null when detached), `reason` (`branch_gone` or
+with `path`, `branch`, `reason` (`branch_gone` or
 `in_base`) and `against` (the gone upstream, or the default branch). A listing
 that could not be worked out whole adds a warning instead of looking complete.
 

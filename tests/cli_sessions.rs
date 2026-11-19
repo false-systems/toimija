@@ -354,7 +354,7 @@ fn sessions_lists_the_finished_worktrees_and_only_those() {
     let expected: Vec<(String, String, Option<String>, String)> = common::scenarios::FINISHED
         .iter()
         .map(|(name, reason)| {
-            let branch = (*name != "detached").then(|| name.to_string());
+            let branch = Some(name.to_string());
             let against = match *reason {
                 "branch_gone" => format!("origin/{name}"),
                 _ => "origin/main".to_string(),
@@ -385,19 +385,11 @@ fn sessions_says_how_to_remove_each_and_removes_nothing() {
     }
     assert!(text.contains("(gone: branch gone on origin)"), "{text}");
     assert!(
-        text.contains("(detached: nothing origin/main lacks)"),
+        text.contains("(merged: nothing origin/main lacks)"),
         "{text}"
     );
     assert!(text.contains("no terminal is inside"), "{text}");
-    for kept in [
-        "gone-dirty",
-        "gone-untracked",
-        "gone-locked",
-        "gone-session",
-        "gone-removed",
-        "open",
-        "unpushed",
-    ] {
+    for kept in common::scenarios::KEPT {
         assert!(!text.contains(&format!("/wt/{kept}")), "{kept}: {text}");
     }
     assert_eq!(
@@ -420,11 +412,7 @@ fn a_worktree_does_not_list_itself() {
         .into_iter()
         .map(|item| item.0)
         .collect();
-    assert_eq!(
-        names,
-        ["detached", "gone-generated", "in-base"],
-        "{value:#}"
-    );
+    assert_eq!(names, ["gone-generated", "merged"], "{value:#}");
 }
 
 /// The packet says it in one line, and only when there is something to say.
@@ -441,14 +429,14 @@ fn the_packet_counts_finished_worktrees_in_one_line() {
         .collect();
     assert_eq!(
         lines,
-        ["- finished worktrees: 4 elsewhere (`toimija sessions` lists them)"],
+        ["- finished worktrees: 3 elsewhere (`toimija sessions` lists them)"],
         "{text}"
     );
     let value: serde_json::Value =
         serde_json::from_str(&toimija_out(&repo, &["enter", "--json"])).unwrap();
     assert_eq!(
         value["finished_worktrees"].as_array().map(Vec::len),
-        Some(4)
+        Some(3)
     );
 
     let clean = tempfile::tempdir().unwrap();

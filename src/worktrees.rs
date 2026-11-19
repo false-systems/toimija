@@ -5,7 +5,11 @@
 //! - it is a linked worktree, not the main one and not the one the command
 //!   runs in (no one removes the folder they stand in);
 //! - its branch's upstream is gone on origin (deleted there and pruned here,
-//!   Git's `[gone]`), or its HEAD is already in the remote default branch;
+//!   Git's `[gone]`), or its branch was pushed to an upstream of its own that
+//!   is still there and the remote default branch already has its HEAD (a
+//!   merge that kept the branch). A branch that still tracks the default
+//!   branch or has no upstream, and a detached HEAD, are never listed: by
+//!   Git's state they cannot be told from a worktree made a minute ago;
 //! - nothing in it is the repository's work left uncommitted, as the packet
 //!   counts it: tool state under `.toimija/` and `.sykli/` is not work;
 //! - it is not locked, and its folder is there;
@@ -40,8 +44,8 @@ const SOURCE: &str = "finished worktrees (git worktree list, for-each-ref, rev-l
 pub struct FinishedWorktree {
     #[serde(with = "crate::path_codec::one")]
     pub path: PathBuf,
-    /// Its branch's short name; `None` when its HEAD is detached.
-    pub branch: Option<String>,
+    /// Its branch's short name. A detached HEAD is never listed.
+    pub branch: String,
     pub reason: Reason,
     /// The upstream that is gone, or the remote default branch that already
     /// has HEAD, by its short name (`origin/main`).
@@ -131,24 +135,39 @@ pub fn find<R: CommandRunner>(runner: &R, here: &Worktree) -> Finished {
         Err(reason) => return Finished::failed(format!("git for-each-ref: {reason}")),
     };
 
-    // Gone on origin first; the rest are finished only if the remote default
-    // branch already has their HEAD, asked for all of them at once.
+    // Gone on origin first. A branch pushed to an upstream of its own that is
+    // still there is finished if the remote default branch already has its
+    // HEAD, asked for all such at once. A branch still tracking the default
+    // branch, one with no upstream, and a detached HEAD are never listed: by
+    // Git's state they cannot be told from a worktree made a minute ago for
+    // work about to start.
+    let base = refs.base();
     let mut candidates = Vec::new();
-    let mut unsettled = Vec::new();
+    // Branches with an upstream of their own still there, with their HEADs.
+    let mut unsettled: Vec<(FinishedWorktree, String)> = Vec::new();
     for entry in linked {
-        match entry
-            .branch
+        let (Some(branch), Some(head)) = (entry.branch, entry.head) else {
+            continue;
+        };
+        let mut candidate = FinishedWorktree {
+            path: entry.path,
+            branch: short_ref(&branch).to_owned(),
+            reason: Reason::BranchGone,
+            against: String::new(),
+        };
+        if let Some(upstream) = refs.gone_upstream(&branch) {
+            candidate.against = upstream;
+            candidates.push(candidate);
+        } else if base
             .as_deref()
-            .and_then(|branch| refs.gone_upstream(branch))
+            .is_some_and(|base| refs.has_own_upstream(&branch, base))
         {
-            Some(upstream) => candidates.push((entry, Reason::BranchGone, upstream)),
-            None => unsettled.push(entry),
+            unsettled.push((candidate, head));
         }
     }
-    if let (Some(base), false) = (refs.base(), unsettled.is_empty()) {
-        let heads: Vec<&str> = unsettled.iter().filter_map(|e| e.head.as_deref()).collect();
+    if let (Some(base), false) = (base, unsettled.is_empty()) {
         let mut args = vec!["rev-list"];
-        args.extend(heads.iter().copied());
+        args.extend(unsettled.iter().map(|(_, head)| head.as_str()));
         args.extend(["--not", base.as_str()]);
         let lacking: BTreeSet<String> = match git::run_git_observed(runner, &here.root, &args) {
             Ok(bytes) => String::from_utf8_lossy(&bytes)
@@ -157,37 +176,29 @@ pub fn find<R: CommandRunner>(runner: &R, here: &Worktree) -> Finished {
                 .collect(),
             Err(reason) => return Finished::failed(format!("git rev-list: {reason}")),
         };
-        let short = short_ref(&base).to_owned();
-        for entry in unsettled {
-            if entry
-                .head
-                .as_ref()
-                .is_some_and(|head| !lacking.contains(head))
-            {
-                candidates.push((entry, Reason::InBase, short.clone()));
+        for (mut candidate, head) in unsettled {
+            if !lacking.contains(&head) {
+                candidate.reason = Reason::InBase;
+                candidate.against = short_ref(&base).to_owned();
+                candidates.push(candidate);
             }
         }
     }
 
     let mut finished = Finished::none();
-    for (entry, reason, against) in candidates {
-        match settled(runner, &entry.path) {
-            Ok(true) => finished.worktrees.push(FinishedWorktree {
-                path: entry.path,
-                branch: entry.branch.as_deref().map(|b| short_ref(b).to_owned()),
-                reason,
-                against,
-            }),
+    for candidate in candidates {
+        match settled(runner, &candidate.path) {
+            Ok(true) => finished.worktrees.push(candidate),
             Ok(false) => {}
             Err(reason) => {
                 debug!(
                     event = "toimija.worktrees.unreadable",
-                    path = %entry.path.display(),
+                    path = %candidate.path.display(),
                     reason = %reason
                 );
                 finished.coverage = Coverage::degraded(
                     SOURCE,
-                    format!("{}: {reason}", crate::path_codec::display(&entry.path)),
+                    format!("{}: {reason}", crate::path_codec::display(&candidate.path)),
                 );
             }
         }
@@ -330,6 +341,14 @@ impl RefListing {
             .map(|(_, upstream, _, _)| short_ref(upstream).to_owned())
     }
 
+    /// Whether `branch` was pushed to an upstream of its own that Git does not
+    /// report gone: one that is not `base`, the remote default branch.
+    fn has_own_upstream(&self, branch: &str, base: &str) -> bool {
+        self.rows.iter().any(|(refname, upstream, track, _)| {
+            refname == branch && !upstream.is_empty() && upstream != base && track != "[gone]"
+        })
+    }
+
     /// The remote default branch, as the packet's base is found:
     /// `origin/HEAD`'s target, else what [`git::remote_default_branch`] picks.
     /// A full ref (`refs/remotes/origin/main`); `None` with no remote one.
@@ -372,7 +391,7 @@ pub fn render_text(worktrees: &[FinishedWorktree]) -> String {
             Reason::BranchGone => "branch gone on origin".to_string(),
             Reason::InBase => format!("nothing {} lacks", worktree.against),
         };
-        let name = worktree.branch.as_deref().unwrap_or("detached");
+        let name = &worktree.branch;
         writeln!(out, "  {path}  ({name}: {why})").unwrap();
         writeln!(out, "    git worktree remove {}", shell_word(&path)).unwrap();
     }
@@ -447,6 +466,19 @@ mod tests {
         ] {
             assert_eq!(refs.gone_upstream(branch), None, "{branch}");
         }
+        // Only `b` has an upstream of its own still there: `a`'s is gone,
+        // `c` has none, and `d` tracks the default branch itself.
+        let base = "refs/remotes/origin/main";
+        let own: Vec<&str> = [
+            "refs/heads/a",
+            "refs/heads/b",
+            "refs/heads/c",
+            "refs/heads/d",
+        ]
+        .into_iter()
+        .filter(|branch| refs.has_own_upstream(branch, base))
+        .collect();
+        assert_eq!(own, ["refs/heads/b"]);
     }
 
     #[test]
@@ -481,7 +513,7 @@ mod tests {
         assert_eq!(packet_line(&[]), None);
         let one = FinishedWorktree {
             path: PathBuf::from("/w/a"),
-            branch: None,
+            branch: "docs/setup".into(),
             reason: Reason::InBase,
             against: "origin/main".into(),
         };
