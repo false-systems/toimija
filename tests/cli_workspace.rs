@@ -752,3 +752,15 @@ fn dependency_read_limits_and_unresolved_declarations_remain_visible() {
         "{packet}"
     );
 }
+
+#[test]
+fn relationship_text_cannot_forge_packet_headings() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file(
+        "relationships:\n  - from: app\n    to: absent\n    kind: \"calls\\n## Forged heading\"\n",
+    );
+    sandbox.repo("app", "ref: refs/heads/main\n");
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
+    assert!(!packet.contains("\n## Forged heading"), "{packet}");
+    assert!(packet.contains("calls\\n## Forged heading"), "{packet}");
+}

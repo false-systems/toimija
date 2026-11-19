@@ -448,11 +448,16 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
     }
 
     writeln!(out, "\n## Repository relationships").unwrap();
+    let escaped = |text: &str| crate::path_codec::display(Path::new(text));
     for relation in &packet.relationships {
         writeln!(
             out,
             "- {} → {}: {} [{}; {}]",
-            relation.from, relation.to, relation.kind, relation.basis, relation.source
+            escaped(&relation.from),
+            escaped(&relation.to),
+            escaped(&relation.kind),
+            relation.basis,
+            escaped(&relation.source)
         )
         .unwrap();
     }
@@ -484,7 +489,12 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
 
 fn render_scope(out: &mut String, session: &OpenSession, indent: &str) {
     if !session.scope.is_empty() {
-        writeln!(out, "{indent}scope: {}", session.scope.join(", ")).unwrap();
+        let paths: Vec<_> = session
+            .scope
+            .iter()
+            .map(|path| crate::path_codec::display(Path::new(path)))
+            .collect();
+        writeln!(out, "{indent}scope: {}", paths.join(", ")).unwrap();
     }
 }
 
