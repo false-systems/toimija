@@ -21,6 +21,9 @@ use crate::config::RepoConfig;
 use crate::session::{self, Handover};
 use crate::sessions::{self, Liveness, SessionView};
 
+mod relationships;
+use relationships::{DeclaredRelationship, Relationship};
+
 /// The file that makes a folder a workspace, relative to the folder.
 pub const WORKSPACE_PATH: &str = ".toimija/workspace.yaml";
 
@@ -38,6 +41,7 @@ run `toimija enter` inside a repository for them.";
 pub struct WorkspaceFile {
     pub role: Option<String>,
     pub read_first: Vec<PathBuf>,
+    pub relationships: Vec<DeclaredRelationship>,
 }
 
 /// The nearest folder at or above `cwd` that holds a workspace file. The
@@ -73,6 +77,8 @@ pub struct WorkspacePacket {
     pub repositories: Vec<Repository>,
     /// Sessions open in the workspace folder itself, outside any repository.
     pub sessions: Vec<OpenSession>,
+    pub relationships: Vec<Relationship>,
+    pub relationship_coverage: &'static str,
     /// What could not be read, each with its reason. Never dropped silently.
     pub not_read: Vec<NotRead>,
     pub not_included: &'static str,
@@ -115,6 +121,7 @@ pub struct OpenSession {
     /// `live` or `stale`.
     pub liveness: &'static str,
     pub intent: Option<String>,
+    pub scope: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -179,6 +186,7 @@ pub fn build(runner: &dyn CommandRunner, root: &Path) -> Result<WorkspacePacket>
     });
 
     let sessions = folder_sessions(runner, root, &mut not_read);
+    let relationships = relationships::collect(&entries, &file.relationships, &mut not_read);
 
     Ok(WorkspacePacket {
         schema: SCHEMA,
@@ -189,6 +197,8 @@ pub fn build(runner: &dyn CommandRunner, root: &Path) -> Result<WorkspacePacket>
         },
         repositories,
         sessions,
+        relationships,
+        relationship_coverage: relationships::COVERAGE,
         not_read,
         not_included: NOT_INCLUDED,
     })
@@ -306,6 +316,7 @@ fn open_session(view: &SessionView) -> OpenSession {
             Liveness::Stale => "stale",
         },
         intent: view.marker.intent.clone(),
+        scope: view.marker.scope.clone(),
     }
 }
 
@@ -426,6 +437,7 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
         }
         for session in &repository.sessions {
             writeln!(out, "  - session: {}", session_line(session)).unwrap();
+            render_scope(&mut out, session, "    ");
         }
         match &repository.handover {
             Some(handover) => {
@@ -435,12 +447,27 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
         }
     }
 
+    writeln!(out, "\n## Repository relationships").unwrap();
+    for relation in &packet.relationships {
+        writeln!(
+            out,
+            "- {} → {}: {} [{}; {}]",
+            relation.from, relation.to, relation.kind, relation.basis, relation.source
+        )
+        .unwrap();
+    }
+    if packet.relationships.is_empty() {
+        writeln!(out, "- none found (not proof of independence)").unwrap();
+    }
+    writeln!(out, "{}", packet.relationship_coverage).unwrap();
+
     writeln!(out, "\n## Sessions in this folder").unwrap();
     if packet.sessions.is_empty() {
         writeln!(out, "- none").unwrap();
     }
     for session in &packet.sessions {
         writeln!(out, "- {}", session_line(session)).unwrap();
+        render_scope(&mut out, session, "  ");
     }
 
     if !packet.not_read.is_empty() {
@@ -453,6 +480,12 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
     writeln!(out, "\n## Not in this packet").unwrap();
     writeln!(out, "{}", packet.not_included).unwrap();
     out
+}
+
+fn render_scope(out: &mut String, session: &OpenSession, indent: &str) {
+    if !session.scope.is_empty() {
+        writeln!(out, "{indent}scope: {}", session.scope.join(", ")).unwrap();
+    }
 }
 
 /// The longest role, intent or handover line shown for one repository. The

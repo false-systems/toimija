@@ -593,3 +593,162 @@ fn a_repository_with_an_open_session_is_listed_first_with_that_session() {
     let not_read = &packet[packet.find("## Not read\n").expect("a Not read section")..];
     assert!(not_read.contains("alpha: sessions"), "{packet}");
 }
+
+#[test]
+fn declared_connections_and_manifest_dependencies_are_distinct_and_cited() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file(
+        "relationships:\n  - from: recorder\n    to: store\n    kind: sends evidence\n",
+    );
+    sandbox.repo("recorder", "ref: refs/heads/main\n");
+    sandbox.repo("store", "ref: refs/heads/main\n");
+    sandbox.write(
+        "recorder/Cargo.toml",
+        r#"
+[package]
+name = "recorder"
+version = "0.1.0"
+[dependencies]
+store = { path = "../store" }
+wire = { git = "https://example.org/team/wire.git" }
+"#,
+    );
+    let packet: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
+    let relations = packet["relationships"].as_array().unwrap();
+    assert!(relations.iter().any(|r| r["from"] == "recorder"
+        && r["to"] == "store"
+        && r["kind"] == "sends evidence"
+        && r["basis"] == "declared"
+        && r["source"] == ".toimija/workspace.yaml"));
+    assert!(relations.iter().any(|r| r["from"] == "recorder"
+        && r["to"] == "store"
+        && r["basis"] == "inferred"
+        && r["source"] == "recorder/Cargo.toml"));
+    assert!(
+        relations
+            .iter()
+            .any(|r| r["to"] == "https://example.org/team/wire.git" && r["basis"] == "inferred")
+    );
+    let markdown = sandbox.stdout(&sandbox.root, &["enter"]);
+    assert!(
+        markdown.contains("## Repository relationships"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("sends evidence [declared; .toimija/workspace.yaml]"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn workspace_sessions_keep_their_declared_scope() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("");
+    sandbox.repo("recorder", "ref: refs/heads/main\n");
+    marker(&sandbox, "recorder", "100-1", "repair capture", false);
+    let path = sandbox
+        .root
+        .join("recorder/.toimija/sessions/100-1/session.json");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["scope"] = serde_json::json!(["src/capture.rs"]);
+    fs::write(path, value.to_string()).unwrap();
+    let packet: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
+    assert_eq!(
+        packet["repositories"][0]["sessions"][0]["scope"],
+        serde_json::json!(["src/capture.rs"])
+    );
+    let markdown = sandbox.stdout(&sandbox.root, &["enter"]);
+    assert!(markdown.contains("scope: src/capture.rs"), "{markdown}");
+}
+
+#[test]
+fn dependency_evidence_handles_locks_comments_credentials_and_partial_reads() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("");
+    for repo in ["rust", "elixir", "erlang", "broken", "dynamic"] {
+        sandbox.repo(repo, "ref: refs/heads/main\n");
+    }
+    sandbox.write(
+        "rust/Cargo.lock",
+        r#"
+version = 4
+[[package]]
+name = "wire"
+version = "0.1.0"
+source = "git+https://test-user:test-secret@example.org/team/wire.git?branch=main#abc"
+"#,
+    );
+    sandbox.write(
+        "elixir/mix.lock",
+        r#"%{
+  # "fake": {:git, "https://example.org/comment", "abc", []},
+  "wire": {:git, "https://example.org/team/wire.git", "abc", []},
+  "hex": {:hex, :hex, "1.0", "abc", [:mix], [], "hexpm", "abc"}
+}"#,
+    );
+    sandbox.write(
+        "erlang/rebar.lock",
+        r#"{"1.2.0", [
+  % {fake, {git, "https://example.org/comment", {ref, "abc"}}, 0},
+  {wire, {git, "https://example.org/team/wire.git", {ref, "abc"}}, 0}
+]}.
+"#,
+    );
+    sandbox.write("broken/Cargo.toml", "[dependencies\n");
+    sandbox.write(
+        "dynamic/mix.exs",
+        "File.write!(\"executed\", \"must not run\")",
+    );
+    let raw = sandbox.stdout(&sandbox.root, &["enter", "--json"]);
+    assert!(!raw.contains("test-secret"), "credentials leaked");
+    assert!(
+        !raw.contains("https://example.org/comment"),
+        "comment treated as evidence"
+    );
+    let packet: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let relations = packet["relationships"].as_array().unwrap();
+    assert_eq!(relations.len(), 3, "{packet:#}");
+    for repo in ["rust", "elixir", "erlang"] {
+        assert!(
+            relations
+                .iter()
+                .any(|r| r["from"] == repo && r["to"] == "https://example.org/team/wire.git"),
+            "{packet:#}"
+        );
+    }
+    assert_eq!(
+        packet["not_read"].as_array().unwrap().len(),
+        2,
+        "{packet:#}"
+    );
+    assert!(
+        packet["relationship_coverage"]
+            .as_str()
+            .unwrap()
+            .contains("partial")
+    );
+    assert!(!sandbox.root.join("executed").exists());
+    assert!(!sandbox.root.join("dynamic/executed").exists());
+}
+
+#[test]
+fn dependency_read_limits_and_unresolved_declarations_remain_visible() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("relationships:\n  - from: app\n    to: absent\n    kind: calls\n");
+    sandbox.repo("app", "ref: refs/heads/main\n");
+    sandbox.write("app/Cargo.lock", &" ".repeat(1024 * 1024 + 1));
+    sandbox.write(
+        "app/Cargo.toml",
+        "[dependencies]\nmissing = { path = '../missing' }\n",
+    );
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
+    assert!(packet.contains("1 MiB read limit"), "{packet}");
+    assert!(packet.contains("cannot be resolved"), "{packet}");
+    assert!(packet.contains("not present"), "{packet}");
+    assert!(
+        packet.contains("app → absent: calls [declared;"),
+        "{packet}"
+    );
+}
