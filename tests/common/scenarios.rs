@@ -231,8 +231,103 @@ pub fn build(name: &str, root: &Path) -> PathBuf {
             git_failing(&repo, &["merge", "-q", "left"]);
             repo
         }
+        "finished-worktrees" => finished_worktrees(root),
         other => panic!("no scenario named {other}"),
     }
+}
+
+/// The worktrees `finished-worktrees` lists from the main checkout, and why:
+/// a branch gone on origin, or nothing `origin/main` lacks.
+pub const FINISHED: [(&str, &str); 4] = [
+    ("detached", "in_base"),
+    ("gone", "branch_gone"),
+    ("gone-generated", "branch_gone"),
+    ("in-base", "in_base"),
+];
+
+/// A clone on `main` with linked worktrees under `root/wt/`, one per case a
+/// finished-worktree listing tells apart. Branches named `gone*` were pushed
+/// with an upstream, deleted on the forge (the bare `origin`) and pruned here,
+/// as a merged pull request's branch is. [`FINISHED`] names the ones listed.
+fn finished_worktrees(root: &Path) -> PathBuf {
+    let repo = cloned(root);
+    let origin = root.join("origin.git");
+    let wt = |name: &str| root.join("wt").join(name);
+    let add = |name: &str, start: &[&str]| {
+        let path = format!("../wt/{name}");
+        let mut args = vec!["worktree", "add", "-q"];
+        args.extend_from_slice(start);
+        args.push(&path);
+        args.push("origin/main");
+        git(&repo, &args);
+    };
+    let commit = |name: &str| {
+        write(&wt(name), &format!("src/{name}.rs"), "pub fn f() {}\n");
+        git(&wt(name), &["add", "-A"]);
+        git(&wt(name), &["commit", "-q", "-m", name]);
+    };
+    for name in [
+        "gone",
+        "gone-generated",
+        "gone-dirty",
+        "gone-untracked",
+        "gone-locked",
+        "gone-session",
+        "gone-removed",
+    ] {
+        add(name, &["-b", name]);
+        commit(name);
+        git(&wt(name), &["push", "-q", "-u", "origin", name]);
+        git(&origin, &["branch", "-q", "-D", name]);
+    }
+    git(&repo, &["fetch", "-q", "--prune", "origin"]);
+    // Tool state is not work: an untracked sykli receipt leaves it finished.
+    write(&wt("gone-generated"), ".sykli/receipt.json", "{}\n");
+    // Work not committed, or not tracked, keeps a worktree.
+    write(&wt("gone-dirty"), "src/main.rs", "fn main() { edited(); }\n");
+    write(&wt("gone-untracked"), "notes.txt", "mine\n");
+    // A locked worktree is one someone asked Git to keep.
+    git(&repo, &["worktree", "lock", "../wt/gone-locked"]);
+    // A live session sits in it: this process, seen just now.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let pid = std::process::id();
+    let id = format!("{now}-{pid}");
+    write(
+        &wt("gone-session"),
+        &format!(".toimija/sessions/{id}/session.json"),
+        &serde_json::json!({
+            "id": id,
+            "pid": pid,
+            "agent": ["codex"],
+            "worktree": wt("gone-session").display().to_string(),
+            "branch": "gone-session",
+            "head": null,
+            "intent": "still here",
+            "scope": [],
+            "started_at": now,
+            "last_seen_at": now,
+        })
+        .to_string(),
+    );
+    // Its folder is gone already: there is nothing left to remove.
+    fs::remove_dir_all(wt("gone-removed")).unwrap();
+    // A pushed branch still on origin, with a commit of its own: open work.
+    add("open", &["-b", "open"]);
+    commit("open");
+    git(&wt("open"), &["push", "-q", "-u", "origin", "open"]);
+    // A commit never pushed, on a branch tracking origin/main.
+    add("unpushed", &["-b", "unpushed"]);
+    commit("unpushed");
+    // Nothing of its own: a branch at origin/main, and a detached checkout.
+    add("in-base", &["-b", "in-base"]);
+    git(
+        &repo,
+        &["worktree", "add", "-q", "--detach", "../wt/detached", "HEAD~1"],
+    );
+    repo
 }
 
 #[cfg(unix)]
