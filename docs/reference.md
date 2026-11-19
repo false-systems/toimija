@@ -733,6 +733,8 @@ Git tuple shape; this structural check does not evaluate either language.
 Unsupported Git source variants (such as Rebar's `git_subdir`), non-UTF-8
 repository names and unresolvable repository paths are also read gaps.
 Declared connections still refer to every listed repository.
+Ambiguous Git URLs (including an unencoded `@` in a URL path) are read gaps
+without displaying the URL, so malformed userinfo cannot expose credentials.
 
 Coverage is always explicitly **partial**: registry packages, nested manifests,
 dynamic path declarations, vendored provenance and runtime connections are not

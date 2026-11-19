@@ -893,6 +893,7 @@ fn git_named_mix_packages_do_not_hide_locked_git_sources() {
   "git_ops": {:hex, :git_ops, "2.0.0", "checksum", [:mix], [{:git_cli, "~> 0.2", [hex: :git_cli, repo: "hexpm", optional: false]}, {:git, "~> 1.0", [hex: :git, repo: "hexpm", optional: false]}], "hexpm", "checksum"},
   "wire": {:git, "https://example.org/wire.git", "abc", []}
 }
+
 "#,
     );
     let packet: serde_json::Value =
@@ -910,4 +911,28 @@ fn git_named_mix_packages_do_not_hide_locked_git_sources() {
         packet["relationships"][0]["to"],
         "https://example.org/wire.git"
     );
+}
+
+#[test]
+fn ambiguous_git_urls_are_gaps_without_credential_fragments() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("");
+    sandbox.repo("app", "ref: refs/heads/main\n");
+    for url in [
+        "https://user:test-secret/remaining@host/wire.git",
+        "https://user:test-secret/remaining?query@host/wire.git",
+        "https://user:test-secret?query@host/wire.git",
+        "https://user:123/test-secret?query@host/wire.git",
+    ] {
+        sandbox.write(
+            "app/Cargo.toml",
+            &format!("[dependencies]\nwire = {{ git = '{url}' }}\n"),
+        );
+        let raw = sandbox.stdout(&sandbox.root, &["enter", "--json"]);
+        let packet: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(!raw.contains("test-secret"), "credential fragment leaked");
+        assert!(!raw.contains("remaining"), "credential fragment leaked");
+        assert!(packet["relationships"].as_array().unwrap().is_empty());
+        assert_eq!(packet["not_read"].as_array().unwrap().len(), 1);
+    }
 }

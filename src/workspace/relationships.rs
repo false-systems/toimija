@@ -121,8 +121,9 @@ pub fn collect(
                                 .get("source")
                                 .and_then(toml::Value::as_str)
                                 .and_then(|s| s.strip_prefix("git+"))
+                                .and_then(|url| public_git_url(url, &source, gaps))
                             {
-                                add(public_git_url(url), "locked dependency (may be transitive)");
+                                add(url, "locked dependency (may be transitive)");
                             }
                         }
                     }
@@ -141,10 +142,9 @@ pub fn collect(
                 match locked_git_sources(&text, if file == "mix.lock" { '#' } else { '%' }) {
                     Ok(urls) => {
                         for url in urls {
-                            add(
-                                public_git_url(&url),
-                                "locked dependency (may be transitive)",
-                            );
+                            if let Some(url) = public_git_url(&url, &source, gaps) {
+                                add(url, "locked dependency (may be transitive)");
+                            }
                         }
                     }
                     Err(reason) => gap(gaps, &source, reason),
@@ -209,8 +209,12 @@ fn cargo_dependencies(
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(deps) = value.get(section).and_then(toml::Value::as_table) {
             for (name, dependency) in deps {
-                if let Some(url) = dependency.get("git").and_then(toml::Value::as_str) {
-                    add(public_git_url(url), candidate.unwrap_or(section));
+                if let Some(url) = dependency
+                    .get("git")
+                    .and_then(toml::Value::as_str)
+                    .and_then(|url| public_git_url(url, source, gaps))
+                {
+                    add(url, candidate.unwrap_or(section));
                 }
                 if let Some(path) = dependency.get("path").and_then(toml::Value::as_str) {
                     match repository.join(path).canonicalize() {
@@ -284,16 +288,40 @@ fn cargo_dependencies(
 
 /// URL identity only: credentials, revision selectors and fragments are not
 /// needed to describe a repository connection and must not enter the packet.
-fn public_git_url(url: &str) -> String {
-    let url = url.split(['?', '#']).next().unwrap_or(url);
+fn public_git_url(raw: &str, source: &str, gaps: &mut Vec<NotRead>) -> Option<String> {
+    let url = raw.split(['?', '#']).next().unwrap_or(raw);
     if let Some((scheme, rest)) = url.split_once("://") {
         let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
         let host = authority.rsplit('@').next().unwrap_or(authority);
-        format!("{scheme}://{host}/{path}")
-    } else if let Some((_, host_path)) = url.split_once('@') {
-        host_path.into()
+        // An unencoded delimiter in userinfo can make a password look like
+        // a path or port. Do not echo ambiguous values, even in the gap.
+        let invalid_port = !host.starts_with('[')
+            && host.rsplit_once(':').is_some_and(|(_, port)| {
+                port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit())
+            });
+        let ambiguous_path = raw
+            .split_once("://")
+            .and_then(|(_, rest)| rest.split_once('/'))
+            .is_some_and(|(_, path)| path.contains('@'));
+        if ambiguous_path || invalid_port {
+            gap(
+                gaps,
+                source,
+                "ambiguous or malformed Git URL; not displayed",
+            );
+            return None;
+        }
+        Some(format!("{scheme}://{host}/{path}"))
+    } else if let Some((_, host_path)) = raw.rsplit_once('@') {
+        Some(
+            host_path
+                .split(['?', '#'])
+                .next()
+                .unwrap_or(host_path)
+                .into(),
+        )
     } else {
-        url.into()
+        Some(url.into())
     }
 }
 

@@ -4,7 +4,8 @@
 //! Outside any Git repository, the nearest such file above the current
 //! directory names the workspace. Its packet is built by reading files only:
 //! the workspace file, each repository's `HEAD`, `.toimija/repo.yaml`,
-//! session markers and handover. No git process is started for it, so the
+//! session markers, handover and bounded root dependency manifests and
+//! lockfiles. Build definitions are never executed. No git process is started, so the
 //! cost does not grow with a git call per repository. What a file cannot
 //! tell (uncommitted work, validation) is not in the packet; `toimija
 //! enter` inside a repository has it.
