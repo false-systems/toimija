@@ -881,3 +881,33 @@ fn unsupported_git_lock_sources_are_read_gaps() {
             .contains("unsupported Git lock source")
     );
 }
+
+#[test]
+fn git_named_mix_packages_do_not_hide_locked_git_sources() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("");
+    sandbox.repo("app", "ref: refs/heads/main\n");
+    sandbox.write(
+        "app/mix.lock",
+        r#"%{
+  "git_ops": {:hex, :git_ops, "2.0.0", "checksum", [:mix], [{:git_cli, "~> 0.2", [hex: :git_cli, repo: "hexpm", optional: false]}], "hexpm", "checksum"},
+  "wire": {:git, "https://example.org/wire.git", "abc", []}
+}
+"#,
+    );
+    let packet: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
+    assert!(
+        packet["not_read"].as_array().unwrap().is_empty(),
+        "{packet:#}"
+    );
+    assert_eq!(
+        packet["relationships"].as_array().unwrap().len(),
+        1,
+        "{packet:#}"
+    );
+    assert_eq!(
+        packet["relationships"][0]["to"],
+        "https://example.org/wire.git"
+    );
+}

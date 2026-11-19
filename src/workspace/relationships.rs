@@ -375,7 +375,8 @@ fn locked_git_sources(text: &str, comment: char) -> Result<Vec<String>, &'static
             continue;
         }
         let start = i + 1 + usize::from(tokens.get(i + 1) == Some(&Token::Mark(':')));
-        if matches!(tokens.get(start), Some(Token::Word(kind)) if kind.starts_with("git_")) {
+        // Rebar's alternate Git source, not a Mix package named `git_*`.
+        if comment == '%' && tokens.get(start) == Some(&Token::Word("git_subdir".into())) {
             return Err("unsupported Git lock source");
         }
         if tokens.get(start) == Some(&Token::Word("git".into())) {
