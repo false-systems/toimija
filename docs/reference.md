@@ -662,13 +662,20 @@ role: the services of one product
 read_first:
   - NOTES.md
   - docs/architecture.md
+relationships:
+  - from: recorder
+    to: store
+    kind: sends evidence
 ```
 
 - **`role`**: one line that says what the folder is for.
 - **`read_first`**: paths, relative to the folder, that an agent starting
   here reads first.
+- **`relationships`**: connections you declare, each with repository folder
+  names `from` and `to`, and a nonblank `kind` describing the connection.
+  Missing repositories are named under **Not read**, not silently dropped.
 
-Both fields are optional, and an empty file is a workspace. A field Toimija
+All fields are optional, and an empty file is a workspace. A field Toimija
 does not know is an error that names the field.
 
 ### Discovery
@@ -732,10 +739,14 @@ What it holds:
   - its branch, read from its `HEAD` file. A `.git` file is followed through
     its `gitdir:` line. A detached HEAD shows as `detached at` and the short
     commit id. A `HEAD` that cannot be read shows as `unknown`;
-  - its open sessions, live or stale, each with its agent and intent;
+  - its open sessions, live or stale, each with its agent, intent and scope;
   - the first line of a waiting handover.
 - **Sessions in this folder**: the sessions `run` opened in the workspace
-  folder or a plain folder below it.
+  folder or a plain folder below it, including their declared scope.
+- **Repository relationships**: declared connections and inferred dependencies,
+  separately labelled, each citing the file it came from. The JSON adds
+  `relationships` (`from`, `to`, `kind`, `basis`, `source`) and
+  `relationship_coverage`. Scope is a `scope` array on each listed session.
 - **Not read**: anything that could not be read, with the reason. This
   section appears only when there is something to name.
 - **Not in this packet**: one line that says what is left out.
@@ -743,6 +754,39 @@ What it holds:
 The packet is built by reading files. It starts no git process, however many
 repositories the folder holds. The one git process `enter` starts here is
 the question every command asks first: is this folder inside a repository?
+
+### Dependency evidence
+
+Inference reads only each listed repository's root `Cargo.toml`, `Cargo.lock`,
+`mix.lock` and `rebar.lock`, at most 1 MiB per file. It never runs Cargo, Mix,
+Rebar, a build script or a network request. Symbolic links in place of those
+files are not followed. Unreadable, oversized and invalid TOML files are
+reported under **Not read**; other readable evidence remains available.
+
+Cargo path dependencies are resolved against the manifest folder and matched
+to the listed repositories on canonical paths. Git dependencies are shown as
+repository URLs, without credentials or revision selectors. Cargo's root
+dependency tables, including workspace, target and patch tables, are read;
+workspace templates and patch overrides are labelled as candidates that may
+be unused, not as dependencies of the package declaring them.
+Lockfile Git sources may be transitive and say so. Mix and Rebar lockfiles
+contribute only literal Git source tuples, never text inside comments or
+quoted examples. Their build definitions are not executed; a missing lockfile
+is reported when `mix.exs` or `rebar.config` exists.
+Unbalanced containers and incomplete Git tuples are read gaps, not locked
+dependencies. Inference requires a literal URL and revision and the expected
+Git tuple shape; this structural check does not evaluate either language.
+Unsupported Git source variants (such as Rebar's `git_subdir`), non-UTF-8
+repository names and unresolvable repository paths are also read gaps.
+Declared connections still refer to every listed repository.
+Ambiguous Git URLs (including an unencoded `@` in a URL path) are read gaps
+without displaying the URL, so malformed userinfo cannot expose credentials.
+
+Coverage is always explicitly **partial**: registry packages, nested manifests,
+dynamic path declarations, vendored provenance and runtime connections are not
+inferred. Declare those connections when they matter. An empty relationship
+list is not evidence that repositories are independent. Toimija reports the
+declarations; it does not decide ownership or turn a dependency into a product role.
 
 ### Commands in a workspace
 

@@ -20,7 +20,10 @@ repository and why, and carries a note from one agent to the next. The packet
 is worked out each time it is asked for and never saved, so it cannot go
 stale. In a folder that holds several repositories, it gives the agent the
 facts of the folder instead: each repository, its branch, and who is working
-where.
+where, including each session's declared scope. The workspace can declare
+connections between repositories; Toimija also reads dependency evidence
+from Cargo manifests and Cargo, Mix and Rebar lockfiles. Declared connections
+and inferred dependencies are labelled separately, with their source files.
 
 Git is not a save button here. Git is the substrate.
 Git gives us the graph of what happened. Toimija turns that graph into operational context for agents.
@@ -124,6 +127,11 @@ repository is for and what it must not become; it is committed. In a folder
 of repositories, `.toimija/workspace.yaml` makes the folder a workspace. The
 rest of `.toimija/` is toimija's own: keep it out of Git with `/.toimija/*`
 and `!/.toimija/repo.yaml` in `.gitignore`.
+
+You can start outside Git: `cd ~/projects && toimija run codex`. With a
+workspace file, the agent receives the workspace packet; without one, the
+session still works but has no repository context. See
+[workspaces](docs/reference.md#workspaces) for declaring connections.
 
 ## How it fits
 
