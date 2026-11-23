@@ -14,6 +14,7 @@ use crate::render;
 use crate::session;
 use crate::sessions;
 use crate::workspace;
+use crate::worktrees;
 
 /// `toimija --version`: the version number and the commit the binary was
 /// built from (`build.rs`), so two builds of one version can be told apart.
@@ -1305,9 +1306,22 @@ fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
 fn run_sessions(args: SessionsArgs) -> Result<()> {
     let cwd = current_dir()?;
     let runner = ProcessCommandRunner;
-    let discovered = (!args.outside_repos).then(|| git::discover_repo_root(&runner, &cwd));
+    // One git process names the root and the folders every worktree shares,
+    // so the other worktrees can be seen.
+    let discovered = (!args.outside_repos).then(|| git::locate(&runner, &cwd));
     let outside = matches!(discovered, None | Some(Err(ToimijaError::NotGitRepo)));
-    let root = if outside {
+    let here = if outside {
+        None
+    } else {
+        Some(
+            discovered
+                .expect("a repository was looked for")
+                .context("not a Git repository")?,
+        )
+    };
+    let root = if let Some(here) = &here {
+        here.root.clone()
+    } else {
         // Sessions `run` opened outside any repository. Reading them never
         // creates the state directory; an absent one holds none.
         session::outside_root().with_context(|| {
@@ -1317,15 +1331,14 @@ fn run_sessions(args: SessionsArgs) -> Result<()> {
                 session::STATE_DIR_ENV
             )
         })?
-    } else {
-        discovered
-            .expect("a repository was looked for")
-            .context("not a Git repository")?
     };
     if outside && !args.json {
         println!("Sessions outside any Git repository ({}):", root.display());
     }
-    let report = sessions::report(&runner, &root)?;
+    let mut report = sessions::report(&runner, &root)?;
+    if let Some(here) = &here {
+        report = report.with_finished(worktrees::find(&runner, here));
+    }
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

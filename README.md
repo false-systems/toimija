@@ -111,7 +111,7 @@ order you meet them:
 ```bash
 toimija run claude         # start an agent as a session, with the packet in its prompt
 toimija enter              # the packet now, for an agent started some other way
-toimija sessions           # who is working in this repository, and why
+toimija sessions           # who is working in this repository, and why; which worktrees are finished
 toimija intent "fix the login redirect"          # a session says why it is here
 toimija handover --next "tests still to write"   # a note for the next agent
 ```

@@ -154,12 +154,47 @@ fn the_reports_find_the_root_once() {
     let sandbox = Sandbox::new("dirty");
     for args in [&["sessions", "--json"][..], &["sessions"]] {
         let calls = sandbox.assert_budget(args, 0, 1);
-        assert_eq!(
-            calls[0],
-            ["rev-parse", "--show-toplevel"],
-            "toimija {args:?}"
-        );
+        assert_eq!(calls[0], LOCATE, "toimija {args:?}");
     }
+}
+
+/// `sessions` finds the root and the folders every worktree shares in one
+/// process, absolute wherever it runs, so it can see the other worktrees.
+const LOCATE: [&str; 5] = [
+    "rev-parse",
+    "--show-toplevel",
+    "--path-format=absolute",
+    "--absolute-git-dir",
+    "--git-common-dir",
+];
+
+/// Finished worktrees cost nothing where there is no other worktree: whether
+/// there is one is read from the files in the common git dir. Where there
+/// are some, three processes name them, their branches' upstreams and what
+/// the remote default branch already has, and one `status` reads each that
+/// could be finished and has no live session in it. The scenario has five such.
+#[test]
+fn finished_worktrees_cost_three_and_a_status_per_candidate() {
+    if !git_available() {
+        return;
+    }
+    let finished = [
+        "worktree",
+        "for-each-ref",
+        "rev-list",
+        "status",
+        "status",
+        "status",
+        "status",
+        "status",
+    ];
+    let sandbox = Sandbox::new("finished-worktrees");
+    let calls = sandbox.assert_budget(&["sessions", "--json"], 0, 9);
+    assert_eq!(calls[0], LOCATE, "{calls:#?}");
+    assert_eq!(verbs(&calls)[1..], finished, "{calls:#?}");
+    // The packet: the clean checkout's five, then the same eight.
+    let calls = sandbox.assert_budget(&["enter", "--json"], 0, 13);
+    assert_eq!(verbs(&calls)[5..], finished, "{calls:#?}");
 }
 
 /// `run` costs `enter`'s six and one more, however long the agent runs: the

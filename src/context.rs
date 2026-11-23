@@ -47,6 +47,10 @@ pub struct ContextPacket {
     /// (`toimija handover`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover: Option<crate::session::Handover>,
+    /// The repository's other worktrees whose work is done here
+    /// ([`crate::worktrees`]); `toimija sessions` says how to remove them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finished_worktrees: Vec<crate::worktrees::FinishedWorktree>,
 }
 
 /// The session a packet is worked out for: who it is and why that session
@@ -176,7 +180,12 @@ pub fn work_out(
     for_diff: bool,
 ) -> anyhow::Result<ContextPacket> {
     let collected = git::collect(runner, worktree).context("failed to read the Git state")?;
-    compile_packet(&collected, for_diff).context("failed to work out the packet")
+    let mut packet =
+        compile_packet(&collected, for_diff).context("failed to work out the packet")?;
+    let finished = crate::worktrees::find(runner, worktree);
+    packet.warnings.extend(finished.warning());
+    packet.finished_worktrees = finished.worktrees;
+    Ok(packet)
 }
 
 /// Under `toimija run`, the session this process runs in, as its marker in
@@ -285,6 +294,7 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         default_budget: Some(config.context.default_budget),
         session: None,
         handover,
+        finished_worktrees: Vec::new(),
     };
     debug!(
         event = "toimija.context.git_section.rendered",
