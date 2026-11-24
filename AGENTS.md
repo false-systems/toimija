@@ -31,4 +31,4 @@ Install the hooks once per clone: `sykli hook install --pre-push`, without which
 - After a merge, `git pull && cargo install --path .`: a stale binary lies about the code.
 - Who does what lives in issues, draft PRs and labels. Toimija shows live sibling sessions; it never coordinates them.
 
-Code is Rust or Elixir/Erlang; never add Python, Go or Node.
+Prefer Rust or Elixir/Erlang; Python and Go are allowed, not preferred.
