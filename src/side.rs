@@ -504,16 +504,74 @@ impl Pane {
     }
 }
 
-/// The graphs already asked for, by repository: the files each rested on,
-/// and the graph or why it could not be read.
-type Graphs = std::collections::HashMap<String, (Fingerprint, Result<crate::graph::Graph, String>)>;
+/// What was learned of one repository's branches: the graph or why it
+/// could not be read, the commits sykli counts each branch ahead of the
+/// base, and the working copies with the handover left in each.
+struct Seen {
+    graph: Result<crate::graph::Graph, String>,
+    ahead: std::collections::HashMap<String, u64>,
+    copies: Vec<follow::WorkingCopy>,
+}
 
-/// A graph being asked for on a thread of its own, so the pane keeps
-/// drawing and taking keys meanwhile.
+impl Seen {
+    fn read(dir: &Path) -> Self {
+        Self {
+            graph: crate::graph::build(
+                &crate::command::ProcessCommandRunner,
+                dir,
+                "origin/main",
+                &crate::graph::sykli_proof,
+            )
+            .map_err(|error| format!("{error:#}")),
+            ahead: ahead_by_branch(dir),
+            copies: follow::working_copies(dir),
+        }
+    }
+}
+
+/// The commits each local branch is ahead of the base, from
+/// `sykli status --json`. A sykli that is absent or fails leaves it empty:
+/// no count is then shown, rather than a nought.
+fn ahead_by_branch(dir: &Path) -> std::collections::HashMap<String, u64> {
+    let Ok(output) = std::process::Command::new("sykli")
+        .args(["status", "--json"])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Default::default();
+    };
+    ahead_from(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn ahead_from(status: &str) -> std::collections::HashMap<String, u64> {
+    let Ok(status) = serde_json::from_str::<serde_json::Value>(status) else {
+        return Default::default();
+    };
+    status
+        .get("branches")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|branch| {
+            Some((
+                branch.get("branch")?.as_str()?.to_string(),
+                branch.get("ahead")?.as_u64()?,
+            ))
+        })
+        .collect()
+}
+
+/// The graphs already asked for, by repository, and the files each rested on.
+type Graphs = std::collections::HashMap<String, (Fingerprint, Seen)>;
+
+/// A repository's branches being asked about on a thread of its own, so
+/// the pane keeps drawing and taking keys meanwhile.
 struct Asking {
     name: String,
     files: Fingerprint,
-    got: Arc<Mutex<Option<Result<crate::graph::Graph, String>>>>,
+    got: Arc<Mutex<Option<Seen>>>,
 }
 
 impl Asking {
@@ -521,14 +579,8 @@ impl Asking {
         let got = Arc::new(Mutex::new(None));
         let put = Arc::clone(&got);
         std::thread::spawn(move || {
-            let read = crate::graph::build(
-                &crate::command::ProcessCommandRunner,
-                &dir,
-                "origin/main",
-                &crate::graph::sykli_proof,
-            )
-            .map_err(|error| format!("{error:#}"));
-            *put.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(read);
+            let seen = Seen::read(&dir);
+            *put.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(seen);
         });
         Self {
             name: name.to_string(),
@@ -537,7 +589,7 @@ impl Asking {
         }
     }
 
-    fn answer(&self) -> Option<Result<crate::graph::Graph, String>> {
+    fn answer(&self) -> Option<Seen> {
         self.got
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -555,6 +607,7 @@ struct Scene<'a> {
     graphs: &'a Graphs,
     /// The repository whose graph is being asked for now.
     asking: Option<&'a str>,
+    root: &'a Path,
     here: Option<&'a follow::Here>,
     turning: Option<char>,
     pulse: u8,
@@ -600,16 +653,41 @@ impl Scene<'_> {
         }
     }
 
+    /// The agent sessions of the last day that work in one of these
+    /// working copies, by the branch checked out there.
+    fn agents_on(&self, copies: &[follow::WorkingCopy]) -> Vec<look::OnBranch> {
+        let Some(Ok(agents)) = self.facts.map(|facts| &facts.agents) else {
+            return Vec::new();
+        };
+        let mut sessions: Vec<&tools::Session> = agents.digest.sessions.iter().collect();
+        sessions.sort_by(|a, b| b.last_at.cmp(&a.last_at));
+        sessions
+            .into_iter()
+            .filter_map(|session| {
+                let cwd = session.cwd.as_deref()?;
+                let branch = follow::copy_of(copies, Path::new(cwd))?.branch.clone()?;
+                Some(look::OnBranch {
+                    branch,
+                    agent: session.agent.clone(),
+                    age: tools::age(session.last_at.as_deref(), self.now),
+                    written: tools::tokens(session.output_tokens),
+                })
+            })
+            .collect()
+    }
+
     /// The lines under the row of views, and the keys of this view.
     fn body(&self) -> (Vec<look::Text>, look::Text) {
         let facts = self.facts;
         let width = self.width;
         let mut body: Vec<look::Text> = Vec::new();
+        // What goes under the graph, which takes the room between.
+        let mut below: Vec<look::Text> = Vec::new();
         let keys = match &self.pane.showing {
             Showing::Projects => {
                 body.extend(look::tiles(facts, self.pulse, width));
                 body.extend(self.repositories());
-                body.extend(look::agents(facts, self.now, 3, true, self.pulse, width));
+                below.extend(look::agents(facts, self.now, 2, false, self.pulse, width));
                 look::keys(&[
                     ("jk", "pick"),
                     ("p", "project"),
@@ -640,29 +718,54 @@ impl Scene<'_> {
                     self.pulse,
                     width,
                 ));
-                body.extend(look::knowledge(facts, width));
+                body.extend(look::knowledge(facts, true, width));
                 look::keys(&[("1", "back"), ("r", "read"), ("q", "quit")])
             }
             Showing::Graph(_) => look::keys(&[("1", "back"), ("r", "read"), ("q", "quit")]),
         };
-        // The graph is on screen without a key: under the cards of the first
-        // view it is the picked repository's, in what room is left, and view
-        // 2 gives it the whole pane.
-        let most = self.room.saturating_sub(body.len() + 2);
-        if let Some(name) = self.graph_of().filter(|_| most >= 2) {
-            let branches = match self.graphs.get(&name) {
-                Some((_, Ok(graph))) => look::Branches::Read(graph),
-                Some((_, Err(why))) => look::Branches::NotRead(why),
-                None => look::Branches::Reading,
-            };
-            // The branch the shell has checked out, when this is its repository.
-            let here = self
-                .here
-                .filter(|here| here.repository == name)
-                .and_then(|here| here.branch.as_deref());
-            let turning = self.turning.filter(|_| self.asking == Some(name.as_str()));
-            body.extend(look::graph(&name, branches, here, turning, most, width));
+        // The graph is on screen without a key. In the first view it is the
+        // picked repository's and has the room between the repositories and
+        // the agents; where that is too little the agents give way. View 2
+        // gives it the whole pane.
+        if let Some(name) = self.graph_of() {
+            let room = self.room.saturating_sub(body.len() + 2);
+            if room < below.len() + GRAPH_ROWS {
+                below.clear();
+            }
+            let most = room.saturating_sub(below.len());
+            if most >= 2 {
+                let seen = self.graphs.get(&name).map(|(_, seen)| seen);
+                let branches = match seen.map(|seen| &seen.graph) {
+                    Some(Ok(graph)) => look::Branches::Read(graph),
+                    Some(Err(why)) => look::Branches::NotRead(why),
+                    None => look::Branches::Reading,
+                };
+                let none = std::collections::HashMap::new();
+                // While the first answer is awaited the working copies are
+                // read here, so a handover shows at once.
+                let copies = match seen {
+                    Some(seen) => seen.copies.clone(),
+                    None => follow::working_copies(&self.root.join(&name)),
+                };
+                let agents = self.agents_on(&copies);
+                let around = look::Around {
+                    // The branch the shell has checked out, when this is
+                    // its repository.
+                    here: self
+                        .here
+                        .filter(|here| here.repository == name)
+                        .and_then(|here| here.branch.as_deref()),
+                    turning: self.turning.filter(|_| self.asking == Some(name.as_str())),
+                    ahead: seen.map_or(&none, |seen| &seen.ahead),
+                    copies: &copies,
+                    agents: &agents,
+                    pulse: self.pulse,
+                    now: self.now,
+                };
+                body.extend(look::graph(&name, branches, &around, most, width));
+            }
         }
+        body.extend(below);
         (body, keys)
     }
 }
@@ -850,6 +953,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                     facts: facts.as_ref(),
                     graphs: &graphs,
                     asking: asking.as_ref().map(|asking| asking.name.as_str()),
+                    root,
                     here: here.as_ref(),
                     turning,
                     pulse,
@@ -939,6 +1043,8 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
 /// The rows of a frame that are not its body: the name, the views and a
 /// blank above; what the marks mean and the keys below.
 const FRAME_ROWS: usize = 5;
+/// The least rows the graph is given before the agents under it give way.
+const GRAPH_ROWS: usize = 10;
 
 /// Narrow this pane to [`PANE_COLUMNS`] by asking Ghostty to move the
 /// divider. Ghostty sizes splits in pixels and does not say which way a
@@ -1397,6 +1503,20 @@ mod tests {
         assert_eq!(screen::read_from(reading, soon), Read::Gone);
         // SAFETY: as above.
         unsafe { libc::close(reading) };
+    }
+
+    #[test]
+    fn sykli_says_how_far_ahead_each_branch_is_and_silence_is_not_nought() {
+        let status = r#"{"schema":"sykli-branch-status.v1","branches":[
+            {"branch":"feat/one","ahead":3,"behind":0},
+            {"branch":"main","ahead":0,"behind":2},
+            {"branch":"odd"}]}"#;
+        let ahead = ahead_from(status);
+        assert_eq!(ahead.get("feat/one"), Some(&3));
+        assert_eq!(ahead.get("main"), Some(&0));
+        assert_eq!(ahead.get("odd"), None, "no count given is no count");
+        assert!(ahead_from("not json").is_empty());
+        assert!(ahead_from("").is_empty());
     }
 
     #[test]

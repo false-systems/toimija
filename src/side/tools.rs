@@ -56,12 +56,20 @@ pub struct Agents {
     pub partial: bool,
 }
 
+/// What `ohjaa check` said of the knowledge here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Knowledge {
+    /// Its summary line, as ohjaa wrote it.
+    pub summary: String,
+    /// What it flagged as maybe no longer holding, a line each.
+    pub flags: Vec<String>,
+}
+
 /// What both tools said, or why one said nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
     pub agents: Result<Agents, String>,
-    /// ohjaa's own summary line, as it wrote it.
-    pub knowledge: Result<String, String>,
+    pub knowledge: Result<Knowledge, String>,
 }
 
 impl Facts {
@@ -106,17 +114,24 @@ fn agents_from(code: i32, out: &str) -> Result<Agents, String> {
     Ok(Agents { digest, partial })
 }
 
-fn read_knowledge(root: &Path) -> Result<String, String> {
+fn read_knowledge(root: &Path) -> Result<Knowledge, String> {
     let (code, out) = run("ohjaa", &["check"], root)?;
-    summary_from(&out).ok_or_else(|| format!("ohjaa check gave no summary (exit {code})"))
+    knowledge_from(&out).ok_or_else(|| format!("ohjaa check gave no summary (exit {code})"))
 }
 
-/// The `summary` line of `ohjaa check`, without its label.
-fn summary_from(out: &str) -> Option<String> {
-    out.lines()
-        .find_map(|line| line.strip_prefix("summary"))
-        .map(|rest| rest.trim().to_string())
-        .filter(|rest| !rest.is_empty())
+/// The `summary` line of `ohjaa check` and its `flag` lines, without
+/// their labels.
+fn knowledge_from(out: &str) -> Option<Knowledge> {
+    let labelled = |label: &'static str| {
+        out.lines()
+            .filter_map(move |line| line.strip_prefix(label))
+            .map(|rest| rest.trim().to_string())
+            .filter(|rest| !rest.is_empty())
+    };
+    Some(Knowledge {
+        summary: labelled("summary").next()?,
+        flags: labelled("flag").collect(),
+    })
 }
 
 /// A token count short enough for a column. Unknown stays unknown.
@@ -151,17 +166,21 @@ fn unix_seconds(stamp: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
 }
 
+/// A length of time short enough for a column.
+pub fn ago(seconds: u64) -> String {
+    match seconds {
+        0..=119 => "now".to_string(),
+        120..=3_599 => format!("{}m", seconds / 60),
+        3_600..=172_799 => format!("{}h", seconds / 3_600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
 /// How long ago a session last wrote, as of `now` in Unix seconds.
 pub fn age(last_at: Option<&str>, now: u64) -> String {
-    let Some(at) = last_at.and_then(unix_seconds) else {
-        return "?".to_string();
-    };
-    let ago = now.saturating_sub(at);
-    match ago {
-        0..=119 => "now".to_string(),
-        120..=3_599 => format!("{}m", ago / 60),
-        3_600..=172_799 => format!("{}h", ago / 3_600),
-        _ => format!("{}d", ago / 86_400),
+    match last_at.and_then(unix_seconds) {
+        Some(at) => ago(now.saturating_sub(at)),
+        None => "?".to_string(),
     }
 }
 
@@ -244,12 +263,18 @@ mod tests {
     }
 
     #[test]
-    fn ohjaas_summary_is_shown_as_it_wrote_it() {
-        let out = "scope    mine  /somewhere\nsummary  3 current, 1 waiting for a decision\n";
+    fn ohjaas_summary_and_what_it_flagged_are_kept_as_it_wrote_them() {
+        let out = "scope    mine  /somewhere\nflag     one-rule: names a thing that is gone\n\
+                   summary  3 current, 1 waiting for a decision\n";
         assert_eq!(
-            summary_from(out).as_deref(),
-            Some("3 current, 1 waiting for a decision")
+            knowledge_from(out),
+            Some(Knowledge {
+                summary: "3 current, 1 waiting for a decision".to_string(),
+                flags: vec!["one-rule: names a thing that is gone".to_string()],
+            })
         );
-        assert_eq!(summary_from("scope  mine\n"), None);
+        assert_eq!(knowledge_from("scope  mine\n"), None);
+        assert_eq!(ago(60), "now");
+        assert_eq!(ago(7_200), "2h");
     }
 }

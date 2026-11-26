@@ -878,20 +878,28 @@ workspace folder or any of its repositories:
   In Ghostty the view is asked to quit first and the pane then closed, as
   Ghostty can take a pane away without ending the program in it; the view
   also ends by itself when it finds its terminal gone.
-- Four views, by number. `1` is everything at once, in cards: each
-  repository of the projects on a line, the latest agent sessions and what
-  each agent wrote, the state of the knowledge, and the branch graph of the
-  repository picked in the room that is left. `2` gives that graph the
-  whole pane, `3` shows the declared relations between the repositories,
-  `4` every agent session of the last day and what each agent read and
-  wrote. The view on screen is lit in the row under the name. The pane
-  opens on `1` and leaves the keyboard in your terminal, so all of it is
-  there without a key; click the pane to give it keys.
+- Four views, by number. `1` is everything at once, in cards: a band of
+  three numbers, each repository of the projects on a line, the branch
+  graph of the repository picked, which has most of the pane, and the two
+  latest agent sessions under it (they give way when the pane is short).
+  `2` gives the graph the whole pane, `3` shows the declared relations
+  between the repositories, `4` every agent session of the last day, what
+  each agent read and wrote, and the knowledge with what ohjaa flagged.
+  The view on screen is lit in the row under the name. The pane opens on
+  `1` and leaves the keyboard in your terminal, so all of it is there
+  without a key; click the pane to give it keys.
+- A tip of the graph says what each tool knows of its branch: `⌂` when a
+  working copy has it checked out, `+4` for the commits sykli counts it
+  ahead of the base, any review, and sykli's mark. Under it, while
+  everything fits, its commit and subject; and always the agent sessions
+  vessa read in a working copy on that branch, and the handover
+  `toimija handover` left there, in one line, or in full where your shell
+  is. Where sykli gives no count none is shown.
 - A repository's line: `▸` when it is the one picked, sykli's mark for the
   branch checked out, the name, `●` when a session is open there, the
   branch, `±3` for three uncommitted paths, `↑2 ↓40` for commits ahead of
   and behind its base. The marks, which the row above the keys repeats:
-  `✓` proven, `✗` failed, `○` not run, `?` unknown; in the graph `–` is a
+  `✓` proven, `✗` failed, `○` not run, `⌂` a working copy; `?` is unknown, and in the graph `–` is a
   commit with no gate, `◉` is the base, and a review that is not `none` is
   written before the mark. What is unknown shows `?`, never nothing.
 - The agent sessions come from `vessa digest --since 24h --json` and the

@@ -9,6 +9,9 @@
 use crate::graph::{Graph, Line as GraphLine, Proof, Review};
 use crate::project::{Row, View};
 
+use std::collections::HashMap;
+
+use super::follow::WorkingCopy;
 use super::tools::{self, Facts};
 
 /// What a piece of text is, which decides its colour.
@@ -305,8 +308,8 @@ pub fn legend() -> Text {
         .add(Tone::Dim, " failed ")
         .add(Tone::Warn, "○")
         .add(Tone::Dim, " not run ")
-        .add(Tone::Warn, "?")
-        .add(Tone::Dim, " unknown")
+        .add(Tone::Cool, "⌂")
+        .add(Tone::Dim, " worktree")
 }
 
 /// The top line: the name, what is shown, a mark that turns while
@@ -345,7 +348,7 @@ pub fn tiles(facts: Option<&Facts>, pulse: u8, width: usize) -> Vec<Text> {
     let agents = facts.and_then(|facts| facts.agents.as_ref().ok());
     let waiting = facts
         .and_then(|facts| facts.knowledge.as_ref().ok())
-        .and_then(|summary| knowledge_from(summary))
+        .and_then(|known| counts_from(&known.summary))
         .map(|known| known.waiting);
     let asked = facts.is_some();
     let unknown = if asked { "?" } else { "…" };
@@ -698,7 +701,7 @@ pub fn totals(facts: Option<&Facts>, width: usize) -> Vec<Text> {
 
 /// The numbers in ohjaa's summary line, where it reads as expected.
 #[derive(Debug, PartialEq, Eq)]
-struct Knowledge {
+struct Counts {
     current: u64,
     waiting: u64,
     errors: u64,
@@ -706,7 +709,7 @@ struct Knowledge {
     briefing: Option<(u64, u64)>,
 }
 
-fn knowledge_from(summary: &str) -> Option<Knowledge> {
+fn counts_from(summary: &str) -> Option<Counts> {
     let mut current = None;
     let mut waiting = None;
     let mut errors = None;
@@ -729,7 +732,7 @@ fn knowledge_from(summary: &str) -> Option<Knowledge> {
             _ => return None,
         }
     }
-    Some(Knowledge {
+    Some(Counts {
         current: current?,
         waiting: waiting?,
         errors: errors?,
@@ -738,11 +741,12 @@ fn knowledge_from(summary: &str) -> Option<Knowledge> {
     })
 }
 
-/// What ohjaa says of the knowledge here. A summary that does not read as
+/// What ohjaa says of the knowledge here, and with `flags` what it
+/// flagged as maybe no longer holding. A summary that does not read as
 /// expected is shown as ohjaa wrote it.
-pub fn knowledge(facts: Option<&Facts>, width: usize) -> Vec<Text> {
+pub fn knowledge(facts: Option<&Facts>, flags: bool, width: usize) -> Vec<Text> {
     let inner = width.saturating_sub(4);
-    let summary = match facts.map(|facts| &facts.knowledge) {
+    let told = match facts.map(|facts| &facts.knowledge) {
         None => {
             return card(
                 "KNOWLEDGE",
@@ -759,13 +763,21 @@ pub fn knowledge(facts: Option<&Facts>, width: usize) -> Vec<Text> {
                 width,
             );
         }
-        Some(Ok(summary)) => summary,
+        Some(Ok(told)) => told,
     };
-    let Some(known) = knowledge_from(summary) else {
+    let flagged = |mut rows: Vec<Text>| {
+        if flags {
+            for flag in &told.flags {
+                rows.extend(wrapped(Tone::Warn, &format!("flag: {flag}"), inner));
+            }
+        }
+        rows
+    };
+    let Some(known) = counts_from(&told.summary) else {
         return card(
             "KNOWLEDGE",
             Text::new(),
-            wrapped(Tone::Plain, summary, inner),
+            flagged(wrapped(Tone::Plain, &told.summary, inner)),
             width,
         );
     };
@@ -795,7 +807,7 @@ pub fn knowledge(facts: Option<&Facts>, width: usize) -> Vec<Text> {
     } else {
         Text::new()
     };
-    card("KNOWLEDGE", note, rows, width)
+    card("KNOWLEDGE", note, flagged(rows), width)
 }
 
 /// What is known of a repository's graph when a frame is drawn.
@@ -825,16 +837,55 @@ fn graph_marks(proof: &Proof, review: &Review) -> Text {
     review.then(proof)
 }
 
-/// The branches in progress of one repository, a line for each tip: its
-/// place in the graph, commit, branches, any review, and sykli's mark. The
-/// tip on the branch `here` is the one the shell beside the pane has
-/// checked out, and is lit. `turning` shows while the graph is asked for
-/// again. At most `most` rows; what does not fit is counted.
+/// An agent session vessa read in a working copy on a branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnBranch {
+    pub branch: String,
+    pub agent: String,
+    /// How long ago it last wrote, short.
+    pub age: String,
+    /// What it wrote, in tokens, short.
+    pub written: String,
+}
+
+/// What the other tools know about the branches of a graph.
+pub struct Around<'a> {
+    /// The branch the shell beside the pane has checked out.
+    pub here: Option<&'a str>,
+    /// Shown while the graph is asked for again.
+    pub turning: Option<char>,
+    /// Commits each branch is ahead of the base, as sykli counts them.
+    pub ahead: &'a HashMap<String, u64>,
+    /// The repository's working copies, with the handover left in each.
+    pub copies: &'a [WorkingCopy],
+    /// The agent sessions of the last day, by the branch they work on.
+    pub agents: &'a [OnBranch],
+    pub pulse: u8,
+    /// Unix seconds, for how long ago a handover was written.
+    pub now: u64,
+}
+
+/// One tip of the graph before it is known how much room there is.
+struct TipRows {
+    line: Text,
+    /// The commit and its subject, shown where there is room.
+    subject: Text,
+    /// Agents at work and the handover left there: always shown.
+    notes: Vec<Text>,
+    mine: bool,
+}
+
+/// The branches in progress of one repository. Each tip has a line: its
+/// place in the graph, its branches, `⌂` where a working copy has it
+/// checked out, the commits it is ahead of the base, any review, and
+/// sykli's mark. Under it, where there is room, its commit and subject;
+/// and always the agent sessions working there and the handover left
+/// there. The tip the shell beside the pane has checked out is lit. At
+/// most `most` rows: subjects give way first, then tips are counted.
 pub fn graph(
     name: &str,
     branches: Branches<'_>,
-    here: Option<&str>,
-    turning: Option<char>,
+    around: &Around<'_>,
     most: usize,
     width: usize,
 ) -> Vec<Text> {
@@ -849,7 +900,7 @@ pub fn graph(
             return card(
                 &title,
                 Text::new(),
-                vec![asking(turning).add(Tone::Dim, "asking git and sykli…")],
+                vec![asking(around.turning).add(Tone::Dim, "asking git and sykli…")],
                 width,
             );
         }
@@ -863,15 +914,19 @@ pub fn graph(
         }
         Branches::Read(graph) => graph,
     };
-    // Each line of the graph keeps one colour down its column.
-    let lanes = |marks: &str, base: bool| {
+    // Each line of the graph keeps one colour down its column. Under a
+    // tip's own line its mark becomes the line it sits on.
+    let lanes = |marks: &str, base: bool, under: bool| {
         let mut text = Text::new();
         for (column, mark) in marks.trim_end().chars().enumerate() {
             let lane = Tone::Lane((column / 2) as u8);
             text = match mark {
+                '*' if under => text.add(lane, "│"),
                 '*' if base => text.add(Tone::Bold, "◉"),
                 '*' => text.add(lane, "●"),
                 '|' => text.add(lane, "│"),
+                '/' if under => text.add(Tone::Plain, " "),
+                '\\' if under => text.add(Tone::Plain, " "),
                 '/' => text.add(lane, "╱"),
                 '\\' => text.add(lane, "╲"),
                 other => text.add(Tone::Dim, other.to_string()),
@@ -879,44 +934,149 @@ pub fn graph(
         }
         text
     };
-    let mut rows = Vec::new();
+
+    let mut edges_and_tips: Vec<Result<TipRows, Text>> = Vec::new();
     for line in &graph.lines {
         match line {
-            GraphLine::Edge { graph } => rows.push(lanes(graph, false)),
+            GraphLine::Edge { graph } => edges_and_tips.push(Err(lanes(graph, false, false))),
             GraphLine::Tip { graph: marks, tip } => {
                 let base = graph
                     .base
                     .as_ref()
                     .is_some_and(|base| tip.branches.contains(base));
-                let mine = here.is_some_and(|here| tip.branches.iter().any(|name| name == here));
-                let short: String = tip.commit.chars().take(7).collect();
-                let left = lanes(marks, base).add(Tone::Dim, format!(" {short} ")).add(
+                let on = |branch: &str| tip.branches.iter().any(|name| name == branch);
+                let mine = around.here.is_some_and(on);
+                let copies: Vec<&WorkingCopy> = around
+                    .copies
+                    .iter()
+                    .filter(|copy| copy.branch.as_deref().is_some_and(on))
+                    .collect();
+
+                let mut right = Text::new();
+                if !copies.is_empty() {
+                    right = right.add(Tone::Cool, "⌂ ");
+                }
+                if let Some(ahead) = tip
+                    .branches
+                    .iter()
+                    .find_map(|name| around.ahead.get(name))
+                    .filter(|ahead| **ahead > 0 && !base)
+                {
+                    right = right.add(Tone::Cool, format!("+{ahead} "));
+                }
+                let right = right.then(graph_marks(&tip.proof, &tip.review));
+                let left = lanes(marks, base, false).add(Tone::Plain, " ").add(
                     if base || mine { Tone::Bold } else { Tone::Cool },
                     tip.branches.join(", "),
                 );
-                let row = ends(left, graph_marks(&tip.proof, &tip.review), inner);
-                rows.push(if mine { row.lit() } else { row });
+                let line = ends(left, right, inner);
+
+                let short: String = tip.commit.chars().take(7).collect();
+                let below = || lanes(marks, base, true).add(Tone::Plain, " ");
+                let subject = below()
+                    .add(Tone::Dim, format!("{short} {}", tip.subject))
+                    .fit(inner);
+
+                let mut notes = Vec::new();
                 for session in &tip.sessions {
                     let intent = session.intent.as_deref().unwrap_or("intent not given");
-                    rows.push(Text::of(Tone::Accent, "  ↳ ").add(
+                    notes.push(below().add(Tone::Accent, "↳ ").add(
                         Tone::Dim,
                         format!("{} {}: {intent}", session.agent, session.liveness),
                     ));
                 }
+                for agent in around.agents.iter().filter(|agent| on(&agent.branch)) {
+                    let fresh = agent.age == "now";
+                    notes.push(
+                        below()
+                            .add(
+                                if fresh {
+                                    Tone::Pulse(around.pulse)
+                                } else {
+                                    Tone::Dim
+                                },
+                                "● ",
+                            )
+                            .add(Tone::Plain, format!("{} ", agent.agent))
+                            .add(
+                                if fresh { Tone::Good } else { Tone::Dim },
+                                format!("{} ", agent.age),
+                            )
+                            .add(Tone::Dim, format!("wrote {}", agent.written)),
+                    );
+                }
+                for left in copies.iter().filter_map(|copy| copy.handover.as_ref()) {
+                    let said = left
+                        .unfinished
+                        .as_deref()
+                        .or(left.next.as_deref())
+                        .unwrap_or("nothing written");
+                    let head = format!(
+                        "handover {}: ",
+                        tools::ago(around.now.saturating_sub(left.written_at))
+                    );
+                    let prefix = below();
+                    let room = inner.saturating_sub(prefix.width() + 2);
+                    // Where the shell is, the handover is read in full lines;
+                    // elsewhere one line says there is one.
+                    let lines = crate::project::wrap(&format!("{head}{said}"), "", room);
+                    let keep = if mine { 4 } else { 1 };
+                    for (at, text) in lines.iter().take(keep).enumerate() {
+                        let cut_short = at + 1 == keep && lines.len() > keep;
+                        let text = if cut_short {
+                            cut(&format!("{text} …"), room)
+                        } else {
+                            text.clone()
+                        };
+                        notes.push(
+                            below()
+                                .add(Tone::Warn, if at == 0 { "↳ " } else { "  " })
+                                .add(Tone::Dim, text),
+                        );
+                    }
+                }
+                edges_and_tips.push(Ok(TipRows {
+                    line: if mine { line.lit() } else { line },
+                    subject,
+                    notes,
+                    mine,
+                }));
             }
         }
     }
-    for warning in &graph.warnings {
-        rows.extend(wrapped(Tone::Warn, &format!("not read: {warning}"), inner));
+    let warnings: Vec<Text> = graph
+        .warnings
+        .iter()
+        .flat_map(|warning| wrapped(Tone::Warn, &format!("not read: {warning}"), inner))
+        .collect();
+
+    // Subjects are shown where everything then still fits; otherwise only
+    // under the tip the shell has checked out.
+    let rows_with = |subjects: bool| -> Vec<Text> {
+        let mut rows = Vec::new();
+        for item in &edges_and_tips {
+            match item {
+                Err(edge) => rows.push(edge.clone()),
+                Ok(tip) => {
+                    rows.push(tip.line.clone());
+                    if subjects || tip.mine {
+                        rows.push(tip.subject.clone());
+                    }
+                    rows.extend(tip.notes.iter().cloned());
+                }
+            }
+        }
+        rows.extend(warnings.iter().cloned());
+        rows
+    };
+    let mut rows = rows_with(true);
+    if rows.len() > most {
+        rows = rows_with(false);
     }
     if rows.is_empty() {
         rows.push(Text::of(Tone::Dim, "nothing in progress"));
     }
-    let tips = graph
-        .lines
-        .iter()
-        .filter(|line| matches!(line, GraphLine::Tip { .. }))
-        .count();
+    let tips = edges_and_tips.iter().filter(|item| item.is_ok()).count();
     if rows.len() > most {
         let hidden = rows.len() - most.saturating_sub(1);
         rows.truncate(most.saturating_sub(1));
@@ -927,7 +1087,7 @@ pub fn graph(
     }
     card(
         &title,
-        asking(turning).add(Tone::Dim, format!("{tips} tips")),
+        asking(around.turning).add(Tone::Dim, format!("{tips} tips")),
         rows,
         width,
     )
@@ -1141,10 +1301,12 @@ mod tests {
                 },
                 partial: true,
             }),
-            knowledge: Ok(
-                "18 current, 11 waiting for a decision, 0 error(s), 1 flag(s), briefing 7727/8000"
-                    .to_string(),
-            ),
+            knowledge: Ok(tools::Knowledge {
+                summary:
+                    "18 current, 11 waiting for a decision, 0 error(s), 1 flag(s), briefing 7727/8000"
+                        .to_string(),
+                flags: vec!["one-rule: names a thing that is gone".to_string()],
+            }),
         }
     }
     /// 2026-01-02T12:00:00Z.
@@ -1184,7 +1346,7 @@ mod tests {
             lines[1].contains("not read: vessa is not installed"),
             "{lines:?}"
         );
-        let lines = plain(&knowledge(Some(&absent), 38));
+        let lines = plain(&knowledge(Some(&absent), true, 38));
         assert!(
             lines[1].contains("not read: ohjaa is not installed"),
             "{lines:?}"
@@ -1193,7 +1355,7 @@ mod tests {
 
     #[test]
     fn ohjaas_numbers_are_laid_out_and_an_unexpected_line_is_shown_whole() {
-        let lines = plain(&knowledge(Some(&facts()), 38));
+        let lines = plain(&knowledge(Some(&facts()), false, 38));
         assert_eq!(lines[0], "╭─ KNOWLEDGE ───────── ohjaa review ─╮");
         assert_eq!(lines[1], "│ 18 current   11 to decide          │");
         assert_eq!(lines[2], "│ 1 flagged   0 errors               │");
@@ -1201,13 +1363,16 @@ mod tests {
         assert!(lines[3].ends_with(" 7727/8000 │"), "{lines:?}");
         let odd = Facts {
             agents: Err(String::new()),
-            knowledge: Ok("all is well".to_string()),
+            knowledge: Ok(tools::Knowledge {
+                summary: "all is well".to_string(),
+                flags: Vec::new(),
+            }),
         };
         assert_eq!(
-            plain(&knowledge(Some(&odd), 38))[1],
+            plain(&knowledge(Some(&odd), false, 38))[1],
             "│ all is well                        │"
         );
-        assert_eq!(knowledge_from("3 current, 1 of something else"), None);
+        assert_eq!(counts_from("3 current, 1 of something else"), None);
     }
 
     fn tip(marks: &str, commit: &str, branch: &str, proof: Proof, review: Review) -> GraphLine {
@@ -1224,9 +1389,35 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tip_is_one_line_with_its_mark_at_the_edge_and_the_rest_is_counted() {
-        let graph_of = Graph {
+    fn around<'a>(
+        ahead: &'a HashMap<String, u64>,
+        copies: &'a [WorkingCopy],
+        agents: &'a [OnBranch],
+        here: Option<&'a str>,
+    ) -> Around<'a> {
+        Around {
+            here,
+            turning: None,
+            ahead,
+            copies,
+            agents,
+            pulse: 7,
+            now: 7_300,
+        }
+    }
+
+    fn three_tips() -> Graph {
+        let mut two = tip(
+            "| *",
+            "bbbbbbb2222",
+            "feat/two",
+            Proof::NotRun,
+            Review::None,
+        );
+        if let GraphLine::Tip { tip, .. } = &mut two {
+            tip.subject = "second thing".to_string();
+        }
+        Graph {
             schema: "test",
             base: Some("origin/main".to_string()),
             lines: vec![
@@ -1237,13 +1428,7 @@ mod tests {
                     Proof::Passed,
                     Review::Blocking,
                 ),
-                tip(
-                    "| *",
-                    "bbbbbbb2222",
-                    "feat/two",
-                    Proof::NotRun,
-                    Review::None,
-                ),
+                two,
                 GraphLine::Edge {
                     graph: "|/".to_string(),
                 },
@@ -1256,46 +1441,104 @@ mod tests {
                 ),
             ],
             warnings: Vec::new(),
-        };
-        let lines = plain(&graph(
-            "alpha",
-            Branches::Read(&graph_of),
-            Some("feat/two"),
-            None,
-            9,
-            38,
-        ));
-        assert_eq!(lines[0], "╭─ GRAPH alpha ───────────── 3 tips ─╮");
-        assert_eq!(lines[1], "│ ● aaaaaaa feat/one      BLOCKING ✓ │");
-        assert_eq!(lines[2], "│ │ ● bbbbbbb feat/two             ○ │");
-        assert_eq!(lines[3], "│ │╱                                 │");
-        assert_eq!(lines[4], "│ ◉ ccccccc origin/main            ✗ │");
-        // The branch the shell has checked out is lit, and only that one.
+        }
+    }
+
+    #[test]
+    fn a_tip_says_what_every_tool_knows_of_its_branch() {
+        let graph_of = three_tips();
+        let ahead = HashMap::from([("feat/two".to_string(), 4), ("feat/one".to_string(), 0)]);
+        let copies = [WorkingCopy {
+            dir: "/work/two".into(),
+            branch: Some("feat/two".to_string()),
+            handover: Some(crate::side::follow::Left {
+                written_at: 100,
+                unfinished: Some(
+                    "the gate is red on the last commit and nobody looked".to_string(),
+                ),
+                next: None,
+            }),
+        }];
+        let agents = [OnBranch {
+            branch: "feat/two".to_string(),
+            agent: "claude".to_string(),
+            age: "now".to_string(),
+            written: "2.5M".to_string(),
+        }];
         let cards = graph(
             "alpha",
             Branches::Read(&graph_of),
-            Some("feat/two"),
-            None,
-            9,
+            &around(&ahead, &copies, &agents, Some("feat/two")),
+            20,
             38,
         );
-        let lit: Vec<bool> = cards
+        let lines = plain(&cards);
+        assert_eq!(
+            lines,
+            [
+                "╭─ GRAPH alpha ───────────── 3 tips ─╮",
+                "│ ● feat/one              BLOCKING ✓ │",
+                "│ │ aaaaaaa                          │",
+                "│ │ ● feat/two                ⌂ +4 ○ │",
+                "│ │ │ bbbbbbb second thing           │",
+                "│ │ │ ● claude now wrote 2.5M        │",
+                "│ │ │ ↳ handover 2h: the gate is red │",
+                "│ │ │   on the last commit and       │",
+                "│ │ │   nobody looked                │",
+                "│ │╱                                 │",
+                "│ ◉ origin/main                    ✗ │",
+                "│ │ ccccccc                          │",
+                "╰────────────────────────────────────╯",
+            ]
+        );
+        // The branch the shell has checked out is lit, and only that one.
+        let lit: Vec<usize> = cards
             .iter()
-            .map(|line| line.0.iter().any(|span| span.lit))
+            .enumerate()
+            .filter(|(_, line)| line.0.iter().any(|span| span.lit))
+            .map(|(at, _)| at)
             .collect();
-        assert_eq!(lit, [false, false, true, false, false, false]);
+        assert_eq!(lit, [3]);
+    }
+
+    #[test]
+    fn with_little_room_subjects_give_way_first_and_then_tips_are_counted() {
+        let graph_of = three_tips();
+        let (ahead, copies, agents) = (HashMap::new(), [], []);
+        let fits = plain(&graph(
+            "alpha",
+            Branches::Read(&graph_of),
+            &around(&ahead, &copies, &agents, None),
+            4,
+            38,
+        ));
+        assert_eq!(
+            fits,
+            [
+                "╭─ GRAPH alpha ───────────── 3 tips ─╮",
+                "│ ● feat/one              BLOCKING ✓ │",
+                "│ │ ● feat/two                     ○ │",
+                "│ │╱                                 │",
+                "│ ◉ origin/main                    ✗ │",
+                "╰────────────────────────────────────╯",
+            ]
+        );
         let short = plain(&graph(
             "alpha",
             Branches::Read(&graph_of),
-            None,
-            None,
+            &around(&ahead, &copies, &agents, None),
             2,
             38,
         ));
         assert_eq!(short.len(), 4, "two rows and the two edges of the card");
         assert_eq!(short[2], "│ … 3 more lines · 2 for all         │");
-        let reading = plain(&graph("alpha", Branches::Reading, None, Some('⠋'), 9, 38));
-        assert!(reading[1].contains("asking git and sykli…"), "{reading:?}");
+        let mut busy = around(&ahead, &copies, &agents, None);
+        busy.turning = Some('⠋');
+        let reading = plain(&graph("alpha", Branches::Reading, &busy, 9, 38));
+        assert!(
+            reading[1].contains("⠋ asking git and sykli…"),
+            "{reading:?}"
+        );
     }
 
     #[test]

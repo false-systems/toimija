@@ -98,6 +98,92 @@ pub fn here(root: &Path, cwd: &Path) -> Option<Here> {
     })
 }
 
+/// The handover left in a working copy, as `toimija handover` wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Left {
+    /// Unix seconds it was written.
+    pub written_at: u64,
+    pub unfinished: Option<String>,
+    pub next: Option<String>,
+}
+
+/// A working copy of a repository: its own folder, or a linked worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkingCopy {
+    pub dir: PathBuf,
+    /// `None` when HEAD is not on a branch.
+    pub branch: Option<String>,
+    pub handover: Option<Left>,
+}
+
+fn branch_at(git_dir: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    head.trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(str::to_string)
+}
+
+fn handover_in(dir: &Path) -> Option<Left> {
+    let text = std::fs::read_to_string(dir.join(".toimija/handover.json")).ok()?;
+    let left: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let said = |key: &str| {
+        left.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    Some(Left {
+        written_at: left.get("written_at")?.as_u64()?,
+        unfinished: said("unfinished"),
+        next: said("next"),
+    })
+}
+
+/// The working copies of the repository at `repo`: its own folder first,
+/// then each linked worktree whose folder is still there. Read from the
+/// files git keeps; no git is run.
+pub fn working_copies(repo: &Path) -> Vec<WorkingCopy> {
+    let git_dir = repo.join(".git");
+    let mut copies = vec![WorkingCopy {
+        dir: repo.to_path_buf(),
+        branch: branch_at(&git_dir),
+        handover: handover_in(repo),
+    }];
+    let Ok(linked) = std::fs::read_dir(git_dir.join("worktrees")) else {
+        return copies;
+    };
+    let mut rest = Vec::new();
+    for entry in linked.flatten() {
+        // `gitdir` names the `.git` file inside the worktree's folder.
+        let Ok(named) = std::fs::read_to_string(entry.path().join("gitdir")) else {
+            continue;
+        };
+        let Some(dir) = Path::new(named.trim()).parent().map(Path::to_path_buf) else {
+            continue;
+        };
+        if !dir.is_dir() {
+            continue;
+        }
+        rest.push(WorkingCopy {
+            branch: branch_at(&entry.path()),
+            handover: handover_in(&dir),
+            dir,
+        });
+    }
+    rest.sort_by(|a, b| a.dir.cmp(&b.dir));
+    copies.extend(rest);
+    copies
+}
+
+/// The working copy a directory is inside, the deepest where they nest.
+pub fn copy_of<'a>(copies: &'a [WorkingCopy], dir: &Path) -> Option<&'a WorkingCopy> {
+    copies
+        .iter()
+        .filter(|copy| dir.starts_with(&copy.dir))
+        .max_by_key(|copy| copy.dir.components().count())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +246,40 @@ mod tests {
             here(&root, &root.join("beta")).and_then(|here| here.branch),
             None
         );
+        // The repository's working copies: its own folder, then the worktree,
+        // each with its branch and the handover left in it.
+        write(
+            &linked.join(".toimija/handover.json"),
+            r#"{"written_at": 100, "unfinished": "the last step", "next": "  "}"#,
+        );
+        write(
+            &its_git.join("gitdir"),
+            &format!("{}\n", linked.join(".git").display()),
+        );
+        // A worktree whose folder was removed is not a place to work.
+        write(
+            &root.join("alpha/.git/worktrees/gone/gitdir"),
+            &format!("{}\n", root.join("_worktrees/gone/.git").display()),
+        );
+        let copies = working_copies(&root.join("alpha"));
+        assert_eq!(copies.len(), 2, "{copies:?}");
+        assert_eq!(copies[0].branch.as_deref(), Some("main"));
+        assert_eq!(copies[0].handover, None);
+        assert_eq!(copies[1].branch.as_deref(), Some("fix/one"));
+        assert_eq!(
+            copies[1].handover,
+            Some(Left {
+                written_at: 100,
+                unfinished: Some("the last step".to_string()),
+                next: None,
+            })
+        );
+        assert_eq!(
+            copy_of(&copies, &linked.join("src")).and_then(|copy| copy.branch.as_deref()),
+            Some("fix/one")
+        );
+        assert_eq!(copy_of(&copies, temp.path()), None);
+
         // The workspace folder itself, and a repository outside it, are no
         // repository of the workspace.
         assert_eq!(here(&root, &root), None);
