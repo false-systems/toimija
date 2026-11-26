@@ -10,6 +10,7 @@
 //! tell (uncommitted work, validation) is not in the packet; `toimija
 //! enter` inside a repository has it.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ use crate::session::{self, Handover};
 use crate::sessions::{self, Liveness, SessionView};
 
 mod relationships;
+pub use relationships::Contract;
 use relationships::{DeclaredRelationship, Relationship};
 
 /// The file that makes a folder a workspace, relative to the folder.
@@ -42,7 +44,64 @@ run `toimija enter` inside a repository for them.";
 pub struct WorkspaceFile {
     pub role: Option<String>,
     pub read_first: Vec<PathBuf>,
+    pub projects: Vec<DeclaredProject>,
     pub relationships: Vec<DeclaredRelationship>,
+}
+
+/// A named group of the folder's repositories and what it is. A repository
+/// may be in several.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeclaredProject {
+    pub name: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub repositories: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    pub name: String,
+    pub role: Option<String>,
+    pub repositories: Vec<String>,
+}
+
+/// The declared projects, as written. One with a blank name is a gap; a
+/// repository it names that `present` does not know is a gap too, and stays
+/// listed: the declaration is the person's, and what is missing is said.
+fn projects(
+    declared: &[DeclaredProject],
+    present: impl Fn(&str) -> bool,
+    not_read: &mut Vec<NotRead>,
+) -> Vec<Project> {
+    let mut found = Vec::new();
+    for project in declared {
+        if project.name.trim().is_empty() {
+            not_read.push(NotRead {
+                what: WORKSPACE_PATH.to_string(),
+                reason: "a project must have a nonblank name".to_string(),
+            });
+            continue;
+        }
+        for repository in &project.repositories {
+            if !present(repository) {
+                not_read.push(NotRead {
+                    what: WORKSPACE_PATH.to_string(),
+                    reason: format!(
+                        "project {:?} names repository {repository:?}, which is not present",
+                        project.name
+                    ),
+                });
+            }
+        }
+        found.push(Project {
+            name: project.name.clone(),
+            role: project.role.clone().filter(|role| !role.trim().is_empty()),
+            repositories: project.repositories.clone(),
+        });
+    }
+    found
 }
 
 /// The nearest folder at or above `cwd` that holds a workspace file. The
@@ -73,6 +132,8 @@ pub fn load(root: &Path) -> Result<WorkspaceFile> {
 pub struct WorkspacePacket {
     pub schema: &'static str,
     pub workspace: WorkspaceBlock,
+    /// The named groups of repositories the workspace file declares.
+    pub projects: Vec<Project>,
     /// The repositories directly inside the folder: those with an open
     /// session or a waiting handover first, then by name.
     pub repositories: Vec<Repository>,
@@ -92,7 +153,7 @@ pub struct WorkspaceBlock {
     pub read_first: Vec<ReadFirst>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadFirst {
     pub path: String,
     pub missing: bool,
@@ -187,7 +248,12 @@ pub fn build(runner: &dyn CommandRunner, root: &Path) -> Result<WorkspacePacket>
     });
 
     let sessions = folder_sessions(runner, root, &mut not_read);
-    let relationships = relationships::collect(&entries, &file.relationships, &mut not_read);
+    let relationships = relationships::collect(root, &entries, &file.relationships, &mut not_read);
+    let listed: BTreeSet<&str> = repositories
+        .iter()
+        .map(|repository| repository.name.as_str())
+        .collect();
+    let projects = projects(&file.projects, |name| listed.contains(name), &mut not_read);
 
     Ok(WorkspacePacket {
         schema: SCHEMA,
@@ -196,6 +262,7 @@ pub fn build(runner: &dyn CommandRunner, root: &Path) -> Result<WorkspacePacket>
             role: file.role.filter(|role| !role.trim().is_empty()),
             read_first,
         },
+        projects,
         repositories,
         sessions,
         relationships,
@@ -420,6 +487,17 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
         writeln!(out, "- {}{missing}", entry.path).unwrap();
     }
 
+    if !packet.projects.is_empty() {
+        writeln!(out, "\n## Projects").unwrap();
+    }
+    for project in &packet.projects {
+        writeln!(out, "{}", project_line("- ", project)).unwrap();
+        if !project.repositories.is_empty() {
+            let names: Vec<_> = project.repositories.iter().map(|name| text(name)).collect();
+            writeln!(out, "  - repositories: {}", names.join(", ")).unwrap();
+        }
+    }
+
     writeln!(out, "\n## Repositories").unwrap();
     if packet.repositories.is_empty() {
         writeln!(out, "- none").unwrap();
@@ -461,6 +539,7 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
             escaped(&relation.source)
         )
         .unwrap();
+        render_contract(&mut out, &relation.contract);
     }
     if packet.relationships.is_empty() {
         writeln!(out, "- none found (not proof of independence)").unwrap();
@@ -486,6 +565,208 @@ pub fn render_markdown(packet: &WorkspacePacket) -> String {
     writeln!(out, "\n## Not in this packet").unwrap();
     writeln!(out, "{}", packet.not_included).unwrap();
     out
+}
+
+/// Text a person or an agent wrote, made safe to sit on one packet line.
+fn text(value: &str) -> String {
+    crate::path_codec::display(Path::new(value))
+}
+
+fn project_line(prefix: &str, project: &Project) -> String {
+    match &project.role {
+        Some(role) => format!("{prefix}{}: {}", text(&project.name), text(role)),
+        None => format!("{prefix}{}: role not set", text(&project.name)),
+    }
+}
+
+fn render_contract(out: &mut String, contract: &[Contract]) {
+    for file in contract {
+        let missing = if file.missing { " (missing)" } else { "" };
+        writeln!(out, "  - contract: {}{missing}", text(&file.path)).unwrap();
+    }
+}
+
+/// What the workspace above a repository says about that repository: the
+/// projects it is in, the declared relationships that touch it, and what its
+/// neighbours are. Read from files; no git process.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Membership {
+    pub folder: String,
+    pub role: Option<String>,
+    pub read_first: Vec<ReadFirst>,
+    pub projects: Vec<Project>,
+    pub relationships: Vec<MemberRelationship>,
+    pub neighbours: Vec<Neighbour>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_read: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberRelationship {
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contract: Vec<Contract>,
+}
+
+/// A repository at the other end of a relationship, and what it says it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Neighbour {
+    pub name: String,
+    pub role: Option<String>,
+}
+
+/// The membership of the repository whose main working copy is `main_root`,
+/// when a workspace file sits in the folder directly above it and has
+/// something to say. Only declared relationships are read: inferring the
+/// others means reading every repository's manifests, which the workspace
+/// packet does and a repository's packet does not.
+pub fn membership(main_root: &Path) -> Option<Membership> {
+    let main_root = main_root.canonicalize().ok()?;
+    let name = main_root.file_name()?.to_str()?.to_owned();
+    let root = main_root.parent()?;
+    if !root.join(WORKSPACE_PATH).is_file() {
+        return None;
+    }
+    let folder = crate::path_codec::display(root);
+    let file = match load(root) {
+        Ok(file) => file,
+        Err(error) => {
+            return Some(Membership {
+                folder,
+                not_read: vec![format!("{error:#}")],
+                ..Membership::default()
+            });
+        }
+    };
+    let mut not_read = Vec::new();
+    let projects: Vec<Project> = file
+        .projects
+        .iter()
+        .filter(|project| !project.name.trim().is_empty())
+        .filter(|project| project.repositories.contains(&name))
+        .map(|project| Project {
+            name: project.name.clone(),
+            role: project.role.clone().filter(|role| !role.trim().is_empty()),
+            repositories: project
+                .repositories
+                .iter()
+                .filter(|other| **other != name)
+                .cloned()
+                .collect(),
+        })
+        .collect();
+    let relationships: Vec<MemberRelationship> = file
+        .relationships
+        .iter()
+        .filter(|relation| relation.from == name || relation.to == name)
+        .filter(|relation| !relation.kind.trim().is_empty())
+        .map(|relation| MemberRelationship {
+            from: relation.from.clone(),
+            to: relation.to.clone(),
+            kind: relation.kind.clone(),
+            contract: relationships::contract(root, &relation.contract),
+        })
+        .collect();
+    let others: BTreeSet<&str> = relationships
+        .iter()
+        .flat_map(|relation| [relation.from.as_str(), relation.to.as_str()])
+        .filter(|other| *other != name)
+        .collect();
+    let neighbours = others
+        .into_iter()
+        .map(|other| {
+            let role = match RepoConfig::load_optional(&root.join(other)) {
+                Ok(config) => config
+                    .map(|config| config.repo.role)
+                    .filter(|role| !role.trim().is_empty()),
+                Err(error) => {
+                    not_read.push(format!("{other}: role: {error}"));
+                    None
+                }
+            };
+            Neighbour {
+                name: other.to_owned(),
+                role,
+            }
+        })
+        .collect();
+    let role = file.role.filter(|role| !role.trim().is_empty());
+    if role.is_none() && projects.is_empty() && relationships.is_empty() {
+        return None;
+    }
+    let read_first = file
+        .read_first
+        .iter()
+        .map(|path| ReadFirst {
+            path: crate::path_codec::display(&root.join(path)),
+            missing: !root.join(path).exists(),
+        })
+        .collect();
+    Some(Membership {
+        folder,
+        role,
+        read_first,
+        projects,
+        relationships,
+        neighbours,
+        not_read,
+    })
+}
+
+/// The "Project context" section of a repository's packet.
+pub fn render_membership(out: &mut String, membership: &Membership) {
+    writeln!(out, "\n## Project context").unwrap();
+    for reason in &membership.not_read {
+        writeln!(out, "- not read: {}", text(reason)).unwrap();
+    }
+    if let Some(role) = &membership.role {
+        writeln!(out, "- workspace: {}", text(role)).unwrap();
+    }
+    for project in &membership.projects {
+        writeln!(out, "{}", project_line("- part of ", project)).unwrap();
+        if !project.repositories.is_empty() {
+            let names: Vec<_> = project.repositories.iter().map(|name| text(name)).collect();
+            writeln!(out, "  - with: {}", names.join(", ")).unwrap();
+        }
+    }
+    for relation in &membership.relationships {
+        writeln!(
+            out,
+            "- {} → {}: {}",
+            text(&relation.from),
+            text(&relation.to),
+            text(&relation.kind)
+        )
+        .unwrap();
+        render_contract(out, &relation.contract);
+    }
+    for neighbour in &membership.neighbours {
+        match &neighbour.role {
+            Some(role) => writeln!(
+                out,
+                "- {} is: {}",
+                text(&neighbour.name),
+                text(&brief(role))
+            ),
+            None => writeln!(out, "- {} is: role not set", text(&neighbour.name)),
+        }
+        .unwrap();
+    }
+    for entry in &membership.read_first {
+        let missing = if entry.missing { " (missing)" } else { "" };
+        writeln!(out, "- read first: {}{missing}", entry.path).unwrap();
+    }
+    if membership.not_read.is_empty() {
+        writeln!(
+            out,
+            "- declared in {}/{WORKSPACE_PATH}; `toimija enter` in that folder shows every \
+             repository and the inferred dependencies",
+            membership.folder
+        )
+        .unwrap();
+    }
 }
 
 fn render_scope(out: &mut String, session: &OpenSession, indent: &str) {

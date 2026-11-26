@@ -953,3 +953,235 @@ fn ambiguous_git_urls_are_gaps_without_credential_fragments() {
         assert_eq!(packet["not_read"].as_array().unwrap().len(), 1);
     }
 }
+
+/// A real repository inside the sandbox's workspace folder, with one commit.
+fn real_repository(sandbox: &Sandbox, name: &str) -> PathBuf {
+    let repo = sandbox.root.join(name);
+    fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    fs::write(repo.join("README.md"), "# real\n").unwrap();
+    run_git(&repo, &["add", "README.md"]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "first",
+        ],
+    );
+    repo
+}
+
+const PROJECTS: &str = "\
+role: everything one team builds
+read_first:
+  - NOTES.md
+projects:
+  - name: Delivery
+    role: the tools that take a change from an idea to main
+    repositories: [checker, teller, absent]
+  - name: Storage
+    role: where evidence is kept
+    repositories: [store]
+relationships:
+  - from: teller
+    to: checker
+    kind: reads what the checker proved
+    contract:
+      - checker/docs/status.md
+      - checker/docs/gone.md
+  - from: store
+    to: elsewhere
+    kind: unrelated to the teller
+";
+
+fn delivery_workspace() -> Sandbox {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file(PROJECTS);
+    sandbox.write("NOTES.md", "# notes\n");
+    sandbox.repo("checker", "ref: refs/heads/main\n");
+    sandbox.write(
+        "checker/.toimija/repo.yaml",
+        "repo:\n  name: checker\n  role: decides whether code may land\n",
+    );
+    sandbox.write("checker/docs/status.md", "# status\n");
+    sandbox.repo("store", "ref: refs/heads/main\n");
+    sandbox
+}
+
+#[test]
+fn projects_say_what_each_group_of_repositories_is() {
+    let sandbox = delivery_workspace();
+    sandbox.repo("teller", "ref: refs/heads/main\n");
+
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
+    assert!(
+        packet.contains(
+            "\n## Projects\n\
+             - Delivery: the tools that take a change from an idea to main\n  \
+             - repositories: checker, teller, absent\n\
+             - Storage: where evidence is kept\n  \
+             - repositories: store\n"
+        ),
+        "{packet}"
+    );
+    // A member that is not in the folder is said, never dropped.
+    assert!(
+        packet.contains("project \"Delivery\" names repository \"absent\", which is not present"),
+        "{packet}"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
+    assert_eq!(json["projects"][0]["name"], "Delivery");
+    assert_eq!(json["projects"][1]["repositories"][0], "store");
+}
+
+#[test]
+fn a_workspace_without_projects_prints_no_projects_section() {
+    let sandbox = three_repositories();
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
+    assert!(!packet.contains("## Projects"), "{packet}");
+}
+
+#[test]
+fn a_relationship_names_its_contract_and_says_when_a_file_is_missing() {
+    let sandbox = delivery_workspace();
+    sandbox.repo("teller", "ref: refs/heads/main\n");
+
+    let packet = sandbox.stdout(&sandbox.root, &["enter"]);
+    assert!(
+        packet.contains(
+            "- teller → checker: reads what the checker proved [declared; .toimija/workspace.yaml]\n  \
+             - contract: checker/docs/status.md\n  \
+             - contract: checker/docs/gone.md (missing)\n"
+        ),
+        "{packet}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&sandbox.root, &["enter", "--json"])).unwrap();
+    let relation = json["relationships"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|relation| relation["from"] == "teller")
+        .unwrap();
+    assert_eq!(relation["contract"][1]["missing"], true);
+}
+
+#[test]
+fn inside_a_member_repository_the_packet_says_what_it_is_part_of() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = delivery_workspace();
+    let teller = real_repository(&sandbox, "teller");
+
+    let packet = sandbox.stdout(&teller, &["enter"]);
+    assert!(packet.starts_with("# Toimija Context\n"), "{packet}");
+    assert!(
+        packet.contains(
+            "\n## Project context\n\
+             - workspace: everything one team builds\n\
+             - part of Delivery: the tools that take a change from an idea to main\n  \
+             - with: checker, absent\n\
+             - teller → checker: reads what the checker proved\n  \
+             - contract: checker/docs/status.md\n  \
+             - contract: checker/docs/gone.md (missing)\n\
+             - checker is: decides whether code may land\n"
+        ),
+        "{packet}"
+    );
+    // Only what touches this repository: not the other project, not the
+    // relationship between two others.
+    assert!(!packet.contains("Storage"), "{packet}");
+    assert!(!packet.contains("unrelated to the teller"), "{packet}");
+    // Where the whole picture is.
+    assert!(packet.contains("- read first: "), "{packet}");
+    assert!(packet.contains("NOTES.md"), "{packet}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&teller, &["enter", "--json"])).unwrap();
+    assert_eq!(json["workspace"]["projects"][0]["name"], "Delivery");
+    assert_eq!(json["workspace"]["relationships"][0]["to"], "checker");
+}
+
+#[test]
+fn a_linked_worktree_elsewhere_is_told_what_its_repository_is_part_of() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = delivery_workspace();
+    let teller = real_repository(&sandbox, "teller");
+    let elsewhere = sandbox.ceiling.join("trees/teller-fix");
+    fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    run_git(
+        &teller,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix",
+            elsewhere.to_str().unwrap(),
+        ],
+    );
+
+    let packet = sandbox.stdout(&elsewhere, &["enter"]);
+    assert!(
+        packet.contains("- part of Delivery: the tools that take a change from an idea to main\n"),
+        "{packet}"
+    );
+}
+
+#[test]
+fn a_repository_the_workspace_says_nothing_about_gets_no_project_section() {
+    if !git_available() {
+        return;
+    }
+    // An empty workspace file above: nothing to tell.
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("# nothing declared\n");
+    let repo = real_repository(&sandbox, "real");
+    let packet = sandbox.stdout(&repo, &["enter"]);
+    assert!(!packet.contains("## Project context"), "{packet}");
+    let json: serde_json::Value =
+        serde_json::from_str(&sandbox.stdout(&repo, &["enter", "--json"])).unwrap();
+    assert!(json.get("workspace").is_none(), "{json}");
+}
+
+#[test]
+fn a_broken_workspace_file_does_not_break_a_repository_packet() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("projects: [not, a, mapping\n");
+    let repo = real_repository(&sandbox, "real");
+    let packet = sandbox.stdout(&repo, &["enter"]);
+    assert!(packet.starts_with("# Toimija Context\n"), "{packet}");
+    assert!(
+        packet.contains("\n## Project context\n- not read: invalid workspace file at "),
+        "{packet}"
+    );
+}
+
+#[test]
+fn the_project_section_costs_a_repository_packet_no_git_process() {
+    if !git_available() {
+        return;
+    }
+    let with = delivery_workspace();
+    let teller = real_repository(&with, "teller");
+    let without = Sandbox::new();
+    let plain = real_repository(&without, "teller");
+    assert_eq!(
+        git_processes(&with, &teller).len(),
+        git_processes(&without, &plain).len()
+    );
+}

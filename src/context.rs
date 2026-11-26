@@ -51,6 +51,24 @@ pub struct ContextPacket {
     /// ([`crate::worktrees`]); `toimija sessions` says how to remove them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub finished_worktrees: Vec<crate::worktrees::FinishedWorktree>,
+    /// What the workspace above this repository says about it: its projects,
+    /// the declared relationships that touch it and what its neighbours are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::workspace::Membership>,
+}
+
+/// The main working copy of the repository `git_dir` belongs to: the folder
+/// that holds its common `.git` directory. A linked worktree's git dir names
+/// the common one in its `commondir` file. Read from files; `None` for a
+/// bare repository or a layout this cannot place.
+fn main_working_copy(repo_root: &Path, git_dir: Option<&Path>) -> Option<PathBuf> {
+    let git_dir = repo_root.join(git_dir?);
+    let common = match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) => git_dir.join(text.trim()),
+        Err(_) => git_dir,
+    };
+    let common = common.canonicalize().ok()?;
+    (common.file_name()? == ".git").then(|| common.parent().map(Path::to_path_buf))?
 }
 
 /// The session a packet is worked out for: who it is and why that session
@@ -216,6 +234,8 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
     // What the last agent here left for the next: every packet
     // worked out in this working copy carries it.
     let handover = crate::session::read_handover(&git.repo_root);
+    let workspace = main_working_copy(&git.repo_root, git.git_dir.as_deref())
+        .and_then(|main| crate::workspace::membership(&main));
     let safe_to_ignore = stable_paths(config.context.safe_to_ignore.clone());
     let ignore_rules = effective_ignore_rules(&safe_to_ignore);
     let secondary_scan = repo::detect_secondary_langs(&git.repo_root, repo_kind, |path| {
@@ -295,6 +315,7 @@ pub fn compile_packet(collected: &git::Collected, for_diff: bool) -> anyhow::Res
         session: None,
         handover,
         finished_worktrees: Vec::new(),
+        workspace,
     };
     debug!(
         event = "toimija.context.git_section.rendered",
