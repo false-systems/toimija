@@ -26,6 +26,7 @@ use crate::command::CommandRunner;
 use crate::project::{self, Asked, View};
 use crate::workspace;
 
+mod follow;
 mod look;
 mod tools;
 
@@ -34,6 +35,10 @@ pub const PANE_COLUMNS: u16 = 38;
 /// The title the view gives its pane, by which `--open` finds it again.
 pub const PANE_TITLE: &str = "toimija side";
 const TICK: Duration = Duration::from_millis(1500);
+/// How long a frame stands while something on screen is moving.
+const FRAME: Duration = Duration::from_millis(160);
+/// The mark that turns while something is being asked.
+const TURNING: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 /// How often uncommitted edits are looked for where a session is at work.
 const BUSY_RECHECK: Duration = Duration::from_secs(20);
 /// And where nobody is.
@@ -191,6 +196,9 @@ pub struct Options {
     /// Narrow this pane to [`PANE_COLUMNS`] first, where the terminal can be
     /// asked to. Set by `--open`.
     pub fit: bool,
+    /// The shell the pane was opened from: the view follows the repository
+    /// that shell is working in. Set by `--open`.
+    pub follow: Option<u32>,
 }
 
 /// Print the view once, or keep it on screen when standard output is a
@@ -455,9 +463,163 @@ impl Pane {
 /// and the graph or why it could not be read.
 type Graphs = std::collections::HashMap<String, (Fingerprint, Result<crate::graph::Graph, String>)>;
 
-fn read_graph(runner: &dyn CommandRunner, dir: &Path) -> Result<crate::graph::Graph, String> {
-    crate::graph::build(runner, dir, "origin/main", &crate::graph::sykli_proof)
-        .map_err(|error| format!("{error:#}"))
+/// A graph being asked for on a thread of its own, so the pane keeps
+/// drawing and taking keys meanwhile.
+struct Asking {
+    name: String,
+    files: Fingerprint,
+    got: Arc<Mutex<Option<Result<crate::graph::Graph, String>>>>,
+}
+
+impl Asking {
+    fn start(name: &str, dir: PathBuf, files: Fingerprint) -> Self {
+        let got = Arc::new(Mutex::new(None));
+        let put = Arc::clone(&got);
+        std::thread::spawn(move || {
+            let read = crate::graph::build(
+                &crate::command::ProcessCommandRunner,
+                &dir,
+                "origin/main",
+                &crate::graph::sykli_proof,
+            )
+            .map_err(|error| format!("{error:#}"));
+            *put.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(read);
+        });
+        Self {
+            name: name.to_string(),
+            files,
+            got,
+        }
+    }
+
+    fn answer(&self) -> Option<Result<crate::graph::Graph, String>> {
+        self.got
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
+/// Everything a frame is drawn from.
+struct Scene<'a> {
+    pane: &'a Pane,
+    folder: &'a str,
+    /// `None` until the repositories have been asked about once.
+    view: Option<&'a Result<View, String>>,
+    facts: Option<&'a tools::Facts>,
+    graphs: &'a Graphs,
+    /// The repository whose graph is being asked for now.
+    asking: Option<&'a str>,
+    here: Option<&'a follow::Here>,
+    turning: Option<char>,
+    pulse: u8,
+    now: u64,
+    width: usize,
+    room: usize,
+}
+
+impl Scene<'_> {
+    fn title(&self) -> String {
+        match &self.pane.showing {
+            Showing::Graph(name) => name.clone(),
+            Showing::Projects | Showing::Relations | Showing::Agents => self
+                .pane
+                .only
+                .clone()
+                .unwrap_or_else(|| self.folder.to_string()),
+        }
+    }
+
+    /// The repository whose graph this view shows, if it shows one.
+    fn graph_of(&self) -> Option<String> {
+        match &self.pane.showing {
+            Showing::Projects => self.pane.picked().map(str::to_string),
+            Showing::Graph(name) => Some(name.clone()),
+            Showing::Relations | Showing::Agents => None,
+        }
+    }
+
+    fn repositories(&self) -> Vec<look::Text> {
+        let told = |tone: look::Tone, text: String| {
+            look::card(
+                "REPOSITORIES",
+                look::Text::new(),
+                vec![look::Text::of(tone, text)],
+                self.width,
+            )
+        };
+        match self.view {
+            None => told(look::Tone::Dim, "asking git and sykli…".to_string()),
+            Some(Ok(view)) => look::repositories(view, self.pane.picked(), self.width),
+            Some(Err(why)) => told(look::Tone::Warn, format!("not read: {why}")),
+        }
+    }
+
+    /// The lines under the row of views, and the keys of this view.
+    fn body(&self) -> (Vec<look::Text>, look::Text) {
+        let facts = self.facts;
+        let width = self.width;
+        let mut body: Vec<look::Text> = Vec::new();
+        let keys = match &self.pane.showing {
+            Showing::Projects => {
+                body.extend(look::tiles(facts, self.pulse, width));
+                body.extend(self.repositories());
+                body.extend(look::agents(facts, self.now, 3, true, self.pulse, width));
+                look::keys(&[
+                    ("jk", "pick"),
+                    ("p", "project"),
+                    ("r", "read"),
+                    ("q", "quit"),
+                ])
+            }
+            Showing::Relations => {
+                match self.view {
+                    Some(Ok(view)) => body.extend(look::links(view, width)),
+                    _ => body.extend(self.repositories()),
+                }
+                look::keys(&[
+                    ("1", "back"),
+                    ("p", "project"),
+                    ("r", "read"),
+                    ("q", "quit"),
+                ])
+            }
+            Showing::Agents => {
+                body.extend(look::tiles(facts, self.pulse, width));
+                body.extend(look::totals(facts, width));
+                body.extend(look::agents(
+                    facts,
+                    self.now,
+                    usize::MAX,
+                    false,
+                    self.pulse,
+                    width,
+                ));
+                body.extend(look::knowledge(facts, width));
+                look::keys(&[("1", "back"), ("r", "read"), ("q", "quit")])
+            }
+            Showing::Graph(_) => look::keys(&[("1", "back"), ("r", "read"), ("q", "quit")]),
+        };
+        // The graph is on screen without a key: under the cards of the first
+        // view it is the picked repository's, in what room is left, and view
+        // 2 gives it the whole pane.
+        let most = self.room.saturating_sub(body.len() + 2);
+        if let Some(name) = self.graph_of().filter(|_| most >= 2) {
+            let branches = match self.graphs.get(&name) {
+                Some((_, Ok(graph))) => look::Branches::Read(graph),
+                Some((_, Err(why))) => look::Branches::NotRead(why),
+                None => look::Branches::Reading,
+            };
+            // The branch the shell has checked out, when this is its repository.
+            let here = self
+                .here
+                .filter(|here| here.repository == name)
+                .and_then(|here| here.branch.as_deref());
+            let turning = self.turning.filter(|_| self.asking == Some(name.as_str()));
+            body.extend(look::graph(&name, branches, here, turning, most, width));
+        }
+        (body, keys)
+    }
 }
 
 /// What vessa and ohjaa last said, asked again on a timer by a thread of
@@ -530,183 +692,197 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
         picked: 0,
     };
     let mut memory = Memory::default();
-    // The graph last drawn: whose it is, the files it rests on, its lines.
     let mut graphs: Graphs = Graphs::new();
+    let mut asking: Option<Asking> = None;
     let mut tools = Tools::default();
     let _screen = screen::enter().context("the terminal could not be prepared")?;
     if options.fit {
         fit_pane();
     }
-
     let palette = look::Palette::detect();
-    // Turns with each draw, for the mark of a session that wrote just now.
-    let mut beat = false;
-    // Whether any agent session is live: the pane then draws every tick.
-    let mut lively = false;
-    let mut drawn: Option<Instant> = None;
+    let folder = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    // What was last learned of the repositories, and when they were asked.
+    let mut shown: Option<Result<View, String>> = None;
+    let mut asked: Option<Instant> = None;
+    // When the repositories' files were last looked at for movement.
+    let mut looked: Option<Instant> = None;
+    // Where the shell beside the pane works, and the directory that says so.
+    let mut beside: Option<PathBuf> = None;
+    let mut here: Option<follow::Here> = None;
+    // The frame on which news last arrived: a light then crosses the name.
+    let mut news: Option<u64> = None;
+    let mut frame: u64 = 0;
+    let mut stale = true;
+
     while !stop.load(Ordering::Relaxed) {
+        frame += 1;
+        let mut redraw = false;
         if tools.due() {
             tools.ask(root);
         }
-        // An idle tick: nothing moved and the view is recent. Wait for a
-        // key and look again, without reading anything.
-        let idle = drawn.is_some_and(|at| at.elapsed() < BUSY_RECHECK)
-            && !tools.arrived.load(Ordering::SeqCst)
-            && !resized.load(Ordering::Relaxed)
-            && !memory.moved(root);
-        if idle {
-            match screen::read_key(TICK).map(|key| pane.press(key)) {
+        if tools.arrived.swap(false, Ordering::SeqCst) {
+            news = Some(frame);
+            redraw = true;
+        }
+        if resized.swap(false, Ordering::Relaxed) {
+            redraw = true;
+        }
+        if let Some(answer) = asking.as_ref().and_then(Asking::answer) {
+            if let Some(done) = asking.take() {
+                graphs.insert(done.name, (done.files, answer));
+            }
+            news = Some(frame);
+            redraw = true;
+        }
+        // The shell moved to another directory: show the repository it is in.
+        let mut moved_to: Option<String> = None;
+        if let Some(shell) = options.follow {
+            let now = follow::cwd_of(shell);
+            if now != beside {
+                here = now.as_deref().and_then(|dir| follow::here(root, dir));
+                moved_to = here.as_ref().map(|here| here.repository.clone());
+                beside = now;
+                redraw = true;
+            }
+        }
+        // The repositories are asked about when their files moved, and on a
+        // slow timer for uncommitted edits, which move no file git keeps.
+        if looked.is_none_or(|at| at.elapsed() >= TICK) {
+            looked = Some(Instant::now());
+            if asked.is_none_or(|at| at.elapsed() >= BUSY_RECHECK) || memory.moved(root) {
+                stale = true;
+            }
+        }
+        let facts = tools.facts();
+        let lively = facts
+            .as_ref()
+            .and_then(|facts| facts.agents.as_ref().ok())
+            .is_some_and(|agents| !agents.digest.live.is_empty());
+        let busy = asking.is_some() || tools.busy.load(Ordering::SeqCst);
+        let lit = news.is_some_and(|at| frame - at < 8);
+        let moving = lively || busy || lit;
+
+        if !stale && !redraw {
+            let wait = if moving { FRAME } else { TICK };
+            match screen::read_key(wait).map(|key| pane.press(key)) {
                 Some(Asks::Quit) => return Ok(0),
                 Some(Asks::Again) => {
                     memory.clear();
                     graphs.clear();
                     tools.asked = None;
-                    drawn = None;
+                    stale = true;
                     continue;
                 }
-                Some(Asks::Draw) => {
-                    drawn = None;
-                    continue;
-                }
-                Some(Asks::Nothing) | None if !lively => continue,
+                Some(Asks::Draw) => {}
+                Some(Asks::Nothing) | None if !moving => continue,
                 Some(Asks::Nothing) | None => {}
             }
         }
-        drawn = Some(Instant::now());
-        beat = !beat;
-        resized.store(false, Ordering::Relaxed);
-        tools.arrived.store(false, Ordering::SeqCst);
-        let facts = tools.facts();
-        lively = facts
-            .as_ref()
-            .and_then(|facts| facts.agents.as_ref().ok())
-            .is_some_and(|agents| !agents.digest.live.is_empty());
+
         let (columns, rows) = screen::size().unwrap_or((usize::from(PANE_COLUMNS), 40));
         let width = options.width.unwrap_or(columns).min(columns);
-        let room = rows.saturating_sub(FRAME_ROWS);
+        // A turn of the mark each frame, and a slow swell of the live marks.
+        let turning = busy.then(|| TURNING[(frame % 10) as usize]);
+        let swell = frame % 14;
+        let pulse = if swell < 8 { swell } else { 14 - swell } as u8;
+        let sweep = news
+            .map(|at| (frame - at) as usize)
+            .filter(|letter| *letter < 7);
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|since| since.as_secs())
             .unwrap_or(0);
-
-        let view = memory.view(
-            runner,
-            root,
-            pane.only.as_deref(),
-            Instant::now(),
-            &mut |names| project::ask_many(root, names),
-        );
-        if let Ok(view) = &view {
-            let mut names: Vec<String> = Vec::new();
-            for row in view.projects.iter().flat_map(|p| &p.repositories) {
-                if row.present && !names.contains(&row.name) {
-                    names.push(row.name.clone());
-                }
-            }
-            pane.repositories = names;
-            pane.picked = pane.picked.min(pane.repositories.len().saturating_sub(1));
-        }
-        let folder = root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let title = match &pane.showing {
-            Showing::Graph(name) => name.clone(),
-            Showing::Projects | Showing::Relations | Showing::Agents => {
-                pane.only.clone().unwrap_or(folder)
-            }
-        };
-        let not_read = |error: &anyhow::Error| {
-            look::card(
-                "NOT READ",
-                look::Text::new(),
-                vec![look::Text::of(look::Tone::Warn, format!("{error:#}"))],
-                width,
-            )
-        };
-        let mut body: Vec<look::Text> = Vec::new();
-        let keys = match &pane.showing {
-            Showing::Projects => {
-                match &view {
-                    Ok(view) => body.extend(look::repositories(view, pane.picked(), width)),
-                    Err(error) => body.extend(not_read(error)),
-                }
-                body.extend(look::agents(facts.as_ref(), now, 3, true, beat, width));
-                body.extend(look::knowledge(facts.as_ref(), width));
-                look::keys(&[
-                    ("jk", "pick"),
-                    ("p", "project"),
-                    ("r", "read"),
-                    ("q", "quit"),
-                ])
-            }
-            Showing::Relations => {
-                match &view {
-                    Ok(view) => body.extend(look::links(view, width)),
-                    Err(error) => body.extend(not_read(error)),
-                }
-                look::keys(&[
-                    ("1", "back"),
-                    ("p", "project"),
-                    ("r", "read"),
-                    ("q", "quit"),
-                ])
-            }
-            Showing::Agents => {
-                body.extend(look::totals(facts.as_ref(), width));
-                body.extend(look::agents(
-                    facts.as_ref(),
+        macro_rules! scene {
+            () => {
+                Scene {
+                    pane: &pane,
+                    folder: &folder,
+                    view: shown.as_ref(),
+                    facts: facts.as_ref(),
+                    graphs: &graphs,
+                    asking: asking.as_ref().map(|asking| asking.name.as_str()),
+                    here: here.as_ref(),
+                    turning,
+                    pulse,
                     now,
-                    usize::MAX,
-                    false,
-                    beat,
                     width,
-                ));
-                body.extend(look::knowledge(facts.as_ref(), width));
-                look::keys(&[("1", "back"), ("r", "read"), ("q", "quit")])
-            }
-            Showing::Graph(_) => look::keys(&[("1", "back"), ("r", "read"), ("q", "quit")]),
-        };
-        // The graph is on screen without a key: under the cards of the first
-        // view it is the picked repository's, in what room is left, and view
-        // 2 gives it the whole pane.
-        let of = match &pane.showing {
-            Showing::Projects => pane.picked().map(str::to_string),
-            Showing::Graph(name) => Some(name.clone()),
-            Showing::Relations | Showing::Agents => None,
-        };
-        let most = room.saturating_sub(body.len() + 2);
-        if let Some(name) = of.filter(|_| most >= 2) {
-            let dir = root.join(&name);
-            let files = fingerprint(&dir);
-            let fresh = graphs.get(&name).is_some_and(|(at, _)| *at == files);
-            if !fresh {
-                // Asking takes a moment in a clone with many branches.
-                let mut waiting = body.clone();
-                waiting.extend(look::graph(&name, look::Branches::Reading, most, width));
+                    room: rows.saturating_sub(FRAME_ROWS),
+                }
+            };
+        }
+
+        if stale {
+            if shown.is_none() {
+                // The first answer takes seconds: show the frame it will fill.
+                let scene = scene!();
+                let (body, keys) = scene.body();
                 draw(
-                    &title,
+                    &scene.title(),
                     pane.showing.number(),
-                    &waiting,
+                    &body,
                     &keys,
+                    Some(TURNING[0]),
+                    None,
                     width,
                     rows,
                     palette,
                 )?;
-                graphs.insert(name.clone(), (files, read_graph(runner, &dir)));
             }
-            let branches = match graphs.get(&name) {
-                Some((_, Ok(graph))) => look::Branches::Read(graph),
-                Some((_, Err(why))) => look::Branches::NotRead(why),
-                None => look::Branches::Reading,
-            };
-            body.extend(look::graph(&name, branches, most, width));
+            let view = memory.view(
+                runner,
+                root,
+                pane.only.as_deref(),
+                Instant::now(),
+                &mut |names| project::ask_many(root, names),
+            );
+            if let Ok(view) = &view {
+                let mut names: Vec<String> = Vec::new();
+                for row in view.projects.iter().flat_map(|p| &p.repositories) {
+                    if row.present && !names.contains(&row.name) {
+                        names.push(row.name.clone());
+                    }
+                }
+                pane.repositories = names;
+                pane.picked = pane.picked.min(pane.repositories.len().saturating_sub(1));
+            }
+            shown = Some(view.map_err(|error| format!("{error:#}")));
+            asked = Some(Instant::now());
+            stale = false;
+            // The shell's repository is picked once the names are known.
+            if moved_to.is_none() && frame == 1 {
+                moved_to = here.as_ref().map(|here| here.repository.clone());
+            }
         }
+        if let Some(at) =
+            moved_to.and_then(|name| pane.repositories.iter().position(|n| *n == name))
+        {
+            pane.picked = at;
+        }
+
+        // A graph whose repository's files moved is asked for again, one at
+        // a time, on a thread of its own; the one on screen stays meanwhile.
+        let scene = scene!();
+        if let Some(name) = scene.graph_of() {
+            let dir = root.join(&name);
+            let files = fingerprint(&dir);
+            let fresh = graphs.get(&name).is_some_and(|(at, _)| *at == files);
+            if !fresh && asking.is_none() {
+                asking = Some(Asking::start(&name, dir, files));
+            }
+        }
+        let scene = scene!();
+        let (body, keys) = scene.body();
         draw(
-            &title,
+            &scene.title(),
             pane.showing.number(),
             &body,
             &keys,
+            turning.or(asking.as_ref().map(|_| TURNING[(frame % 10) as usize])),
+            sweep,
             width,
             rows,
             palette,
@@ -795,11 +971,14 @@ fn next_project(names: &[String], now: Option<&str>) -> Option<String> {
 /// One frame, written once, inside the terminal's synchronized-output marks
 /// so a half-drawn frame is never shown.
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn draw(
     title: &str,
     on: usize,
     body: &[look::Text],
     keys: &look::Text,
+    turning: Option<char>,
+    sweep: Option<usize>,
     width: usize,
     rows: usize,
     palette: look::Palette,
@@ -816,7 +995,7 @@ fn draw(
         frame.push_str(&text.fit(width).ansi(palette));
         frame.push_str("\x1b[K\r\n");
     };
-    line(look::header(title, &clock, width));
+    line(look::header(title, &clock, turning, sweep, width));
     line(look::tabs(on));
     line(look::Text::new());
     for text in body.iter().take(room) {
@@ -844,11 +1023,23 @@ pub fn opener(
     project: Option<&str>,
     env: &dyn Fn(&str) -> Option<String>,
     tty: Option<&str>,
+    shell: Option<u32>,
 ) -> std::result::Result<(String, Vec<String>), String> {
     let mut side = vec![exe.display().to_string(), "side".to_string()];
     if let Some(project) = project {
         side.push("--project".to_string());
         side.push(project.to_string());
+    }
+    // What a person is told to run is the command as they would type it;
+    // the pane this opens is also told which shell to follow.
+    let typed = side
+        .iter()
+        .map(|word| shell_quote(word))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(shell) = shell {
+        side.push("--follow".to_string());
+        side.push(shell.to_string());
     }
     let shell_line = side
         .iter()
@@ -875,7 +1066,7 @@ pub fn opener(
             return Err(format!(
                 "this was not run from a terminal, so there is no telling which Ghostty \
                  window is meant. Run it in the terminal the pane should sit beside:\n  \
-                 {shell_line} --open"
+                 {typed} --open"
             ));
         };
         // In the tab this terminal is in, a pane titled as the view titles
@@ -913,7 +1104,7 @@ pub fn opener(
     }
     Err(format!(
         "this terminal cannot be asked for a pane from here. Open a split yourself and run:\n  \
-         {shell_line}\n\
+         {typed}\n\
          In Ghostty, a key can do it; add to its config:\n  \
          keybind = super+shift+b=new_split:right"
     ))
@@ -1060,6 +1251,37 @@ mod tests {
     }
 
     #[test]
+    fn the_pane_is_told_which_shell_to_follow_and_a_person_is_not() {
+        let tmux = |name: &str| (name == "TMUX").then(|| "/tmp/tmux-1/default,1,0".to_string());
+        let (_, args) = opener(
+            Path::new("/bin/toimija"),
+            Path::new("/work"),
+            Some("One"),
+            &tmux,
+            None,
+            Some(4242),
+        )
+        .unwrap();
+        assert!(
+            args[1].contains("'/bin/toimija side --project One --follow 4242'"),
+            "{}",
+            args[1]
+        );
+        // The command a person is told to type names no process.
+        let said = opener(
+            Path::new("/bin/toimija"),
+            Path::new("/work"),
+            None,
+            &|_| None,
+            None,
+            Some(4242),
+        )
+        .unwrap_err();
+        assert!(said.contains("/bin/toimija side\n"), "{said}");
+        assert!(!said.contains("4242"), "{said}");
+    }
+
+    #[test]
     fn inside_tmux_open_is_a_toggle_that_keeps_focus() {
         let env = |name: &str| (name == "TMUX").then(|| "/tmp/tmux-1/default,1,0".to_string());
         let (program, args) = opener(
@@ -1067,6 +1289,7 @@ mod tests {
             Path::new("/work"),
             None,
             &env,
+            None,
             None,
         )
         .unwrap();
@@ -1128,6 +1351,7 @@ mod tests {
             None,
             &env,
             Some("/dev/ttys004"),
+            None,
         )
         .unwrap();
         assert_eq!(program, "osascript");
@@ -1146,6 +1370,7 @@ mod tests {
             None,
             &env,
             None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1161,6 +1386,7 @@ mod tests {
             Path::new("/work"),
             None,
             &|_| None,
+            None,
             None,
         )
         .unwrap_err();

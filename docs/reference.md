@@ -898,6 +898,19 @@ workspace folder or any of its repositories:
   bar, never as zero, and a partial read is marked partial. A session that
   wrote within the last two minutes has a mark that beats. Toimija reads
   no conversation.
+- The pane opened by `--open` follows the shell it was opened from: when
+  you `cd` into another repository of the workspace, or into one of its
+  linked worktrees, that repository is picked and its graph shown, with
+  the branch you have checked out lit. It asks the kernel for the shell's
+  directory and reads the `.git` above it; no process is started. A key
+  that picks another repository holds until you change directory again.
+- A band under the views gives three numbers: agent sessions running now,
+  tokens written over the last day (`written +?` when an agent's count is
+  not known and so left out), and knowledge waiting for a person.
+- The frame is drawn at once and filled as answers come: a mark turns by
+  the clock while git, sykli, vessa or ohjaa is being asked, on threads of
+  their own, so keys are taken meanwhile. The pane redraws six times a
+  second only while something on it moves, and otherwise waits.
 - Colour is exact where `COLORTERM` says the terminal has true colour, and
   the terminal's own sixteen colours elsewhere.
 - Keys: `j` and `k` or the arrows pick a repository, `p` steps through the

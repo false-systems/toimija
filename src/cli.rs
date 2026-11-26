@@ -398,6 +398,9 @@ pub struct SideArgs {
     /// Narrow the pane first. `--open` passes it to the pane it opens.
     #[arg(long, hide = true)]
     pub fit: bool,
+    /// The shell to follow. `--open` passes its own to the pane it opens.
+    #[arg(long, hide = true)]
+    pub follow: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -1395,6 +1398,18 @@ fn workspace_of(
     }
 }
 
+/// The process this one was started from: the shell `side --open` was
+/// typed in, which the pane it opens then follows.
+#[cfg(unix)]
+fn parent_shell() -> Option<u32> {
+    Some(std::os::unix::process::parent_id())
+}
+
+#[cfg(not(unix))]
+fn parent_shell() -> Option<u32> {
+    None
+}
+
 fn run_side(args: SideArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
@@ -1414,6 +1429,7 @@ fn run_side(args: SideArgs) -> Result<i32> {
             args.project.as_deref(),
             &env,
             crate::side::own_tty().as_deref(),
+            parent_shell(),
         ) {
             Ok((program, arguments)) => {
                 let status = std::process::Command::new(&program)
@@ -1442,6 +1458,7 @@ fn run_side(args: SideArgs) -> Result<i32> {
             once: args.once,
             width: args.width,
             fit: args.fit,
+            follow: args.follow,
         },
     )
 }

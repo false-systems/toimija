@@ -26,8 +26,17 @@ pub enum Tone {
     Cool,
     /// The view on screen, in the row of views.
     Pill,
+    /// A number that is the point of its tile.
+    Big,
     /// A step along a bar, from 0 at its start to 255 at its end.
     Heat(u8),
+    /// A letter of the name: where it stands from 0 to 255, and whether the
+    /// light that crosses the name when news arrives is on it.
+    Title(u8, bool),
+    /// A line of the graph, by which column it runs in.
+    Lane(u8),
+    /// The mark of something live, from 0 at its faintest to 7.
+    Pulse(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,8 +53,8 @@ impl Palette {
         }
     }
 
-    fn sgr(self, tone: Tone) -> String {
-        match (self, tone) {
+    fn sgr(self, tone: Tone, lit: bool) -> String {
+        let colour = match (self, tone) {
             (_, Tone::Plain) => String::new(),
             (_, Tone::Bold) => "1".to_string(),
             (Palette::True, Tone::Dim) => "38;2;112;118;132".to_string(),
@@ -55,25 +64,80 @@ impl Palette {
             (Palette::True, Tone::Accent) => "1;38;2;255;40;20".to_string(),
             (Palette::True, Tone::Cool) => "38;2;122;184;255".to_string(),
             (Palette::True, Tone::Pill) => "1;38;2;255;255;255;48;2;214;30;16".to_string(),
+            (Palette::True, Tone::Big) => "1;38;2;240;242;248".to_string(),
             (Palette::True, Tone::Heat(at)) => {
                 // Red at the start of the bar, amber at its end.
                 let at = u32::from(at);
                 format!("38;2;255;{};{}", 40 + at * 160 / 255, 20 + at * 50 / 255)
             }
+            (Palette::True, Tone::Title(_, true)) => "1;38;2;255;236;220".to_string(),
+            (Palette::True, Tone::Title(at, false)) => {
+                let at = u32::from(at);
+                format!("1;38;2;255;{};{}", 36 + at * 110 / 255, 16 + at * 30 / 255)
+            }
+            (Palette::True, Tone::Lane(lane)) => match lane % 5 {
+                0 => "38;2;255;70;50",
+                1 => "38;2;122;184;255",
+                2 => "38;2;72;213;130",
+                3 => "38;2;247;190;74",
+                _ => "38;2;200;140;255",
+            }
+            .to_string(),
+            (Palette::True, Tone::Pulse(level)) => {
+                // The same green, from a third of its light to all of it.
+                let light = 90 + u32::from(level.min(7)) * 165 / 7;
+                format!(
+                    "38;2;{};{};{}",
+                    72 * light / 255,
+                    213 * light / 255,
+                    130 * light / 255
+                )
+            }
             (Palette::Basic, Tone::Dim) => "2".to_string(),
             (Palette::Basic, Tone::Good) => "32".to_string(),
             (Palette::Basic, Tone::Warn) => "33".to_string(),
-            (Palette::Basic, Tone::Bad | Tone::Accent) => "1;31".to_string(),
+            (Palette::Basic, Tone::Bad | Tone::Accent | Tone::Title(..)) => "1;31".to_string(),
             (Palette::Basic, Tone::Cool) => "36".to_string(),
             (Palette::Basic, Tone::Pill) => "1;7".to_string(),
+            (Palette::Basic, Tone::Big) => "1".to_string(),
             (Palette::Basic, Tone::Heat(_)) => "31".to_string(),
+            (Palette::Basic, Tone::Lane(lane)) => match lane % 5 {
+                0 => "31",
+                1 => "36",
+                2 => "32",
+                3 => "33",
+                _ => "35",
+            }
+            .to_string(),
+            (Palette::Basic, Tone::Pulse(level)) => {
+                if level >= 4 { "32" } else { "2;32" }.to_string()
+            }
+        };
+        // A lit piece sits on a panel a shade off the background. Sixteen
+        // colours have no such shade, and the pieces carry marks instead.
+        let panel = match (self, lit, tone) {
+            (Palette::True, true, tone) if tone != Tone::Pill => "48;2;38;41;52",
+            _ => "",
+        };
+        match (colour.is_empty(), panel.is_empty()) {
+            (_, true) => colour,
+            (true, false) => panel.to_string(),
+            (false, false) => format!("{colour};{panel}"),
         }
     }
 }
 
+/// A piece of a line: its text, its tone, and whether it sits on a panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Span {
+    pub tone: Tone,
+    pub lit: bool,
+    pub text: String,
+}
+
 /// One line of the pane: pieces of text, each in a tone.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Text(Vec<(Tone, String)>);
+pub struct Text(Vec<Span>);
 
 impl Text {
     pub fn new() -> Self {
@@ -87,7 +151,11 @@ impl Text {
     pub fn add(mut self, tone: Tone, text: impl Into<String>) -> Self {
         let text = text.into();
         if !text.is_empty() {
-            self.0.push((tone, text));
+            self.0.push(Span {
+                tone,
+                lit: false,
+                text,
+            });
         }
         self
     }
@@ -97,39 +165,49 @@ impl Text {
         self
     }
 
+    /// The whole line on a panel, as it stands now.
+    pub fn lit(mut self) -> Self {
+        for span in &mut self.0 {
+            span.lit = true;
+        }
+        self
+    }
+
     pub fn width(&self) -> usize {
-        self.0.iter().map(|(_, text)| text.chars().count()).sum()
+        self.0.iter().map(|span| span.text.chars().count()).sum()
     }
 
     /// The characters without their tones.
     #[cfg(test)]
     pub fn plain(&self) -> String {
-        self.0.iter().map(|(_, text)| text.as_str()).collect()
+        self.0.iter().map(|span| span.text.as_str()).collect()
     }
 
     /// Exactly `width` columns: cut where it is longer, padded where shorter.
     pub fn fit(self, width: usize) -> Self {
         let mut left = width;
         let mut fitted = Text::new();
-        for (tone, text) in self.0 {
+        for span in self.0 {
             if left == 0 {
                 break;
             }
-            let part: String = text.chars().take(left).collect();
+            let part: String = span.text.chars().take(left).collect();
             left -= part.chars().count();
-            fitted = fitted.add(tone, part);
+            if !part.is_empty() {
+                fitted.0.push(Span { text: part, ..span });
+            }
         }
         fitted.add(Tone::Plain, " ".repeat(left))
     }
 
     pub fn ansi(&self, palette: Palette) -> String {
         let mut out = String::new();
-        for (tone, text) in &self.0 {
-            let sgr = palette.sgr(*tone);
+        for span in &self.0 {
+            let sgr = palette.sgr(span.tone, span.lit);
             if sgr.is_empty() {
-                out.push_str(text);
+                out.push_str(&span.text);
             } else {
-                out.push_str(&format!("\x1b[{sgr}m{text}\x1b[0m"));
+                out.push_str(&format!("\x1b[{sgr}m{}\x1b[0m", span.text));
             }
         }
         out
@@ -231,15 +309,95 @@ pub fn legend() -> Text {
         .add(Tone::Dim, " unknown")
 }
 
-/// The top line: the name, what is shown, and the time.
-pub fn header(title: &str, clock: &str, width: usize) -> Text {
+/// The top line: the name, what is shown, a mark that turns while
+/// something is being asked, and the time. `sweep` is the letter of the
+/// name the light is on, when news has just arrived.
+pub fn header(
+    title: &str,
+    clock: &str,
+    turning: Option<char>,
+    sweep: Option<usize>,
+    width: usize,
+) -> Text {
+    let mut name = Text::of(Tone::Accent, "▍");
+    for (at, letter) in "TOIMIJA".chars().enumerate() {
+        let along = (at * 255 / 6) as u8;
+        name = name.add(Tone::Title(along, sweep == Some(at)), letter.to_string());
+    }
+    let mut right = Text::new();
+    if let Some(mark) = turning {
+        right = right.add(Tone::Accent, format!("{mark} "));
+    }
     ends(
-        Text::of(Tone::Accent, "▍TOIMIJA")
-            .add(Tone::Plain, "  ")
-            .add(Tone::Bold, title),
-        Text::of(Tone::Dim, clock),
+        name.add(Tone::Plain, "  ").add(Tone::Bold, title),
+        right.add(Tone::Dim, clock),
         width,
     )
+}
+
+/// Three numbers in a band under the views: the agent sessions running
+/// now, what the agents wrote over the last day, and the knowledge that
+/// waits for a person. A number that is not known is `?`, and a sum that
+/// leaves an agent out says so.
+pub fn tiles(facts: Option<&Facts>, pulse: u8, width: usize) -> Vec<Text> {
+    let each = width / 3;
+    let last = width - each * 2;
+    let agents = facts.and_then(|facts| facts.agents.as_ref().ok());
+    let waiting = facts
+        .and_then(|facts| facts.knowledge.as_ref().ok())
+        .and_then(|summary| knowledge_from(summary))
+        .map(|known| known.waiting);
+    let asked = facts.is_some();
+    let unknown = if asked { "?" } else { "…" };
+
+    let live = agents.map(|agents| agents.digest.live.len());
+    let live_text = live.map_or_else(|| unknown.to_string(), |count| count.to_string());
+    let live_tone = match live {
+        Some(count) if count > 0 => Tone::Pulse(pulse),
+        _ => Tone::Dim,
+    };
+
+    let known: Vec<u64> = agents
+        .map(|agents| {
+            agents
+                .digest
+                .by_agent
+                .iter()
+                .filter_map(|by| by.output_tokens)
+                .collect()
+        })
+        .unwrap_or_default();
+    let left_out =
+        agents.is_some_and(|agents| agents.partial || known.len() < agents.digest.by_agent.len());
+    let written = match agents {
+        Some(_) if !known.is_empty() => tools::tokens(Some(known.iter().sum())),
+        _ => unknown.to_string(),
+    };
+
+    let waiting_text = waiting.map_or_else(|| unknown.to_string(), |count| count.to_string());
+    let waiting_tone = match waiting {
+        Some(count) if count > 0 => Tone::Warn,
+        Some(_) => Tone::Good,
+        None => Tone::Dim,
+    };
+
+    let cell = |tone: Tone, text: &str, width: usize| {
+        Text::of(Tone::Plain, " ").add(tone, text).fit(width)
+    };
+    vec![
+        cell(live_tone, &format!("● {live_text}"), each)
+            .then(cell(Tone::Big, &written, each))
+            .then(cell(waiting_tone, &waiting_text, last))
+            .lit(),
+        cell(Tone::Dim, "live", each)
+            .then(cell(
+                Tone::Dim,
+                if left_out { "written +?" } else { "written" },
+                each,
+            ))
+            .then(cell(Tone::Dim, "to decide", last))
+            .lit(),
+    ]
 }
 
 /// The views by number, the one on screen lit.
@@ -330,7 +488,8 @@ fn repository(row: &Row, picked: bool, name_width: usize, width: usize) -> Text 
         Tone::Cool
     };
     left = left.add(tone, cut(branch, room));
-    ends(left, right, width)
+    let line = ends(left, right, width);
+    if picked { line.lit() } else { line }
 }
 
 /// Every repository of the projects shown, a line each.
@@ -360,23 +519,47 @@ pub fn repositories(view: &View, picked: Option<&str>, width: usize) -> Vec<Text
     for warning in &view.warnings {
         rows.extend(wrapped(Tone::Warn, &format!("not read: {warning}"), inner));
     }
-    let note = if view.warnings.is_empty() {
+    // How many of the repositories that are here sykli calls proven.
+    let mut here: Vec<&Row> = Vec::new();
+    for row in view
+        .projects
+        .iter()
+        .flat_map(|project| &project.repositories)
+    {
+        if row.present && !here.iter().any(|seen| seen.name == row.name) {
+            here.push(row);
+        }
+    }
+    let proven = here
+        .iter()
+        .filter(|row| row.proof.as_deref() == Some("proven"))
+        .count();
+    let note = if !view.warnings.is_empty() {
+        Text::of(Tone::Warn, "partial")
+    } else if here.is_empty() {
         Text::new()
     } else {
-        Text::of(Tone::Warn, "partial")
+        Text::of(
+            if proven == here.len() {
+                Tone::Good
+            } else {
+                Tone::Warn
+            },
+            format!("{proven}/{} proven", here.len()),
+        )
     };
     card("REPOSITORIES", note, rows, width)
 }
 
 /// The agent sessions of the last day, at most `limit`, then what each
-/// agent wrote. `beat` turns each second draw, for the mark of a session
-/// that wrote within the last two minutes.
+/// agent wrote. `pulse` is how bright the mark of a session that wrote
+/// within the last two minutes is in this frame.
 pub fn agents(
     facts: Option<&Facts>,
     now: u64,
     limit: usize,
     bars: bool,
-    beat: bool,
+    pulse: u8,
     width: usize,
 ) -> Vec<Text> {
     let inner = width.saturating_sub(4);
@@ -415,10 +598,10 @@ pub fn agents(
     for session in sessions.iter().take(limit) {
         let age = tools::age(session.last_at.as_deref(), now);
         let fresh = age == "now";
-        let mark = match (fresh, beat) {
-            (true, true) => Text::of(Tone::Good, "● "),
-            (true, false) => Text::of(Tone::Dim, "● "),
-            (false, _) => Text::of(Tone::Plain, "  "),
+        let mark = if fresh {
+            Text::of(Tone::Pulse(pulse), "● ")
+        } else {
+            Text::of(Tone::Plain, "  ")
         };
         rows.push(
             mark.add(Tone::Plain, format!("{:<8} ", cut(&session.agent, 8)))
@@ -643,17 +826,30 @@ fn graph_marks(proof: &Proof, review: &Review) -> Text {
 }
 
 /// The branches in progress of one repository, a line for each tip: its
-/// place in the graph, commit, branches, any review, and sykli's mark. At
-/// most `most` rows; what does not fit is counted.
-pub fn graph(name: &str, branches: Branches<'_>, most: usize, width: usize) -> Vec<Text> {
+/// place in the graph, commit, branches, any review, and sykli's mark. The
+/// tip on the branch `here` is the one the shell beside the pane has
+/// checked out, and is lit. `turning` shows while the graph is asked for
+/// again. At most `most` rows; what does not fit is counted.
+pub fn graph(
+    name: &str,
+    branches: Branches<'_>,
+    here: Option<&str>,
+    turning: Option<char>,
+    most: usize,
+    width: usize,
+) -> Vec<Text> {
     let inner = width.saturating_sub(4);
     let title = format!("GRAPH {}", cut(name, inner.saturating_sub(8)));
+    let asking = |mark: Option<char>| match mark {
+        Some(mark) => Text::of(Tone::Accent, format!("{mark} ")),
+        None => Text::new(),
+    };
     let graph = match branches {
         Branches::Reading => {
             return card(
                 &title,
                 Text::new(),
-                vec![Text::of(Tone::Dim, "asking git and sykli…")],
+                vec![asking(turning).add(Tone::Dim, "asking git and sykli…")],
                 width,
             );
         }
@@ -667,15 +863,17 @@ pub fn graph(name: &str, branches: Branches<'_>, most: usize, width: usize) -> V
         }
         Branches::Read(graph) => graph,
     };
+    // Each line of the graph keeps one colour down its column.
     let lanes = |marks: &str, base: bool| {
         let mut text = Text::new();
-        for mark in marks.trim_end().chars() {
+        for (column, mark) in marks.trim_end().chars().enumerate() {
+            let lane = Tone::Lane((column / 2) as u8);
             text = match mark {
                 '*' if base => text.add(Tone::Bold, "◉"),
-                '*' => text.add(Tone::Accent, "●"),
-                '|' => text.add(Tone::Dim, "│"),
-                '/' => text.add(Tone::Dim, "╱"),
-                '\\' => text.add(Tone::Dim, "╲"),
+                '*' => text.add(lane, "●"),
+                '|' => text.add(lane, "│"),
+                '/' => text.add(lane, "╱"),
+                '\\' => text.add(lane, "╲"),
                 other => text.add(Tone::Dim, other.to_string()),
             };
         }
@@ -690,12 +888,14 @@ pub fn graph(name: &str, branches: Branches<'_>, most: usize, width: usize) -> V
                     .base
                     .as_ref()
                     .is_some_and(|base| tip.branches.contains(base));
+                let mine = here.is_some_and(|here| tip.branches.iter().any(|name| name == here));
                 let short: String = tip.commit.chars().take(7).collect();
                 let left = lanes(marks, base).add(Tone::Dim, format!(" {short} ")).add(
-                    if base { Tone::Bold } else { Tone::Cool },
+                    if base || mine { Tone::Bold } else { Tone::Cool },
                     tip.branches.join(", "),
                 );
-                rows.push(ends(left, graph_marks(&tip.proof, &tip.review), inner));
+                let row = ends(left, graph_marks(&tip.proof, &tip.review), inner);
+                rows.push(if mine { row.lit() } else { row });
                 for session in &tip.sessions {
                     let intent = session.intent.as_deref().unwrap_or("intent not given");
                     rows.push(Text::of(Tone::Accent, "  ↳ ").add(
@@ -727,7 +927,7 @@ pub fn graph(name: &str, branches: Branches<'_>, most: usize, width: usize) -> V
     }
     card(
         &title,
-        Text::of(Tone::Dim, format!("{tips} tips")),
+        asking(turning).add(Tone::Dim, format!("{tips} tips")),
         rows,
         width,
     )
@@ -840,7 +1040,7 @@ mod tests {
         let half = bar(0.5, 10);
         assert_eq!(half.width(), 10);
         assert_eq!(
-            half.0.iter().filter(|(tone, _)| *tone != Tone::Dim).count(),
+            half.0.iter().filter(|span| span.tone != Tone::Dim).count(),
             5
         );
         let little = bar(0.001, 10);
@@ -848,7 +1048,7 @@ mod tests {
             little
                 .0
                 .iter()
-                .filter(|(tone, _)| *tone != Tone::Dim)
+                .filter(|span| span.tone != Tone::Dim)
                 .count(),
             1
         );
@@ -877,7 +1077,7 @@ mod tests {
             Some("alpha"),
             38,
         ));
-        assert_eq!(lines[0], "╭─ REPOSITORIES ─────────────────────╮");
+        assert_eq!(lines[0], "╭─ REPOSITORIES ──────── 1/3 proven ─╮");
         assert_eq!(lines[1], "│ ▸✓ alpha   feat/a-long-… ±3 ↑2 ↓40 │");
         assert_eq!(lines[2], "│  ? beta    main              ±? ↕? │");
         assert_eq!(lines[3], "│    gamma not here                  │");
@@ -952,7 +1152,7 @@ mod tests {
 
     #[test]
     fn agents_show_who_is_live_what_was_written_and_what_is_not_known() {
-        let lines = plain(&agents(Some(&facts()), NOON, 4, true, true, 38));
+        let lines = plain(&agents(Some(&facts()), NOON, 4, true, 7, 38));
         assert_eq!(lines[0], "╭─ AGENTS ──────── 1 live · 2 today ─╮");
         assert_eq!(lines[1], "│ ● claude   beta         now   2.5M │");
         assert_eq!(lines[2], "│   opencode alpha        12h      ? │");
@@ -967,19 +1167,19 @@ mod tests {
             "{lines:?}"
         );
         // One more than the limit is counted, not dropped.
-        let few = plain(&agents(Some(&facts()), NOON, 1, true, true, 38));
+        let few = plain(&agents(Some(&facts()), NOON, 1, true, 7, 38));
         assert!(few[2].contains("… 1 more · 4 for all"), "{few:?}");
     }
 
     #[test]
     fn a_tool_that_said_nothing_is_named_not_shown_as_an_empty_card() {
-        let waiting = plain(&agents(None, NOON, 4, true, true, 38));
+        let waiting = plain(&agents(None, NOON, 4, true, 7, 38));
         assert!(waiting[1].contains("asking vessa…"), "{waiting:?}");
         let absent = Facts {
             agents: Err("vessa is not installed".to_string()),
             knowledge: Err("ohjaa is not installed".to_string()),
         };
-        let lines = plain(&agents(Some(&absent), NOON, 4, true, true, 38));
+        let lines = plain(&agents(Some(&absent), NOON, 4, true, 7, 38));
         assert!(
             lines[1].contains("not read: vessa is not installed"),
             "{lines:?}"
@@ -1057,17 +1257,105 @@ mod tests {
             ],
             warnings: Vec::new(),
         };
-        let lines = plain(&graph("alpha", Branches::Read(&graph_of), 9, 38));
+        let lines = plain(&graph(
+            "alpha",
+            Branches::Read(&graph_of),
+            Some("feat/two"),
+            None,
+            9,
+            38,
+        ));
         assert_eq!(lines[0], "╭─ GRAPH alpha ───────────── 3 tips ─╮");
         assert_eq!(lines[1], "│ ● aaaaaaa feat/one      BLOCKING ✓ │");
         assert_eq!(lines[2], "│ │ ● bbbbbbb feat/two             ○ │");
         assert_eq!(lines[3], "│ │╱                                 │");
         assert_eq!(lines[4], "│ ◉ ccccccc origin/main            ✗ │");
-        let short = plain(&graph("alpha", Branches::Read(&graph_of), 2, 38));
+        // The branch the shell has checked out is lit, and only that one.
+        let cards = graph(
+            "alpha",
+            Branches::Read(&graph_of),
+            Some("feat/two"),
+            None,
+            9,
+            38,
+        );
+        let lit: Vec<bool> = cards
+            .iter()
+            .map(|line| line.0.iter().any(|span| span.lit))
+            .collect();
+        assert_eq!(lit, [false, false, true, false, false, false]);
+        let short = plain(&graph(
+            "alpha",
+            Branches::Read(&graph_of),
+            None,
+            None,
+            2,
+            38,
+        ));
         assert_eq!(short.len(), 4, "two rows and the two edges of the card");
         assert_eq!(short[2], "│ … 3 more lines · 2 for all         │");
-        let reading = plain(&graph("alpha", Branches::Reading, 9, 38));
+        let reading = plain(&graph("alpha", Branches::Reading, None, Some('⠋'), 9, 38));
         assert!(reading[1].contains("asking git and sykli…"), "{reading:?}");
+    }
+
+    #[test]
+    fn the_band_of_numbers_says_what_is_left_out_and_what_is_not_known_yet() {
+        let lines = tiles(Some(&facts()), 7, 38);
+        assert_eq!(
+            plain(&lines),
+            [
+                " ● 1         2.5M        11           ",
+                " live        written +?  to decide    ",
+            ]
+        );
+        assert!(lines.iter().all(|line| line.width() == 38));
+        assert!(
+            lines[0].0.iter().all(|span| span.lit),
+            "the band is a panel"
+        );
+        // Before the tools answered nothing is a number, and a tool that
+        // could not be asked leaves a question mark, never a nought.
+        assert_eq!(
+            tiles(None, 0, 38)[0].plain(),
+            " ● …         …           …            "
+        );
+        let absent = Facts {
+            agents: Err("vessa is not installed".to_string()),
+            knowledge: Err("ohjaa is not installed".to_string()),
+        };
+        assert_eq!(
+            tiles(Some(&absent), 0, 38)[0].plain(),
+            " ● ?         ?           ?            "
+        );
+    }
+
+    #[test]
+    fn the_name_carries_the_mark_that_turns_and_the_light_that_crosses_it() {
+        let still = header("SDLC", "12:54 UTC", None, None, 38);
+        assert!(
+            !still
+                .0
+                .iter()
+                .any(|span| matches!(span.tone, Tone::Title(_, true)))
+        );
+        let busy = header("SDLC", "12:54 UTC", Some('⠙'), Some(3), 38);
+        assert_eq!(busy.plain(), "▍TOIMIJA  SDLC             ⠙ 12:54 UTC");
+        let lit: Vec<&str> = busy
+            .0
+            .iter()
+            .filter(|span| matches!(span.tone, Tone::Title(_, true)))
+            .map(|span| span.text.as_str())
+            .collect();
+        assert_eq!(lit, ["M"], "the fourth letter");
+        // Colour never changes what is written.
+        assert_eq!(
+            Text::of(Tone::Good, "ab").lit().ansi(Palette::True),
+            "\x1b[38;2;72;213;130;48;2;38;41;52mab\x1b[0m"
+        );
+        assert_eq!(
+            Text::of(Tone::Good, "ab").lit().ansi(Palette::Basic),
+            "\x1b[32mab\x1b[0m"
+        );
     }
 
     #[test]
@@ -1080,14 +1368,14 @@ mod tests {
                 tabs(on)
                     .0
                     .iter()
-                    .filter(|(tone, _)| *tone == Tone::Pill)
+                    .filter(|span| span.tone == Tone::Pill)
                     .count(),
                 1
             );
         }
         assert!(legend().width() <= 38);
         assert_eq!(
-            header("SDLC", "12:54 UTC", 38).plain(),
+            header("SDLC", "12:54 UTC", None, None, 38).plain(),
             "▍TOIMIJA  SDLC               12:54 UTC"
         );
     }
