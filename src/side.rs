@@ -444,6 +444,7 @@ pub fn opener(
     root: &Path,
     project: Option<&str>,
     env: &dyn Fn(&str) -> Option<String>,
+    tty: Option<&str>,
 ) -> std::result::Result<(String, Vec<String>), String> {
     let mut side = vec![exe.display().to_string(), "side".to_string()];
     if let Some(project) = project {
@@ -471,15 +472,26 @@ pub fn opener(
         ));
     }
     if cfg!(target_os = "macos") && env("TERM_PROGRAM").as_deref() == Some("ghostty") {
+        // The pane goes beside the terminal this was typed in, found by its
+        // device. Without one there is no telling which window is meant, and
+        // the front one may be another: refuse rather than guess.
+        let Some(tty) = tty else {
+            return Err(format!(
+                "this was not run from a terminal, so there is no telling which Ghostty \
+                 window is meant. Run it in the terminal the pane should sit beside:\n  \
+                 {shell_line} --open"
+            ));
+        };
         let script = format!(
             "tell application \"Ghostty\"\n\
-             set here to focused terminal of selected tab of front window\n\
+             set here to first terminal whose tty is {}\n\
              set cfg to new surface configuration\n\
              set command of cfg to {}\n\
              set initial working directory of cfg to {}\n\
              set pane to split here direction right with configuration cfg\n\
              focus here\n\
              end tell",
+            applescript_string(tty),
             applescript_string(&shell_line),
             applescript_string(&root.display().to_string()),
         );
@@ -491,6 +503,29 @@ pub fn opener(
          In Ghostty, a key can do it; add to its config:\n  \
          keybind = super+shift+b=new_split:right"
     ))
+}
+
+/// The device of the terminal this process was started in, when it has one.
+#[cfg(unix)]
+pub fn own_tty() -> Option<String> {
+    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .into_iter()
+        .find_map(|descriptor| {
+            // SAFETY: ttyname returns null or a C string that is copied at once.
+            unsafe {
+                let name = libc::ttyname(descriptor);
+                (!name.is_null()).then(|| {
+                    std::ffi::CStr::from_ptr(name)
+                        .to_string_lossy()
+                        .into_owned()
+                })
+            }
+        })
+}
+
+#[cfg(not(unix))]
+pub fn own_tty() -> Option<String> {
+    None
 }
 
 /// `word` as one word of a POSIX shell line.
@@ -583,8 +618,14 @@ mod tests {
     #[test]
     fn inside_tmux_the_pane_is_a_tmux_split_that_keeps_focus() {
         let env = |name: &str| (name == "TMUX").then(|| "/tmp/tmux-1/default,1,0".to_string());
-        let (program, args) =
-            opener(Path::new("/bin/toimija"), Path::new("/work"), None, &env).unwrap();
+        let (program, args) = opener(
+            Path::new("/bin/toimija"),
+            Path::new("/work"),
+            None,
+            &env,
+            None,
+        )
+        .unwrap();
         assert_eq!(program, "tmux");
         assert_eq!(
             args,
@@ -610,6 +651,7 @@ mod tests {
             Path::new("/work"),
             Some(hostile),
             &env,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -619,11 +661,51 @@ mod tests {
         assert_eq!(applescript_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn in_ghostty_the_pane_goes_beside_the_terminal_it_was_typed_in() {
+        let env = |name: &str| (name == "TERM_PROGRAM").then(|| "ghostty".to_string());
+        let (program, args) = opener(
+            Path::new("/bin/toimija"),
+            Path::new("/work"),
+            None,
+            &env,
+            Some("/dev/ttys004"),
+        )
+        .unwrap();
+        assert_eq!(program, "osascript");
+        assert!(
+            args[1].contains("set here to first terminal whose tty is \"/dev/ttys004\""),
+            "{}",
+            args[1]
+        );
+        // Never the front window: with several open it may be another one.
+        assert!(!args[1].contains("front window"), "{}", args[1]);
+
+        // With no terminal of its own it refuses rather than guess a window.
+        let refused = opener(
+            Path::new("/bin/toimija"),
+            Path::new("/work"),
+            None,
+            &env,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("no telling which Ghostty window"),
+            "{refused}"
+        );
+    }
+
     #[test]
     fn a_terminal_that_cannot_be_asked_says_what_to_run() {
-        let said = opener(Path::new("/bin/toimija"), Path::new("/work"), None, &|_| {
-            None
-        })
+        let said = opener(
+            Path::new("/bin/toimija"),
+            Path::new("/work"),
+            None,
+            &|_| None,
+            None,
+        )
         .unwrap_err();
         assert!(said.contains("/bin/toimija side"), "{said}");
     }

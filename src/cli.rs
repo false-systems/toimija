@@ -1401,7 +1401,13 @@ fn run_side(args: SideArgs) -> Result<i32> {
     if args.open {
         let exe = std::env::current_exe().context("failed to find the toimija that is running")?;
         let env = |name: &str| std::env::var(name).ok();
-        return match crate::side::opener(&exe, &root, args.project.as_deref(), &env) {
+        return match crate::side::opener(
+            &exe,
+            &root,
+            args.project.as_deref(),
+            &env,
+            crate::side::own_tty().as_deref(),
+        ) {
             Ok((program, arguments)) => {
                 let status = std::process::Command::new(&program)
                     .args(&arguments)
