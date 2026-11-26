@@ -944,9 +944,13 @@ workspace folder or any of its repositories:
 - Keys, once the pane is clicked: `1` to `4` the views, `j` and `k` or the
   arrows pick a repository, `p` steps through the projects, `r` reads
   everything again, `q` quits.
-- Without `--project` the pane shows the project of the repository your
-  shell is in (the smallest that declares it), and every project where
-  your shell is in none. `p` holds another until you change directory.
+- Without `--project` the pane starts with the project of the repository
+  or linked worktree it opens from (the smallest project that declares it).
+  At the workspace root it uses a Toimija session's declared repo paths
+  if they point to one smallest project. Otherwise it shows every
+  project; use `--project` to choose one. A pane that follows a shell
+  updates when the shell changes directory; `p` picks another project
+  until then.
 - What needs a person is said in sentences, the most pressing first, one
   line of it in the first view and all of it in view `4`: a gate that failed, with the
   task that failed where sykli names it (`toimija: clippy failed on
@@ -957,10 +961,19 @@ workspace folder or any of its repositories:
   when you change directory and every twenty seconds.
 - Each tip of the graph says how long since its branch got a commit, and a
   branch left for two weeks is drawn faint.
-- One key for the pane, in Ghostty: add
-  `keybind = super+shift+b=text:toimija side --open\r` to its config. The
-  key types the command into the terminal it is pressed in, so press it at
-  a prompt: once to open the pane beside that terminal, again to close it.
+- **Toggle during a Ghostty agent session (macOS):** in Shortcuts, make a
+  shortcut named **Work graph** with a **Run Shell Script** action that runs
+  `toimija side --open --focused`. Use the absolute path to your installed
+  `toimija` and include the directories for your tools in the action's
+  `PATH` if Shortcuts cannot find them. Give it a keyboard shortcut. With
+  Ghostty focused, press it once to open the graph beside the current
+  terminal, and again to close it. macOS may ask to allow automation of
+  Ghostty on the first run. The shortcut doesn't type in the agent's
+  terminal. It reads the working directory each time it opens the graph.
+- **ChatGPT desktop app, Codex mode:** set a local environment action
+  named **Work graph** to run `toimija side`. It runs in the session's
+  integrated terminal, not in a Ghostty pane. Use the app's **Toggle
+  terminal** shortcut to hide and show it without stopping the view.
 - It is an ordinary foreground command that redraws in place. It writes
   nothing and ends with its pane.
 - While nothing moves it starts no git or sykli process. Every second and a half it reads
