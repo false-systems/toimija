@@ -875,6 +875,9 @@ workspace folder or any of its repositories:
   command to run in a split you open yourself.
 - `--open` is a toggle: when the pane is already there, in this tmux window
   or this Ghostty tab, it closes it instead.
+  In Ghostty the view is asked to quit first and the pane then closed, as
+  Ghostty can take a pane away without ending the program in it; the view
+  also ends by itself when it finds its terminal gone.
 - Four views, by number. `1` is everything at once, in cards: each
   repository of the projects on a line, the latest agent sessions and what
   each agent wrote, the state of the knowledge, and the branch graph of the

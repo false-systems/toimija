@@ -328,10 +328,30 @@ mod screen {
         }
     }
 
-    /// One key, waiting at most `wait`. `None` when none came.
-    pub fn key(wait: std::time::Duration) -> Option<u8> {
+    /// Set once the terminal is gone: its other end was closed, and no
+    /// key will ever come.
+    static GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Whether the terminal this view draws in has gone away. A terminal
+    /// that closes a pane does not always signal the program in it, so
+    /// this is how the view learns that it has no pane any more.
+    pub fn gone() -> bool {
+        GONE.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// What reading one byte gave.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Read {
+        Byte(u8),
+        Nothing,
+        /// The other end is closed.
+        Gone,
+    }
+
+    /// One byte from `fd`, waiting at most `wait`.
+    pub fn read_from(fd: libc::c_int, wait: std::time::Duration) -> Read {
         let mut watched = libc::pollfd {
-            fd: libc::STDIN_FILENO,
+            fd,
             events: libc::POLLIN,
             revents: 0,
         };
@@ -339,10 +359,35 @@ mod screen {
         // SAFETY: one valid pollfd, and a one-byte buffer for read.
         unsafe {
             if libc::poll(&mut watched, 1, millis) <= 0 {
-                return None;
+                return Read::Nothing;
+            }
+            if watched.revents & libc::POLLNVAL != 0 {
+                return Read::Gone;
             }
             let mut byte = 0u8;
-            (libc::read(libc::STDIN_FILENO, (&raw mut byte).cast(), 1) == 1).then_some(byte)
+            match libc::read(fd, (&raw mut byte).cast(), 1) {
+                1 => Read::Byte(byte),
+                // Ready to read and nothing there is the end of input.
+                0 => Read::Gone,
+                _ => match std::io::Error::last_os_error().kind() {
+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock => {
+                        Read::Nothing
+                    }
+                    _ => Read::Gone,
+                },
+            }
+        }
+    }
+
+    /// One key, waiting at most `wait`. `None` when none came.
+    pub fn key(wait: std::time::Duration) -> Option<u8> {
+        match read_from(libc::STDIN_FILENO, wait) {
+            Read::Byte(byte) => Some(byte),
+            Read::Nothing => None,
+            Read::Gone => {
+                GONE.store(true, std::sync::atomic::Ordering::Relaxed);
+                None
+            }
         }
     }
 }
@@ -718,7 +763,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     let mut frame: u64 = 0;
     let mut stale = true;
 
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && !screen::gone() {
         frame += 1;
         let mut redraw = false;
         if tools.due() {
@@ -1071,7 +1116,9 @@ pub fn opener(
         };
         // In the tab this terminal is in, a pane titled as the view titles
         // itself is the view: close it. Otherwise open one beside this
-        // terminal and give the focus back.
+        // terminal and give the focus back. Closing asks the view to quit
+        // first, as its `q` key does: Ghostty can take a pane away without
+        // ending the program in it.
         let script = format!(
             "tell application \"Ghostty\"\n\
              set here to first terminal whose tty is {tty}\n\
@@ -1079,13 +1126,21 @@ pub fn opener(
              repeat with w in windows\n\
              repeat with t in tabs of w\n\
              if (tty of terminals of t) contains {tty} then\n\
-             set panes to (terminals of t whose name is {title})\n\
+             set panes to panes & (terminals of t whose name is {title})\n\
              end if\n\
              end repeat\n\
              end repeat\n\
              if (count of panes) > 0 then\n\
              repeat with pane in panes\n\
+             try\n\
+             input text \"q\" to pane\n\
+             end try\n\
+             end repeat\n\
+             delay 0.4\n\
+             repeat with pane in panes\n\
+             try\n\
              close pane\n\
+             end try\n\
              end repeat\n\
              else\n\
              set cfg to new surface configuration\n\
@@ -1318,6 +1373,32 @@ mod tests {
         assert_eq!(applescript_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_that_went_away_is_known_and_a_quiet_one_is_not() {
+        use screen::Read;
+        let mut ends = [0 as libc::c_int; 2];
+        // SAFETY: a two-element array for the two ends of a pipe.
+        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+        let (reading, writing) = (ends[0], ends[1]);
+        // Other tests start programs meanwhile; one that inherited the
+        // writing end would keep the pipe open after this test closed it.
+        for end in ends {
+            // SAFETY: setting a flag on a descriptor this test opened.
+            unsafe { libc::fcntl(end, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+        let soon = Duration::from_millis(10);
+        assert_eq!(screen::read_from(reading, soon), Read::Nothing);
+        // SAFETY: one byte from a live buffer into an open descriptor.
+        assert_eq!(unsafe { libc::write(writing, b"q".as_ptr().cast(), 1) }, 1);
+        assert_eq!(screen::read_from(reading, soon), Read::Byte(b'q'));
+        // SAFETY: closing a descriptor this test opened.
+        unsafe { libc::close(writing) };
+        assert_eq!(screen::read_from(reading, soon), Read::Gone);
+        // SAFETY: as above.
+        unsafe { libc::close(reading) };
+    }
+
     #[test]
     fn a_number_goes_straight_to_its_view() {
         use screen::Key;
@@ -1362,6 +1443,12 @@ mod tests {
         );
         // Never the front window: with several open it may be another one.
         assert!(!args[1].contains("front window"), "{}", args[1]);
+        // Closing asks the view to quit before the pane is taken away.
+        let quit = args[1]
+            .find("input text \"q\" to pane")
+            .expect("the view is asked to quit");
+        let close = args[1].find("close pane").expect("the pane is closed");
+        assert!(quit < close, "{}", args[1]);
 
         // With no terminal of its own it refuses rather than guess a window.
         let refused = opener(
