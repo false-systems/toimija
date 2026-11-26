@@ -457,17 +457,6 @@ pub fn render_lines_with(view: &View, width: usize, picked: Option<&str>) -> Vec
     lines
 }
 
-/// The repositories of each project as they stand, without the relations:
-/// the first view of `toimija side`.
-pub fn render_rows(view: &View, width: usize, picked: Option<&str>) -> Vec<String> {
-    let mut lines = render_lines_with(view, width, picked);
-    if let Some(at) = lines.iter().position(|line| line == "relations") {
-        lines.truncate(at.saturating_sub(1));
-        lines.extend(render_not_read(view, width));
-    }
-    lines
-}
-
 /// The declared relationships between the repositories shown.
 pub fn render_relations(view: &View, width: usize) -> Vec<String> {
     let width = width.max(24);

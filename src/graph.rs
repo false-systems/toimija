@@ -569,56 +569,6 @@ pub fn render_text(graph: &Graph) -> String {
     out
 }
 
-/// The graph for a narrow pane: each tip on two lines, the second holding
-/// its proof and review under the graph's own edges, then who is there.
-pub fn render_narrow(graph: &Graph, width: usize) -> Vec<String> {
-    let cut = |text: String| -> String {
-        if text.chars().count() <= width {
-            return text;
-        }
-        let mut short: String = text.chars().take(width.saturating_sub(1)).collect();
-        short.push('…');
-        short
-    };
-    let mut lines = Vec::new();
-    for line in &graph.lines {
-        match line {
-            Line::Edge { graph } => lines.push(cut(graph.clone())),
-            Line::Tip { graph, tip } => {
-                // Under a commit's mark the line it sits on carries on.
-                let under: String = graph
-                    .chars()
-                    .map(|mark| if mark == '*' { '|' } else { mark })
-                    .collect();
-                let short: String = tip.commit.chars().take(7).collect();
-                lines.push(cut(format!("{graph} {short} {}", tip.branches.join(", "))));
-                lines.push(cut(format!(
-                    "{under}   {}  review: {}",
-                    proof_word(&tip.proof),
-                    review_word(&tip.review)
-                )));
-                for session in &tip.sessions {
-                    let intent = session.intent.as_deref().unwrap_or("intent not given");
-                    lines.push(cut(format!(
-                        "{under}   {} {}: {}",
-                        session.agent,
-                        session.liveness,
-                        shorten(intent)
-                    )));
-                }
-            }
-        }
-    }
-    if !graph.warnings.is_empty() {
-        lines.push(String::new());
-        lines.push("not read".to_string());
-        for warning in &graph.warnings {
-            lines.push(cut(format!("  {warning}")));
-        }
-    }
-    lines
-}
-
 fn proof_word(proof: &Proof) -> &str {
     match proof {
         Proof::Passed => "proven",

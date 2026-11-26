@@ -875,21 +875,31 @@ workspace folder or any of its repositories:
   command to run in a split you open yourself.
 - `--open` is a toggle: when the pane is already there, in this tmux window
   or this Ghostty tab, it closes it instead.
-- Four views, by number. `1` is everything at once: where each repository
-  of the projects stands, the latest agent sessions, the state of the
-  knowledge, and the branch graph of the repository picked. `2` gives that
-  graph the whole pane, `3` shows the declared relations between the
-  repositories, `4` every agent session of the last day with the tokens
-  each agent read and wrote. The line under the title shows which is on
-  screen. The pane opens on `1` and leaves the keyboard in your terminal,
-  so all of it is there without a key; click the pane to give it keys.
+- Four views, by number. `1` is everything at once, in cards: each
+  repository of the projects on a line, the latest agent sessions and what
+  each agent wrote, the state of the knowledge, and the branch graph of the
+  repository picked in the room that is left. `2` gives that graph the
+  whole pane, `3` shows the declared relations between the repositories,
+  `4` every agent session of the last day and what each agent read and
+  wrote. The view on screen is lit in the row under the name. The pane
+  opens on `1` and leaves the keyboard in your terminal, so all of it is
+  there without a key; click the pane to give it keys.
+- A repository's line: `▸` when it is the one picked, sykli's mark for the
+  branch checked out, the name, `●` when a session is open there, the
+  branch, `±3` for three uncommitted paths, `↑2 ↓40` for commits ahead of
+  and behind its base. The marks, which the row above the keys repeats:
+  `✓` proven, `✗` failed, `○` not run, `?` unknown; in the graph `–` is a
+  commit with no gate, `◉` is the base, and a review that is not `none` is
+  written before the mark. What is unknown shows `?`, never nothing.
 - The agent sessions come from `vessa digest --since 24h --json` and the
-  knowledge line from `ohjaa check`, each asked every two minutes in the
-  background. A tool that is not installed or fails is said so in its
-  section; a count vessa does not know shows as `?`, never as zero, and a
-  partial read is marked partial. Toimija reads no conversation.
-- Colours are the terminal's own: proven green, failed or blocking red,
-  unknown, not run and no gate yellow.
+  knowledge card from the summary line of `ohjaa check`, each asked every
+  two minutes in the background. A tool that is not installed or fails is
+  said so in its card; a count vessa does not know shows as `?` with no
+  bar, never as zero, and a partial read is marked partial. A session that
+  wrote within the last two minutes has a mark that beats. Toimija reads
+  no conversation.
+- Colour is exact where `COLORTERM` says the terminal has true colour, and
+  the terminal's own sixteen colours elsewhere.
 - Keys: `j` and `k` or the arrows pick a repository, `p` steps through the
   projects, `r` reads everything again, `q` quits.
 - It is an ordinary foreground command that redraws in place. It captures no

@@ -26,6 +26,7 @@ use crate::command::CommandRunner;
 use crate::project::{self, Asked, View};
 use crate::workspace;
 
+mod look;
 mod tools;
 
 /// The width asked for when this command opens its own pane, in columns.
@@ -39,8 +40,6 @@ const BUSY_RECHECK: Duration = Duration::from_secs(20);
 const QUIET_RECHECK: Duration = Duration::from_secs(180);
 /// How often vessa and ohjaa are asked again.
 const TOOLS_RECHECK: Duration = Duration::from_secs(120);
-/// Marks a line of the pane as a section heading, for [`draw`] to set bold.
-const HEAD: char = '\u{e000}';
 
 /// The file times that move when a repository's commits, index, branch or
 /// receipts do. Equal fingerprints mean git and sykli need not be asked.
@@ -354,22 +353,14 @@ enum Showing {
 }
 
 impl Showing {
-    /// The views by number, the one on screen in brackets.
-    fn tabs(&self) -> String {
-        let mark = |on: bool, text: &str| {
-            if on {
-                format!("[{text}]")
-            } else {
-                text.to_string()
-            }
-        };
-        [
-            mark(matches!(self, Showing::Projects), "1 projects"),
-            mark(matches!(self, Showing::Graph(_)), "2 graph"),
-            mark(matches!(self, Showing::Relations), "3 links"),
-            mark(matches!(self, Showing::Agents), "4 agents"),
-        ]
-        .join(" ")
+    /// Where this view stands in the row of views.
+    fn number(&self) -> usize {
+        match self {
+            Showing::Projects => 0,
+            Showing::Graph(_) => 1,
+            Showing::Relations => 2,
+            Showing::Agents => 3,
+        }
     }
 }
 
@@ -460,22 +451,13 @@ impl Pane {
     }
 }
 
-/// The branch graph of the repository at `dir`, as lines for the pane.
-fn graph_lines(runner: &dyn CommandRunner, dir: &Path, width: usize) -> Vec<String> {
-    match crate::graph::build(runner, dir, "origin/main", &crate::graph::sykli_proof) {
-        Ok(graph) => crate::graph::render_narrow(&graph, width),
-        Err(error) => vec![format!("not read: {error:#}")],
-    }
-}
-
 /// The graphs already asked for, by repository: the files each rested on,
-/// the width it was drawn for, and its lines.
-type Graphs = std::collections::HashMap<String, (Fingerprint, usize, Vec<String>)>;
+/// and the graph or why it could not be read.
+type Graphs = std::collections::HashMap<String, (Fingerprint, Result<crate::graph::Graph, String>)>;
 
-/// A section heading: its label, then a rule to the pane's edge.
-fn section(label: &str, width: usize) -> String {
-    let rule = "─".repeat(width.saturating_sub(label.chars().count() + 1));
-    format!("{HEAD}{label} {rule}")
+fn read_graph(runner: &dyn CommandRunner, dir: &Path) -> Result<crate::graph::Graph, String> {
+    crate::graph::build(runner, dir, "origin/main", &crate::graph::sykli_proof)
+        .map_err(|error| format!("{error:#}"))
 }
 
 /// What vessa and ohjaa last said, asked again on a timer by a thread of
@@ -523,28 +505,6 @@ impl Tools {
     }
 }
 
-/// The agent sessions, at most `limit`, or why there are none to show.
-fn agents_body(facts: Option<&tools::Facts>, width: usize, limit: usize) -> Vec<String> {
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|since| since.as_secs())
-        .unwrap_or(0);
-    match facts.map(|facts| &facts.agents) {
-        None => vec!["reading…".to_string()],
-        Some(Ok(agents)) => tools::agents_lines(agents, now, width, limit),
-        Some(Err(why)) => project::wrap(&format!("not read: {why}"), "", width),
-    }
-}
-
-/// ohjaa's summary, or why there is none.
-fn knowledge_body(facts: Option<&tools::Facts>, width: usize) -> Vec<String> {
-    match facts.map(|facts| &facts.knowledge) {
-        None => vec!["reading…".to_string()],
-        Some(Ok(summary)) => project::wrap(summary, "", width),
-        Some(Err(why)) => project::wrap(&format!("not read: {why}"), "", width),
-    }
-}
-
 #[cfg(unix)]
 fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -578,13 +538,18 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
         fit_pane();
     }
 
+    let palette = look::Palette::detect();
+    // Turns with each draw, for the mark of a session that wrote just now.
+    let mut beat = false;
+    // Whether any agent session is live: the pane then draws every tick.
+    let mut lively = false;
     let mut drawn: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) {
-        // An idle tick: nothing moved and the view is recent. Wait for a
-        // key and look again, without reading or drawing anything.
         if tools.due() {
             tools.ask(root);
         }
+        // An idle tick: nothing moved and the view is recent. Wait for a
+        // key and look again, without reading anything.
         let idle = drawn.is_some_and(|at| at.elapsed() < BUSY_RECHECK)
             && !tools.arrived.load(Ordering::SeqCst)
             && !resized.load(Ordering::Relaxed)
@@ -597,18 +562,32 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                     graphs.clear();
                     tools.asked = None;
                     drawn = None;
+                    continue;
                 }
-                Some(Asks::Draw) => drawn = None,
+                Some(Asks::Draw) => {
+                    drawn = None;
+                    continue;
+                }
+                Some(Asks::Nothing) | None if !lively => continue,
                 Some(Asks::Nothing) | None => {}
             }
-            continue;
         }
         drawn = Some(Instant::now());
+        beat = !beat;
         resized.store(false, Ordering::Relaxed);
         tools.arrived.store(false, Ordering::SeqCst);
         let facts = tools.facts();
+        lively = facts
+            .as_ref()
+            .and_then(|facts| facts.agents.as_ref().ok())
+            .is_some_and(|agents| !agents.digest.live.is_empty());
         let (columns, rows) = screen::size().unwrap_or((usize::from(PANE_COLUMNS), 40));
         let width = options.width.unwrap_or(columns).min(columns);
+        let room = rows.saturating_sub(FRAME_ROWS);
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|since| since.as_secs())
+            .unwrap_or(0);
 
         let view = memory.view(
             runner,
@@ -637,85 +616,108 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                 pane.only.clone().unwrap_or(folder)
             }
         };
-        let (mut body, keys) = match &pane.showing {
-            Showing::Projects => (
-                match &view {
-                    Ok(view) => project::render_rows(view, width, pane.picked()),
-                    Err(error) => vec![format!("not read: {error:#}")],
-                },
-                "jk pick  p next project  r  q quit",
-            ),
-            Showing::Relations => (
-                match &view {
-                    Ok(view) => {
-                        let lines = project::render_relations(view, width);
-                        if lines.is_empty() {
-                            vec!["none declared between these".to_string()]
-                        } else {
-                            lines
-                        }
-                    }
-                    Err(error) => vec![format!("not read: {error:#}")],
-                },
-                "p next project  r again  q quit",
-            ),
-            Showing::Graph(_) => (Vec::new(), "1 back  r again  q quit"),
-            Showing::Agents => {
-                let mut lines = vec![section("LAST DAY, BY AGENT", width)];
-                match facts.as_ref().map(|facts| &facts.agents) {
-                    Some(Ok(agents)) => lines.extend(tools::totals_lines(agents)),
-                    _ => lines.push("…".to_string()),
-                }
-                lines.push(String::new());
-                lines.push(section("SESSIONS", width));
-                lines.extend(agents_body(facts.as_ref(), width, usize::MAX));
-                lines.push(String::new());
-                lines.push(section("KNOWLEDGE", width));
-                lines.extend(knowledge_body(facts.as_ref(), width));
-                (lines, "1 back  r again  q quit")
-            }
+        let not_read = |error: &anyhow::Error| {
+            look::card(
+                "NOT READ",
+                look::Text::new(),
+                vec![look::Text::of(look::Tone::Warn, format!("{error:#}"))],
+                width,
+            )
         };
-        if pane.showing == Showing::Projects {
-            body.push(String::new());
-            body.push(section("AGENTS", width));
-            body.extend(agents_body(facts.as_ref(), width, 4));
-            body.push(String::new());
-            body.push(section("KNOWLEDGE", width));
-            body.extend(knowledge_body(facts.as_ref(), width));
-        }
-        // The graph is on screen without a key: under the projects it is the
-        // picked repository's, and view 2 gives it the whole pane.
+        let mut body: Vec<look::Text> = Vec::new();
+        let keys = match &pane.showing {
+            Showing::Projects => {
+                match &view {
+                    Ok(view) => body.extend(look::repositories(view, pane.picked(), width)),
+                    Err(error) => body.extend(not_read(error)),
+                }
+                body.extend(look::agents(facts.as_ref(), now, 3, true, beat, width));
+                body.extend(look::knowledge(facts.as_ref(), width));
+                look::keys(&[
+                    ("jk", "pick"),
+                    ("p", "project"),
+                    ("r", "read"),
+                    ("q", "quit"),
+                ])
+            }
+            Showing::Relations => {
+                match &view {
+                    Ok(view) => body.extend(look::links(view, width)),
+                    Err(error) => body.extend(not_read(error)),
+                }
+                look::keys(&[
+                    ("1", "back"),
+                    ("p", "project"),
+                    ("r", "read"),
+                    ("q", "quit"),
+                ])
+            }
+            Showing::Agents => {
+                body.extend(look::totals(facts.as_ref(), width));
+                body.extend(look::agents(
+                    facts.as_ref(),
+                    now,
+                    usize::MAX,
+                    false,
+                    beat,
+                    width,
+                ));
+                body.extend(look::knowledge(facts.as_ref(), width));
+                look::keys(&[("1", "back"), ("r", "read"), ("q", "quit")])
+            }
+            Showing::Graph(_) => look::keys(&[("1", "back"), ("r", "read"), ("q", "quit")]),
+        };
+        // The graph is on screen without a key: under the cards of the first
+        // view it is the picked repository's, in what room is left, and view
+        // 2 gives it the whole pane.
         let of = match &pane.showing {
             Showing::Projects => pane.picked().map(str::to_string),
             Showing::Graph(name) => Some(name.clone()),
             Showing::Relations | Showing::Agents => None,
         };
-        if let Some(name) = of {
-            if pane.showing == Showing::Projects {
-                body.push(String::new());
-                body.push(section(&format!("GRAPH {name}"), width));
-            }
+        let most = room.saturating_sub(body.len() + 2);
+        if let Some(name) = of.filter(|_| most >= 2) {
             let dir = root.join(&name);
-            let now = fingerprint(&dir);
-            let fresh = graphs
-                .get(&name)
-                .is_some_and(|(at, wide, _)| *at == now && *wide == width);
+            let files = fingerprint(&dir);
+            let fresh = graphs.get(&name).is_some_and(|(at, _)| *at == files);
             if !fresh {
                 // Asking takes a moment in a clone with many branches.
                 let mut waiting = body.clone();
-                waiting.push("reading…".to_string());
-                draw(&title, &pane.showing.tabs(), &waiting, keys, width, rows)?;
-                let lines = graph_lines(runner, &dir, width);
-                graphs.insert(name.clone(), (now, width, lines));
+                waiting.extend(look::graph(&name, look::Branches::Reading, most, width));
+                draw(
+                    &title,
+                    pane.showing.number(),
+                    &waiting,
+                    &keys,
+                    width,
+                    rows,
+                    palette,
+                )?;
+                graphs.insert(name.clone(), (files, read_graph(runner, &dir)));
             }
-            if let Some((_, _, lines)) = graphs.get(&name) {
-                body.extend(lines.iter().cloned());
-            }
+            let branches = match graphs.get(&name) {
+                Some((_, Ok(graph))) => look::Branches::Read(graph),
+                Some((_, Err(why))) => look::Branches::NotRead(why),
+                None => look::Branches::Reading,
+            };
+            body.extend(look::graph(&name, branches, most, width));
         }
-        draw(&title, &pane.showing.tabs(), &body, keys, width, rows)?;
+        draw(
+            &title,
+            pane.showing.number(),
+            &body,
+            &keys,
+            width,
+            rows,
+            palette,
+        )?;
     }
     Ok(0)
 }
+
+/// The rows of a frame that are not its body: the name, the views and a
+/// blank above; what the marks mean and the keys below.
+const FRAME_ROWS: usize = 5;
 
 /// Narrow this pane to [`PANE_COLUMNS`] by asking Ghostty to move the
 /// divider. Ghostty sizes splits in pixels and does not say which way a
@@ -790,96 +792,43 @@ fn next_project(names: &[String], now: Option<&str>) -> Option<String> {
     }
 }
 
-/// One line of the pane, cut to its width and then coloured: a heading
-/// bold, the picked repository in reverse, the words that say how a commit
-/// stands in green, yellow or red, and the detail under a repository dim.
-/// The colours are the terminal's own, so they follow its theme.
-fn styled(text: &str, width: usize) -> String {
-    if let Some(heading) = text.strip_prefix(HEAD) {
-        let cut: String = heading.chars().take(width).collect();
-        return format!("\x1b[1m{cut}\x1b[0m");
-    }
-    let cut: String = text.chars().take(width).collect();
-    if cut.ends_with(project::PICKED) {
-        return format!("\x1b[7m{cut}\x1b[0m");
-    }
-    let mut out = cut.clone();
-    for (word, colour) in [
-        (" proven", "32"),
-        (" now ", "32"),
-        ("●", "32"),
-        (" failed", "31"),
-        ("blocking", "31"),
-        (" unknown", "33"),
-        (" not run", "33"),
-        (" no gate", "33"),
-        ("not read", "33"),
-        ("partial:", "33"),
-    ] {
-        out = out.replace(word, &format!("\x1b[{colour}m{word}\x1b[39m"));
-    }
-    if cut.starts_with("    ") || cut.starts_with("… ") {
-        format!("\x1b[2m{out}\x1b[0m")
-    } else {
-        out
-    }
-}
-
 /// One frame, written once, inside the terminal's synchronized-output marks
-/// so a half-drawn frame is never shown. The picked repository's line is
-/// drawn in reverse as well as marked.
+/// so a half-drawn frame is never shown.
 #[cfg(unix)]
 fn draw(
     title: &str,
-    tabs: &str,
-    body: &[String],
-    keys: &str,
+    on: usize,
+    body: &[look::Text],
+    keys: &look::Text,
     width: usize,
     rows: usize,
+    palette: look::Palette,
 ) -> Result<()> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|since| since.as_secs())
         .unwrap_or(0);
     let clock = format!("{:02}:{:02} UTC", now % 86_400 / 3_600, now % 3_600 / 60);
-    let name = format!("TOIMIJA  {title}");
-    let gap = width.saturating_sub(name.chars().count() + clock.chars().count());
-    let heading = if gap >= 2 {
-        format!("{name}{}{clock}", " ".repeat(gap))
-    } else {
-        name
-    };
-    let room = rows.saturating_sub(5);
+    let room = rows.saturating_sub(FRAME_ROWS);
 
     let mut frame = String::from("\x1b[?2026h\x1b[H");
-    frame.push_str(&styled(&format!("{HEAD}{heading}"), width));
-    frame.push_str("\x1b[K\r\n");
-    let tabs: String = tabs.chars().take(width).collect();
-    frame.push_str("\x1b[2m");
-    frame.push_str(
-        &tabs
-            .replace('[', "\x1b[22;1;7m ")
-            .replace(']', " \x1b[0;2m"),
-    );
-    frame.push_str("\x1b[0m\x1b[K\r\n");
-    let mut line = |text: &str| {
-        frame.push_str(&styled(text, width));
+    let mut line = |text: look::Text| {
+        frame.push_str(&text.fit(width).ansi(palette));
         frame.push_str("\x1b[K\r\n");
     };
-    line("");
+    line(look::header(title, &clock, width));
+    line(look::tabs(on));
+    line(look::Text::new());
     for text in body.iter().take(room) {
-        line(text);
-    }
-    if body.len() > room {
-        line(&format!("… {} more lines", body.len() - room));
+        line(text.clone());
     }
     frame.push_str("\x1b[J");
-    // The last row: the keys.
-    frame.push_str(&format!("\x1b[{rows};1H"));
-    let foot: String = keys.chars().take(width).collect();
-    frame.push_str("\x1b[2m");
-    frame.push_str(&foot);
-    frame.push_str("\x1b[0m\x1b[K\x1b[?2026l");
+    // The last two rows: what the marks mean, and the keys.
+    frame.push_str(&format!("\x1b[{};1H", rows.saturating_sub(1)));
+    frame.push_str(&look::legend().fit(width).ansi(palette));
+    frame.push_str(&format!("\x1b[K\x1b[{rows};1H"));
+    frame.push_str(&keys.clone().fit(width).ansi(palette));
+    frame.push_str("\x1b[K\x1b[?2026l");
 
     let mut out = std::io::stdout().lock();
     out.write_all(frame.as_bytes())?;
@@ -1144,56 +1093,6 @@ mod tests {
         assert_eq!(shell_quote(""), "''");
         // And one string for AppleScript.
         assert_eq!(applescript_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
-    }
-
-    #[test]
-    fn the_views_are_numbered_and_the_one_on_screen_is_bracketed() {
-        assert_eq!(
-            Showing::Projects.tabs(),
-            "[1 projects] 2 graph 3 links 4 agents"
-        );
-        assert_eq!(
-            Showing::Graph("one".to_string()).tabs(),
-            "1 projects [2 graph] 3 links 4 agents"
-        );
-        assert!(Showing::Relations.tabs().contains("[3 links]"));
-        assert!(Showing::Agents.tabs().ends_with("[4 agents]"));
-        // Whichever is on screen, the line fits the pane.
-        assert!(Showing::Agents.tabs().chars().count() <= usize::from(PANE_COLUMNS));
-    }
-
-    #[test]
-    fn a_heading_is_bold_to_the_panes_edge_and_words_get_their_colour() {
-        let heading = section("GRAPH sykli", 20);
-        assert_eq!(heading.chars().count(), 21, "the mark and twenty columns");
-        assert_eq!(styled(&heading, 20), "\x1b[1mGRAPH sykli ────────\x1b[0m");
-        assert_eq!(
-            styled("|    proven  review: none", 40),
-            "|   \x1b[32m proven\x1b[39m  review: none"
-        );
-        assert!(styled("    main  clean  failed", 40).starts_with("\x1b[2m"));
-        assert!(styled("    main  clean  failed", 40).contains("\x1b[31m failed"));
-        // Cut before it is coloured, so a colour never counts as width.
-        assert_eq!(styled("abc proven", 6), "abc pr");
-        let picked = format!("○ one {}", project::PICKED);
-        assert_eq!(styled(&picked, 40), format!("\x1b[7m{picked}\x1b[0m"));
-    }
-
-    #[test]
-    fn what_a_tool_did_not_say_is_said_not_left_blank() {
-        assert_eq!(agents_body(None, 38, 4), ["reading…"]);
-        let facts = tools::Facts {
-            agents: Err("vessa is not installed".to_string()),
-            knowledge: Ok("3 current, 1 waiting for a decision".to_string()),
-        };
-        assert_eq!(
-            agents_body(Some(&facts), 38, 4),
-            ["not read: vessa is not installed"]
-        );
-        assert_eq!(
-            knowledge_body(Some(&facts), 38),
-            ["3 current, 1 waiting for a decision"]
-        );
     }
 
     #[test]

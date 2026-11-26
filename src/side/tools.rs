@@ -165,70 +165,11 @@ pub fn age(last_at: Option<&str>, now: u64) -> String {
     }
 }
 
-fn cut(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let mut short: String = text.chars().take(width.saturating_sub(1)).collect();
-    short.push('…');
-    short
-}
-
 /// Where a session works: the folder's own name.
-fn place(cwd: Option<&str>) -> String {
+pub fn place(cwd: Option<&str>) -> String {
     cwd.and_then(|cwd| Path::new(cwd).file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "?".to_string())
-}
-
-/// The sessions of the last day, the latest first, at most `limit` of them:
-/// agent, folder, how long ago it last wrote, the tokens it wrote.
-pub fn agents_lines(agents: &Agents, now: u64, width: usize, limit: usize) -> Vec<String> {
-    let digest = &agents.digest;
-    let mut lines = vec![format!(
-        "{} live, {} in the last day",
-        digest.live.len(),
-        digest.sessions.len()
-    )];
-    let mut sessions: Vec<&Session> = digest.sessions.iter().collect();
-    sessions.sort_by(|a, b| b.last_at.cmp(&a.last_at));
-    // agent(8) folder(rest) age(4) tokens(6), a space between each.
-    let folder = width.saturating_sub(8 + 4 + 6 + 3).max(4);
-    for session in sessions.iter().take(limit) {
-        lines.push(format!(
-            "{:<8} {:<folder$} {:>4} {:>6}",
-            cut(&session.agent, 8),
-            cut(&place(session.cwd.as_deref()), folder),
-            age(session.last_at.as_deref(), now),
-            tokens(session.output_tokens),
-        ));
-    }
-    if sessions.len() > limit {
-        lines.push(format!("… {} more, 4 for all", sessions.len() - limit));
-    }
-    if agents.partial {
-        lines.push("partial: vessa could not read it all".to_string());
-    }
-    lines
-}
-
-/// Tokens read and written by each agent over the last day.
-pub fn totals_lines(agents: &Agents) -> Vec<String> {
-    let mut lines = vec![format!(
-        "{:<8} {:>8} {:>7} {:>7}",
-        "", "sessions", "in", "out"
-    )];
-    for by in &agents.digest.by_agent {
-        lines.push(format!(
-            "{:<8} {:>8} {:>7} {:>7}",
-            cut(&by.agent, 8),
-            by.sessions
-                .map_or_else(|| "?".to_string(), |n| n.to_string()),
-            tokens(by.input_tokens),
-            tokens(by.output_tokens),
-        ));
-    }
-    lines
 }
 
 #[cfg(test)]
@@ -283,47 +224,23 @@ mod tests {
     }
 
     #[test]
-    fn sessions_come_latest_first_each_within_the_pane() {
-        let agents = agents_from(0, DIGEST).expect("the digest is read");
-        assert!(!agents.partial);
-        let lines = agents_lines(&agents, NOON, 38, 2);
-        assert_eq!(lines[0], "1 live, 3 in the last day");
+    fn a_partial_read_is_marked_and_a_failure_is_not_an_empty_day() {
+        let whole = agents_from(0, DIGEST).expect("the digest is read");
+        assert!(!whole.partial);
+        assert_eq!(whole.digest.sessions.len(), 3);
+        assert_eq!(whole.digest.by_agent[1].output_tokens, None);
         assert!(
-            lines[1].starts_with("claude   a-very-long-fold…"),
-            "{lines:?}"
-        );
-        assert!(lines[1].ends_with(" now   2.5M"), "{lines:?}");
-        assert!(lines[2].starts_with("claude   beta"), "{lines:?}");
-        assert!(lines[2].ends_with("  1h    900"), "{lines:?}");
-        assert_eq!(lines[3], "… 1 more, 4 for all");
-        assert!(
-            lines.iter().all(|line| line.chars().count() <= 38),
-            "{lines:?}"
-        );
-        // The agent that records no tokens shows unknown, not zero.
-        let all = agents_lines(&agents, NOON, 38, 9);
-        assert!(all[3].ends_with("12h      ?"), "{all:?}");
-        let totals = totals_lines(&agents);
-        assert!(
-            totals[2].ends_with("       1       ?       ?"),
-            "{totals:?}"
-        );
-    }
-
-    #[test]
-    fn a_partial_read_is_said_and_a_failure_is_not_an_empty_day() {
-        let partial = agents_from(4, DIGEST).expect("partial numbers are kept");
-        assert!(partial.partial);
-        let lines = agents_lines(&partial, NOON, 38, 9);
-        assert_eq!(
-            lines.last().map(String::as_str),
-            Some("partial: vessa could not read it all")
+            agents_from(4, DIGEST)
+                .expect("partial numbers are kept")
+                .partial
         );
         assert_eq!(
             agents_from(1, "").unwrap_err(),
             "vessa digest failed (exit 1)"
         );
         assert!(agents_from(0, "not json").is_err());
+        assert_eq!(place(Some("/work/alpha")), "alpha");
+        assert_eq!(place(None), "?");
     }
 
     #[test]
