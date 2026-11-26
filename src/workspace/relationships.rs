@@ -15,6 +15,29 @@ pub struct DeclaredRelationship {
     pub from: String,
     pub to: String,
     pub kind: String,
+    /// The files both sides must keep compatible, relative to the workspace
+    /// folder.
+    #[serde(default)]
+    pub contract: Vec<PathBuf>,
+}
+
+/// One file of a relationship's contract, and whether it is there now.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Contract {
+    pub path: String,
+    pub missing: bool,
+}
+
+/// A declared contract as it stands on disk. A path that does not exist is
+/// kept and marked, never dropped: it is the sign the contract moved.
+pub fn contract(root: &Path, declared: &[PathBuf]) -> Vec<Contract> {
+    declared
+        .iter()
+        .map(|path| Contract {
+            path: crate::path_codec::display(path),
+            missing: !root.join(path).exists(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -24,9 +47,12 @@ pub struct Relationship {
     pub kind: String,
     pub basis: &'static str,
     pub source: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contract: Vec<Contract>,
 }
 
 pub fn collect(
+    root: &Path,
     entries: &[PathBuf],
     declared: &[DeclaredRelationship],
     gaps: &mut Vec<NotRead>,
@@ -87,6 +113,7 @@ pub fn collect(
             kind: relation.kind.clone(),
             basis: "declared",
             source: super::WORKSPACE_PATH.into(),
+            contract: contract(root, &relation.contract),
         });
     }
     for (name, repository) in &repositories {
@@ -103,6 +130,7 @@ pub fn collect(
                         kind: kind.into(),
                         basis: "inferred",
                         source: source.clone(),
+                        contract: Vec::new(),
                     });
                 }
             };

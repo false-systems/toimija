@@ -317,6 +317,12 @@ pub fn render_context_markdown(packet: &ContextPacket, budget: usize) -> String 
         write_handover(&mut output, handover);
     }
 
+    // What this repository is part of, and what connects to it: durable
+    // context the agent would otherwise have to be told.
+    if let Some(membership) = &packet.workspace {
+        crate::workspace::render_membership(&mut output, membership);
+    }
+
     // The contract renders on every packet and early.
     write_workset_contract(&mut output);
 
@@ -806,6 +812,7 @@ mod tests {
             session: None,
             handover: None,
             finished_worktrees: Vec::new(),
+            workspace: None,
         }
     }
 

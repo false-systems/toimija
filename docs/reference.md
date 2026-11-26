@@ -698,26 +698,39 @@ role: the services of one product
 read_first:
   - NOTES.md
   - docs/architecture.md
+projects:
+  - name: Evidence
+    role: how a fact gets from an agent's machine into the store
+    repositories: [recorder, store]
 relationships:
   - from: recorder
     to: store
     kind: sends evidence
+    contract:
+      - store/docs/statement.md
 ```
 
 - **`role`**: one line that says what the folder is for.
 - **`read_first`**: paths, relative to the folder, that an agent starting
   here reads first.
+- **`projects`**: named groups of the folder's repositories, each with a
+  `name`, a `role` saying what it is, and its `repositories` by folder name.
+  A repository may be in several projects. One that is named but is not in
+  the folder stays listed and is named under **Not read**.
 - **`relationships`**: connections you declare, each with repository folder
   names `from` and `to`, and a nonblank `kind` describing the connection.
   Missing repositories are named under **Not read**, not silently dropped.
+  `contract` is optional: the files both sides must keep compatible, relative
+  to the folder. One that is not there is shown as `(missing)`.
 
 All fields are optional, and an empty file is a workspace. A field Toimija
 does not know is an error that names the field.
 
 ### Discovery
 
-Inside a Git repository nothing changes: the repository is nearer, so it
-wins, even when a workspace file sits above it. Outside any repository,
+Inside a Git repository the repository is nearer, so it wins: `enter` prints
+the repository's packet, even when a workspace file sits above it. That
+packet then says what the workspace declares about this repository (below). Outside any repository,
 Toimija walks up from the current directory to the first folder that has
 `.toimija/workspace.yaml`. The nearest one wins. There is no list of
 workspaces anywhere else.
@@ -790,6 +803,34 @@ What it holds:
 The packet is built by reading files. It starts no git process, however many
 repositories the folder holds. The one git process `enter` starts here is
 the question every command asks first: is this folder inside a repository?
+
+### Inside a member repository
+
+When the folder directly above a repository's main working copy has a
+workspace file that says something about it, the repository's packet gains a
+section. A linked worktree anywhere on the machine gets the same one, since it
+belongs to the same repository:
+
+```text
+## Project context
+- workspace: the services of one product
+- part of Evidence: how a fact gets from an agent's machine into the store
+  - with: store
+- recorder → store: sends evidence
+  - contract: store/docs/statement.md
+- store is: keeps and serves the facts
+- read first: /work/NOTES.md
+- declared in /work/.toimija/workspace.yaml; `toimija enter` in that folder shows every repository and the inferred dependencies
+```
+
+It holds the workspace's role, the projects this repository is in with their
+other members, the declared relationships that touch it, what each repository
+at the other end says it is (from its own `.toimija/repo.yaml`), and the
+workspace's read-first paths. Other projects and relationships between other
+repositories are left out. Inferred dependencies are not read here. The JSON
+packet carries the same under `workspace`. It is read from files and costs no
+git process. A workspace file that cannot be read is named in the section and
+the packet is still printed; one that declares nothing adds nothing.
 
 ### Dependency evidence
 
