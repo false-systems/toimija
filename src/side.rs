@@ -791,6 +791,17 @@ impl Scene<'_> {
         }
     }
 
+    fn seen_view(&self) -> Option<&View> {
+        self.view.and_then(|view| view.as_ref().ok())
+    }
+
+    /// The graph of the repository picked, where it has been read.
+    fn seen_graph(&self) -> Option<(&str, &crate::graph::Graph)> {
+        let name = self.pane.picked()?;
+        let (_, seen) = self.graphs.get(name)?;
+        Some((name, seen.graph.as_ref().ok()?))
+    }
+
     /// The agent sessions of the last day that work in one of these
     /// working copies, by the branch checked out there.
     fn agents_on(&self, copies: &[follow::WorkingCopy]) -> Vec<look::OnBranch> {
@@ -823,15 +834,22 @@ impl Scene<'_> {
         let mut below: Vec<look::Text> = Vec::new();
         let keys = match &self.pane.showing {
             Showing::Projects => {
-                let picked = self.graph_of();
-                let graph = picked.as_deref().and_then(|name| {
-                    let (_, seen) = self.graphs.get(name)?;
-                    Some((name, seen.graph.as_ref().ok()?))
-                });
-                let view = self.view.and_then(|view| view.as_ref().ok());
-                body.extend(look::needs_you(view, graph, facts, width));
+                // The first view is the calm one: a line when something
+                // needs a person, the repositories, the files not committed
+                // where the shell is when there are any, and the graph.
+                // Everything else is a view away.
+                if let Some(line) =
+                    look::needs_line(self.seen_view(), self.seen_graph(), facts, width)
+                {
+                    body.push(line);
+                    body.push(look::Text::new());
+                }
                 body.extend(self.repositories());
-                if let Some(here) = self.here {
+                if let Some(here) = self.here
+                    && self.changed.is_some_and(|changed| {
+                        changed.as_ref().map_or(true, |lines| !lines.is_empty())
+                    })
+                {
                     body.extend(look::you_are_here(
                         &here.repository,
                         here.branch.as_deref(),
@@ -839,9 +857,8 @@ impl Scene<'_> {
                         width,
                     ));
                 }
-                below.extend(look::agents(facts, self.now, 2, false, self.pulse, width));
                 look::keys(&[
-                    ("jk", "pick"),
+                    ("click", "pick"),
                     ("p", "project"),
                     ("r", "read"),
                     ("q", "quit"),
@@ -861,6 +878,12 @@ impl Scene<'_> {
             }
             Showing::Agents => {
                 body.extend(look::tiles(facts, self.pulse, width));
+                body.extend(look::needs_you(
+                    self.seen_view(),
+                    self.seen_graph(),
+                    facts,
+                    width,
+                ));
                 body.extend(look::totals(facts, width));
                 body.extend(look::agents(
                     facts,
@@ -912,6 +935,7 @@ impl Scene<'_> {
                     committed: seen.map_or(&none, |seen| &seen.committed),
                     copies: &copies,
                     agents: &agents,
+                    detail: matches!(self.pane.showing, Showing::Graph(_)),
                     skip: &self.pane.scroll,
                     pulse: self.pulse,
                     now: self.now,
@@ -1233,6 +1257,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                     &body,
                     &keys,
                     None,
+                    None,
                     Some(TURNING[0]),
                     None,
                     width,
@@ -1292,6 +1317,10 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
             &body,
             &keys,
             notice.as_ref().map(|(said, _)| said.as_str()),
+            facts
+                .as_ref()
+                .and_then(|facts| facts.agents.as_ref().ok())
+                .map(|agents| (agents.digest.live.len(), pulse)),
             turning.or(asking.as_ref().map(|_| TURNING[(frame % 10) as usize])),
             sweep,
             width,
@@ -1391,6 +1420,7 @@ fn draw(
     body: &[look::Text],
     keys: &look::Text,
     notice: Option<&str>,
+    live: Option<(usize, u8)>,
     turning: Option<char>,
     sweep: Option<usize>,
     width: usize,
@@ -1409,7 +1439,7 @@ fn draw(
         frame.push_str(&text.fit(width).ansi(palette));
         frame.push_str("\x1b[K\r\n");
     };
-    line(look::header(title, &clock, turning, sweep, width));
+    line(look::header(title, &clock, live, turning, sweep, width));
     line(look::tabs(on));
     line(look::Text::new());
     for text in body.iter().take(room) {
@@ -1620,7 +1650,18 @@ pub fn opener(
              end tell",
             tty = applescript_string(tty),
             title = applescript_string(PANE_TITLE),
-            command = applescript_string(&format!("{shell_line} --fit")),
+            command = applescript_string(&match env("PATH") {
+                // Ghostty starts a pane's command without the shell's
+                // profile, so without the PATH that finds sykli, vessa and
+                // ohjaa: the pane is given the one this shell has.
+                Some(path) => {
+                    format!(
+                        "/usr/bin/env PATH={} {shell_line} --fit",
+                        shell_quote(&path)
+                    )
+                }
+                None => format!("{shell_line} --fit"),
+            }),
             folder = applescript_string(&root.display().to_string()),
         );
         return Ok(("osascript".to_string(), vec!["-e".to_string(), script]));
@@ -2014,6 +2055,8 @@ mod tests {
         );
         // Never the front window: with several open it may be another one.
         assert!(!args[1].contains("front window"), "{}", args[1]);
+        // With no PATH to hand on, the command is the bare one.
+        assert!(!args[1].contains("/usr/bin/env PATH="), "{}", args[1]);
         // Closing asks the view to quit before the pane is taken away.
         let quit = args[1]
             .find("input text \"q\" to pane")
@@ -2035,6 +2078,33 @@ mod tests {
             refused.contains("no telling which Ghostty window"),
             "{refused}"
         );
+    }
+
+    #[test]
+    fn the_ghostty_pane_is_given_the_path_that_finds_the_other_tools() {
+        let env = |name: &str| match name {
+            "TERM_PROGRAM" => Some("ghostty".to_string()),
+            "PATH" => Some("/home/me/.cargo/bin:/usr/bin:/a b".to_string()),
+            _ => None,
+        };
+        let opened = opener(
+            Path::new("/bin/toimija"),
+            Path::new("/work"),
+            None,
+            &env,
+            Some("/dev/ttys004"),
+            None,
+        );
+        if cfg!(target_os = "macos") {
+            let (_, args) = opened.unwrap();
+            assert!(
+                args[1].contains(
+                    "/usr/bin/env PATH='/home/me/.cargo/bin:/usr/bin:/a b' /bin/toimija side"
+                ),
+                "{}",
+                args[1]
+            );
+        }
     }
 
     #[test]

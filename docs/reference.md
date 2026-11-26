@@ -871,30 +871,33 @@ workspace folder or any of its repositories:
 - `toimija side --open` asks for a pane on the right and runs there, beside
   the terminal it was typed in: under tmux with `tmux split-window`, in
   Ghostty on macOS through its AppleScript interface (macOS asks once for
-  permission). The pane is made 38 columns wide. Elsewhere it prints the
+  permission). Ghostty starts a pane's command without your shell's
+  profile, so the pane is handed the `PATH` of the shell it was opened
+  from, which is how it finds sykli, vessa and ohjaa. The pane is made 38 columns wide. Elsewhere it prints the
   command to run in a split you open yourself.
 - `--open` is a toggle: when the pane is already there, in this tmux window
   or this Ghostty tab, it closes it instead.
   In Ghostty the view is asked to quit first and the pane then closed, as
   Ghostty can take a pane away without ending the program in it; the view
   also ends by itself when it finds its terminal gone.
-- Four views, by number. `1` is everything at once, in cards: a band of
-  three numbers, each repository of the projects on a line, the branch
-  graph of the repository picked, which has most of the pane, and the two
-  latest agent sessions under it (they give way when the pane is short).
-  `2` gives the graph the whole pane, `3` shows the declared relations
-  between the repositories, `4` every agent session of the last day, what
-  each agent read and wrote, and the knowledge with what ohjaa flagged.
-  The view on screen is lit in the row under the name. The pane opens on
-  `1` and leaves the keyboard in your terminal, so all of it is there
-  without a key; click the pane to give it keys.
-- A tip of the graph says what each tool knows of its branch: `⌂` when a
-  working copy has it checked out, `+4` for the commits sykli counts it
-  ahead of the base, any review, and sykli's mark. Under it, while
-  everything fits, its commit and subject; and always the agent sessions
-  vessa read in a working copy on that branch, and the handover
-  `toimija handover` left there, in one line, or in full where your shell
-  is. Where sykli gives no count none is shown.
+- Four views, by number. `1` is the calm one: a line when something needs
+  you, each repository of the projects on a line, the files you have not
+  committed when there are any, and the branch graph of the repository
+  picked, which has the rest of the pane. `2` gives the graph the whole
+  pane and everything known of each tip, `3` shows the declared relations
+  between the repositories, `4` what needs you in full, every agent
+  session of the last day, what each agent read and wrote, and the
+  knowledge with what ohjaa flagged. The view on screen is lit in the row
+  under the name. The pane opens on `1` and leaves the keyboard in your
+  terminal, so it is there without a key.
+- A tip of the graph is one line: its branch, `⌂` when a working copy has
+  it checked out, how long since it got a commit, any review, and sykli's
+  mark. Under the tip your shell has checked out are its commit and
+  subject and the handover `toimija handover` left there. View `2` adds,
+  for every tip, the commits sykli counts it ahead of the base (`+4`), its
+  commit and subject while everything fits, the agent sessions vessa read
+  in a working copy on that branch, and its handover. Where sykli gives no
+  count none is shown.
 - A repository's line: `▸` when it is the one picked, sykli's mark for the
   branch checked out, the name, `●` when a session is open there, the
   branch, `±3` for three uncommitted paths, `↑2 ↓40` for commits ahead of
@@ -915,7 +918,7 @@ workspace folder or any of its repositories:
   the branch you have checked out lit. It asks the kernel for the shell's
   directory and reads the `.git` above it; no process is started. A key
   that picks another repository holds until you change directory again.
-- A band under the views gives three numbers: agent sessions running now,
+- A band at the top of view `4` gives three numbers: agent sessions running now,
   tokens written over the last day (`written +?` when an agent's count is
   not known and so left out), and knowledge waiting for a person.
 - The frame is drawn at once and filled as answers come: a mark turns by
@@ -938,12 +941,12 @@ workspace folder or any of its repositories:
 - Without `--project` the pane shows the project of the repository your
   shell is in (the smallest that declares it), and every project where
   your shell is in none. `p` holds another until you change directory.
-- `NEEDS YOU`, at the top of the first view, says in sentences what waits
-  for a person, the most pressing first: a gate that failed, a review that
+- What needs a person is said in sentences, the most pressing first, one
+  line of it in the first view and all of it in view `4`: a gate that failed, a review that
   blocks, knowledge with errors, proposals waiting, rules ohjaa flagged.
   With nothing it says so.
-- `HERE` names the repository and branch your shell is in and the files
-  changed and not committed there, from `git status --porcelain`, asked
+- `HERE` shows when your shell is in a working copy with files changed and
+  not committed, and names them, from `git status --porcelain`, asked
   when you change directory and every twenty seconds.
 - Each tip of the graph says how long since its branch got a commit, and a
   branch left for two weeks is drawn faint.

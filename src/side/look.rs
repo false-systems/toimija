@@ -337,11 +337,13 @@ pub fn legend() -> Text {
 }
 
 /// The top line: the name, what is shown, a mark that turns while
-/// something is being asked, and the time. `sweep` is the letter of the
-/// name the light is on, when news has just arrived.
+/// something is being asked, how many agent sessions run now, and the
+/// time. `sweep` is the letter of the name the light is on, when news has
+/// just arrived.
 pub fn header(
     title: &str,
     clock: &str,
+    live: Option<(usize, u8)>,
     turning: Option<char>,
     sweep: Option<usize>,
     width: usize,
@@ -354,6 +356,11 @@ pub fn header(
     let mut right = Text::new();
     if let Some(mark) = turning {
         right = right.add(Tone::Accent, format!("{mark} "));
+    }
+    if let Some((count, pulse)) = live.filter(|(count, _)| *count > 0) {
+        right = right
+            .add(Tone::Pulse(pulse), "●")
+            .add(Tone::Dim, format!("{count} "));
     }
     ends(
         name.add(Tone::Plain, "  ").add(Tone::Bold, title),
@@ -902,6 +909,10 @@ pub struct Around<'a> {
     pub copies: &'a [WorkingCopy],
     /// The agent sessions of the last day, by the branch they work on.
     pub agents: &'a [OnBranch],
+    /// Everything known of every tip: the commits ahead, each commit and
+    /// subject, each handover. Without it only the tip the shell has
+    /// checked out says more than its line.
+    pub detail: bool,
     /// How many rows of the graph are scrolled past. Set back to what
     /// the graph has when it is more than that.
     pub skip: &'a std::cell::Cell<usize>,
@@ -1005,7 +1016,7 @@ pub fn graph(
                     .branches
                     .iter()
                     .find_map(|name| around.ahead.get(name))
-                    .filter(|ahead| **ahead > 0 && !base)
+                    .filter(|ahead| around.detail && **ahead > 0 && !base)
                 {
                     right = right.add(Tone::Cool, format!("+{ahead} "));
                 }
@@ -1077,7 +1088,11 @@ pub fn graph(
                             .add(Tone::Dim, format!("wrote {}", agent.written)),
                     );
                 }
-                for left in copies.iter().filter_map(|copy| copy.handover.as_ref()) {
+                for left in copies
+                    .iter()
+                    .filter_map(|copy| copy.handover.as_ref())
+                    .filter(|_| around.detail || mine)
+                {
                     let said = left
                         .unfinished
                         .as_deref()
@@ -1092,7 +1107,11 @@ pub fn graph(
                     // Where the shell is, the handover is read in full lines;
                     // elsewhere one line says there is one.
                     let lines = crate::project::wrap(&format!("{head}{said}"), "", room);
-                    let keep = if mine { 4 } else { 1 };
+                    let keep = match (mine, around.detail) {
+                        (false, _) => 1,
+                        (true, false) => 2,
+                        (true, true) => 4,
+                    };
                     for (at, text) in lines.iter().take(keep).enumerate() {
                         let cut_short = at + 1 == keep && lines.len() > keep;
                         let text = if cut_short {
@@ -1141,7 +1160,7 @@ pub fn graph(
         rows.extend(warnings.iter().cloned());
         rows
     };
-    let mut rows = rows_with(true);
+    let mut rows = rows_with(around.detail);
     if rows.len() > most {
         rows = rows_with(false);
     }
@@ -1181,13 +1200,11 @@ pub fn graph(
 /// What needs a person now, the most pressing first, in plain sentences:
 /// a gate that failed, a review that blocks, knowledge that waits. With
 /// nothing to say it says so, so an empty card is never a question.
-pub fn needs_you(
+fn needs(
     view: Option<&View>,
     graph: Option<(&str, &Graph)>,
     facts: Option<&Facts>,
-    width: usize,
-) -> Vec<Text> {
-    let inner = width.saturating_sub(4);
+) -> Vec<(Tone, String)> {
     let mut needs: Vec<(Tone, String)> = Vec::new();
     let mut failed: Vec<&str> = Vec::new();
     for row in view
@@ -1236,23 +1253,57 @@ pub fn needs_you(
         if known.waiting > 0 {
             needs.push((
                 Tone::Warn,
-                format!(
-                    "{} proposals wait for your decision: run ohjaa review",
-                    known.waiting
-                ),
+                format!("{} proposals wait for you: ohjaa review", known.waiting),
             ));
         }
         if known.flags > 0 {
             needs.push((
                 Tone::Warn,
-                format!("ohjaa flagged {} rule as maybe stale: view 4", known.flags),
+                format!("ohjaa flagged {} rule as maybe stale", known.flags),
             ));
         }
     }
 
+    needs
+}
+
+/// The most pressing thing that needs a person, on one line, and how many
+/// more there are. `None` when there is nothing: the first view then has
+/// no such line at all.
+pub fn needs_line(
+    view: Option<&View>,
+    graph: Option<(&str, &Graph)>,
+    facts: Option<&Facts>,
+    width: usize,
+) -> Option<Text> {
+    let needs = needs(view, graph, facts);
+    let (tone, first) = needs.first()?;
+    let more = match needs.len() - 1 {
+        0 => Text::new(),
+        more => Text::of(Tone::Dim, format!("+{more}")),
+    };
+    Some(ends(
+        Text::of(*tone, "• ").add(
+            Tone::Plain,
+            cut(first, width.saturating_sub(3 + more.width())),
+        ),
+        more,
+        width,
+    ))
+}
+
+/// Everything that needs a person, each in full, for the last view.
+pub fn needs_you(
+    view: Option<&View>,
+    graph: Option<(&str, &Graph)>,
+    facts: Option<&Facts>,
+    width: usize,
+) -> Vec<Text> {
+    let inner = width.saturating_sub(4);
+    let needs = needs(view, graph, facts);
     let count = needs.len();
     let mut rows = Vec::new();
-    for (tone, need) in needs.iter().take(4) {
+    for (tone, need) in needs.iter().take(6) {
         for (at, line) in crate::project::wrap(need, "", inner.saturating_sub(2))
             .into_iter()
             .enumerate()
@@ -1260,8 +1311,8 @@ pub fn needs_you(
             rows.push(Text::of(*tone, if at == 0 { "• " } else { "  " }).add(Tone::Plain, line));
         }
     }
-    if count > 4 {
-        rows.push(Text::of(Tone::Dim, format!("  … {} more", count - 4)));
+    if count > 6 {
+        rows.push(Text::of(Tone::Dim, format!("  … {} more", count - 6)));
     }
     if rows.is_empty() {
         rows.push(Text::of(Tone::Good, "✓ ").add(Tone::Dim, "nothing right now"));
@@ -1306,7 +1357,7 @@ pub fn you_are_here(
                     count => format!("{count} files changed, not committed"),
                 },
             )];
-            for line in lines.iter().take(5) {
+            for line in lines.iter().take(3) {
                 // `XY path`: the two status letters, then the path.
                 let (state, path) = line.split_at(line.len().min(2));
                 let path = path.trim();
@@ -1323,10 +1374,10 @@ pub fn you_are_here(
                 };
                 rows.push(Text::of(Tone::Warn, format!("{state:<2} ")).add(Tone::Plain, shown));
             }
-            if lines.len() > 5 {
+            if lines.len() > 3 {
                 rows.push(Text::of(
                     Tone::Dim,
-                    format!("   … {} more", lines.len() - 5),
+                    format!("   … {} more", lines.len() - 3),
                 ));
             }
             rows
@@ -1652,6 +1703,7 @@ mod tests {
             committed,
             copies,
             agents,
+            detail: true,
             skip: Box::leak(Box::new(std::cell::Cell::new(0))),
             pulse: 7,
             now: 7_300,
@@ -1766,6 +1818,49 @@ mod tests {
     }
 
     #[test]
+    fn the_first_view_keeps_a_tip_to_its_line_except_where_the_shell_is() {
+        let graph_of = three_tips();
+        let ahead = HashMap::from([("feat/two".to_string(), 4), ("feat/one".to_string(), 9)]);
+        let none = HashMap::new();
+        let copies = [
+            WorkingCopy {
+                dir: "/work/one".into(),
+                branch: Some("feat/one".to_string()),
+                handover: Some(crate::side::follow::Left {
+                    written_at: 100,
+                    unfinished: Some("elsewhere".to_string()),
+                    next: None,
+                }),
+            },
+            WorkingCopy {
+                dir: "/work/two".into(),
+                branch: Some("feat/two".to_string()),
+                handover: Some(crate::side::follow::Left {
+                    written_at: 100,
+                    unfinished: Some("pick this up".to_string()),
+                    next: None,
+                }),
+            },
+        ];
+        let mut calm = around(&ahead, &none, &copies, &[], Some("feat/two"));
+        calm.detail = false;
+        let lines = plain(&graph("alpha", Branches::Read(&graph_of), &calm, 20, 38));
+        assert_eq!(
+            lines,
+            [
+                "╭─ GRAPH alpha ───────────── 3 tips ─╮",
+                "│ ● feat/one            ⌂ BLOCKING ✓ │",
+                "│ │ ● feat/two                   ⌂ ○ │",
+                "│ │ │ bbbbbbb second thing           │",
+                "│ │ │ ↳ handover 2h: pick this up    │",
+                "│ │╱                                 │",
+                "│ ◉ origin/main                    ✗ │",
+                "╰────────────────────────────────────╯",
+            ]
+        );
+    }
+
+    #[test]
     fn with_little_room_subjects_give_way_first_and_then_tips_are_counted() {
         let graph_of = three_tips();
         let (ahead, copies, agents) = (HashMap::new(), [], []);
@@ -1834,11 +1929,33 @@ mod tests {
                 "│ • alpha: a review blocks feat/one  │",
                 "│ • alpha: the gate failed on        │",
                 "│   origin/main                      │",
-                "│ • 11 proposals wait for your       │",
-                "│   decision: run ohjaa review       │",
-                "│   … 1 more                         │",
+                "│ • 11 proposals wait for you: ohjaa │",
+                "│   review                           │",
+                "│ • ohjaa flagged 1 rule as maybe    │",
+                "│   stale                            │",
                 "╰────────────────────────────────────╯",
             ]
+        );
+        // The first view has only the worst of them, on one line.
+        let line = needs_line(
+            Some(&broken),
+            Some(("alpha", &graph_of)),
+            Some(&facts()),
+            38,
+        );
+        assert_eq!(
+            line.map(|line| line.plain()).as_deref(),
+            Some("• alpha: the gate failed on feat/x  +4")
+        );
+        assert_eq!(
+            needs_line(
+                Some(&view(vec![row("beta", "main", Some("proven"))])),
+                None,
+                None,
+                38
+            ),
+            None,
+            "with nothing to say there is no line"
         );
         // Quiet is said, and so is not confused with not asked yet.
         let quiet = plain(&needs_you(
@@ -1914,15 +2031,15 @@ mod tests {
 
     #[test]
     fn the_name_carries_the_mark_that_turns_and_the_light_that_crosses_it() {
-        let still = header("SDLC", "12:54 UTC", None, None, 38);
+        let still = header("SDLC", "12:54 UTC", None, None, None, 38);
         assert!(
             !still
                 .0
                 .iter()
                 .any(|span| matches!(span.tone, Tone::Title(_, true)))
         );
-        let busy = header("SDLC", "12:54 UTC", Some('⠙'), Some(3), 38);
-        assert_eq!(busy.plain(), "▍TOIMIJA  SDLC             ⠙ 12:54 UTC");
+        let busy = header("SDLC", "12:54 UTC", Some((2, 7)), Some('⠙'), Some(3), 38);
+        assert_eq!(busy.plain(), "▍TOIMIJA  SDLC          ⠙ ●2 12:54 UTC");
         let lit: Vec<&str> = busy
             .0
             .iter()
@@ -1966,7 +2083,7 @@ mod tests {
         assert_eq!(tab_at(3, 36), Some(3));
         assert_eq!(tab_at(3, 60), None);
         assert_eq!(
-            header("SDLC", "12:54 UTC", None, None, 38).plain(),
+            header("SDLC", "12:54 UTC", None, None, None, 38).plain(),
             "▍TOIMIJA  SDLC               12:54 UTC"
         );
     }
