@@ -1326,17 +1326,26 @@ fn side_in_a_member_repository_shows_its_workspace_and_stays_narrow() {
         return;
     }
     let sandbox = Sandbox::new();
-    sandbox.workspace_file(TOOLS);
+    sandbox.workspace_file(
+        "projects:\n  - name: Tools\n    repositories: [teller]\n  - name: Other\n    repositories: [unrelated]\n",
+    );
     let teller = real_repository(&sandbox, "teller");
+    real_repository(&sandbox, "unrelated");
+    let worktree = sandbox.ceiling.join("teller-task");
+    run_git(
+        &teller,
+        &["worktree", "add", "-b", "task", worktree.to_str().unwrap()],
+    );
     let path = fake_sykli(&sandbox, "proven", 0);
     let output = sandbox
-        .toimija(&teller)
+        .toimija(&worktree)
         .env("PATH", &path)
-        .args(["side", "--once", "--project", "Tools", "--width", "30"])
+        .args(["side", "--once", "--width", "30"])
         .output()
         .unwrap();
     let view = String::from_utf8(output.stdout).unwrap();
     assert!(view.contains("○ teller\n"), "{view}");
+    assert!(!view.contains("unrelated"), "{view}");
     assert!(
         view.lines().all(|line| line.chars().count() <= 30),
         "{view}"
@@ -1352,4 +1361,29 @@ fn side_with_no_workspace_says_how_to_make_one() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("no workspace here"));
+}
+
+#[test]
+fn side_at_the_workspace_root_uses_the_wrapped_sessions_scope() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file(
+        "projects:\n  - name: Tools\n    repositories: [teller]\n  - name: Other\n    repositories: [unrelated]\n",
+    );
+    real_repository(&sandbox, "teller");
+    real_repository(&sandbox, "unrelated");
+    let path = fake_sykli(&sandbox, "proven", 0);
+    let binary = assert_cmd::cargo::cargo_bin("toimija");
+    sandbox
+        .toimija(&sandbox.root)
+        .env("PATH", path)
+        .args(["run", "--intent", "inspect the graph", "--scope", "teller"])
+        .arg(binary)
+        .args(["side", "--once"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("○ teller"))
+        .stdout(predicate::str::contains("unrelated").not());
 }

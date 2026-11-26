@@ -227,18 +227,90 @@ pub struct Options {
     pub beside: Option<String>,
 }
 
+/// At a workspace folder, a live wrapped session can say more than its
+/// directory. Read its declared repo paths, never its conversation.
+pub fn session_project(
+    runner: &dyn CommandRunner,
+    root: &Path,
+    cwd: &Path,
+    focused_pid: Option<u32>,
+) -> Result<Option<String>> {
+    if follow::here(root, cwd).is_some() {
+        return Ok(None);
+    }
+    let Some(state) = crate::session::outside_root() else {
+        return Ok(None);
+    };
+    let marker = if let Some(pid) = focused_pid {
+        crate::sessions::report(runner, &state)?
+            .sessions
+            .into_iter()
+            .find(|session| session.marker.pid == pid)
+            .map(|session| session.marker)
+    } else {
+        crate::session::ambient_session(&state)
+            .map(|(_, dir)| crate::session::load_marker(&dir))
+            .transpose()?
+    };
+    let Some(marker) = marker else {
+        return Ok(None);
+    };
+    let (Ok(folder), Ok(root), Ok(cwd)) = (
+        Path::new(&marker.worktree).canonicalize(),
+        root.canonicalize(),
+        cwd.canonicalize(),
+    ) else {
+        return Ok(None);
+    };
+    if !folder.starts_with(&root) || !cwd.starts_with(&folder) {
+        return Ok(None);
+    }
+    let repositories: Vec<_> = marker
+        .scope
+        .iter()
+        .filter_map(|path| follow::here(&root, &folder.join(path)))
+        .map(|here| here.repository)
+        .collect();
+    if repositories.is_empty() {
+        return Ok(None);
+    }
+    let mut projects = workspace::load(&root)?.projects;
+    projects.retain(|project| {
+        repositories
+            .iter()
+            .all(|repo| project.repositories.contains(repo))
+    });
+    projects.sort_by_key(|project| project.repositories.len());
+    Ok(match projects.as_slice() {
+        [first, second, ..] if first.repositories.len() == second.repositories.len() => None,
+        [first, ..] => Some(first.name.clone()),
+        [] => None,
+    })
+}
+
 /// Print the view once, or keep it on screen when standard output is a
 /// terminal. Exit code 4 when part of it could not be read.
-pub fn run(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32> {
+pub fn run(runner: &dyn CommandRunner, root: &Path, cwd: &Path, options: Options) -> Result<i32> {
+    let start = follow::here(root, cwd);
+    let members: Vec<(String, Vec<String>)> = workspace::load(root)?
+        .projects
+        .into_iter()
+        .map(|project| (project.name, project.repositories))
+        .collect();
+    let only = options.project.clone().or_else(|| {
+        start
+            .as_ref()
+            .and_then(|here| project_of(&members, &here.repository))
+    });
     if options.once || !std::io::stdout().is_terminal() {
-        let view = project::build(runner, root, options.project.as_deref())?;
+        let view = project::build(runner, root, only.as_deref())?;
         let width = options.width.unwrap_or(usize::from(PANE_COLUMNS));
         print!("{}", project::render_text(&view, width));
         return Ok(if view.warnings.is_empty() { 0 } else { 4 });
     }
     #[cfg(unix)]
     {
-        live(runner, root, options)
+        live(runner, root, options, members, only, start)
     }
     #[cfg(not(unix))]
     {
@@ -1042,7 +1114,14 @@ impl Tools {
 }
 
 #[cfg(unix)]
-fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32> {
+fn live(
+    runner: &dyn CommandRunner,
+    root: &Path,
+    options: Options,
+    members: Vec<(String, Vec<String>)>,
+    only: Option<String>,
+    start: Option<follow::Here>,
+) -> Result<i32> {
     let stop = Arc::new(AtomicBool::new(false));
     let resized = Arc::new(AtomicBool::new(false));
     for signal in [
@@ -1054,15 +1133,9 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     }
     signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resized))?;
 
-    // Each project and the repositories declared to be in it.
-    let members: Vec<(String, Vec<String>)> = workspace::load(root)?
-        .projects
-        .into_iter()
-        .map(|project| (project.name, project.repositories))
-        .collect();
     let mut pane = Pane {
         showing: Showing::Projects,
-        only: options.project.clone(),
+        only,
         projects: members.iter().map(|(name, _)| name.clone()).collect(),
         follows: options.project.is_none(),
         repositories: Vec::new(),
@@ -1090,7 +1163,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     let mut looked: Option<Instant> = None;
     // Where the shell beside the pane works, and the directory that says so.
     let mut beside: Option<PathBuf> = None;
-    let mut here: Option<follow::Here> = None;
+    let mut here = start;
     // The files not committed where the shell is: for which working copy,
     // the answer, when it was asked, and the asking still under way.
     let mut changed: Option<(PathBuf, Changed)> = None;
@@ -1635,11 +1708,65 @@ fn jump(
     format!("typed: cd …/{name}")
 }
 
+/// The terminal an external Ghostty shortcut was invoked beside.
+pub struct FocusedTerminal {
+    pub tty: String,
+    pub cwd: PathBuf,
+    pub pid: u32,
+}
+
+#[cfg(target_os = "macos")]
+const FOCUSED_GHOSTTY: &str = r#"
+if application "Ghostty" is not running then error "Open Ghostty to toggle the work graph."
+tell application "Ghostty"
+    if not frontmost then error "Focus the Ghostty terminal for the work graph."
+    set here to focused terminal of selected tab of front window
+    return (tty of here) & linefeed & (pid of here) & linefeed & (working directory of here)
+end tell
+"#;
+
+pub fn focused_ghostty() -> Result<FocusedTerminal> {
+    #[cfg(target_os = "macos")]
+    {
+        let result = std::process::Command::new("osascript")
+            .args(["-e", FOCUSED_GHOSTTY])
+            .output()
+            .context("could not ask Ghostty for its focused terminal")?;
+        anyhow::ensure!(
+            result.status.success(),
+            "could not get the focused Ghostty terminal: {}",
+            String::from_utf8_lossy(&result.stderr).trim_end()
+        );
+        let output = String::from_utf8(result.stdout).context("Ghostty returned non-UTF-8 text")?;
+        let (tty, tail) = output
+            .strip_suffix('\n')
+            .unwrap_or(&output)
+            .split_once('\n')
+            .context("Ghostty did not return a terminal and directory")?;
+        let (pid, cwd) = tail
+            .split_once('\n')
+            .context("Ghostty did not return a process and directory")?;
+        anyhow::ensure!(
+            tty.starts_with("/dev/") && Path::new(cwd).is_absolute(),
+            "Ghostty did not return a terminal and absolute working directory"
+        );
+        Ok(FocusedTerminal {
+            tty: tty.to_owned(),
+            cwd: PathBuf::from(cwd),
+            pid: pid
+                .parse()
+                .context("Ghostty did not return a valid process ID")?,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    anyhow::bail!("--focused needs Ghostty on macOS")
+}
+
 /// How `side --open` would open the pane here, as a program and its
 /// arguments, or the reason it cannot.
 pub fn opener(
     exe: &Path,
-    root: &Path,
+    cwd: &Path,
     project: Option<&str>,
     env: &dyn Fn(&str) -> Option<String>,
     tty: Option<&str>,
@@ -1686,7 +1813,7 @@ pub fn opener(
             "pane=$(tmux list-panes -F '#{{pane_id}} #{{pane_title}}' | sed -n 's/ {PANE_TITLE}$//p' | head -1)\n\
              if [ -n \"$pane\" ]; then tmux kill-pane -t \"$pane\"\n\
              else tmux split-window -h -d -l {PANE_COLUMNS} -c {} {}\nfi",
-            shell_quote(&root.display().to_string()),
+            shell_quote(&cwd.display().to_string()),
             shell_quote(&shell_line),
         );
         return Ok(("sh".to_string(), vec!["-c".to_string(), script]));
@@ -1752,7 +1879,7 @@ pub fn opener(
                 }
                 None => format!("{shell_line} --fit"),
             }),
-            folder = applescript_string(&root.display().to_string()),
+            folder = applescript_string(&cwd.display().to_string()),
         );
         return Ok(("osascript".to_string(), vec!["-e".to_string(), script]));
     }

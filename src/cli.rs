@@ -392,6 +392,9 @@ pub struct SideArgs {
     /// Open a pane on the right (Ghostty on macOS, or tmux) and run there.
     #[arg(long, conflicts_with = "once")]
     pub open: bool,
+    /// Toggle beside the focused Ghostty terminal from an external shortcut (macOS).
+    #[arg(long, requires = "open")]
+    pub focused: bool,
     /// Print the view once and exit, as when output is not a terminal.
     #[arg(long)]
     pub once: bool,
@@ -1417,7 +1420,14 @@ fn parent_shell() -> Option<u32> {
 }
 
 fn run_side(args: SideArgs) -> Result<i32> {
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let focused = args
+        .focused
+        .then(crate::side::focused_ghostty)
+        .transpose()?;
+    let cwd = match &focused {
+        Some(terminal) => terminal.cwd.clone(),
+        None => std::env::current_dir().context("failed to read current directory")?,
+    };
     let runner = ProcessCommandRunner;
     let Some(root) = workspace_of(&runner, &cwd) else {
         anyhow::bail!(
@@ -1426,16 +1436,33 @@ fn run_side(args: SideArgs) -> Result<i32> {
             workspace::WORKSPACE_PATH
         );
     };
+    let project = match args.project {
+        Some(name) => Some(name),
+        None => crate::side::session_project(
+            &runner,
+            &root,
+            &cwd,
+            focused.as_ref().map(|terminal| terminal.pid),
+        )?,
+    };
     if args.open {
         let exe = std::env::current_exe().context("failed to find the toimija that is running")?;
-        let env = |name: &str| std::env::var(name).ok();
+        let env = |name: &str| match (args.focused, name) {
+            (true, "TERM_PROGRAM") => Some("ghostty".to_owned()),
+            (true, "TMUX" | "TMUX_PANE") => None,
+            _ => std::env::var(name).ok(),
+        };
+        let (tty, follow) = match focused {
+            Some(terminal) => (Some(terminal.tty), None),
+            None => (crate::side::own_tty(), parent_shell()),
+        };
         return match crate::side::opener(
             &exe,
-            &root,
-            args.project.as_deref(),
+            &cwd,
+            project.as_deref(),
             &env,
-            crate::side::own_tty().as_deref(),
-            parent_shell(),
+            tty.as_deref(),
+            follow,
         ) {
             Ok((program, arguments)) => {
                 let status = std::process::Command::new(&program)
@@ -1459,8 +1486,9 @@ fn run_side(args: SideArgs) -> Result<i32> {
     crate::side::run(
         &runner,
         &root,
+        &cwd,
         crate::side::Options {
-            project: args.project,
+            project,
             once: args.once,
             width: args.width,
             fit: args.fit,

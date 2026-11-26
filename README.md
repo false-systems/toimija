@@ -114,6 +114,7 @@ toimija enter              # the packet now, for an agent started some other way
 toimija sessions           # who is working in this repository, and why; which worktrees are finished
 toimija graph              # the branches in progress: proven or not, review level, who is there
 toimija side --open        # projects, a repository's graph and relations in a pane; again to close it
+toimija side --open --focused  # Ghostty shortcut: toggle while the agent has the keyboard
 toimija intent "fix the login redirect"          # a session says why it is here
 toimija handover --next "tests still to write"   # a note for the next agent
 ```
