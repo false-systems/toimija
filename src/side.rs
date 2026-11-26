@@ -3,8 +3,9 @@
 //!
 //! It is an ordinary foreground command that redraws in place, so it works
 //! in any split of any terminal and in a multiplexer pane. It lives as long
-//! as its pane: no daemon, and nothing is written. It captures no mouse, so
-//! text can still be selected.
+//! as its pane: no daemon, and nothing is written. The keyboard stays in the
+//! terminal beside it, so it takes clicks and the wheel; text in it is
+//! selected with Shift held.
 //!
 //! An idle tick starts no process. Each tick it reads a few file times for
 //! each repository shown; git and sykli are asked again only for a
@@ -199,6 +200,9 @@ pub struct Options {
     /// The shell the pane was opened from: the view follows the repository
     /// that shell is working in. Set by `--open`.
     pub follow: Option<u32>,
+    /// Where that shell's terminal is, to type into it: `tmux:<pane>` or
+    /// `ghostty:<device>`. Set by `--open`.
+    pub beside: Option<String>,
 }
 
 /// Print the view once, or keep it on screen when standard output is a
@@ -255,14 +259,14 @@ mod screen {
         }));
         // The alternate screen, so nothing is left in the scrollback; no cursor.
         let mut out = std::io::stdout().lock();
-        out.write_all(b"\x1b[?1049h\x1b[?25l\x1b]2;toimija side\x07")?;
+        out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b]2;toimija side\x07")?;
         out.flush()?;
         Ok(Screen)
     }
 
     pub fn restore() {
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(b"\x1b[?25h\x1b[?1049l");
+        let _ = out.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l");
         let _ = out.flush();
         if let Some(mode) = SAVED.get() {
             // SAFETY: the termios is the one tcgetattr filled in.
@@ -308,6 +312,28 @@ mod screen {
         Down,
         Back,
         Char(u8),
+        /// A press of the first mouse button, at a column and row from 1.
+        Click {
+            column: usize,
+            row: usize,
+        },
+        /// A turn of the wheel: up is negative.
+        Wheel(i8),
+    }
+
+    /// A mouse report as a terminal sends it after `ESC [ <`: the button,
+    /// column and row, then `M` for a press. A release, another button or
+    /// anything malformed is nothing.
+    pub fn mouse(report: &str) -> Option<Key> {
+        let numbers = report.strip_suffix('M')?;
+        let mut parts = numbers.split(';').map(|part| part.parse::<usize>().ok());
+        let (button, column, row) = (parts.next()??, parts.next()??, parts.next()??);
+        match button {
+            0 => Some(Key::Click { column, row }),
+            64 => Some(Key::Wheel(-1)),
+            65 => Some(Key::Wheel(1)),
+            _ => None,
+        }
     }
 
     /// One key, waiting at most `wait`. An arrow arrives as three bytes; a
@@ -319,6 +345,21 @@ mod screen {
                 Some(b'[' | b'O') => match key(soon) {
                     Some(b'A') => Some(Key::Up),
                     Some(b'B') => Some(Key::Down),
+                    Some(b'<') => {
+                        let mut report = String::new();
+                        while report.len() < 24 {
+                            match key(soon) {
+                                Some(byte) => {
+                                    report.push(char::from(byte));
+                                    if byte == b'M' || byte == b'm' {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                        mouse(&report)
+                    }
                     _ => None,
                 },
                 _ => Some(Key::Back),
@@ -441,6 +482,8 @@ struct Pane {
     /// The repositories on screen, in order, and the one picked.
     repositories: Vec<String>,
     picked: usize,
+    /// How many rows of the graph are scrolled past.
+    scroll: std::cell::Cell<usize>,
 }
 
 impl Pane {
@@ -480,14 +523,28 @@ impl Pane {
                 self.showing = Showing::Projects;
                 Asks::Draw
             }
+            (_, Key::Wheel(by)) => {
+                let now = self.scroll.get();
+                self.scroll.set(if by < 0 {
+                    now.saturating_sub(3)
+                } else {
+                    now + 3
+                });
+                Asks::Draw
+            }
+            // A click is placed by what was drawn, which the pane does not
+            // know: the loop that draws answers it.
+            (_, Key::Click { .. }) => Asks::Nothing,
             (Showing::Projects, Key::Down | Key::Char(b'j')) => {
                 if self.picked + 1 < self.repositories.len() {
                     self.picked += 1;
                 }
+                self.scroll.set(0);
                 Asks::Draw
             }
             (Showing::Projects, Key::Up | Key::Char(b'k')) => {
                 self.picked = self.picked.saturating_sub(1);
+                self.scroll.set(0);
                 Asks::Draw
             }
             (Showing::Projects, Key::Char(b'g' | b'\r' | b'\n' | b'l')) => match self.picked() {
@@ -855,6 +912,7 @@ impl Scene<'_> {
                     committed: seen.map_or(&none, |seen| &seen.committed),
                     copies: &copies,
                     agents: &agents,
+                    skip: &self.pane.scroll,
                     pulse: self.pulse,
                     now: self.now,
                 };
@@ -937,6 +995,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
         follows: options.project.is_none(),
         repositories: Vec::new(),
         picked: 0,
+        scroll: Default::default(),
     };
     let mut memory = Memory::default();
     let mut graphs: Graphs = Graphs::new();
@@ -969,6 +1028,11 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     let mut news: Option<u64> = None;
     let mut frame: u64 = 0;
     let mut stale = true;
+    // What a click on each line of the body drawn last means.
+    let mut hits: Vec<Option<look::Tag>> = Vec::new();
+    // What a click last did, said for a few seconds where the marks are
+    // explained.
+    let mut notice: Option<(String, Instant)> = None;
 
     while !stop.load(Ordering::Relaxed) && !screen::gone() {
         frame += 1;
@@ -1053,11 +1117,62 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
             .is_some_and(|agents| !agents.digest.live.is_empty());
         let busy = asking.is_some() || changing.is_some() || tools.busy.load(Ordering::SeqCst);
         let lit = news.is_some_and(|at| frame - at < 8);
-        let moving = lively || busy || lit;
+        if notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= Duration::from_secs(6))
+        {
+            notice = None;
+            redraw = true;
+        }
+        let moving = lively || busy || lit || notice.is_some();
 
         if !stale && !redraw {
             let wait = if moving { FRAME } else { TICK };
-            match screen::read_key(wait).map(|key| pane.press(key)) {
+            let asks = match screen::read_key(wait) {
+                // A click on the row of views goes to that view; on a
+                // repository it picks it; on a branch a working copy has
+                // checked out it takes the shell there.
+                Some(screen::Key::Click { column, row: 2 }) => {
+                    look::tab_at(pane.showing.number(), column.saturating_sub(1))
+                        .map(|view| pane.press(screen::Key::Char(b'1' + view as u8)))
+                }
+                Some(screen::Key::Click { row, .. }) => {
+                    match row
+                        .checked_sub(4)
+                        .and_then(|at| hits.get(at))
+                        .cloned()
+                        .flatten()
+                    {
+                        Some(look::Tag::Repository(name)) => pane
+                            .repositories
+                            .iter()
+                            .position(|known| *known == name)
+                            .map(|at| {
+                                pane.picked = at;
+                                pane.scroll.set(0);
+                                Asks::Draw
+                            }),
+                        Some(look::Tag::Branch(branch)) => {
+                            let shown = match &pane.showing {
+                                Showing::Graph(name) => Some(name.clone()),
+                                _ => pane.picked().map(str::to_string),
+                            };
+                            let copies = shown
+                                .and_then(|name| graphs.get(&name))
+                                .map(|(_, seen)| seen.copies.as_slice())
+                                .unwrap_or_default();
+                            let said =
+                                jump(copies, &branch, options.follow, options.beside.as_deref());
+                            notice = Some((said, Instant::now()));
+                            Some(Asks::Draw)
+                        }
+                        None => None,
+                    }
+                }
+                Some(key) => Some(pane.press(key)),
+                None => None,
+            };
+            match asks {
                 Some(Asks::Quit) => return Ok(0),
                 Some(Asks::Again) => {
                     memory.clear();
@@ -1117,6 +1232,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                     pane.showing.number(),
                     &body,
                     &keys,
+                    None,
                     Some(TURNING[0]),
                     None,
                     width,
@@ -1168,11 +1284,14 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
         }
         let scene = scene!();
         let (body, keys) = scene.body();
+        let title = scene.title();
+        hits = body.iter().map(|line| line.tag().cloned()).collect();
         draw(
-            &scene.title(),
+            &title,
             pane.showing.number(),
             &body,
             &keys,
+            notice.as_ref().map(|(said, _)| said.as_str()),
             turning.or(asking.as_ref().map(|_| TURNING[(frame % 10) as usize])),
             sweep,
             width,
@@ -1271,6 +1390,7 @@ fn draw(
     on: usize,
     body: &[look::Text],
     keys: &look::Text,
+    notice: Option<&str>,
     turning: Option<char>,
     sweep: Option<usize>,
     width: usize,
@@ -1298,7 +1418,11 @@ fn draw(
     frame.push_str("\x1b[J");
     // The last two rows: what the marks mean, and the keys.
     frame.push_str(&format!("\x1b[{};1H", rows.saturating_sub(1)));
-    frame.push_str(&look::legend().fit(width).ansi(palette));
+    let above_keys = match notice {
+        Some(said) => look::Text::of(look::Tone::Accent, "▸ ").add(look::Tone::Plain, said),
+        None => look::legend(),
+    };
+    frame.push_str(&above_keys.fit(width).ansi(palette));
     frame.push_str(&format!("\x1b[K\x1b[{rows};1H"));
     frame.push_str(&keys.clone().fit(width).ansi(palette));
     frame.push_str("\x1b[K\x1b[?2026l");
@@ -1307,6 +1431,88 @@ fn draw(
     out.write_all(frame.as_bytes())?;
     out.flush()?;
     Ok(())
+}
+
+/// The programs that type `line` and Enter into the terminal `beside`
+/// names, or `None` when it names none this knows.
+fn typing(beside: &str, line: &str) -> Option<Vec<(String, Vec<String>)>> {
+    let words = |words: &[&str]| {
+        words
+            .iter()
+            .map(|word| word.to_string())
+            .collect::<Vec<_>>()
+    };
+    if let Some(pane) = beside.strip_prefix("tmux:") {
+        return Some(vec![
+            (
+                "tmux".to_string(),
+                words(&["send-keys", "-t", pane, "-l", line]),
+            ),
+            (
+                "tmux".to_string(),
+                words(&["send-keys", "-t", pane, "Enter"]),
+            ),
+        ]);
+    }
+    if let Some(tty) = beside.strip_prefix("ghostty:") {
+        let script = format!(
+            "tell application \"Ghostty\"\n\
+             set shell to first terminal whose tty is {}\n\
+             input text {} to shell\n\
+             send key \"enter\" to shell\n\
+             end tell",
+            applescript_string(tty),
+            applescript_string(line),
+        );
+        return Some(vec![("osascript".to_string(), words(&["-e", &script]))]);
+    }
+    None
+}
+
+/// Take the shell beside the pane to the working copy that has `branch`
+/// checked out, by typing `cd` there; and say in a line what was done. It
+/// types only into a shell that is waiting at its prompt.
+fn jump(
+    copies: &[follow::WorkingCopy],
+    branch: &str,
+    shell: Option<u32>,
+    beside: Option<&str>,
+) -> String {
+    let Some(copy) = copies
+        .iter()
+        .find(|copy| copy.branch.as_deref() == Some(branch))
+    else {
+        return format!("no working copy has {branch}");
+    };
+    let line = format!("cd {}", shell_quote(&copy.dir.display().to_string()));
+    let (Some(shell), Some(beside)) = (shell, beside) else {
+        return format!("not opened by --open: {line}");
+    };
+    match follow::at_prompt(shell) {
+        Some(true) => {}
+        Some(false) => return "your shell is busy: nothing typed".to_string(),
+        None => return "cannot tell if your shell is free".to_string(),
+    }
+    let Some(programs) = typing(beside, &line) else {
+        return format!("cannot type there: {line}");
+    };
+    for (program, arguments) in programs {
+        let ran = std::process::Command::new(&program)
+            .args(&arguments)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if !ran.is_ok_and(|status| status.success()) {
+            return format!("{program} could not type: {line}");
+        }
+    }
+    let name = copy
+        .dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    format!("typed: cd …/{name}")
 }
 
 /// How `side --open` would open the pane here, as a program and its
@@ -1334,6 +1540,19 @@ pub fn opener(
     if let Some(shell) = shell {
         side.push("--follow".to_string());
         side.push(shell.to_string());
+    }
+    let in_tmux = env("TMUX").is_some_and(|value| !value.is_empty());
+    let in_ghostty = cfg!(target_os = "macos") && env("TERM_PROGRAM").as_deref() == Some("ghostty");
+    let beside = if in_tmux {
+        env("TMUX_PANE").map(|pane| format!("tmux:{pane}"))
+    } else if in_ghostty {
+        tty.map(|tty| format!("ghostty:{tty}"))
+    } else {
+        None
+    };
+    if let Some(beside) = beside {
+        side.push("--beside".to_string());
+        side.push(beside);
     }
     let shell_line = side
         .iter()
@@ -1523,6 +1742,7 @@ mod tests {
             follows: false,
             repositories: vec!["one".to_string(), "two".to_string()],
             picked: 0,
+            scroll: Default::default(),
         };
         assert_eq!(pane.press(Key::Down), Asks::Draw);
         assert_eq!(pane.press(Key::Char(b'j')), Asks::Draw);
@@ -1667,6 +1887,73 @@ mod tests {
         assert_eq!(committed.len(), 2);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_click_and_a_turn_of_the_wheel_are_read_and_the_rest_is_not() {
+        use screen::Key;
+        assert_eq!(
+            screen::mouse("0;12;7M"),
+            Some(Key::Click { column: 12, row: 7 })
+        );
+        assert_eq!(screen::mouse("64;3;3M"), Some(Key::Wheel(-1)));
+        assert_eq!(screen::mouse("65;3;3M"), Some(Key::Wheel(1)));
+        assert_eq!(screen::mouse("0;12;7m"), None, "a release");
+        assert_eq!(screen::mouse("2;12;7M"), None, "another button");
+        assert_eq!(screen::mouse("0;12M"), None);
+        assert_eq!(screen::mouse(""), None);
+        // The wheel scrolls the graph by three rows and stops at its top.
+        let mut pane = Pane {
+            showing: Showing::Projects,
+            only: None,
+            projects: Vec::new(),
+            follows: false,
+            repositories: vec!["one".to_string(), "two".to_string()],
+            picked: 0,
+            scroll: Default::default(),
+        };
+        assert_eq!(pane.press(Key::Wheel(1)), Asks::Draw);
+        assert_eq!(pane.scroll.get(), 3);
+        pane.press(Key::Wheel(-1));
+        pane.press(Key::Wheel(-1));
+        assert_eq!(pane.scroll.get(), 0);
+        // Picking another repository starts its graph from the top.
+        pane.press(Key::Wheel(1));
+        pane.press(Key::Down);
+        assert_eq!(pane.scroll.get(), 0);
+    }
+
+    #[test]
+    fn a_jump_types_cd_only_where_it_can_and_says_what_it_did() {
+        let copies = [follow::WorkingCopy {
+            dir: "/work/_worktrees/it's here".into(),
+            branch: Some("feat/one".to_string()),
+            handover: None,
+        }];
+        assert_eq!(
+            jump(&copies, "feat/none", Some(1), Some("tmux:%1")),
+            "no working copy has feat/none"
+        );
+        // A pane opened by hand does not know which shell to type into.
+        assert_eq!(
+            jump(&copies, "feat/one", None, None),
+            "not opened by --open: cd '/work/_worktrees/it'\\''s here'"
+        );
+        // A shell that is not there is not known to be free: nothing is typed.
+        assert_eq!(
+            jump(&copies, "feat/one", Some(u32::MAX - 7), Some("tmux:%1")),
+            "cannot tell if your shell is free"
+        );
+        let tmux = typing("tmux:%3", "cd '/a b'").unwrap();
+        assert_eq!(tmux[0].1, ["send-keys", "-t", "%3", "-l", "cd '/a b'"]);
+        assert_eq!(tmux[1].1, ["send-keys", "-t", "%3", "Enter"]);
+        let ghostty = typing("ghostty:/dev/ttys004", "cd '/a \"b\"'").unwrap();
+        assert_eq!(ghostty[0].0, "osascript");
+        assert!(ghostty[0].1[1].contains("first terminal whose tty is \"/dev/ttys004\""));
+        assert!(ghostty[0].1[1].contains("input text \"cd '/a \\\"b\\\"'\" to shell"));
+        assert!(ghostty[0].1[1].contains("send key \"enter\" to shell"));
+        assert_eq!(typing("elsewhere", "cd /"), None);
+    }
+
     #[test]
     fn sykli_says_how_far_ahead_each_branch_is_and_silence_is_not_nought() {
         let status = r#"{"schema":"sykli-branch-status.v1","branches":[
@@ -1691,6 +1978,7 @@ mod tests {
             follows: false,
             repositories: vec!["one".to_string()],
             picked: 0,
+            scroll: Default::default(),
         };
         assert_eq!(pane.press(Key::Char(b'3')), Asks::Draw);
         assert_eq!(pane.showing, Showing::Relations);

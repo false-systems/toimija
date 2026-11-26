@@ -138,9 +138,20 @@ pub struct Span {
     pub text: String,
 }
 
-/// One line of the pane: pieces of text, each in a tone.
+/// What a click on a line means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tag {
+    /// The line of a repository: a click picks it.
+    Repository(String),
+    /// The line of a branch tip: a click takes the shell to the working
+    /// copy that has the branch checked out.
+    Branch(String),
+}
+
+/// One line of the pane: pieces of text, each in a tone, and what a click
+/// on it means, if anything.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Text(Vec<Span>);
+pub struct Text(Vec<Span>, Option<Tag>);
 
 impl Text {
     pub fn new() -> Self {
@@ -168,6 +179,16 @@ impl Text {
         self
     }
 
+    /// This line with what a click on it means.
+    pub fn tagged(mut self, tag: Tag) -> Self {
+        self.1 = Some(tag);
+        self
+    }
+
+    pub fn tag(&self) -> Option<&Tag> {
+        self.1.as_ref()
+    }
+
     /// The whole line on a panel, as it stands now.
     pub fn lit(mut self) -> Self {
         for span in &mut self.0 {
@@ -189,7 +210,7 @@ impl Text {
     /// Exactly `width` columns: cut where it is longer, padded where shorter.
     pub fn fit(self, width: usize) -> Self {
         let mut left = width;
-        let mut fitted = Text::new();
+        let mut fitted = Text(Vec::new(), self.1);
         for span in self.0 {
             if left == 0 {
                 break;
@@ -261,11 +282,14 @@ pub fn card(title: &str, note: Text, rows: Vec<Text>, width: usize) -> Vec<Text>
     }
     let mut lines = vec![top.add(Tone::Dim, "─╮").fit(width)];
     for row in rows {
-        lines.push(
-            Text::of(Tone::Dim, "│ ")
-                .then(row.fit(inner))
-                .add(Tone::Dim, " │"),
-        );
+        let tag = row.tag().cloned();
+        let line = Text::of(Tone::Dim, "│ ")
+            .then(row.fit(inner))
+            .add(Tone::Dim, " │");
+        lines.push(match tag {
+            Some(tag) => line.tagged(tag),
+            None => line,
+        });
     }
     lines.push(Text::of(
         Tone::Dim,
@@ -419,6 +443,22 @@ pub fn tabs(on: usize) -> Text {
     text
 }
 
+/// The view whose name is at `column` (from 0) of the row of views.
+pub fn tab_at(on: usize, column: usize) -> Option<usize> {
+    let mut start = 0;
+    for (at, name) in ["projects", "graph", "links", "agents"].iter().enumerate() {
+        if at > 0 {
+            start += 1;
+        }
+        let wide = name.chars().count() + 2 + if at == on { 2 } else { 0 };
+        if (start..start + wide).contains(&column) {
+            return Some(at);
+        }
+        start += wide;
+    }
+    None
+}
+
 /// The keys of a view: each key lit, what it does dim.
 pub fn keys(pairs: &[(&str, &str)]) -> Text {
     let mut text = Text::new();
@@ -491,7 +531,7 @@ fn repository(row: &Row, picked: bool, name_width: usize, width: usize) -> Text 
         Tone::Cool
     };
     left = left.add(tone, cut(branch, room));
-    let line = ends(left, right, width);
+    let line = ends(left, right, width).tagged(Tag::Repository(row.name.clone()));
     if picked { line.lit() } else { line }
 }
 
@@ -862,6 +902,9 @@ pub struct Around<'a> {
     pub copies: &'a [WorkingCopy],
     /// The agent sessions of the last day, by the branch they work on.
     pub agents: &'a [OnBranch],
+    /// How many rows of the graph are scrolled past. Set back to what
+    /// the graph has when it is more than that.
+    pub skip: &'a std::cell::Cell<usize>,
     pub pulse: u8,
     /// Unix seconds, for how long ago a handover was written.
     pub now: u64,
@@ -989,7 +1032,16 @@ pub fn graph(
                     },
                     tip.branches.join(", "),
                 );
+                // A click goes to the branch a working copy has checked out.
+                let reached = copies
+                    .first()
+                    .and_then(|copy| copy.branch.clone())
+                    .or_else(|| tip.branches.first().cloned());
                 let line = ends(left, right, inner);
+                let line = match reached {
+                    Some(branch) => line.tagged(Tag::Branch(branch)),
+                    None => line,
+                };
 
                 let short: String = tip.commit.chars().take(7).collect();
                 let below = || lanes(marks, base, true).add(Tone::Plain, " ");
@@ -1097,12 +1149,25 @@ pub fn graph(
         rows.push(Text::of(Tone::Dim, "nothing in progress"));
     }
     let tips = edges_and_tips.iter().filter(|item| item.is_ok()).count();
+    // Scrolled rows leave the top, as far as there is more than fits.
+    let skip = around.skip.get().min(rows.len().saturating_sub(most));
+    around.skip.set(skip);
+    if skip > 0 {
+        rows.drain(..skip);
+        rows[0] = Text::of(
+            Tone::Dim,
+            match skip {
+                1 => "… 1 line above".to_string(),
+                skip => format!("… {skip} lines above"),
+            },
+        );
+    }
     if rows.len() > most {
         let hidden = rows.len() - most.saturating_sub(1);
         rows.truncate(most.saturating_sub(1));
         rows.push(Text::of(
             Tone::Dim,
-            format!("… {hidden} more lines · 2 for all"),
+            format!("… {hidden} more lines · scroll, or 2"),
         ));
     }
     card(
@@ -1426,6 +1491,13 @@ mod tests {
     }
 
     #[test]
+    fn a_click_on_a_repository_that_is_here_picks_it() {
+        let cards = repositories(&view(vec![row("alpha", "main", None)]), None, 38);
+        assert_eq!(cards[0].tag(), None);
+        assert_eq!(cards[1].tag(), Some(&Tag::Repository("alpha".to_string())));
+    }
+
+    #[test]
     fn a_view_that_could_not_all_be_read_says_so_in_its_card() {
         let mut partial = view(vec![row("alpha", "main", Some("proven"))]);
         partial
@@ -1580,6 +1652,7 @@ mod tests {
             committed,
             copies,
             agents,
+            skip: Box::leak(Box::new(std::cell::Cell::new(0))),
             pulse: 7,
             now: 7_300,
         }
@@ -1675,6 +1748,13 @@ mod tests {
                 "╰────────────────────────────────────╯",
             ]
         );
+        // A click on a tip goes to its branch; the lines under it are not
+        // places to click.
+        let tags: Vec<Option<&Tag>> = cards.iter().map(Text::tag).collect();
+        assert_eq!(tags[1], Some(&Tag::Branch("feat/one".to_string())));
+        assert_eq!(tags[3], Some(&Tag::Branch("feat/two".to_string())));
+        assert_eq!(tags[2], None);
+        assert_eq!(tags[5], None);
         // The branch the shell has checked out is lit, and only that one.
         let lit: Vec<usize> = cards
             .iter()
@@ -1715,7 +1795,14 @@ mod tests {
             38,
         ));
         assert_eq!(short.len(), 4, "two rows and the two edges of the card");
-        assert_eq!(short[2], "│ … 3 more lines · 2 for all         │");
+        assert_eq!(short[2], "│ … 3 more lines · scroll, or 2      │");
+        // Scrolling leaves rows at the top, never past the last that fits.
+        let scrolled = around(&ahead, &ahead, &copies, &agents, None);
+        scrolled.skip.set(99);
+        let lines = plain(&graph("alpha", Branches::Read(&graph_of), &scrolled, 2, 38));
+        assert_eq!(scrolled.skip.get(), 2, "four rows, two fit");
+        assert_eq!(lines[1], "│ … 2 lines above                    │");
+        assert_eq!(lines[2], "│ ◉ origin/main                    ✗ │");
         let mut busy = around(&ahead, &ahead, &copies, &agents, None);
         busy.turning = Some('⠋');
         let reading = plain(&graph("alpha", Branches::Reading, &busy, 9, 38));
@@ -1870,6 +1957,14 @@ mod tests {
             );
         }
         assert!(legend().width() <= 38);
+        // A click on the row of views lands on the view under it.
+        assert_eq!(tab_at(0, 0), Some(0));
+        assert_eq!(tab_at(0, 11), Some(0));
+        assert_eq!(tab_at(0, 12), None, "the gap between two views");
+        assert_eq!(tab_at(0, 13), Some(1));
+        assert_eq!(tab_at(3, 0), Some(0));
+        assert_eq!(tab_at(3, 36), Some(3));
+        assert_eq!(tab_at(3, 60), None);
         assert_eq!(
             header("SDLC", "12:54 UTC", None, None, 38).plain(),
             "▍TOIMIJA  SDLC               12:54 UTC"

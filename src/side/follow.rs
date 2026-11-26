@@ -52,6 +52,57 @@ pub fn cwd_of(_pid: u32) -> Option<PathBuf> {
     None
 }
 
+/// Whether the process `pid` is what its terminal is waiting on: a shell
+/// at its prompt, with nothing running in front of it. `None` when the
+/// kernel does not say.
+#[cfg(target_os = "macos")]
+pub fn at_prompt(pid: u32) -> Option<bool> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    // SAFETY: plain data the kernel fills, of the size passed.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` lives for the call and is `size` bytes long.
+    let filled = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::addr_of_mut!(info).cast(),
+            libc::c_int::try_from(size).ok()?,
+        )
+    };
+    if usize::try_from(filled).ok()? < size {
+        return None;
+    }
+    Some(info.pbi_pgid == info.e_tpgid)
+}
+
+/// Whether the process `pid` is what its terminal is waiting on: a shell
+/// at its prompt, with nothing running in front of it. `None` when the
+/// kernel does not say.
+#[cfg(target_os = "linux")]
+pub fn at_prompt(pid: u32) -> Option<bool> {
+    foreground_from(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn at_prompt(_pid: u32) -> Option<bool> {
+    None
+}
+
+/// From a line of `/proc/<pid>/stat`: whether the process's group is the
+/// one in the foreground of its terminal. The name, in brackets, may hold
+/// spaces, so the fields are counted from its closing bracket.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn foreground_from(stat: &str) -> Option<bool> {
+    let after = stat.rsplit_once(')')?.1;
+    let mut fields = after.split_whitespace();
+    // state, parent, group, session, terminal, foreground group.
+    let group: i64 = fields.nth(2)?.parse().ok()?;
+    let foreground: i64 = fields.nth(2)?.parse().ok()?;
+    Some(group == foreground)
+}
+
 /// The repository of the workspace a directory is in, and the branch
 /// checked out there.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +255,18 @@ mod tests {
         );
         // A process that is not there has no directory: unknown, not a guess.
         assert_eq!(cwd_of(u32::MAX - 7), None);
+    }
+
+    #[test]
+    fn a_shell_is_at_its_prompt_when_its_group_has_the_terminal() {
+        let waiting = "4242 (zsh) S 4000 4242 4242 34816 4242 4194304 1 0";
+        assert_eq!(foreground_from(waiting), Some(true));
+        let busy = "4242 (my shell) S 4000 4242 4242 34816 5151 4194304 1 0";
+        assert_eq!(foreground_from(busy), Some(false));
+        assert_eq!(foreground_from("not a stat line"), None);
+        // A process that is not there is not known to be at a prompt.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert_eq!(at_prompt(u32::MAX - 7), None);
     }
 
     fn write(path: &Path, text: &str) {

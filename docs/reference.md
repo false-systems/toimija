@@ -924,10 +924,35 @@ workspace folder or any of its repositories:
   second only while something on it moves, and otherwise waits.
 - Colour is exact where `COLORTERM` says the terminal has true colour, and
   the terminal's own sixteen colours elsewhere.
-- Keys: `j` and `k` or the arrows pick a repository, `p` steps through the
-  projects, `r` reads everything again, `q` quits.
-- It is an ordinary foreground command that redraws in place. It captures no
-  mouse, writes nothing and ends with its pane.
+- The mouse does what the keys do, as the keyboard stays in your terminal:
+  a click on a view's name goes to it, a click on a repository picks it,
+  and the wheel scrolls the graph. A click on a branch marked `⌂` takes
+  your shell to the working copy that has it checked out, by typing `cd`
+  and Enter there. It types only into a shell waiting at its prompt: while
+  a program runs in it nothing is typed, and the row above the keys says
+  so. That row says what a click did for a few seconds. To select text in
+  the pane, hold Shift.
+- Keys, once the pane is clicked: `1` to `4` the views, `j` and `k` or the
+  arrows pick a repository, `p` steps through the projects, `r` reads
+  everything again, `q` quits.
+- Without `--project` the pane shows the project of the repository your
+  shell is in (the smallest that declares it), and every project where
+  your shell is in none. `p` holds another until you change directory.
+- `NEEDS YOU`, at the top of the first view, says in sentences what waits
+  for a person, the most pressing first: a gate that failed, a review that
+  blocks, knowledge with errors, proposals waiting, rules ohjaa flagged.
+  With nothing it says so.
+- `HERE` names the repository and branch your shell is in and the files
+  changed and not committed there, from `git status --porcelain`, asked
+  when you change directory and every twenty seconds.
+- Each tip of the graph says how long since its branch got a commit, and a
+  branch left for two weeks is drawn faint.
+- One key for the pane, in Ghostty: add
+  `keybind = super+shift+b=text:toimija side --open\r` to its config. The
+  key types the command into the terminal it is pressed in, so press it at
+  a prompt: once to open the pane beside that terminal, again to close it.
+- It is an ordinary foreground command that redraws in place. It writes
+  nothing and ends with its pane.
 - While nothing moves it starts no git or sykli process. Every second and a half it reads
   a few file times for each repository; git and sykli are asked again only
   for a repository whose commits, index, branch or receipts moved, and on a

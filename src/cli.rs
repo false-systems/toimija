@@ -147,11 +147,14 @@ pub enum Command {
     /// `--open` asks Ghostty (on macOS) or tmux for a pane on the right and
     /// runs there, and again closes it. Under the repositories it shows the
     /// latest agent sessions (from vessa), the state of the knowledge (from
-    /// ohjaa) and the branch graph of the repository picked. Keys: `1` to
-    /// `4` change view, `j`/`k` pick a repository, `p` next project, `r`
-    /// read again, `q` quit.
-    /// Read-only; it asks git and sykli only when something moved, captures
-    /// no mouse and lives only as long as its pane.
+    /// ohjaa) and the branch graph of the repository picked. It follows the
+    /// shell it was opened from: `cd` into a repository and the pane shows
+    /// it. Click a view, a repository, or a branch marked `⌂` to take your
+    /// shell to its working copy; the wheel scrolls the graph. Keys, once
+    /// the pane is clicked: `1` to `4` change view, `j`/`k` pick a
+    /// repository, `p` next project, `r` read again, `q` quit.
+    /// It asks git and sykli only when something moved, writes nothing and
+    /// lives only as long as its pane.
     #[command(
         after_help = "Examples:\n  toimija side --open               # a pane on the right, kept up to date\n  \
         toimija side --project SDLC       # one project\n  \
@@ -401,6 +404,9 @@ pub struct SideArgs {
     /// The shell to follow. `--open` passes its own to the pane it opens.
     #[arg(long, hide = true)]
     pub follow: Option<u32>,
+    /// Where that shell's terminal is. `--open` passes it too.
+    #[arg(long, hide = true)]
+    pub beside: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1459,6 +1465,7 @@ fn run_side(args: SideArgs) -> Result<i32> {
             width: args.width,
             fit: args.fit,
             follow: args.follow,
+            beside: args.beside,
         },
     )
 }
