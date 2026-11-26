@@ -4,14 +4,14 @@ This repo is Toimija, a Rust CLI with one job: it tells an agent where the work 
 
 Run `toimija enter` first. Under `toimija run` your launch prompt carries your packet; run `toimija enter` again for the state now, after HEAD, branch, index or unfamiliar worktree changes (not after your own edits). Its Git state is the working truth, and its Read first list names what to read. Say why you are here with `toimija intent "<why>"`.
 
-Keep changes small and reviewable. Toimija has six commands: `run`, `enter`, `sessions`, `graph`, `intent` and `handover`. Other tools read its facts through its CLI (`sessions --json`, the packet, the launch prompt), never through imports, plugins or dynamic libraries.
+Keep changes small and reviewable. Toimija has seven commands: `run`, `enter`, `sessions`, `graph`, `side`, `intent` and `handover`. Other tools read its facts through its CLI (`sessions --json`, the packet, the launch prompt), never through imports, plugins or dynamic libraries.
 
 ## Boundaries
 
 - Keep Toimija one Rust crate with one job: where the work stands — Git state, changed files, who else is working here and why, the branches in progress, and the last handover. A command outside that job does not belong here.
 - Work the packet out when it is asked for; never write it to disk. Nothing Toimija says may need refreshing or verifying.
 - Start no git process while an agent runs under `run`, and keep git processes per command minimal; `tests/cli_budgets.rs` pins them.
-- No network calls, no background daemons. `run` lives only as long as its agent, and a session's marker only as long as its `run`.
+- No network calls, no background daemons. `run` lives only as long as its agent, and a session's marker only as long as its `run`. `side` is a foreground view that lives only as long as its pane, and starts no process while nothing in its repositories moves.
 - Sessions outside any Git repository live in the machine-local state directory, never a `.toimija/` folder where the agent works. A workspace (`.toimija/workspace.yaml`) reports repositories, the projects they are declared to be in, session scopes and declared or inferred relationships from bounded file reads, and the packet of a repository repeats what the workspace declares about it: no git process per repository, build execution or persistent index. Dependency evidence is partial, with sources and read gaps, never an ownership decision.
 - No MCP, LSP, SCIP, Tree-sitter or Kythe integration. Toimija runs no checks and writes no receipts (that is sykli's; `graph` only asks sykli what its receipts say of a commit and reads its review notes), and does no dispatch, assignment or closure of work.
 

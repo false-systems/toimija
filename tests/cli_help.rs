@@ -7,7 +7,9 @@ use predicates::prelude::*;
 
 /// The commands toimija has, and no others: its one job is to tell an agent
 /// where the work stands.
-const COMMANDS: [&str; 6] = ["run", "enter", "sessions", "graph", "intent", "handover"];
+const COMMANDS: [&str; 7] = [
+    "run", "enter", "sessions", "graph", "side", "intent", "handover",
+];
 
 #[test]
 fn top_level_help_describes_every_subcommand_and_no_other() {

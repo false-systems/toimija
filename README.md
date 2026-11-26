@@ -105,7 +105,7 @@ build; native Windows is not supported.
 
 ## Use
 
-Toimija needs no setup: it works in any Git repository. Six commands, in the
+Toimija needs no setup: it works in any Git repository. Seven commands, in the
 order you meet them:
 
 ```bash
@@ -113,6 +113,7 @@ toimija run claude         # start an agent as a session, with the packet in its
 toimija enter              # the packet now, for an agent started some other way
 toimija sessions           # who is working in this repository, and why; which worktrees are finished
 toimija graph              # the branches in progress: proven or not, review level, who is there
+toimija side --open        # the same across a workspace's projects, kept on screen in a pane
 toimija intent "fix the login redirect"          # a session says why it is here
 toimija handover --next "tests still to write"   # a note for the next agent
 ```
@@ -159,7 +160,7 @@ one job and works alone.
 - It keeps no copy of the packet. Ask again, with `toimija enter`, to see the
   state as it is now.
 - It makes no network calls and leaves no process running after a command
-  ends. While an agent runs under `toimija run`, it starts no git process.
+  ends. `toimija side` is a command that ends when you close its pane. While an agent runs under `toimija run`, it starts no git process.
 - It does not parse source code or keep an index. What to read first comes
   from file paths.
 

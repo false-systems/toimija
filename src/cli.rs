@@ -138,6 +138,22 @@ pub enum Command {
         toimija graph --base origin/develop --json"
     )]
     Graph(GraphArgs),
+    /// Keep the project view on screen in a narrow pane beside your terminal.
+    ///
+    /// Use this in a workspace folder, or in any of its repositories: it
+    /// shows each repository of the workspace's projects with its branch,
+    /// uncommitted changes, distance from its base, what sykli's receipts
+    /// say and who is working there, and redraws when something moves.
+    /// `--open` asks Ghostty (on macOS) or tmux for a pane on the right and
+    /// runs there. Keys: `r` read again, `p` next project, `q` quit.
+    /// Read-only; it starts no process while nothing changes, captures no
+    /// mouse and lives only as long as its pane.
+    #[command(
+        after_help = "Examples:\n  toimija side --open               # a pane on the right, kept up to date\n  \
+        toimija side --project SDLC       # one project\n  \
+        toimija side --once               # print it once and exit"
+    )]
+    Side(SideArgs),
     /// Declare or update this session's intent — tell other sessions why you are here.
     ///
     /// Use this from inside a `toimija run` session (the agent itself,
@@ -362,10 +378,29 @@ pub struct HandoverArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct SideArgs {
+    /// Show one project of the workspace, by name.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Open a pane on the right (Ghostty on macOS, or tmux) and run there.
+    #[arg(long, conflicts_with = "once")]
+    pub open: bool,
+    /// Print the view once and exit, as when output is not a terminal.
+    #[arg(long)]
+    pub once: bool,
+    /// Columns to draw in; the pane's width by default.
+    #[arg(long)]
+    pub width: Option<usize>,
+}
+
+#[derive(Debug, Args)]
 pub struct GraphArgs {
     /// Ref the branches are heading for; its own history is left out.
     #[arg(long, default_value = "origin/main")]
     pub base: String,
+    /// In a workspace folder: show one project, by name.
+    #[arg(long)]
+    pub project: Option<String>,
     /// Emit the graph as JSON instead of text.
     #[arg(long)]
     pub json: bool,
@@ -420,6 +455,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Enter(args) => run_enter(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
         Command::Graph(args) => run_graph(args),
+        Command::Side(args) => run_side(args),
         Command::Intent(args) => run_intent(args).map(|()| 0),
         Command::Handover(args) => run_handover(args).map(|()| 0),
     };
@@ -449,6 +485,7 @@ impl Command {
             Command::Enter(_) => "enter",
             Command::Sessions(_) => "sessions",
             Command::Graph(_) => "graph",
+            Command::Side(_) => "side",
             Command::Intent(_) => "intent",
             Command::Handover(_) => "handover",
         }
@@ -1330,12 +1367,100 @@ fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
+/// The workspace a command run at `cwd` belongs to: the one above the folder
+/// when outside a repository, or the one directly above the repository's
+/// main working copy.
+fn workspace_of(
+    runner: &ProcessCommandRunner,
+    cwd: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    match git::discover(runner, cwd) {
+        Ok(found) => {
+            let common = found.common_dir?.canonicalize().ok()?;
+            let main = (common.file_name()? == ".git").then(|| common.parent())??;
+            let above = main.parent()?;
+            above
+                .join(workspace::WORKSPACE_PATH)
+                .is_file()
+                .then(|| above.to_path_buf())
+        }
+        Err(_) => workspace::find(cwd),
+    }
+}
+
+fn run_side(args: SideArgs) -> Result<i32> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let Some(root) = workspace_of(&runner, &cwd) else {
+        anyhow::bail!(
+            "no workspace here: `toimija side` shows the projects of a workspace. Write {} in \
+             the folder that holds your repositories",
+            workspace::WORKSPACE_PATH
+        );
+    };
+    if args.open {
+        let exe = std::env::current_exe().context("failed to find the toimija that is running")?;
+        let env = |name: &str| std::env::var(name).ok();
+        return match crate::side::opener(&exe, &root, args.project.as_deref(), &env) {
+            Ok((program, arguments)) => {
+                let status = std::process::Command::new(&program)
+                    .args(&arguments)
+                    .status()
+                    .with_context(|| format!("{program} could not be run"))?;
+                if !status.success() {
+                    anyhow::bail!(
+                        "{program} did not open the pane ({status}). Open a split yourself and \
+                         run `toimija side` in it"
+                    );
+                }
+                Ok(0)
+            }
+            Err(how) => {
+                println!("{how}");
+                Ok(1)
+            }
+        };
+    }
+    crate::side::run(
+        &runner,
+        &root,
+        crate::side::Options {
+            project: args.project,
+            once: args.once,
+            width: args.width,
+        },
+    )
+}
+
 /// Exit code 4 when part of the picture could not be read: the graph is
 /// printed, with what is missing named, but it is not the whole of it.
 fn run_graph(args: GraphArgs) -> Result<i32> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let runner = ProcessCommandRunner;
-    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let Ok(repo_root) = git::discover_repo_root(&runner, &cwd) else {
+        // Outside a repository, in a workspace: where the work stands across
+        // its projects.
+        let Some(root) = workspace::find(&cwd) else {
+            anyhow::bail!(
+                "not a Git repository, and no workspace above it: move into a repository, \
+                 or write {} to make this folder a workspace",
+                workspace::WORKSPACE_PATH
+            );
+        };
+        let view = crate::project::build(&runner, &root, args.project.as_deref())?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&view)?);
+        } else {
+            print!("{}", crate::project::render_text(&view, 100));
+        }
+        return Ok(if view.warnings.is_empty() { 0 } else { 4 });
+    };
+    if args.project.is_some() {
+        anyhow::bail!(
+            "--project picks a project of a workspace: run `toimija graph --project` in the \
+             workspace folder, not inside a repository"
+        );
+    }
     let graph = crate::graph::build(&runner, &repo_root, &args.base, &crate::graph::sykli_proof)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&graph)?);

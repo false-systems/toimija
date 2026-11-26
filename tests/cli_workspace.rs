@@ -1185,3 +1185,171 @@ fn the_project_section_costs_a_repository_packet_no_git_process() {
         git_processes(&without, &plain).len()
     );
 }
+
+/// A `sykli` that answers `status --json` with one current branch, put first
+/// on PATH so the real one is never asked.
+fn fake_sykli(sandbox: &Sandbox, proof: &str, behind: u64) -> String {
+    let bin = sandbox.ceiling.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let script = bin.join("sykli");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s' '{{\"schema\":\"sykli-branch-status.v1\",\"branches\":[\
+             {{\"branch\":\"main\",\"current\":true,\"proof\":\"{proof}\",\"ahead\":0,\"behind\":{behind}}}]}}'\n"
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+const TOOLS: &str = "\
+projects:
+  - name: Tools
+    role: what the team works with
+    repositories: [teller, absent]
+  - name: Other
+    repositories: [checker]
+relationships:
+  - from: teller
+    to: checker
+    kind: reads what the checker proved
+";
+
+#[test]
+fn graph_in_a_workspace_shows_each_repository_of_a_project_as_it_stands() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file(TOOLS);
+    let teller = real_repository(&sandbox, "teller");
+    fs::write(teller.join("draft.txt"), "not committed\n").unwrap();
+    let path = fake_sykli(&sandbox, "proven", 3);
+
+    let output = sandbox
+        .toimija(&sandbox.root)
+        .env("PATH", &path)
+        .args(["graph", "--project", "tools"])
+        .output()
+        .unwrap();
+    let view = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = view.lines().collect();
+    assert_eq!(
+        lines[..3],
+        ["Tools", "  what the team works with", "○ teller"],
+        "{view}"
+    );
+    assert!(
+        lines[3].starts_with("    main ") && lines[3].ends_with("  1 changed  proven"),
+        "{view}"
+    );
+    assert_eq!(
+        lines[4..7],
+        [
+            "    3 behind its base",
+            "○ absent",
+            "    not in this folder"
+        ],
+        "{view}"
+    );
+    // The other project and the relationship that leaves this one are not shown.
+    assert!(!view.contains("\nOther\n"), "{view}");
+    assert!(!view.contains("\nrelations\n"), "{view}");
+    // A member that is not there is a gap: the view is not the whole picture.
+    assert_eq!(output.status.code(), Some(4), "{view}");
+
+    let json = sandbox
+        .toimija(&sandbox.root)
+        .env("PATH", &path)
+        .args(["graph", "--project", "Tools", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["schema"], "toimija-project.v1");
+    assert_eq!(json["projects"][0]["repositories"][0]["changed"], 1);
+    assert_eq!(json["projects"][0]["repositories"][0]["behind"], 3);
+    assert_eq!(json["projects"][0]["repositories"][1]["present"], false);
+}
+
+#[test]
+fn without_sykli_proof_is_unknown_never_a_pass() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file("projects:\n  - name: Tools\n    repositories: [teller]\n");
+    real_repository(&sandbox, "teller");
+    // A PATH with git and no sykli.
+    let git = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let git_dir = PathBuf::from(String::from_utf8(git.stdout).unwrap().trim().to_string());
+    let output = sandbox
+        .toimija(&sandbox.root)
+        .env("PATH", git_dir.parent().unwrap())
+        .args(["side", "--once", "--width", "40"])
+        .output()
+        .unwrap();
+    let view = String::from_utf8(output.stdout).unwrap();
+    assert!(view.contains("clean  proof unknown"), "{view}");
+    assert!(view.contains("teller: sykli is not installed"), "{view}");
+    assert_eq!(output.status.code(), Some(4), "{view}");
+}
+
+#[test]
+fn a_project_that_is_not_declared_is_refused_with_the_ones_that_are() {
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file(TOOLS);
+    sandbox
+        .toimija(&sandbox.root)
+        .args(["graph", "--project", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no project named \"nope\""))
+        .stderr(predicate::str::contains("it declares: Tools, Other"));
+}
+
+#[test]
+fn side_in_a_member_repository_shows_its_workspace_and_stays_narrow() {
+    if !git_available() {
+        return;
+    }
+    let sandbox = Sandbox::new();
+    sandbox.workspace_file(TOOLS);
+    let teller = real_repository(&sandbox, "teller");
+    let path = fake_sykli(&sandbox, "proven", 0);
+    let output = sandbox
+        .toimija(&teller)
+        .env("PATH", &path)
+        .args(["side", "--once", "--project", "Tools", "--width", "30"])
+        .output()
+        .unwrap();
+    let view = String::from_utf8(output.stdout).unwrap();
+    assert!(view.contains("○ teller\n"), "{view}");
+    assert!(
+        view.lines().all(|line| line.chars().count() <= 30),
+        "{view}"
+    );
+}
+
+#[test]
+fn side_with_no_workspace_says_how_to_make_one() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .toimija(&sandbox.root)
+        .args(["side", "--once"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no workspace here"));
+}
