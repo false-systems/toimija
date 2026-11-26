@@ -64,10 +64,20 @@ const GIT_LOCATION_ENV: [&str; 7] = [
 
 /// Remove the repo-locating git env vars from `command` so repository discovery
 /// falls back to the working directory we set. See [`GIT_LOCATION_ENV`].
-fn scrub_git_location_env(command: &mut Command) {
+pub(crate) fn scrub_git_location_env(command: &mut Command) {
     for key in GIT_LOCATION_ENV {
         command.env_remove(key);
     }
+}
+
+/// A `git` pinned to `cwd`, for a caller that needs a [`Command`] of its own
+/// rather than the runner. The repo-locating variables it would inherit are
+/// removed, as the runner removes them.
+pub(crate) fn git_command(cwd: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(cwd);
+    scrub_git_location_env(&mut command);
+    command
 }
 
 #[derive(Debug, Clone, Copy)]

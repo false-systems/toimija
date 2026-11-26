@@ -7,7 +7,7 @@ use predicates::prelude::*;
 
 /// The commands toimija has, and no others: its one job is to tell an agent
 /// where the work stands.
-const COMMANDS: [&str; 5] = ["run", "enter", "sessions", "intent", "handover"];
+const COMMANDS: [&str; 6] = ["run", "enter", "sessions", "graph", "intent", "handover"];
 
 #[test]
 fn top_level_help_describes_every_subcommand_and_no_other() {
@@ -19,6 +19,9 @@ fn top_level_help_describes_every_subcommand_and_no_other() {
         .stdout(predicate::str::contains("Start an agent as a session"))
         .stdout(predicate::str::contains("Work out the packet and print it"))
         .stdout(predicate::str::contains("List the sessions working here"))
+        .stdout(predicate::str::contains(
+            "Show what is cooking in this clone",
+        ))
         .stdout(predicate::str::contains(
             "Declare or update this session's intent",
         ))
