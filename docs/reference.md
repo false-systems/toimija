@@ -898,6 +898,12 @@ workspace folder or any of its repositories:
   commit and subject while everything fits, the agent sessions vessa read
   in a working copy on that branch, and its handover. Where sykli gives no
   count none is shown.
+- A gate that is running turns its mark, on the repository's line and on
+  the tip, and the tip says under it which task is on (`gate running:
+  test`), in every view. View `2` adds under each tip what sykli's records
+  say of its gate: `proven 5m ago · took 25s` (or `from cache` where no
+  task had to run), `clippy failed 2h ago` with the tasks that failed, and
+  the reason behind a `?`. A part sykli does not give is left out.
 - A repository's line: `▸` when it is the one picked, sykli's mark for the
   branch checked out, the name, `●` when a session is open there, the
   branch, `±3` for three uncommitted paths, `↑2 ↓40` for commits ahead of
@@ -942,8 +948,9 @@ workspace folder or any of its repositories:
   shell is in (the smallest that declares it), and every project where
   your shell is in none. `p` holds another until you change directory.
 - What needs a person is said in sentences, the most pressing first, one
-  line of it in the first view and all of it in view `4`: a gate that failed, a review that
-  blocks, knowledge with errors, proposals waiting, rules ohjaa flagged.
+  line of it in the first view and all of it in view `4`: a gate that failed, with the
+  task that failed where sykli names it (`toimija: clippy failed on
+  feat/x`), a review that blocks, knowledge with errors, proposals waiting, rules ohjaa flagged.
   With nothing it says so.
 - `HERE` shows when your shell is in a working copy with files changed and
   not committed, and names them, from `git status --porcelain`, asked
@@ -958,9 +965,10 @@ workspace folder or any of its repositories:
   nothing and ends with its pane.
 - While nothing moves it starts no git or sykli process. Every second and a half it reads
   a few file times for each repository; git and sykli are asked again only
-  for a repository whose commits, index, branch or receipts moved, and on a
-  slow timer for uncommitted edits (20 seconds where a session is open, three
-  minutes elsewhere).
+  for a repository whose commits, index, branch, receipts or gate runs
+  moved, and on a slow timer for uncommitted edits (20 seconds where a
+  session is open or a gate runs, three minutes elsewhere). Which task of a
+  failed gate failed costs one more sykli process, asked only then.
 - `--once` prints the view and exits, as it does whenever the output is not a
   terminal. `--width` sets the columns.
 

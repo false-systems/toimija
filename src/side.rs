@@ -67,7 +67,19 @@ pub fn fingerprint(dir: &Path) -> Fingerprint {
         stamp(git_dir.join("FETCH_HEAD")),
         stamp(git_dir.join("sykli/receipts")),
         stamp(dir.join(".sykli/receipts")),
+        // A gate that starts adds its run here, in the clone's own git
+        // directory, whichever working copy it runs in.
+        stamp(common_dir(&git_dir).join("sykli/runs")),
     ])
+}
+
+/// The git directory a working copy's own one shares with the others of
+/// its clone: where its `commondir` file says, or itself.
+fn common_dir(git_dir: &Path) -> PathBuf {
+    match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) => git_dir.join(text.trim()),
+        Err(_) => git_dir.to_path_buf(),
+    }
 }
 
 /// The git directory of the working copy at `dir`: `.git`, or where a
@@ -155,7 +167,17 @@ impl Memory {
                 .repositories
                 .iter()
                 .any(|repository| repository.name == name && !repository.sessions.is_empty());
-            let recheck = if busy { BUSY_RECHECK } else { QUIET_RECHECK };
+            // A gate seen running is asked about again soon: one that was
+            // killed moves no file when it ends.
+            let gating = self
+                .kept
+                .get(&name)
+                .is_some_and(|known| known.asked.proof.as_deref() == Some("pending"));
+            let recheck = if busy || gating {
+                BUSY_RECHECK
+            } else {
+                QUIET_RECHECK
+            };
             let current = self.kept.get(&name).is_some_and(|known| {
                 known.fingerprint == fresh && now.duration_since(known.at) < recheck
             });
@@ -574,22 +596,43 @@ struct Seen {
     /// When each branch last got a commit, in Unix seconds.
     committed: std::collections::HashMap<String, u64>,
     copies: Vec<follow::WorkingCopy>,
+    /// What sykli's records say of each tip's gate, by commit.
+    gates: std::collections::HashMap<String, crate::graph::Gate>,
+    at: Instant,
 }
 
 impl Seen {
     fn read(dir: &Path) -> Self {
+        // The answer that gives a tip its proof also says what its gate is
+        // doing: kept from the same sykli process, not asked for again.
+        let gates = std::cell::RefCell::new(std::collections::HashMap::new());
+        let prover = |dir: &Path, commit: &str| {
+            let (proof, gate) = crate::graph::sykli_said(dir, commit);
+            gates.borrow_mut().insert(commit.to_string(), gate);
+            proof
+        };
+        let graph = crate::graph::build(
+            &crate::command::ProcessCommandRunner,
+            dir,
+            "origin/main",
+            &prover,
+        )
+        .map_err(|error| format!("{error:#}"));
         Self {
-            graph: crate::graph::build(
-                &crate::command::ProcessCommandRunner,
-                dir,
-                "origin/main",
-                &crate::graph::sykli_proof,
-            )
-            .map_err(|error| format!("{error:#}")),
+            graph,
+            gates: gates.into_inner(),
+            at: Instant::now(),
             ahead: ahead_by_branch(dir),
             committed: committed_by_branch(dir),
             copies: follow::working_copies(dir),
         }
+    }
+}
+
+impl Seen {
+    /// Whether a gate was running on one of its tips when it was read.
+    fn gating(&self) -> bool {
+        self.gates.values().any(|gate| gate.running.is_some())
     }
 }
 
@@ -748,6 +791,8 @@ struct Scene<'a> {
     /// The files not committed where the shell is; `None` while asked.
     changed: Option<&'a Result<Vec<String>, String>>,
     turning: Option<char>,
+    /// The mark of a gate that is running, a turn further each frame.
+    spin: char,
     pulse: u8,
     now: u64,
     width: usize,
@@ -786,7 +831,7 @@ impl Scene<'_> {
         };
         match self.view {
             None => told(look::Tone::Dim, "asking git and sykli…".to_string()),
-            Some(Ok(view)) => look::repositories(view, self.pane.picked(), self.width),
+            Some(Ok(view)) => look::repositories(view, self.pane.picked(), self.spin, self.width),
             Some(Err(why)) => told(look::Tone::Warn, format!("not read: {why}")),
         }
     }
@@ -796,10 +841,10 @@ impl Scene<'_> {
     }
 
     /// The graph of the repository picked, where it has been read.
-    fn seen_graph(&self) -> Option<(&str, &crate::graph::Graph)> {
+    fn seen_graph(&self) -> Option<look::Picked<'_>> {
         let name = self.pane.picked()?;
         let (_, seen) = self.graphs.get(name)?;
-        Some((name, seen.graph.as_ref().ok()?))
+        Some((name, seen.graph.as_ref().ok()?, &seen.gates))
     }
 
     /// The agent sessions of the last day that work in one of these
@@ -916,6 +961,7 @@ impl Scene<'_> {
                     None => look::Branches::Reading,
                 };
                 let none = std::collections::HashMap::new();
+                let no_gates = std::collections::HashMap::new();
                 // While the first answer is awaited the working copies are
                 // read here, so a handover shows at once.
                 let copies = match seen {
@@ -935,6 +981,8 @@ impl Scene<'_> {
                     committed: seen.map_or(&none, |seen| &seen.committed),
                     copies: &copies,
                     agents: &agents,
+                    gates: seen.map_or(&no_gates, |seen| &seen.gates),
+                    spin: self.spin,
                     detail: matches!(self.pane.showing, Showing::Graph(_)),
                     skip: &self.pane.scroll,
                     pulse: self.pulse,
@@ -1148,7 +1196,18 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
             notice = None;
             redraw = true;
         }
-        let moving = lively || busy || lit || notice.is_some();
+        // A gate that is running turns its mark.
+        let gating = graphs.values().any(|(_, seen)| seen.gating())
+            || shown
+                .as_ref()
+                .and_then(|view| view.as_ref().ok())
+                .is_some_and(|view| {
+                    view.projects
+                        .iter()
+                        .flat_map(|project| &project.repositories)
+                        .any(|row| row.proof.as_deref() == Some("pending"))
+                });
+        let moving = lively || busy || lit || gating || notice.is_some();
 
         if !stale && !redraw {
             let wait = if moving { FRAME } else { TICK };
@@ -1238,6 +1297,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                     here: here.as_ref(),
                     changed: changed.as_ref().map(|(_, lines)| lines),
                     turning,
+                    spin: TURNING[(frame % 10) as usize],
                     pulse,
                     now,
                     width,
@@ -1302,7 +1362,11 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
         if let Some(name) = scene.graph_of() {
             let dir = root.join(&name);
             let files = fingerprint(&dir);
-            let fresh = graphs.get(&name).is_some_and(|(at, _)| *at == files);
+            // A graph with a gate running is read again soon, to follow the
+            // task it is on and to notice one that was killed.
+            let fresh = graphs.get(&name).is_some_and(|(at, seen)| {
+                *at == files && !(seen.gating() && seen.at.elapsed() >= BUSY_RECHECK)
+            });
             if !fresh && asking.is_none() {
                 asking = Some(Asking::start(&name, dir, files));
             }

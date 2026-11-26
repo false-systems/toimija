@@ -452,33 +452,167 @@ fn present(
     by_branch
 }
 
-/// What sykli says of a commit, asked of the installed sykli.
-pub fn sykli_proof(repo_root: &Path, commit: &str) -> Proof {
-    proof_from("sykli", repo_root, commit)
+/// What sykli's records say of a commit's gate beyond its verdict. Each
+/// part is `None` or empty where sykli's answer does not say.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Gate {
+    /// A run of the commit's tree is in progress: the tasks running now.
+    pub running: Option<Vec<String>>,
+    /// The tasks that failed in the run that decided a failed verdict.
+    pub failed: Vec<String>,
+    /// When the run that decided the verdict started, in Unix seconds.
+    pub judged_at: Option<u64>,
+    /// How long the tasks of the proof took.
+    pub took: Option<Took>,
+    /// Why sykli calls the commit's records a conflict, in its words.
+    pub conflict: Option<String>,
 }
 
-fn proof_from(sykli: &str, repo_root: &Path, commit: &str) -> Proof {
+/// How long a proof's tasks took to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Took {
+    Seconds(u64),
+    /// No task ran: every result came from sykli's cache.
+    Cached,
+}
+
+/// What sykli says of a commit, asked of the installed sykli.
+pub fn sykli_proof(repo_root: &Path, commit: &str) -> Proof {
+    said_from("sykli", repo_root, commit).0
+}
+
+/// The same answer with what it says of the gate's runs: one sykli process.
+pub fn sykli_said(repo_root: &Path, commit: &str) -> (Proof, Gate) {
+    said_from("sykli", repo_root, commit)
+}
+
+/// As [`sykli_said`], of the sykli named.
+pub fn said_from(sykli: &str, repo_root: &Path, commit: &str) -> (Proof, Gate) {
     let mut asked = std::process::Command::new(sykli);
     asked
         .current_dir(repo_root)
         .args(["status", "--commit", commit, "--json"]);
     // As for toimija's own git: no inherited GIT_DIR points sykli elsewhere.
     crate::command::scrub_git_location_env(&mut asked);
+    let only = |proof: Proof| (proof, Gate::default());
     let output = match asked.output() {
         Ok(output) => output,
         // Without sykli the one thing still known is whether the commit
         // carries a contract at all: one that does not is gated by nothing.
-        Err(_) if !carries_contract(repo_root, commit) => return Proof::NoGate,
-        Err(_) => return Proof::Unknown("sykli is not installed".to_string()),
+        Err(_) if !carries_contract(repo_root, commit) => return only(Proof::NoGate),
+        Err(_) => return only(Proof::Unknown("sykli is not installed".to_string())),
     };
     let Ok(status) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
         let said = String::from_utf8_lossy(&output.stderr);
         if said.contains("has no sykli.json") {
-            return Proof::NoGate;
+            return only(Proof::NoGate);
         }
-        return Proof::Unknown("sykli gave no answer".to_string());
+        return only(Proof::Unknown("sykli gave no answer".to_string()));
     };
-    proof_of(&status)
+    let mut gate = gate_of(&status);
+    // How long the proof took is in its receipt, not in sykli's answer.
+    // The newest proof that ran its tasks says so; one that only served
+    // the cache says that where no other does.
+    let took: Vec<Took> = proving_receipts(&status)
+        .iter()
+        .filter_map(|(_, path)| std::fs::read_to_string(path).ok())
+        .filter_map(|receipt| took_from(&receipt))
+        .collect();
+    gate.took = took
+        .iter()
+        .find(|took| matches!(took, Took::Seconds(_)))
+        .or(took.first())
+        .copied();
+    (proof_of(&status), gate)
+}
+
+fn entries<'a>(status: &'a serde_json::Value, key: &str) -> &'a [serde_json::Value] {
+    status[key].as_array().map_or(&[], Vec::as_slice)
+}
+
+/// The receipts that prove the commit, the newest first: when each run
+/// started in milliseconds, and where its receipt is.
+fn proving_receipts(status: &serde_json::Value) -> Vec<(u64, String)> {
+    let mut proving: Vec<(u64, String)> = entries(status, "current")
+        .iter()
+        .filter(|receipt| receipt["judgement"] == "verified")
+        .filter_map(|receipt| {
+            Some((
+                receipt["started_at_ms"].as_u64()?,
+                receipt["receipt"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    proving.sort_by(|a, b| b.cmp(a));
+    proving
+}
+
+/// What sykli's answer says of the gate's runs. Nothing is made up: a part
+/// the answer lacks stays empty.
+fn gate_of(status: &serde_json::Value) -> Gate {
+    let named = |run: &serde_json::Value, states: &[&str]| -> Vec<String> {
+        entries(run, "tasks")
+            .iter()
+            .filter(|task| states.iter().any(|state| task["state"] == *state))
+            .filter_map(|task| task["name"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let runs = entries(status, "runs");
+    let running = runs
+        .iter()
+        .find(|run| run["state"] == "running" || run["state"] == "requested")
+        .map(|run| named(run, &["running"]));
+    let verdict = status["verdict"].as_str();
+    // The newest receipt of the kind that decided the verdict.
+    let decided = entries(status, "current")
+        .iter()
+        .filter(|receipt| match verdict {
+            Some("passed") => receipt["judgement"] == "verified",
+            Some("failed") => receipt["outcome"] == "failed",
+            _ => false,
+        })
+        .max_by_key(|receipt| receipt["started_at_ms"].as_u64());
+    let failed = match (verdict, decided) {
+        (Some("failed"), Some(receipt)) => runs
+            .iter()
+            .find(|run| run["run"] == receipt["run"] && receipt["run"].is_string())
+            .map(|run| named(run, &["failed", "errored"]))
+            .unwrap_or_default(),
+        (Some("failed"), None) => runs
+            .iter()
+            .find(|run| run["outcome"] == "failed")
+            .map(|run| named(run, &["failed", "errored"]))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    Gate {
+        running,
+        failed,
+        judged_at: decided
+            .and_then(|receipt| receipt["started_at_ms"].as_u64())
+            .map(|ms| ms / 1000),
+        took: None,
+        conflict: status["conflict"].as_str().map(str::to_owned),
+    }
+}
+
+/// How long the tasks of a receipt took: from the start of its run to the
+/// end of the last task that ran in it. A receipt that cannot be read says
+/// nothing.
+fn took_from(receipt: &str) -> Option<Took> {
+    let receipt: serde_json::Value = serde_json::from_str(receipt).ok()?;
+    let started = receipt["started_at_ms"].as_u64()?;
+    let tasks = receipt["tasks"].as_array()?;
+    let end = tasks
+        .iter()
+        .filter(|task| task["outcome"] != "cached")
+        .filter_map(|task| Some(task["started_at_ms"].as_u64()? + task["duration_ms"].as_u64()?))
+        .max();
+    match end {
+        Some(end) => Some(Took::Seconds(end.checked_sub(started)? / 1000)),
+        None if tasks.is_empty() => None,
+        None => Some(Took::Cached),
+    }
 }
 
 /// The proof in sykli's answer. A pass stands on its receipt; any other
@@ -1045,12 +1179,12 @@ mod tests {
         let Some(dir) = repo() else { return };
         let root = dir.path();
         let absent = "sykli-that-is-not-installed";
-        assert_eq!(proof_from(absent, root, "work"), Proof::NoGate);
+        assert_eq!(said_from(absent, root, "work").0, Proof::NoGate);
         fs::write(root.join("sykli.json"), "{}\n").unwrap();
         run(root, &["add", "-A"]);
         run(root, &["commit", "-q", "-m", "a gate"]);
         assert_eq!(
-            proof_from(absent, root, "work"),
+            said_from(absent, root, "work").0,
             Proof::Unknown("sykli is not installed".to_string())
         );
     }
@@ -1110,6 +1244,87 @@ mod tests {
         let graph = build(&ProcessCommandRunner, root, "origin/main", &none).unwrap();
         assert_eq!(tip(&graph, "work").subject, "the work");
         assert_eq!(tip(&graph, "origin/main").subject, "first");
+    }
+
+    #[test]
+    fn syklis_answer_says_what_the_gate_is_doing_and_silence_stays_silence() {
+        // As sykli answers while a run of the tree is in progress.
+        let running = serde_json::json!({
+            "verdict": "pending", "conflict": null, "current": [],
+            "runs": [{"run": "r1", "state": "running", "outcome": null, "tasks": [
+                {"name": "fmt", "state": "passed"},
+                {"name": "test", "state": "running"},
+                {"name": "docs", "state": "pending"}]}]
+        });
+        assert_eq!(
+            gate_of(&running),
+            Gate {
+                running: Some(vec!["test".to_string()]),
+                ..Gate::default()
+            }
+        );
+        // After a failure: the run its newest failed receipt names decides,
+        // not an older one.
+        let failed = serde_json::json!({
+            "verdict": "failed", "conflict": null,
+            "current": [
+                {"judgement": "failed", "outcome": "failed", "run": "old", "started_at_ms": 5_000},
+                {"judgement": "failed", "outcome": "failed", "run": "new", "started_at_ms": 9_000}],
+            "runs": [
+                {"run": "old", "state": "completed", "outcome": "failed", "tasks": [
+                    {"name": "fmt", "state": "failed"}]},
+                {"run": "new", "state": "completed", "outcome": "failed", "tasks": [
+                    {"name": "fmt", "state": "cached"},
+                    {"name": "clippy", "state": "failed"},
+                    {"name": "test", "state": "errored"}]}]
+        });
+        assert_eq!(
+            gate_of(&failed),
+            Gate {
+                failed: vec!["clippy".to_string(), "test".to_string()],
+                judged_at: Some(9),
+                ..Gate::default()
+            }
+        );
+        // A pass is dated by its newest receipt that verifies.
+        let passed = serde_json::json!({
+            "verdict": "passed", "conflict": null,
+            "current": [
+                {"judgement": "verified", "outcome": "cached", "receipt": "/b", "started_at_ms": 9_000},
+                {"judgement": "verified", "outcome": "passed", "receipt": "/a", "started_at_ms": 5_000},
+                {"judgement": "failed", "outcome": "failed", "receipt": "/c", "started_at_ms": 99_000}],
+            "runs": []
+        });
+        assert_eq!(gate_of(&passed).judged_at, Some(9));
+        assert_eq!(gate_of(&passed).failed, Vec::<String>::new());
+        assert_eq!(
+            proving_receipts(&passed),
+            [(9_000, "/b".to_string()), (5_000, "/a".to_string())]
+        );
+        // An answer that says nothing of runs gives nothing, not a nought.
+        assert_eq!(
+            gate_of(&serde_json::json!({"verdict": "none"})),
+            Gate::default()
+        );
+        assert_eq!(
+            gate_of(&serde_json::json!({"verdict": "conflict", "conflict": "why"})).conflict,
+            Some("why".to_string())
+        );
+    }
+
+    #[test]
+    fn a_proof_took_as_long_as_its_tasks_that_ran_and_a_cached_one_says_so() {
+        let ran = r#"{"started_at_ms": 1000, "tasks": [
+            {"name": "fmt", "outcome": "passed", "started_at_ms": 1200, "duration_ms": 300},
+            {"name": "test", "outcome": "passed", "started_at_ms": 1500, "duration_ms": 24600},
+            {"name": "old", "outcome": "cached", "started_at_ms": 10, "duration_ms": 1}]}"#;
+        assert_eq!(took_from(ran), Some(Took::Seconds(25)));
+        let cached = r#"{"started_at_ms": 1000, "tasks": [
+            {"name": "fmt", "outcome": "cached", "started_at_ms": 10, "duration_ms": 0}]}"#;
+        assert_eq!(took_from(cached), Some(Took::Cached));
+        assert_eq!(took_from(r#"{"started_at_ms": 1000, "tasks": []}"#), None);
+        assert_eq!(took_from(r#"{"tasks": [{"outcome": "passed"}]}"#), None);
+        assert_eq!(took_from("not a receipt"), None);
     }
 
     #[test]

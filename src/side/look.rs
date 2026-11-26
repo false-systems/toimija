@@ -6,7 +6,7 @@
 //! true colour the tones are exact; otherwise they are the terminal's own
 //! sixteen.
 
-use crate::graph::{Graph, Line as GraphLine, Proof, Review};
+use crate::graph::{Gate, Graph, Line as GraphLine, Proof, Review, Took};
 use crate::project::{Row, View};
 
 use std::collections::HashMap;
@@ -314,9 +314,11 @@ fn bar(part: f64, cells: usize) -> Text {
     text.add(Tone::Dim, "━".repeat(cells - lit))
 }
 
-/// The mark for what sykli says of a repository's branch.
-fn proof_mark(proof: Option<&str>) -> Text {
+/// The mark for what sykli says of a repository's branch. A gate that is
+/// running turns.
+fn proof_mark(proof: Option<&str>, spin: char) -> Text {
     match proof {
+        Some("pending") => Text::of(Tone::Accent, spin.to_string()),
         Some("proven") => Text::of(Tone::Good, "✓"),
         Some("failed") => Text::of(Tone::Bad, "✗"),
         None | Some("unknown") => Text::of(Tone::Warn, "?"),
@@ -479,7 +481,7 @@ pub fn keys(pairs: &[(&str, &str)]) -> Text {
 
 /// One repository on one line: its mark, name, branch, uncommitted paths
 /// and distance from its base. Unknown shows as `?`, never as none.
-fn repository(row: &Row, picked: bool, name_width: usize, width: usize) -> Text {
+fn repository(row: &Row, picked: bool, spin: char, name_width: usize, width: usize) -> Text {
     let pick = if picked {
         Text::of(Tone::Accent, "▸")
     } else {
@@ -494,7 +496,7 @@ fn repository(row: &Row, picked: bool, name_width: usize, width: usize) -> Text 
             .fit(width);
     }
     let mut left = pick
-        .then(proof_mark(row.proof.as_deref()))
+        .then(proof_mark(row.proof.as_deref(), spin))
         .add(Tone::Plain, " ")
         .add(if picked { Tone::Bold } else { Tone::Plain }, name)
         .add(
@@ -543,7 +545,7 @@ fn repository(row: &Row, picked: bool, name_width: usize, width: usize) -> Text 
 }
 
 /// Every repository of the projects shown, a line each.
-pub fn repositories(view: &View, picked: Option<&str>, width: usize) -> Vec<Text> {
+pub fn repositories(view: &View, picked: Option<&str>, spin: char, width: usize) -> Vec<Text> {
     let inner = width.saturating_sub(4);
     let name_width = view
         .projects
@@ -563,7 +565,7 @@ pub fn repositories(view: &View, picked: Option<&str>, width: usize) -> Vec<Text
             // A repository in two projects is picked once, where it is first.
             let pick = !marked && picked == Some(row.name.as_str());
             marked |= pick;
-            rows.push(repository(row, pick, name_width, inner));
+            rows.push(repository(row, pick, spin, name_width, inner));
         }
     }
     for warning in &view.warnings {
@@ -864,8 +866,12 @@ pub enum Branches<'a> {
     NotRead(&'a str),
 }
 
-fn graph_marks(proof: &Proof, review: &Review) -> Text {
+fn graph_marks(proof: &Proof, review: &Review, running: Option<char>) -> Text {
     let proof = match proof {
+        // A gate that is running turns, whatever was last said of the tip.
+        _ if running.is_some() => {
+            Text::of(Tone::Accent, running.map(String::from).unwrap_or_default())
+        }
         Proof::Passed => Text::of(Tone::Good, "✓"),
         Proof::Failed => Text::of(Tone::Bad, "✗"),
         Proof::NotRun => Text::of(Tone::Warn, "○"),
@@ -882,6 +888,64 @@ fn graph_marks(proof: &Proof, review: &Review) -> Text {
         Review::Unreadable => Text::of(Tone::Warn, "review? "),
     };
     review.then(proof)
+}
+
+/// How long ago, as part of a sentence.
+fn since(at: u64, now: u64) -> String {
+    match tools::ago(now.saturating_sub(at)).as_str() {
+        "now" => "just now".to_string(),
+        ago => format!("{ago} ago"),
+    }
+}
+
+/// What sykli's records say of a tip's gate beyond its mark: when it was
+/// proven and how long that took, which task failed and when, or why the
+/// proof is not known. `None` where there is nothing to add.
+fn gate_said(proof: &Proof, gate: Option<&Gate>, now: u64) -> Option<(Tone, String)> {
+    let when = gate
+        .and_then(|gate| gate.judged_at)
+        .map(|at| since(at, now));
+    match proof {
+        Proof::Passed => {
+            let took = gate.and_then(|gate| gate.took).map(|took| match took {
+                Took::Cached => "from cache".to_string(),
+                Took::Seconds(seconds @ 0..120) => format!("took {seconds}s"),
+                Took::Seconds(seconds) => format!("took {}m", seconds / 60),
+            });
+            let said: Vec<String> = when
+                .map(|when| format!("proven {when}"))
+                .into_iter()
+                .chain(took)
+                .collect();
+            (!said.is_empty()).then(|| (Tone::Good, said.join(" · ")))
+        }
+        Proof::Failed => {
+            let tasks = gate.map(|gate| gate.failed.as_slice()).unwrap_or_default();
+            if tasks.is_empty() && when.is_none() {
+                return None;
+            }
+            let what = match tasks {
+                [] => "the gate".to_string(),
+                tasks => tasks.join(", "),
+            };
+            Some((
+                Tone::Bad,
+                match when {
+                    Some(when) => format!("{what} failed {when}"),
+                    None => format!("{what} failed"),
+                },
+            ))
+        }
+        Proof::Unknown(why) => Some((Tone::Warn, format!("? {why}"))),
+        Proof::Other(word) => Some((
+            Tone::Warn,
+            match gate.and_then(|gate| gate.conflict.as_deref()) {
+                Some(why) => format!("? sykli says {word}: {why}"),
+                None => format!("? sykli says {word}"),
+            },
+        )),
+        Proof::NotRun | Proof::NoGate => None,
+    }
 }
 
 /// An agent session vessa read in a working copy on a branch.
@@ -909,6 +973,10 @@ pub struct Around<'a> {
     pub copies: &'a [WorkingCopy],
     /// The agent sessions of the last day, by the branch they work on.
     pub agents: &'a [OnBranch],
+    /// What sykli's records say of each tip's gate, by commit.
+    pub gates: &'a HashMap<String, Gate>,
+    /// The mark of a gate that is running, a turn further each frame.
+    pub spin: char,
     /// Everything known of every tip: the commits ahead, each commit and
     /// subject, each handover. Without it only the tip the shell has
     /// checked out says more than its line.
@@ -1032,7 +1100,13 @@ pub fn graph(
                     right = right.add(Tone::Dim, format!("{} ", tools::ago(idle)));
                 }
                 let faint = idle.is_some_and(|idle| idle > 14 * 86_400);
-                let right = right.then(graph_marks(&tip.proof, &tip.review));
+                let gate = around.gates.get(&tip.commit);
+                let running = gate.and_then(|gate| gate.running.as_ref());
+                let right = right.then(graph_marks(
+                    &tip.proof,
+                    &tip.review,
+                    running.map(|_| around.spin),
+                ));
                 let left = lanes(marks, base, false).add(Tone::Plain, " ").add(
                     if base || mine {
                         Tone::Bold
@@ -1061,6 +1135,28 @@ pub fn graph(
                     .fit(inner);
 
                 let mut notes = Vec::new();
+                // A gate that is running says so under its tip in every
+                // view; what else sykli knows of the gate is detail.
+                if let Some(tasks) = running {
+                    let said = match tasks.as_slice() {
+                        [] => "gate running".to_string(),
+                        tasks => format!("gate running: {}", tasks.join(", ")),
+                    };
+                    notes.push(
+                        below()
+                            .add(Tone::Accent, format!("{} ", around.spin))
+                            .add(Tone::Plain, said)
+                            .fit(inner),
+                    );
+                } else if around.detail
+                    && let Some((tone, said)) = gate_said(&tip.proof, gate, around.now)
+                {
+                    let prefix = below();
+                    let room = inner.saturating_sub(prefix.width());
+                    for text in crate::project::wrap(&said, "", room).iter().take(3) {
+                        notes.push(below().add(tone, text.clone()));
+                    }
+                }
                 for session in &tip.sessions {
                     let intent = session.intent.as_deref().unwrap_or("intent not given");
                     notes.push(below().add(Tone::Accent, "↳ ").add(
@@ -1197,12 +1293,24 @@ pub fn graph(
     )
 }
 
+/// The graph of the repository picked: its name, its branches and what
+/// sykli's records say of each tip's gate, by commit.
+pub type Picked<'a> = (&'a str, &'a Graph, &'a HashMap<String, Gate>);
+
+/// A failed gate in a sentence, naming the tasks where sykli names them.
+fn failed_said(name: &str, tasks: &[String], branch: &str) -> String {
+    match tasks {
+        [] => format!("{name}: the gate failed on {branch}"),
+        tasks => format!("{name}: {} failed on {branch}", tasks.join(", ")),
+    }
+}
+
 /// What needs a person now, the most pressing first, in plain sentences:
 /// a gate that failed, a review that blocks, knowledge that waits. With
 /// nothing to say it says so, so an empty card is never a question.
 fn needs(
     view: Option<&View>,
-    graph: Option<(&str, &Graph)>,
+    graph: Option<Picked<'_>>,
     facts: Option<&Facts>,
 ) -> Vec<(Tone, String)> {
     let mut needs: Vec<(Tone, String)> = Vec::new();
@@ -1216,15 +1324,15 @@ fn needs(
             failed.push(&row.name);
             needs.push((
                 Tone::Bad,
-                format!(
-                    "{}: the gate failed on {}",
-                    row.name,
-                    row.branch.as_deref().unwrap_or("its branch")
+                failed_said(
+                    &row.name,
+                    &row.failed,
+                    row.branch.as_deref().unwrap_or("its branch"),
                 ),
             ));
         }
     }
-    if let Some((name, graph)) = graph {
+    if let Some((name, graph, gates)) = graph {
         for line in &graph.lines {
             let GraphLine::Tip { tip, .. } = line else {
                 continue;
@@ -1234,7 +1342,11 @@ fn needs(
                 needs.push((Tone::Bad, format!("{name}: a review blocks {branch}")));
             }
             if tip.proof == Proof::Failed {
-                let said = format!("{name}: the gate failed on {branch}");
+                let tasks = gates
+                    .get(&tip.commit)
+                    .map(|gate| gate.failed.as_slice())
+                    .unwrap_or_default();
+                let said = failed_said(name, tasks, branch);
                 if !needs.iter().any(|(_, need)| *need == said) {
                     needs.push((Tone::Bad, said));
                 }
@@ -1272,7 +1384,7 @@ fn needs(
 /// no such line at all.
 pub fn needs_line(
     view: Option<&View>,
-    graph: Option<(&str, &Graph)>,
+    graph: Option<Picked<'_>>,
     facts: Option<&Facts>,
     width: usize,
 ) -> Option<Text> {
@@ -1295,7 +1407,7 @@ pub fn needs_line(
 /// Everything that needs a person, each in full, for the last view.
 pub fn needs_you(
     view: Option<&View>,
-    graph: Option<(&str, &Graph)>,
+    graph: Option<Picked<'_>>,
     facts: Option<&Facts>,
     width: usize,
 ) -> Vec<Text> {
@@ -1434,6 +1546,7 @@ mod tests {
             ahead: Some(0),
             behind: Some(0),
             proof: proof.map(str::to_string),
+            failed: Vec::new(),
             sessions: Vec::new(),
         }
     }
@@ -1528,6 +1641,7 @@ mod tests {
                 row("delta", "main", Some("failed")),
             ]),
             Some("alpha"),
+            '⠋',
             38,
         ));
         assert_eq!(lines[0], "╭─ REPOSITORIES ──────── 1/3 proven ─╮");
@@ -1543,7 +1657,7 @@ mod tests {
 
     #[test]
     fn a_click_on_a_repository_that_is_here_picks_it() {
-        let cards = repositories(&view(vec![row("alpha", "main", None)]), None, 38);
+        let cards = repositories(&view(vec![row("alpha", "main", None)]), None, '⠋', 38);
         assert_eq!(cards[0].tag(), None);
         assert_eq!(cards[1].tag(), Some(&Tag::Repository("alpha".to_string())));
     }
@@ -1554,7 +1668,7 @@ mod tests {
         partial
             .warnings
             .push("beta: git did not answer".to_string());
-        let lines = plain(&repositories(&partial, None, 38));
+        let lines = plain(&repositories(&partial, None, '⠋', 38));
         assert!(lines[0].contains("partial"), "{lines:?}");
         assert!(
             lines[2].contains("not read: beta: git did not"),
@@ -1703,6 +1817,8 @@ mod tests {
             committed,
             copies,
             agents,
+            gates: Box::leak(Box::new(HashMap::new())),
+            spin: '⠋',
             detail: true,
             skip: Box::leak(Box::new(std::cell::Cell::new(0))),
             pulse: 7,
@@ -1746,6 +1862,175 @@ mod tests {
             ],
             warnings: Vec::new(),
         }
+    }
+
+    /// What sykli's records say of the three tips: one proven five minutes
+    /// before `now` in 25 seconds, one with its gate running, one failed.
+    fn three_gates(running: &[&str]) -> HashMap<String, Gate> {
+        HashMap::from([
+            (
+                "aaaaaaa1111".to_string(),
+                Gate {
+                    judged_at: Some(7_000),
+                    took: Some(Took::Seconds(25)),
+                    ..Gate::default()
+                },
+            ),
+            (
+                "bbbbbbb2222".to_string(),
+                Gate {
+                    running: Some(running.iter().map(|task| task.to_string()).collect()),
+                    ..Gate::default()
+                },
+            ),
+            (
+                "ccccccc3333".to_string(),
+                Gate {
+                    failed: vec!["clippy".to_string(), "test".to_string()],
+                    judged_at: Some(100),
+                    ..Gate::default()
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn a_gate_that_is_running_turns_and_the_detail_says_what_sykli_knows() {
+        let graph_of = three_tips();
+        let none = HashMap::new();
+        let gates = three_gates(&["test"]);
+        let mut calm = around(&none, &none, &[], &[], None);
+        calm.gates = &gates;
+        calm.detail = false;
+        let lines = plain(&graph("alpha", Branches::Read(&graph_of), &calm, 20, 38));
+        assert_eq!(
+            lines,
+            [
+                "╭─ GRAPH alpha ───────────── 3 tips ─╮",
+                "│ ● feat/one              BLOCKING ✓ │",
+                "│ │ ● feat/two                     ⠋ │",
+                "│ │ │ ⠋ gate running: test           │",
+                "│ │╱                                 │",
+                "│ ◉ origin/main                    ✗ │",
+                "╰────────────────────────────────────╯",
+            ]
+        );
+        let mut detail = around(&none, &none, &[], &[], None);
+        detail.gates = &gates;
+        let lines = plain(&graph("alpha", Branches::Read(&graph_of), &detail, 20, 38));
+        assert_eq!(
+            lines,
+            [
+                "╭─ GRAPH alpha ───────────── 3 tips ─╮",
+                "│ ● feat/one              BLOCKING ✓ │",
+                "│ │ aaaaaaa                          │",
+                "│ │ proven 5m ago · took 25s         │",
+                "│ │ ● feat/two                     ⠋ │",
+                "│ │ │ bbbbbbb second thing           │",
+                "│ │ │ ⠋ gate running: test           │",
+                "│ │╱                                 │",
+                "│ ◉ origin/main                    ✗ │",
+                "│ │ ccccccc                          │",
+                "│ │ clippy, test failed 2h ago       │",
+                "╰────────────────────────────────────╯",
+            ]
+        );
+        // A run that has started no task yet still says it runs.
+        let starting = three_gates(&[]);
+        calm.gates = &starting;
+        let lines = plain(&graph("alpha", Branches::Read(&graph_of), &calm, 20, 38));
+        assert_eq!(lines[3], "│ │ │ ⠋ gate running                 │");
+    }
+
+    #[test]
+    fn what_sykli_does_not_say_of_a_gate_is_not_made_up() {
+        let now = 7_300;
+        // Proven, but sykli gave neither a time nor a receipt to read.
+        assert_eq!(gate_said(&Proof::Passed, None, now), None);
+        assert_eq!(gate_said(&Proof::Passed, Some(&Gate::default()), now), None);
+        assert_eq!(gate_said(&Proof::Failed, Some(&Gate::default()), now), None);
+        assert_eq!(gate_said(&Proof::NotRun, Some(&Gate::default()), now), None);
+        let cached = Gate {
+            judged_at: Some(7_290),
+            took: Some(Took::Cached),
+            ..Gate::default()
+        };
+        assert_eq!(
+            gate_said(&Proof::Passed, Some(&cached), now),
+            Some((Tone::Good, "proven just now · from cache".to_string()))
+        );
+        let long = Gate {
+            took: Some(Took::Seconds(250)),
+            ..Gate::default()
+        };
+        assert_eq!(
+            gate_said(&Proof::Passed, Some(&long), now),
+            Some((Tone::Good, "took 4m".to_string()))
+        );
+        let unnamed = Gate {
+            judged_at: Some(100),
+            ..Gate::default()
+        };
+        assert_eq!(
+            gate_said(&Proof::Failed, Some(&unnamed), now),
+            Some((Tone::Bad, "the gate failed 2h ago".to_string()))
+        );
+        // The reason behind a `?` is said as sykli or toimija gave it.
+        assert_eq!(
+            gate_said(
+                &Proof::Unknown("sykli is not installed".to_string()),
+                None,
+                now
+            ),
+            Some((Tone::Warn, "? sykli is not installed".to_string()))
+        );
+        let conflict = Gate {
+            conflict: Some("a pass no run recorded".to_string()),
+            ..Gate::default()
+        };
+        assert_eq!(
+            gate_said(&Proof::Other("conflict".to_string()), Some(&conflict), now),
+            Some((
+                Tone::Warn,
+                "? sykli says conflict: a pass no run recorded".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_repository_whose_gate_is_running_turns_its_mark() {
+        let lines = plain(&repositories(
+            &view(vec![row("alpha", "feat/x", Some("pending"))]),
+            None,
+            '⠹',
+            38,
+        ));
+        assert!(lines[1].starts_with("│  ⠹ alpha"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn a_failed_gate_names_the_task_that_failed() {
+        let mut failed = row("alpha", "feat/x", Some("failed"));
+        failed.failed = vec!["clippy".to_string()];
+        let graph_of = three_tips();
+        let gates = three_gates(&[]);
+        let lines = plain(&needs_you(
+            Some(&view(vec![failed])),
+            Some(("alpha", &graph_of, &gates)),
+            None,
+            38,
+        ));
+        assert_eq!(
+            lines,
+            [
+                "╭─ NEEDS YOU ──────────────────── 3 ─╮",
+                "│ • alpha: clippy failed on feat/x   │",
+                "│ • alpha: a review blocks feat/one  │",
+                "│ • alpha: clippy, test failed on    │",
+                "│   origin/main                      │",
+                "╰────────────────────────────────────╯",
+            ]
+        );
     }
 
     #[test]
@@ -1917,7 +2202,7 @@ mod tests {
         let graph_of = three_tips();
         let lines = plain(&needs_you(
             Some(&broken),
-            Some(("alpha", &graph_of)),
+            Some(("alpha", &graph_of, &HashMap::new())),
             Some(&facts()),
             38,
         ));
@@ -1939,7 +2224,7 @@ mod tests {
         // The first view has only the worst of them, on one line.
         let line = needs_line(
             Some(&broken),
-            Some(("alpha", &graph_of)),
+            Some(("alpha", &graph_of, &HashMap::new())),
             Some(&facts()),
             38,
         );

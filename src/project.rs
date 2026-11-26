@@ -62,6 +62,10 @@ pub struct Row {
     pub behind: Option<u64>,
     /// What sykli says of the branch checked out: `proven`, `failed`, `none`…
     pub proof: Option<String>,
+    /// The tasks of the gate that failed, where the proof is `failed` and
+    /// sykli names them. Not part of the published view.
+    #[serde(skip)]
+    pub failed: Vec<String>,
     pub sessions: Vec<OpenSession>,
 }
 
@@ -72,6 +76,8 @@ pub struct Asked {
     pub ahead: Option<u64>,
     pub behind: Option<u64>,
     pub proof: Option<String>,
+    /// The tasks that failed, asked for only when the proof is `failed`.
+    pub failed: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -110,6 +116,13 @@ pub fn ask_with(runner: &dyn CommandRunner, dir: &Path, sykli: &str) -> Asked {
                         asked.proof = branch["proof"].as_str().map(str::to_owned);
                         asked.ahead = branch["ahead"].as_u64();
                         asked.behind = branch["behind"].as_u64();
+                        // Which task failed is in the commit's own records:
+                        // one more sykli process, only for a failed gate.
+                        if let (Some("failed"), Some(commit)) =
+                            (asked.proof.as_deref(), branch["commit"].as_str())
+                        {
+                            asked.failed = crate::graph::said_from(sykli, dir, commit).1.failed;
+                        }
                     }
                     // A detached HEAD is on no branch: sykli lists branches.
                     None => asked.proof = None,
@@ -261,6 +274,7 @@ pub fn build_from(
                             ahead: asked.ahead,
                             behind: asked.behind,
                             proof: asked.proof,
+                            failed: asked.failed,
                             sessions: repository.sessions.clone(),
                         }
                     }
@@ -272,6 +286,7 @@ pub fn build_from(
                         ahead: None,
                         behind: None,
                         proof: None,
+                        failed: Vec::new(),
                         sessions: Vec::new(),
                     },
                 };
