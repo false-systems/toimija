@@ -1410,8 +1410,56 @@ fn next_project(names: &[String], now: Option<&str>) -> Option<String> {
     }
 }
 
-/// One frame, written once, inside the terminal's synchronized-output marks
-/// so a half-drawn frame is never shown.
+/// One frame as the bytes written for it, inside the terminal's
+/// synchronized-output marks so a half-drawn frame is never shown.
+///
+/// A row is cleared before it is written, never after. A line as wide as
+/// the pane leaves the cursor on its last column, and a terminal asked
+/// there to erase to the end of the row erases that column: Ghostty did,
+/// and every card lost its right edge.
+#[allow(clippy::too_many_arguments)]
+fn frame_of(
+    title: &str,
+    clock: &str,
+    on: usize,
+    body: &[look::Text],
+    keys: &look::Text,
+    notice: Option<&str>,
+    live: Option<(usize, u8)>,
+    turning: Option<char>,
+    sweep: Option<usize>,
+    width: usize,
+    rows: usize,
+    palette: look::Palette,
+) -> String {
+    let room = rows.saturating_sub(FRAME_ROWS);
+    let mut frame = String::from("\x1b[?2026h\x1b[H");
+    let mut line = |text: look::Text| {
+        frame.push_str("\x1b[K");
+        frame.push_str(&text.fit(width).ansi(palette));
+        frame.push_str("\r\n");
+    };
+    line(look::header(title, clock, live, turning, sweep, width));
+    line(look::tabs(on));
+    line(look::Text::new());
+    for text in body.iter().take(room) {
+        line(text.clone());
+    }
+    frame.push_str("\x1b[J");
+    // The last two rows: what the marks mean, and the keys.
+    let above_keys = match notice {
+        Some(said) => look::Text::of(look::Tone::Accent, "▸ ").add(look::Tone::Plain, said),
+        None => look::legend(),
+    };
+    frame.push_str(&format!("\x1b[{};1H\x1b[K", rows.saturating_sub(1)));
+    frame.push_str(&above_keys.fit(width).ansi(palette));
+    frame.push_str(&format!("\x1b[{rows};1H\x1b[K"));
+    frame.push_str(&keys.clone().fit(width).ansi(palette));
+    frame.push_str("\x1b[?2026l");
+    frame
+}
+
+/// Draw one frame.
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn draw(
@@ -1432,31 +1480,9 @@ fn draw(
         .map(|since| since.as_secs())
         .unwrap_or(0);
     let clock = format!("{:02}:{:02} UTC", now % 86_400 / 3_600, now % 3_600 / 60);
-    let room = rows.saturating_sub(FRAME_ROWS);
-
-    let mut frame = String::from("\x1b[?2026h\x1b[H");
-    let mut line = |text: look::Text| {
-        frame.push_str(&text.fit(width).ansi(palette));
-        frame.push_str("\x1b[K\r\n");
-    };
-    line(look::header(title, &clock, live, turning, sweep, width));
-    line(look::tabs(on));
-    line(look::Text::new());
-    for text in body.iter().take(room) {
-        line(text.clone());
-    }
-    frame.push_str("\x1b[J");
-    // The last two rows: what the marks mean, and the keys.
-    frame.push_str(&format!("\x1b[{};1H", rows.saturating_sub(1)));
-    let above_keys = match notice {
-        Some(said) => look::Text::of(look::Tone::Accent, "▸ ").add(look::Tone::Plain, said),
-        None => look::legend(),
-    };
-    frame.push_str(&above_keys.fit(width).ansi(palette));
-    frame.push_str(&format!("\x1b[K\x1b[{rows};1H"));
-    frame.push_str(&keys.clone().fit(width).ansi(palette));
-    frame.push_str("\x1b[K\x1b[?2026l");
-
+    let frame = frame_of(
+        title, &clock, on, body, keys, notice, live, turning, sweep, width, rows, palette,
+    );
     let mut out = std::io::stdout().lock();
     out.write_all(frame.as_bytes())?;
     out.flush()?;
@@ -2007,6 +2033,38 @@ mod tests {
         assert_eq!(ahead.get("odd"), None, "no count given is no count");
         assert!(ahead_from("not json").is_empty());
         assert!(ahead_from("").is_empty());
+    }
+
+    #[test]
+    fn a_row_is_cleared_before_it_is_written_and_never_after() {
+        let body = vec![look::Text::of(look::Tone::Plain, "x".repeat(38))];
+        let frame = frame_of(
+            "SDLC",
+            "12:00 UTC",
+            0,
+            &body,
+            &look::keys(&[("q", "quit")]),
+            None,
+            None,
+            None,
+            None,
+            38,
+            12,
+            look::Palette::Basic,
+        );
+        assert!(frame.contains(&"x".repeat(38)));
+        // Erasing after a full row would take its last column with it.
+        let mut erased = 0;
+        for (at, _) in frame.match_indices("\x1b[K") {
+            erased += 1;
+            let before = &frame[..at];
+            assert!(
+                before.ends_with("\r\n") || before.ends_with('H'),
+                "erased after {:?}",
+                &before[before.len().saturating_sub(12)..]
+            );
+        }
+        assert_eq!(erased, 6, "four rows from the top and the two at the foot");
     }
 
     #[test]
