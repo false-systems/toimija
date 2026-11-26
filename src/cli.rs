@@ -124,6 +124,20 @@ pub enum Command {
         toimija sessions --outside-repos   # sessions opened outside any repository"
     )]
     Sessions(SessionsArgs),
+    /// Show what is cooking in this clone: the graph of its branches, each tip
+    /// with whether it is proven, how serious its review is and who is working there.
+    ///
+    /// Use this to see at a glance which branches are in progress and which
+    /// need a person: proof is what sykli's receipts say of the commit, review
+    /// is the level sykli keeps for its tree (`refs/notes/sykli/review`; `stale`
+    /// when it was read against another base), and the
+    /// sessions are the open ones on that branch in any worktree. Read-only:
+    /// it runs no check, decides nothing and asks no network.
+    #[command(
+        after_help = "Examples:\n  toimija graph                        # branches not yet in origin/main\n  \
+        toimija graph --base origin/develop --json"
+    )]
+    Graph(GraphArgs),
     /// Declare or update this session's intent — tell other sessions why you are here.
     ///
     /// Use this from inside a `toimija run` session (the agent itself,
@@ -348,6 +362,16 @@ pub struct HandoverArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct GraphArgs {
+    /// Ref the branches are heading for; its own history is left out.
+    #[arg(long, default_value = "origin/main")]
+    pub base: String,
+    /// Emit the graph as JSON instead of text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct SessionsArgs {
     /// Emit the report as JSON instead of the human-readable listing.
     #[arg(long)]
@@ -379,6 +403,7 @@ pub fn run(cli: Cli) -> Result<i32> {
     let output_format = match &cli.command {
         Command::Enter(args) if args.json => "json",
         Command::Sessions(args) if args.json => "json",
+        Command::Graph(args) if args.json => "json",
         _ => "text",
     };
     let span = info_span!(
@@ -394,6 +419,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Run(args) => run_run(args),
         Command::Enter(args) => run_enter(args).map(|()| 0),
         Command::Sessions(args) => run_sessions(args).map(|()| 0),
+        Command::Graph(args) => run_graph(args),
         Command::Intent(args) => run_intent(args).map(|()| 0),
         Command::Handover(args) => run_handover(args).map(|()| 0),
     };
@@ -422,6 +448,7 @@ impl Command {
             Command::Run(_) => "run",
             Command::Enter(_) => "enter",
             Command::Sessions(_) => "sessions",
+            Command::Graph(_) => "graph",
             Command::Intent(_) => "intent",
             Command::Handover(_) => "handover",
         }
@@ -1301,6 +1328,21 @@ fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
 #[cfg(not(unix))]
 fn wrapped_exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
+}
+
+/// Exit code 4 when part of the picture could not be read: the graph is
+/// printed, with what is missing named, but it is not the whole of it.
+fn run_graph(args: GraphArgs) -> Result<i32> {
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let runner = ProcessCommandRunner;
+    let repo_root = git::discover_repo_root(&runner, &cwd).context("not a Git repository")?;
+    let graph = crate::graph::build(&runner, &repo_root, &args.base, &crate::graph::sykli_proof)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&graph)?);
+    } else {
+        print!("{}", crate::graph::render_text(&graph));
+    }
+    Ok(if graph.warnings.is_empty() { 0 } else { 4 })
 }
 
 fn run_sessions(args: SessionsArgs) -> Result<()> {

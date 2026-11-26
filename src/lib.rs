@@ -7,6 +7,7 @@ mod context;
 mod coverage;
 mod error;
 mod git;
+mod graph;
 pub mod logging;
 mod owned;
 mod path_codec;

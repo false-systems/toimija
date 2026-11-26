@@ -105,13 +105,14 @@ build; native Windows is not supported.
 
 ## Use
 
-Toimija needs no setup: it works in any Git repository. Five commands, in the
+Toimija needs no setup: it works in any Git repository. Six commands, in the
 order you meet them:
 
 ```bash
 toimija run claude         # start an agent as a session, with the packet in its prompt
 toimija enter              # the packet now, for an agent started some other way
 toimija sessions           # who is working in this repository, and why; which worktrees are finished
+toimija graph              # the branches in progress: proven or not, review level, who is there
 toimija intent "fix the login redirect"          # a session says why it is here
 toimija handover --next "tests still to write"   # a note for the next agent
 ```
@@ -151,7 +152,8 @@ one job and works alone.
 
 - It does not decide. It assigns no work, judges no result and closes nothing.
 - It runs no checks. The packet names the validation commands and toimija
-  never runs them.
+  never runs them. `toimija graph` shows what sykli's receipts say of each
+  branch; it asks sykli and judges nothing.
 - It does not coordinate agents. Overlap between sessions is a warning, never
   a lock.
 - It keeps no copy of the packet. Ask again, with `toimija enter`, to see the

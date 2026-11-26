@@ -645,6 +645,42 @@ required. The note is written to `.toimija/handover.json` and replaces the one
 before it. Every packet worked out in this working copy shows it under "Last
 handover", with when it was written and the branch and HEAD at the time.
 
+## The branches in progress: `graph`
+
+`toimija graph` draws the git graph of the base (`origin/main`, or `--base`)
+and every local branch not yet in it. Beside each branch tip it puts three
+facts and no detail:
+
+- **proof**: what sykli's receipts say of the commit, asked with
+  `sykli status --commit`: `proven`, `FAILED`, `not run`, `no gate` (the commit
+  carries no `sykli.json`) or `unknown` (sykli could not be asked). Toimija
+  runs no check.
+- **review**: the level of the review sykli keeps for the commit's tree as a
+  git note (`refs/notes/sykli/review`, written by `sykli review`): `fine`,
+  `look`, `BLOCKING`, `overruled` (a person let a blocking review cross),
+  `stale` or `none`. Findings are not shown. A review answers for the base it
+  was read against. `stale` means a review is kept for the tree, but it was
+  read against another commit than the one where this tip and the base part
+  now, so it says nothing of the tip as it stands. Checking that costs one
+  `git merge-base` for each tip that has a review.
+- **who is there**: the open sessions on that branch in any worktree of the
+  clone, live or stale, each with its intent.
+
+```text
+$ toimija graph
+* 553a1ff  feat/review-task  proven   review: fine      claude live: "local land step"
+| * 77296cc  perf/budgets    not run  review: none
+|/
+* abf372f  origin/main, main proven   review: none
+```
+
+`--json` prints `toimija-graph.v1`: the base, the lines in order (a tip with
+its commit, branches, subject, proof, review and sessions, or a graph edge)
+and `warnings` naming what could not be read. With a warning the graph is
+still printed and the exit code is 4: it is not the whole picture. A branch
+that was squash-merged is not an ancestor of the base, so it stays in the
+graph until it is deleted. It is read-only and asks no network.
+
 ## Workspaces
 
 A workspace is a folder that holds repositories and is not a repository
@@ -818,6 +854,7 @@ workspace. `handover` needs a repository.
 | `enter` | Work out the packet and print it. The first step for an agent that is not under `run`, and the way to see the state again. `--identity --json` prints only what the repository says it is. |
 | `sessions` | List the sessions working here, with overlap warnings. |
 | `intent "<text>"` | Declare or update this session's intent and scope. |
+| `graph` | Draw the branches in progress, each tip with its proof, review level and who is there. |
 | `handover` | Leave a note for the next agent in this working copy. |
 
 `toimija <command> --help` lists each command's flags with examples.
@@ -841,7 +878,9 @@ What each command costs in git processes is pinned by
 reads `git status` once, and reads only the refs and history its output shows,
 six in all on a feature branch; `enter --identity --json` costs one. `run`
 costs `enter`'s six and one `git status` when the agent exits, however long
-the agent runs. `sessions` costs one, and `handover` two.
+the agent runs. `sessions` costs one, and `handover` two. `graph` is not
+budgeted there: it asks sykli once for each branch tip, and checks a review's
+base with one `git merge-base` for each tip that has a review.
 
 ## Configuration
 
