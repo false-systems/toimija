@@ -832,6 +832,57 @@ packet carries the same under `workspace`. It is read from files and costs no
 git process. A workspace file that cannot be read is named in the section and
 the packet is still printed; one that declares nothing adds nothing.
 
+### Where the work stands across projects: `graph` and `side`
+
+In a workspace folder, `toimija graph` prints one row for each repository of
+the workspace's projects (`--project <name>` for one; with no project
+declared, every repository of the folder):
+
+```text
+Evidence
+  how a fact gets from an agent's machine into the store
+● recorder
+    feat/retry                      2 changed  proven
+    3 ahead, 1 behind its base
+    claude live: fix the retry loop
+○ store
+    main                            clean  none
+
+relations
+  recorder → store
+    sends evidence
+```
+
+Each row has the branch, the paths with uncommitted work, how far the branch
+is from its base, what sykli's receipts say of it, and the open sessions. A
+filled mark means a session is open there. The declared relationships between
+the repositories shown follow, with any contract file that is missing. What is
+unknown is said as unknown, never as clean or proven; whatever could not be
+read is listed under `not read`, and the exit code is then 4. `--json` prints
+`toimija-project.v1`.
+
+This view asks more than the workspace packet, so it costs more: one
+`git status` and one `sykli status --json` for each repository shown, all
+asked at once. In a repository, `graph` is the branch graph described above.
+
+`toimija side` keeps the same view on screen in a narrow pane, from a
+workspace folder or any of its repositories:
+
+- `toimija side --open` asks for a pane on the right and runs there: under
+  tmux with `tmux split-window`, in Ghostty on macOS through its AppleScript
+  interface (macOS asks once for permission). Elsewhere it prints the command
+  to run in a split you open yourself.
+- Keys: `r` reads everything again, `p` steps through the projects, `q` quits.
+- It is an ordinary foreground command that redraws in place. It captures no
+  mouse, writes nothing and ends with its pane.
+- While nothing moves it starts no process. Every second and a half it reads
+  a few file times for each repository; git and sykli are asked again only
+  for a repository whose commits, index, branch or receipts moved, and on a
+  slow timer for uncommitted edits (20 seconds where a session is open, three
+  minutes elsewhere).
+- `--once` prints the view and exits, as it does whenever the output is not a
+  terminal. `--width` sets the columns.
+
 ### Dependency evidence
 
 Inference reads only each listed repository's root `Cargo.toml`, `Cargo.lock`,
@@ -895,7 +946,8 @@ workspace. `handover` needs a repository.
 | `enter` | Work out the packet and print it. The first step for an agent that is not under `run`, and the way to see the state again. `--identity --json` prints only what the repository says it is. |
 | `sessions` | List the sessions working here, with overlap warnings. |
 | `intent "<text>"` | Declare or update this session's intent and scope. |
-| `graph` | Draw the branches in progress, each tip with its proof, review level and who is there. |
+| `graph` | Draw the branches in progress, each tip with its proof, review level and who is there. In a workspace folder: where each project's repositories stand. |
+| `side` | Keep the project view on screen in a narrow pane beside your terminal. |
 | `handover` | Leave a note for the next agent in this working copy. |
 
 `toimija <command> --help` lists each command's flags with examples.
