@@ -58,6 +58,8 @@ pub fn cwd_of(_pid: u32) -> Option<PathBuf> {
 pub struct Here {
     /// The repository's folder name in the workspace.
     pub repository: String,
+    /// The top of the working copy the shell is in.
+    pub top: PathBuf,
     /// The branch checked out where the shell is: in a linked worktree,
     /// that worktree's branch. `None` when HEAD is not on a branch.
     pub branch: Option<String>,
@@ -91,6 +93,7 @@ pub fn here(root: &Path, cwd: &Path) -> Option<Here> {
     let head = std::fs::read_to_string(git_dir.join("HEAD")).unwrap_or_default();
     Some(Here {
         repository: main_top.file_name()?.to_string_lossy().into_owned(),
+        top: top.to_path_buf(),
         branch: head
             .trim()
             .strip_prefix("ref: refs/heads/")
@@ -218,6 +221,7 @@ mod tests {
             here(&root, &root.join("alpha/src/deep")),
             Some(Here {
                 repository: "alpha".to_string(),
+                top: root.join("alpha"),
                 branch: Some("main".to_string()),
             })
         );
@@ -236,6 +240,7 @@ mod tests {
             here(&root, &linked.join("src")),
             Some(Here {
                 repository: "alpha".to_string(),
+                top: linked.clone(),
                 branch: Some("fix/one".to_string()),
             })
         );

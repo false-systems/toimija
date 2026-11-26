@@ -856,6 +856,8 @@ pub struct Around<'a> {
     pub turning: Option<char>,
     /// Commits each branch is ahead of the base, as sykli counts them.
     pub ahead: &'a HashMap<String, u64>,
+    /// When each branch last got a commit, in Unix seconds.
+    pub committed: &'a HashMap<String, u64>,
     /// The repository's working copies, with the handover left in each.
     pub copies: &'a [WorkingCopy],
     /// The agent sessions of the last day, by the branch they work on.
@@ -964,9 +966,27 @@ pub fn graph(
                 {
                     right = right.add(Tone::Cool, format!("+{ahead} "));
                 }
+                // How long since the branch last got a commit. A branch
+                // left for two weeks is drawn faint.
+                let idle = tip
+                    .branches
+                    .iter()
+                    .filter_map(|name| around.committed.get(name))
+                    .max()
+                    .map(|at| around.now.saturating_sub(*at));
+                if let Some(idle) = idle {
+                    right = right.add(Tone::Dim, format!("{} ", tools::ago(idle)));
+                }
+                let faint = idle.is_some_and(|idle| idle > 14 * 86_400);
                 let right = right.then(graph_marks(&tip.proof, &tip.review));
                 let left = lanes(marks, base, false).add(Tone::Plain, " ").add(
-                    if base || mine { Tone::Bold } else { Tone::Cool },
+                    if base || mine {
+                        Tone::Bold
+                    } else if faint {
+                        Tone::Dim
+                    } else {
+                        Tone::Cool
+                    },
                     tip.branches.join(", "),
                 );
                 let line = ends(left, right, inner);
@@ -1091,6 +1111,163 @@ pub fn graph(
         rows,
         width,
     )
+}
+
+/// What needs a person now, the most pressing first, in plain sentences:
+/// a gate that failed, a review that blocks, knowledge that waits. With
+/// nothing to say it says so, so an empty card is never a question.
+pub fn needs_you(
+    view: Option<&View>,
+    graph: Option<(&str, &Graph)>,
+    facts: Option<&Facts>,
+    width: usize,
+) -> Vec<Text> {
+    let inner = width.saturating_sub(4);
+    let mut needs: Vec<(Tone, String)> = Vec::new();
+    let mut failed: Vec<&str> = Vec::new();
+    for row in view
+        .iter()
+        .flat_map(|view| &view.projects)
+        .flat_map(|project| &project.repositories)
+    {
+        if row.proof.as_deref() == Some("failed") && !failed.contains(&row.name.as_str()) {
+            failed.push(&row.name);
+            needs.push((
+                Tone::Bad,
+                format!(
+                    "{}: the gate failed on {}",
+                    row.name,
+                    row.branch.as_deref().unwrap_or("its branch")
+                ),
+            ));
+        }
+    }
+    if let Some((name, graph)) = graph {
+        for line in &graph.lines {
+            let GraphLine::Tip { tip, .. } = line else {
+                continue;
+            };
+            let branch = tip.branches.first().map_or("a commit", String::as_str);
+            if tip.review == Review::Blocking {
+                needs.push((Tone::Bad, format!("{name}: a review blocks {branch}")));
+            }
+            if tip.proof == Proof::Failed {
+                let said = format!("{name}: the gate failed on {branch}");
+                if !needs.iter().any(|(_, need)| *need == said) {
+                    needs.push((Tone::Bad, said));
+                }
+            }
+        }
+    }
+    if let Some(Ok(told)) = facts.map(|facts| &facts.knowledge)
+        && let Some(known) = counts_from(&told.summary)
+    {
+        if known.errors > 0 {
+            needs.push((
+                Tone::Bad,
+                format!("{} errors in the knowledge: run ohjaa check", known.errors),
+            ));
+        }
+        if known.waiting > 0 {
+            needs.push((
+                Tone::Warn,
+                format!(
+                    "{} proposals wait for your decision: run ohjaa review",
+                    known.waiting
+                ),
+            ));
+        }
+        if known.flags > 0 {
+            needs.push((
+                Tone::Warn,
+                format!("ohjaa flagged {} rule as maybe stale: view 4", known.flags),
+            ));
+        }
+    }
+
+    let count = needs.len();
+    let mut rows = Vec::new();
+    for (tone, need) in needs.iter().take(4) {
+        for (at, line) in crate::project::wrap(need, "", inner.saturating_sub(2))
+            .into_iter()
+            .enumerate()
+        {
+            rows.push(Text::of(*tone, if at == 0 { "• " } else { "  " }).add(Tone::Plain, line));
+        }
+    }
+    if count > 4 {
+        rows.push(Text::of(Tone::Dim, format!("  … {} more", count - 4)));
+    }
+    if rows.is_empty() {
+        rows.push(Text::of(Tone::Good, "✓ ").add(Tone::Dim, "nothing right now"));
+    }
+    let note = if count > 0 {
+        Text::of(Tone::Warn, count.to_string())
+    } else {
+        Text::new()
+    };
+    card("NEEDS YOU", note, rows, width)
+}
+
+/// Where the shell beside the pane is: the repository, the branch checked
+/// out there, and the files changed and not committed, by name. `changed`
+/// is `git status --porcelain` line by line; `None` while it is asked.
+pub fn you_are_here(
+    repository: &str,
+    branch: Option<&str>,
+    changed: Option<&Result<Vec<String>, String>>,
+    width: usize,
+) -> Vec<Text> {
+    let inner = width.saturating_sub(4);
+    let title = format!("HERE {}", cut(repository, 12));
+    let note = Text::of(
+        Tone::Cool,
+        cut(
+            branch.unwrap_or("no branch"),
+            inner.saturating_sub(title.chars().count() + 3),
+        ),
+    );
+    let rows = match changed {
+        None => vec![Text::of(Tone::Dim, "asking git…")],
+        Some(Err(why)) => wrapped(Tone::Warn, &format!("not read: {why}"), inner),
+        Some(Ok(lines)) if lines.is_empty() => {
+            vec![Text::of(Tone::Good, "✓ ").add(Tone::Dim, "everything is committed")]
+        }
+        Some(Ok(lines)) => {
+            let mut rows = vec![Text::of(
+                Tone::Warn,
+                match lines.len() {
+                    1 => "1 file changed, not committed".to_string(),
+                    count => format!("{count} files changed, not committed"),
+                },
+            )];
+            for line in lines.iter().take(5) {
+                // `XY path`: the two status letters, then the path.
+                let (state, path) = line.split_at(line.len().min(2));
+                let path = path.trim();
+                // The end of a long path says more than its start.
+                let room = inner.saturating_sub(3);
+                let shown = if path.chars().count() > room {
+                    let tail: String = path
+                        .chars()
+                        .skip(path.chars().count() - room.saturating_sub(1))
+                        .collect();
+                    format!("…{tail}")
+                } else {
+                    path.to_string()
+                };
+                rows.push(Text::of(Tone::Warn, format!("{state:<2} ")).add(Tone::Plain, shown));
+            }
+            if lines.len() > 5 {
+                rows.push(Text::of(
+                    Tone::Dim,
+                    format!("   … {} more", lines.len() - 5),
+                ));
+            }
+            rows
+        }
+    };
+    card(&title, note, rows, width)
 }
 
 /// The declared relationships between the repositories shown.
@@ -1391,6 +1568,7 @@ mod tests {
 
     fn around<'a>(
         ahead: &'a HashMap<String, u64>,
+        committed: &'a HashMap<String, u64>,
         copies: &'a [WorkingCopy],
         agents: &'a [OnBranch],
         here: Option<&'a str>,
@@ -1399,6 +1577,7 @@ mod tests {
             here,
             turning: None,
             ahead,
+            committed,
             copies,
             agents,
             pulse: 7,
@@ -1448,6 +1627,11 @@ mod tests {
     fn a_tip_says_what_every_tool_knows_of_its_branch() {
         let graph_of = three_tips();
         let ahead = HashMap::from([("feat/two".to_string(), 4), ("feat/one".to_string(), 0)]);
+        // `now` is 7300: one branch got a commit an hour ago, one two hours ago.
+        let committed = HashMap::from([
+            ("feat/two".to_string(), 3_700u64),
+            ("feat/one".to_string(), 0),
+        ]);
         let copies = [WorkingCopy {
             dir: "/work/two".into(),
             branch: Some("feat/two".to_string()),
@@ -1468,7 +1652,7 @@ mod tests {
         let cards = graph(
             "alpha",
             Branches::Read(&graph_of),
-            &around(&ahead, &copies, &agents, Some("feat/two")),
+            &around(&ahead, &committed, &copies, &agents, Some("feat/two")),
             20,
             38,
         );
@@ -1477,9 +1661,9 @@ mod tests {
             lines,
             [
                 "╭─ GRAPH alpha ───────────── 3 tips ─╮",
-                "│ ● feat/one              BLOCKING ✓ │",
+                "│ ● feat/one           2h BLOCKING ✓ │",
                 "│ │ aaaaaaa                          │",
-                "│ │ ● feat/two                ⌂ +4 ○ │",
+                "│ │ ● feat/two             ⌂ +4 1h ○ │",
                 "│ │ │ bbbbbbb second thing           │",
                 "│ │ │ ● claude now wrote 2.5M        │",
                 "│ │ │ ↳ handover 2h: the gate is red │",
@@ -1508,7 +1692,7 @@ mod tests {
         let fits = plain(&graph(
             "alpha",
             Branches::Read(&graph_of),
-            &around(&ahead, &copies, &agents, None),
+            &around(&ahead, &ahead, &copies, &agents, None),
             4,
             38,
         ));
@@ -1526,18 +1710,87 @@ mod tests {
         let short = plain(&graph(
             "alpha",
             Branches::Read(&graph_of),
-            &around(&ahead, &copies, &agents, None),
+            &around(&ahead, &ahead, &copies, &agents, None),
             2,
             38,
         ));
         assert_eq!(short.len(), 4, "two rows and the two edges of the card");
         assert_eq!(short[2], "│ … 3 more lines · 2 for all         │");
-        let mut busy = around(&ahead, &copies, &agents, None);
+        let mut busy = around(&ahead, &ahead, &copies, &agents, None);
         busy.turning = Some('⠋');
         let reading = plain(&graph("alpha", Branches::Reading, &busy, 9, 38));
         assert!(
             reading[1].contains("⠋ asking git and sykli…"),
             "{reading:?}"
+        );
+    }
+
+    #[test]
+    fn what_needs_a_person_is_said_in_sentences_the_worst_first() {
+        let mut broken = view(vec![
+            row("alpha", "feat/x", Some("failed")),
+            row("beta", "main", Some("proven")),
+        ]);
+        broken.projects.push(broken.projects[0].clone());
+        let graph_of = three_tips();
+        let lines = plain(&needs_you(
+            Some(&broken),
+            Some(("alpha", &graph_of)),
+            Some(&facts()),
+            38,
+        ));
+        assert_eq!(
+            lines,
+            [
+                "╭─ NEEDS YOU ──────────────────── 5 ─╮",
+                "│ • alpha: the gate failed on feat/x │",
+                "│ • alpha: a review blocks feat/one  │",
+                "│ • alpha: the gate failed on        │",
+                "│   origin/main                      │",
+                "│ • 11 proposals wait for your       │",
+                "│   decision: run ohjaa review       │",
+                "│   … 1 more                         │",
+                "╰────────────────────────────────────╯",
+            ]
+        );
+        // Quiet is said, and so is not confused with not asked yet.
+        let quiet = plain(&needs_you(
+            Some(&view(vec![row("beta", "main", Some("proven"))])),
+            None,
+            None,
+            38,
+        ));
+        assert_eq!(quiet[0], "╭─ NEEDS YOU ────────────────────────╮");
+        assert_eq!(quiet[1], "│ ✓ nothing right now                │");
+    }
+
+    #[test]
+    fn where_the_shell_is_names_the_files_not_committed() {
+        let changed = Ok(vec![
+            " M src/side.rs".to_string(),
+            "?? a/very/long/path/to/some/deeply/nested/file.txt".to_string(),
+        ]);
+        let lines = plain(&you_are_here("alpha", Some("feat/two"), Some(&changed), 38));
+        assert_eq!(
+            lines,
+            [
+                "╭─ HERE alpha ──────────── feat/two ─╮",
+                "│ 2 files changed, not committed     │",
+                "│  M src/side.rs                     │",
+                "│ ?? …to/some/deeply/nested/file.txt │",
+                "╰────────────────────────────────────╯",
+            ]
+        );
+        let clean = plain(&you_are_here("alpha", None, Some(&Ok(Vec::new())), 38));
+        assert!(clean[0].contains("no branch"), "{clean:?}");
+        assert_eq!(clean[1], "│ ✓ everything is committed          │");
+        let asking = plain(&you_are_here("alpha", Some("main"), None, 38));
+        assert!(asking[1].contains("asking git…"), "{asking:?}");
+        let failed = Err("git did not answer".to_string());
+        let lines = plain(&you_are_here("alpha", Some("main"), Some(&failed), 38));
+        assert!(
+            lines[1].contains("not read: git did not answer"),
+            "{lines:?}"
         );
     }
 

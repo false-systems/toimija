@@ -435,6 +435,9 @@ struct Pane {
     only: Option<String>,
     /// The projects, to step through with `p`.
     projects: Vec<String>,
+    /// Whether the project shown is the one the shell is working in. A key
+    /// that picks a project holds until the shell changes directory.
+    follows: bool,
     /// The repositories on screen, in order, and the one picked.
     repositories: Vec<String>,
     picked: usize,
@@ -496,6 +499,7 @@ impl Pane {
             },
             (Showing::Projects, Key::Char(b'p' | b'\t')) => {
                 self.only = next_project(&self.projects, self.only.as_deref());
+                self.follows = false;
                 self.picked = 0;
                 Asks::Draw
             }
@@ -510,6 +514,8 @@ impl Pane {
 struct Seen {
     graph: Result<crate::graph::Graph, String>,
     ahead: std::collections::HashMap<String, u64>,
+    /// When each branch last got a commit, in Unix seconds.
+    committed: std::collections::HashMap<String, u64>,
     copies: Vec<follow::WorkingCopy>,
 }
 
@@ -524,6 +530,7 @@ impl Seen {
             )
             .map_err(|error| format!("{error:#}")),
             ahead: ahead_by_branch(dir),
+            committed: committed_by_branch(dir),
             copies: follow::working_copies(dir),
         }
     }
@@ -543,6 +550,88 @@ fn ahead_by_branch(dir: &Path) -> std::collections::HashMap<String, u64> {
         return Default::default();
     };
     ahead_from(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// When each branch, local or fetched, last got a commit: one git process.
+fn committed_by_branch(dir: &Path) -> std::collections::HashMap<String, u64> {
+    use crate::command::CommandRunner as _;
+    let Ok(output) = crate::command::ProcessCommandRunner.run(
+        dir,
+        "git",
+        &[
+            "for-each-ref",
+            "--format=%(committerdate:unix) %(refname:short)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    ) else {
+        return Default::default();
+    };
+    committed_from(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn committed_from(refs: &str) -> std::collections::HashMap<String, u64> {
+    refs.lines()
+        .filter_map(|line| {
+            let (at, name) = line.split_once(' ')?;
+            Some((name.trim().to_string(), at.parse().ok()?))
+        })
+        .collect()
+}
+
+/// The files changed and not committed in the working copy at `top`, as
+/// `git status --porcelain` lists them.
+fn changed_in(top: &Path) -> Result<Vec<String>, String> {
+    use crate::command::CommandRunner as _;
+    let output = crate::command::ProcessCommandRunner
+        .run(top, "git", &["status", "--porcelain"])
+        .map_err(|error| format!("git could not be run: {error}"))?;
+    if output.status != 0 {
+        return Err(format!("git status failed (exit {})", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// `git status --porcelain` line by line, or why it could not be read.
+type Changed = Result<Vec<String>, String>;
+
+/// Something asked on a thread of its own, so the pane keeps drawing and
+/// taking keys until the answer is there.
+struct Job<T> {
+    got: Arc<Mutex<Option<T>>>,
+}
+
+impl<T: Send + 'static> Job<T> {
+    fn start(ask: impl FnOnce() -> T + Send + 'static) -> Self {
+        let got = Arc::new(Mutex::new(None));
+        let put = Arc::clone(&got);
+        std::thread::spawn(move || {
+            let answer = ask();
+            *put.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(answer);
+        });
+        Self { got }
+    }
+
+    fn answer(&self) -> Option<T> {
+        self.got
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
+/// The project a repository is shown under when the pane follows the
+/// shell: the smallest one that declares it, which says the most about it.
+fn project_of(members: &[(String, Vec<String>)], repository: &str) -> Option<String> {
+    members
+        .iter()
+        .filter(|(_, repositories)| repositories.iter().any(|name| name == repository))
+        .min_by_key(|(_, repositories)| repositories.len())
+        .map(|(name, _)| name.clone())
 }
 
 fn ahead_from(status: &str) -> std::collections::HashMap<String, u64> {
@@ -566,34 +655,24 @@ fn ahead_from(status: &str) -> std::collections::HashMap<String, u64> {
 /// The graphs already asked for, by repository, and the files each rested on.
 type Graphs = std::collections::HashMap<String, (Fingerprint, Seen)>;
 
-/// A repository's branches being asked about on a thread of its own, so
-/// the pane keeps drawing and taking keys meanwhile.
+/// A repository's branches being asked about.
 struct Asking {
     name: String,
     files: Fingerprint,
-    got: Arc<Mutex<Option<Seen>>>,
+    job: Job<Seen>,
 }
 
 impl Asking {
     fn start(name: &str, dir: PathBuf, files: Fingerprint) -> Self {
-        let got = Arc::new(Mutex::new(None));
-        let put = Arc::clone(&got);
-        std::thread::spawn(move || {
-            let seen = Seen::read(&dir);
-            *put.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(seen);
-        });
         Self {
             name: name.to_string(),
             files,
-            got,
+            job: Job::start(move || Seen::read(&dir)),
         }
     }
 
     fn answer(&self) -> Option<Seen> {
-        self.got
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
+        self.job.answer()
     }
 }
 
@@ -609,6 +688,8 @@ struct Scene<'a> {
     asking: Option<&'a str>,
     root: &'a Path,
     here: Option<&'a follow::Here>,
+    /// The files not committed where the shell is; `None` while asked.
+    changed: Option<&'a Result<Vec<String>, String>>,
     turning: Option<char>,
     pulse: u8,
     now: u64,
@@ -685,8 +766,22 @@ impl Scene<'_> {
         let mut below: Vec<look::Text> = Vec::new();
         let keys = match &self.pane.showing {
             Showing::Projects => {
-                body.extend(look::tiles(facts, self.pulse, width));
+                let picked = self.graph_of();
+                let graph = picked.as_deref().and_then(|name| {
+                    let (_, seen) = self.graphs.get(name)?;
+                    Some((name, seen.graph.as_ref().ok()?))
+                });
+                let view = self.view.and_then(|view| view.as_ref().ok());
+                body.extend(look::needs_you(view, graph, facts, width));
                 body.extend(self.repositories());
+                if let Some(here) = self.here {
+                    body.extend(look::you_are_here(
+                        &here.repository,
+                        here.branch.as_deref(),
+                        self.changed,
+                        width,
+                    ));
+                }
                 below.extend(look::agents(facts, self.now, 2, false, self.pulse, width));
                 look::keys(&[
                     ("jk", "pick"),
@@ -757,6 +852,7 @@ impl Scene<'_> {
                         .and_then(|here| here.branch.as_deref()),
                     turning: self.turning.filter(|_| self.asking == Some(name.as_str())),
                     ahead: seen.map_or(&none, |seen| &seen.ahead),
+                    committed: seen.map_or(&none, |seen| &seen.committed),
                     copies: &copies,
                     agents: &agents,
                     pulse: self.pulse,
@@ -828,14 +924,17 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     }
     signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resized))?;
 
+    // Each project and the repositories declared to be in it.
+    let members: Vec<(String, Vec<String>)> = workspace::load(root)?
+        .projects
+        .into_iter()
+        .map(|project| (project.name, project.repositories))
+        .collect();
     let mut pane = Pane {
         showing: Showing::Projects,
         only: options.project.clone(),
-        projects: workspace::load(root)?
-            .projects
-            .into_iter()
-            .map(|project| project.name)
-            .collect(),
+        projects: members.iter().map(|(name, _)| name.clone()).collect(),
+        follows: options.project.is_none(),
         repositories: Vec::new(),
         picked: 0,
     };
@@ -861,6 +960,11 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     // Where the shell beside the pane works, and the directory that says so.
     let mut beside: Option<PathBuf> = None;
     let mut here: Option<follow::Here> = None;
+    // The files not committed where the shell is: for which working copy,
+    // the answer, when it was asked, and the asking still under way.
+    let mut changed: Option<(PathBuf, Changed)> = None;
+    let mut changed_at: Option<Instant> = None;
+    let mut changing: Option<(PathBuf, Job<Changed>)> = None;
     // The frame on which news last arrived: a light then crosses the name.
     let mut news: Option<u64> = None;
     let mut frame: u64 = 0;
@@ -895,6 +999,19 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                 moved_to = here.as_ref().map(|here| here.repository.clone());
                 beside = now;
                 redraw = true;
+                changed_at = None;
+                // Without --project the project shown is the one the shell
+                // is working in, or all of them where it is in none.
+                pane.follows = options.project.is_none();
+                if pane.follows {
+                    let project = moved_to
+                        .as_deref()
+                        .and_then(|name| project_of(&members, name));
+                    if project != pane.only {
+                        pane.only = project;
+                        stale = true;
+                    }
+                }
             }
         }
         // The repositories are asked about when their files moved, and on a
@@ -905,12 +1022,36 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                 stale = true;
             }
         }
+        // The files not committed where the shell is are asked for when it
+        // moves, when the repository's files move, and every so often, as
+        // an edit moves no file git keeps.
+        if let Some((top, job)) = &changing
+            && let Some(answer) = job.answer()
+        {
+            changed = Some((top.clone(), answer));
+            changing = None;
+            redraw = true;
+        }
+        match &here {
+            Some(here) => {
+                if changed.as_ref().is_some_and(|(top, _)| *top != here.top) {
+                    changed = None;
+                }
+                let due = changed_at.is_none_or(|at| at.elapsed() >= BUSY_RECHECK);
+                if changing.is_none() && (due || stale) {
+                    let top = here.top.clone();
+                    changed_at = Some(Instant::now());
+                    changing = Some((top.clone(), Job::start(move || changed_in(&top))));
+                }
+            }
+            None => changed = None,
+        }
         let facts = tools.facts();
         let lively = facts
             .as_ref()
             .and_then(|facts| facts.agents.as_ref().ok())
             .is_some_and(|agents| !agents.digest.live.is_empty());
-        let busy = asking.is_some() || tools.busy.load(Ordering::SeqCst);
+        let busy = asking.is_some() || changing.is_some() || tools.busy.load(Ordering::SeqCst);
         let lit = news.is_some_and(|at| frame - at < 8);
         let moving = lively || busy || lit;
 
@@ -922,6 +1063,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                     memory.clear();
                     graphs.clear();
                     tools.asked = None;
+                    changed_at = None;
                     stale = true;
                     continue;
                 }
@@ -955,6 +1097,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                     asking: asking.as_ref().map(|asking| asking.name.as_str()),
                     root,
                     here: here.as_ref(),
+                    changed: changed.as_ref().map(|(_, lines)| lines),
                     turning,
                     pulse,
                     now,
@@ -1377,6 +1520,7 @@ mod tests {
             showing: Showing::Projects,
             only: None,
             projects: vec!["Tools".to_string()],
+            follows: false,
             repositories: vec!["one".to_string(), "two".to_string()],
             picked: 0,
         };
@@ -1506,6 +1650,24 @@ mod tests {
     }
 
     #[test]
+    fn a_repository_is_shown_under_the_smallest_project_that_declares_it() {
+        let members = vec![
+            (
+                "Platform".to_string(),
+                vec!["one".to_string(), "two".to_string(), "three".to_string()],
+            ),
+            ("Two".to_string(), vec!["two".to_string()]),
+        ];
+        assert_eq!(project_of(&members, "two").as_deref(), Some("Two"));
+        assert_eq!(project_of(&members, "one").as_deref(), Some("Platform"));
+        assert_eq!(project_of(&members, "elsewhere"), None);
+        let committed = committed_from("1700000000 feat/one\n1700000500 origin/main\nodd line\n");
+        assert_eq!(committed.get("feat/one"), Some(&1_700_000_000));
+        assert_eq!(committed.get("origin/main"), Some(&1_700_000_500));
+        assert_eq!(committed.len(), 2);
+    }
+
+    #[test]
     fn sykli_says_how_far_ahead_each_branch_is_and_silence_is_not_nought() {
         let status = r#"{"schema":"sykli-branch-status.v1","branches":[
             {"branch":"feat/one","ahead":3,"behind":0},
@@ -1526,6 +1688,7 @@ mod tests {
             showing: Showing::Projects,
             only: None,
             projects: Vec::new(),
+            follows: false,
             repositories: vec!["one".to_string()],
             picked: 0,
         };
