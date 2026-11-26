@@ -145,7 +145,8 @@ pub enum Command {
     /// uncommitted changes, distance from its base, what sykli's receipts
     /// say and who is working there, and redraws when something moves.
     /// `--open` asks Ghostty (on macOS) or tmux for a pane on the right and
-    /// runs there. Keys: `r` read again, `p` next project, `q` quit.
+    /// runs there. Keys: `j`/`k` pick a repository, `g` its branch graph, `p`
+    /// next project or back, `r` read again, `q` quit.
     /// Read-only; it starts no process while nothing changes, captures no
     /// mouse and lives only as long as its pane.
     #[command(
@@ -391,6 +392,9 @@ pub struct SideArgs {
     /// Columns to draw in; the pane's width by default.
     #[arg(long)]
     pub width: Option<usize>,
+    /// Narrow the pane first. `--open` passes it to the pane it opens.
+    #[arg(long, hide = true)]
+    pub fit: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1434,6 +1438,7 @@ fn run_side(args: SideArgs) -> Result<i32> {
             project: args.project,
             once: args.once,
             width: args.width,
+            fit: args.fit,
         },
     )
 }

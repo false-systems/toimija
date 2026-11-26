@@ -868,11 +868,18 @@ asked at once. In a repository, `graph` is the branch graph described above.
 `toimija side` keeps the same view on screen in a narrow pane, from a
 workspace folder or any of its repositories:
 
-- `toimija side --open` asks for a pane on the right and runs there: under
-  tmux with `tmux split-window`, in Ghostty on macOS through its AppleScript
-  interface (macOS asks once for permission). Elsewhere it prints the command
-  to run in a split you open yourself.
-- Keys: `r` reads everything again, `p` steps through the projects, `q` quits.
+- `toimija side --open` asks for a pane on the right and runs there, beside
+  the terminal it was typed in: under tmux with `tmux split-window`, in
+  Ghostty on macOS through its AppleScript interface (macOS asks once for
+  permission). The pane is made 38 columns wide. Elsewhere it prints the
+  command to run in a split you open yourself.
+- `--open` is a toggle: when the pane is already there, in this tmux window
+  or this Ghostty tab, it closes it instead.
+- Three views, by number: `1` where each repository of the projects stands,
+  `2` the branch graph of the repository picked, `3` the declared relations
+  between them. The line under the title shows which is on screen.
+- Keys: `j` and `k` or the arrows pick a repository, `p` steps through the
+  projects, `r` reads everything again, `q` quits.
 - It is an ordinary foreground command that redraws in place. It captures no
   mouse, writes nothing and ends with its pane.
 - While nothing moves it starts no process. Every second and a half it reads

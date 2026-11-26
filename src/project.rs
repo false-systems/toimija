@@ -305,6 +305,20 @@ pub fn build_from(
         })
         .collect();
 
+    // A gap about a repository of the folder that is not shown here is not
+    // a gap in this view: it stays in the workspace packet, where it belongs.
+    let elsewhere: Vec<&str> = packet
+        .repositories
+        .iter()
+        .map(|repository| repository.name.as_str())
+        .filter(|name| !shown.contains(name))
+        .collect();
+    warnings.retain(|warning| {
+        !elsewhere.iter().any(|name| {
+            warning.starts_with(&format!("{name}: ")) || warning.contains(&format!(" {name}/"))
+        })
+    });
+
     Ok(View {
         schema: SCHEMA,
         folder: packet.workspace.folder.clone(),
@@ -317,6 +331,30 @@ pub fn build_from(
 
 fn safe(value: &str) -> String {
     crate::path_codec::display(Path::new(value))
+}
+
+/// `text` over as many lines as it needs, each starting with `indent` and
+/// no wider than `width`. A word longer than a line is cut.
+fn wrap(text: &str, indent: &str, width: usize) -> Vec<String> {
+    let room = width.saturating_sub(indent.chars().count()).max(8);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let word = fit(word, room);
+        let longer = line.chars().count() + 1 + word.chars().count();
+        if !line.is_empty() && longer > room {
+            lines.push(format!("{indent}{line}"));
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&word);
+    }
+    if !line.is_empty() {
+        lines.push(format!("{indent}{line}"));
+    }
+    lines
 }
 
 /// `value` cut to `width` characters, with an ellipsis when it was longer.
@@ -332,6 +370,15 @@ fn fit(value: &str, width: usize) -> String {
 /// The view as lines no wider than `width`, for a terminal or a narrow pane.
 /// State is said in words as well as marks, so nothing depends on colour.
 pub fn render_lines(view: &View, width: usize) -> Vec<String> {
+    render_lines_with(view, width, None)
+}
+
+/// The mark that ends the line of the repository picked in `toimija side`.
+pub const PICKED: char = '◂';
+
+/// As [`render_lines`], with the repository named `picked` marked wherever
+/// it is listed.
+pub fn render_lines_with(view: &View, width: usize, picked: Option<&str>) -> Vec<String> {
     let width = width.max(24);
     let mut lines = Vec::new();
     for (index, project) in view.projects.iter().enumerate() {
@@ -348,7 +395,15 @@ pub fn render_lines(view: &View, width: usize) -> Vec<String> {
             } else {
                 '●'
             };
-            lines.push(fit(&format!("{mark} {}", safe(&row.name)), width));
+            let mut header = fit(
+                &format!("{mark} {}", safe(&row.name)),
+                width.saturating_sub(2),
+            );
+            if picked == Some(row.name.as_str()) {
+                header.push(' ');
+                header.push(PICKED);
+            }
+            lines.push(header);
             if !row.present {
                 lines.push("    not in this folder".to_string());
                 continue;
@@ -392,20 +447,48 @@ pub fn render_lines(view: &View, width: usize) -> Vec<String> {
             }
         }
     }
-    if !view.relationships.is_empty() {
+    let relations = render_relations(view, width);
+    if !relations.is_empty() {
         lines.push(String::new());
         lines.push("relations".to_string());
+        lines.extend(relations);
+    }
+    lines.extend(render_not_read(view, width));
+    lines
+}
+
+/// The repositories of each project as they stand, without the relations:
+/// the first view of `toimija side`.
+pub fn render_rows(view: &View, width: usize, picked: Option<&str>) -> Vec<String> {
+    let mut lines = render_lines_with(view, width, picked);
+    if let Some(at) = lines.iter().position(|line| line == "relations") {
+        lines.truncate(at.saturating_sub(1));
+        lines.extend(render_not_read(view, width));
+    }
+    lines
+}
+
+/// The declared relationships between the repositories shown.
+pub fn render_relations(view: &View, width: usize) -> Vec<String> {
+    let width = width.max(24);
+    let mut lines = Vec::new();
+    {
         for relation in &view.relationships {
             lines.push(fit(
                 &format!("  {} → {}", safe(&relation.from), safe(&relation.to)),
                 width,
             ));
-            lines.push(fit(&format!("    {}", safe(&relation.kind)), width));
+            lines.extend(wrap(&safe(&relation.kind), "    ", width));
             for path in &relation.missing_contract {
                 lines.push(fit(&format!("    contract missing: {}", safe(path)), width));
             }
         }
     }
+    lines
+}
+
+fn render_not_read(view: &View, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
     if !view.warnings.is_empty() {
         lines.push(String::new());
         lines.push("not read".to_string());
@@ -435,6 +518,17 @@ mod tests {
             ? notes.txt\0u UU N... 1 1 1 1 a a a both.rs\0";
         assert_eq!(changed_paths(porcelain), 4);
         assert_eq!(changed_paths(b""), 0);
+    }
+
+    #[test]
+    fn text_wraps_at_words_and_never_runs_past_the_width() {
+        let lines = wrap("reads what the checker proved of each commit", "  ", 20);
+        assert_eq!(
+            lines,
+            ["  reads what the", "  checker proved of", "  each commit"]
+        );
+        assert!(lines.iter().all(|line| line.chars().count() <= 20));
+        assert_eq!(wrap("", "  ", 20), Vec::<String>::new());
     }
 
     #[test]

@@ -26,6 +26,8 @@ use crate::workspace;
 
 /// The width asked for when this command opens its own pane, in columns.
 pub const PANE_COLUMNS: u16 = 38;
+/// The title the view gives its pane, by which `--open` finds it again.
+pub const PANE_TITLE: &str = "toimija side";
 const TICK: Duration = Duration::from_millis(1500);
 /// How often uncommitted edits are looked for where a session is at work.
 const BUSY_RECHECK: Duration = Duration::from_secs(20);
@@ -179,6 +181,9 @@ pub struct Options {
     pub project: Option<String>,
     pub once: bool,
     pub width: Option<usize>,
+    /// Narrow this pane to [`PANE_COLUMNS`] first, where the terminal can be
+    /// asked to. Set by `--open`.
+    pub fit: bool,
 }
 
 /// Print the view once, or keep it on screen when standard output is a
@@ -235,7 +240,7 @@ mod screen {
         }));
         // The alternate screen, so nothing is left in the scrollback; no cursor.
         let mut out = std::io::stdout().lock();
-        out.write_all(b"\x1b[?1049h\x1b[?25l")?;
+        out.write_all(b"\x1b[?1049h\x1b[?25l\x1b]2;toimija side\x07")?;
         out.flush()?;
         Ok(Screen)
     }
@@ -270,6 +275,43 @@ mod screen {
         }
     }
 
+    /// Columns, and the width of the terminal in pixels when it says.
+    pub fn columns_and_pixels() -> Option<(usize, usize)> {
+        // SAFETY: TIOCGWINSZ fills the winsize it is given.
+        unsafe {
+            let mut size: libc::winsize = std::mem::zeroed();
+            (libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) == 0 && size.ws_col > 0)
+                .then(|| (usize::from(size.ws_col), usize::from(size.ws_xpixel)))
+        }
+    }
+
+    /// A key as the view understands it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Key {
+        Up,
+        Down,
+        Back,
+        Char(u8),
+    }
+
+    /// One key, waiting at most `wait`. An arrow arrives as three bytes; a
+    /// lone escape means back.
+    pub fn read_key(wait: std::time::Duration) -> Option<Key> {
+        let soon = std::time::Duration::from_millis(15);
+        match key(wait)? {
+            0x1b => match key(soon) {
+                Some(b'[' | b'O') => match key(soon) {
+                    Some(b'A') => Some(Key::Up),
+                    Some(b'B') => Some(Key::Down),
+                    _ => None,
+                },
+                _ => Some(Key::Back),
+            },
+            0x7f | 0x08 => Some(Key::Back),
+            byte => Some(Key::Char(byte)),
+        }
+    }
+
     /// One key, waiting at most `wait`. `None` when none came.
     pub fn key(wait: std::time::Duration) -> Option<u8> {
         let mut watched = libc::pollfd {
@@ -289,6 +331,124 @@ mod screen {
     }
 }
 
+/// What the pane is showing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Showing {
+    /// Where each repository of the projects stands.
+    Projects,
+    /// The branch graph of one repository.
+    Graph(String),
+    /// The declared relationships between the repositories shown.
+    Relations,
+}
+
+impl Showing {
+    /// The views by number, the one on screen in brackets.
+    fn tabs(&self) -> String {
+        let mark = |on: bool, text: &str| {
+            if on {
+                format!("[{text}]")
+            } else {
+                format!(" {text} ")
+            }
+        };
+        format!(
+            "{}{}{}",
+            mark(matches!(self, Showing::Projects), "1 projects"),
+            mark(matches!(self, Showing::Graph(_)), "2 graph"),
+            mark(matches!(self, Showing::Relations), "3 relations"),
+        )
+    }
+}
+
+/// What a key asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Asks {
+    Quit,
+    /// Read everything again.
+    Again,
+    /// Draw again: something on screen changed.
+    Draw,
+    Nothing,
+}
+
+/// The state a key changes: what is shown, which project, and which
+/// repository is picked.
+struct Pane {
+    showing: Showing,
+    only: Option<String>,
+    /// The projects, to step through with `p`.
+    projects: Vec<String>,
+    /// The repositories on screen, in order, and the one picked.
+    repositories: Vec<String>,
+    picked: usize,
+}
+
+impl Pane {
+    fn picked(&self) -> Option<&str> {
+        self.repositories.get(self.picked).map(String::as_str)
+    }
+
+    #[cfg(unix)]
+    fn press(&mut self, key: screen::Key) -> Asks {
+        use screen::Key;
+        match (&self.showing, key) {
+            (_, Key::Char(b'q')) => Asks::Quit,
+            (_, Key::Char(b'r')) => Asks::Again,
+            (_, Key::Char(b'1')) => {
+                self.showing = Showing::Projects;
+                Asks::Draw
+            }
+            (_, Key::Char(b'2')) => match self.picked() {
+                Some(name) => {
+                    self.showing = Showing::Graph(name.to_string());
+                    Asks::Draw
+                }
+                None => Asks::Nothing,
+            },
+            (_, Key::Char(b'3')) => {
+                self.showing = Showing::Relations;
+                Asks::Draw
+            }
+            (Showing::Graph(_) | Showing::Relations, Key::Back | Key::Char(b'p' | b'g' | b'h')) => {
+                self.showing = Showing::Projects;
+                Asks::Draw
+            }
+            (Showing::Projects, Key::Down | Key::Char(b'j')) => {
+                if self.picked + 1 < self.repositories.len() {
+                    self.picked += 1;
+                }
+                Asks::Draw
+            }
+            (Showing::Projects, Key::Up | Key::Char(b'k')) => {
+                self.picked = self.picked.saturating_sub(1);
+                Asks::Draw
+            }
+            (Showing::Projects, Key::Char(b'g' | b'\r' | b'\n' | b'l')) => match self.picked() {
+                Some(name) => {
+                    self.showing = Showing::Graph(name.to_string());
+                    Asks::Draw
+                }
+                None => Asks::Nothing,
+            },
+            (Showing::Projects, Key::Char(b'p' | b'\t')) => {
+                self.only = next_project(&self.projects, self.only.as_deref());
+                self.picked = 0;
+                Asks::Draw
+            }
+            _ => Asks::Nothing,
+        }
+    }
+}
+
+/// The branch graph of the repository at `dir`, as lines for the pane.
+fn graph_lines(runner: &dyn CommandRunner, dir: &Path, width: usize) -> Vec<String> {
+    match crate::graph::build(runner, dir, "origin/main", &crate::graph::sykli_proof) {
+        Ok(graph) => crate::graph::render_narrow(&graph, width),
+        Err(error) => vec![format!("not read: {error:#}")],
+    }
+}
+
 #[cfg(unix)]
 fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -302,15 +462,24 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     }
     signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resized))?;
 
-    // The projects to step through with `p`: all of them, then each.
-    let names: Vec<String> = workspace::load(root)?
-        .projects
-        .into_iter()
-        .map(|project| project.name)
-        .collect();
-    let mut only = options.project.clone();
+    let mut pane = Pane {
+        showing: Showing::Projects,
+        only: options.project.clone(),
+        projects: workspace::load(root)?
+            .projects
+            .into_iter()
+            .map(|project| project.name)
+            .collect(),
+        repositories: Vec::new(),
+        picked: 0,
+    };
     let mut memory = Memory::default();
+    // The graph last drawn: whose it is, the files it rests on, its lines.
+    let mut graph: Option<(String, Fingerprint, usize, Vec<String>)> = None;
     let _screen = screen::enter().context("the terminal could not be prepared")?;
+    if options.fit {
+        fit_pane();
+    }
 
     let mut drawn: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) {
@@ -320,57 +489,161 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
             && !resized.load(Ordering::Relaxed)
             && !memory.moved(root);
         if idle {
-            match screen::key(TICK) {
-                Some(b'q') => return Ok(0),
-                Some(b'r') => {
+            match screen::read_key(TICK).map(|key| pane.press(key)) {
+                Some(Asks::Quit) => return Ok(0),
+                Some(Asks::Again) => {
                     memory.clear();
+                    graph = None;
                     drawn = None;
                 }
-                Some(b'p' | b'\t') => {
-                    only = next_project(&names, only.as_deref());
-                    drawn = None;
-                }
-                _ => {}
+                Some(Asks::Draw) => drawn = None,
+                Some(Asks::Nothing) | None => {}
             }
             continue;
         }
         drawn = Some(Instant::now());
+        resized.store(false, Ordering::Relaxed);
         let (columns, rows) = screen::size().unwrap_or((usize::from(PANE_COLUMNS), 40));
         let width = options.width.unwrap_or(columns).min(columns);
-        let body = match memory.view(
+
+        let view = memory.view(
             runner,
             root,
-            only.as_deref(),
+            pane.only.as_deref(),
             Instant::now(),
             &mut |names| project::ask_many(root, names),
-        ) {
-            Ok(view) => project::render_lines(&view, width),
-            Err(error) => vec![format!("not read: {error:#}")],
-        };
-        draw(root, only.as_deref(), &body, width, rows)?;
-        resized.store(false, Ordering::Relaxed);
-
-        let until = Instant::now() + TICK;
-        while Instant::now() < until
-            && !stop.load(Ordering::Relaxed)
-            && !resized.load(Ordering::Relaxed)
-        {
-            match screen::key(until.saturating_duration_since(Instant::now())) {
-                Some(b'q') => return Ok(0),
-                Some(b'r') => {
-                    memory.clear();
-                    break;
+        );
+        if let Ok(view) = &view {
+            let mut names: Vec<String> = Vec::new();
+            for row in view.projects.iter().flat_map(|p| &p.repositories) {
+                if row.present && !names.contains(&row.name) {
+                    names.push(row.name.clone());
                 }
-                Some(b'p' | b'\t') => {
-                    only = next_project(&names, only.as_deref());
-                    break;
-                }
-                _ => {}
             }
+            pane.repositories = names;
+            pane.picked = pane.picked.min(pane.repositories.len().saturating_sub(1));
         }
+        let folder = root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (title, body, keys) = match &pane.showing {
+            Showing::Projects => (
+                pane.only.clone().unwrap_or(folder),
+                match &view {
+                    Ok(view) => project::render_rows(view, width, pane.picked()),
+                    Err(error) => vec![format!("not read: {error:#}")],
+                },
+                "jk pick  p next project  r  q quit",
+            ),
+            Showing::Relations => (
+                pane.only.clone().unwrap_or(folder),
+                match &view {
+                    Ok(view) => {
+                        let lines = project::render_relations(view, width);
+                        if lines.is_empty() {
+                            vec!["none declared between these".to_string()]
+                        } else {
+                            lines
+                        }
+                    }
+                    Err(error) => vec![format!("not read: {error:#}")],
+                },
+                "p next project  r again  q quit",
+            ),
+            Showing::Graph(name) => {
+                let dir = root.join(name);
+                let now = fingerprint(&dir);
+                let fresh = graph
+                    .as_ref()
+                    .is_some_and(|(of, at, wide, _)| of == name && *at == now && *wide == width);
+                if !fresh {
+                    // Asking takes a moment in a clone with many branches.
+                    draw(
+                        name,
+                        &pane.showing.tabs(),
+                        &["reading…".to_string()],
+                        "",
+                        width,
+                        rows,
+                    )?;
+                    graph = Some((name.clone(), now, width, graph_lines(runner, &dir, width)));
+                }
+                (
+                    name.clone(),
+                    graph
+                        .as_ref()
+                        .map(|kept| kept.3.clone())
+                        .unwrap_or_default(),
+                    "1 back  r again  q quit",
+                )
+            }
+        };
+        draw(&title, &pane.showing.tabs(), &body, keys, width, rows)?;
     }
     Ok(0)
 }
+
+/// Narrow this pane to [`PANE_COLUMNS`] by asking Ghostty to move the
+/// divider. Ghostty sizes splits in pixels and does not say which way a
+/// direction moves this pane, so each step is measured and the next one
+/// corrected: a wrong direction is turned round, a wrong scale is rescaled.
+/// Any failure leaves the pane as it is.
+#[cfg(target_os = "macos")]
+fn fit_pane() {
+    let Some(tty) = own_tty() else { return };
+    if std::env::var("TERM_PROGRAM").as_deref() != Ok("ghostty") {
+        return;
+    }
+    let want = usize::from(PANE_COLUMNS);
+    let mut narrower = "right";
+    let mut wider = "left";
+    let mut scale = 1.0_f64;
+    for _ in 0..5 {
+        let Some((columns, pixels)) = screen::columns_and_pixels() else {
+            return;
+        };
+        if columns.abs_diff(want) <= 1 || pixels == 0 {
+            return;
+        }
+        let cell = pixels as f64 / columns as f64;
+        let amount = (columns.abs_diff(want) as f64 * cell * scale)
+            .round()
+            .max(1.0) as u64;
+        let direction = if columns > want { narrower } else { wider };
+        let script = format!(
+            "tell application \"Ghostty\" to perform action {} on (first terminal whose tty is {})",
+            applescript_string(&format!("resize_split:{direction},{amount}")),
+            applescript_string(&tty),
+        );
+        let asked = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if !asked.is_ok_and(|status| status.success()) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        let Some((after, _)) = screen::columns_and_pixels() else {
+            return;
+        };
+        if after == columns {
+            return;
+        }
+        let meant_narrower = columns > want;
+        if (after < columns) != meant_narrower {
+            std::mem::swap(&mut narrower, &mut wider);
+        } else {
+            let moved = columns.abs_diff(after) as f64;
+            let asked = columns.abs_diff(want) as f64;
+            scale = (scale * asked / moved).clamp(0.2, 5.0);
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn fit_pane() {}
 
 /// After every project, each in turn, then every project again.
 fn next_project(names: &[String], now: Option<&str>) -> Option<String> {
@@ -385,49 +658,56 @@ fn next_project(names: &[String], now: Option<&str>) -> Option<String> {
 }
 
 /// One frame, written once, inside the terminal's synchronized-output marks
-/// so a half-drawn frame is never shown.
+/// so a half-drawn frame is never shown. The picked repository's line is
+/// drawn in reverse as well as marked.
 #[cfg(unix)]
-fn draw(root: &Path, only: Option<&str>, body: &[String], width: usize, rows: usize) -> Result<()> {
-    let folder = root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let title = format!("TOIMIJA  {}", only.unwrap_or(&folder));
+fn draw(
+    title: &str,
+    tabs: &str,
+    body: &[String],
+    keys: &str,
+    width: usize,
+    rows: usize,
+) -> Result<()> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|since| since.as_secs())
         .unwrap_or(0);
-    let clock = format!(
-        "{:02}:{:02}:{:02} UTC",
-        now % 86_400 / 3_600,
-        now % 3_600 / 60,
-        now % 60
-    );
-    let rule: String = "─".repeat(width);
-    let keys = "r again  p project  q quit";
-    let room = rows.saturating_sub(4);
+    let clock = format!("{:02}:{:02} UTC", now % 86_400 / 3_600, now % 3_600 / 60);
+    let name = format!("TOIMIJA  {title}");
+    let gap = width.saturating_sub(name.chars().count() + clock.chars().count());
+    let heading = if gap >= 2 {
+        format!("{name}{}{clock}", " ".repeat(gap))
+    } else {
+        name
+    };
+    let room = rows.saturating_sub(5);
 
     let mut frame = String::from("\x1b[?2026h\x1b[H");
     let mut line = |text: &str| {
         let cut: String = text.chars().take(width).collect();
-        frame.push_str(&cut);
+        if cut.ends_with(project::PICKED) {
+            frame.push_str("\x1b[7m");
+            frame.push_str(&cut);
+            frame.push_str("\x1b[0m");
+        } else {
+            frame.push_str(&cut);
+        }
         frame.push_str("\x1b[K\r\n");
     };
-    line(&title);
-    line(&rule);
+    line(&heading);
+    line(tabs);
+    line("");
     for text in body.iter().take(room) {
         line(text);
     }
     if body.len() > room {
-        line(&format!(
-            "… {} more lines; widen or pick a project",
-            body.len() - room
-        ));
+        line(&format!("… {} more lines", body.len() - room));
     }
     frame.push_str("\x1b[J");
-    // The last row: when this was read, and the keys.
+    // The last row: the keys.
     frame.push_str(&format!("\x1b[{rows};1H"));
-    let foot: String = format!("{clock}  {keys}").chars().take(width).collect();
+    let foot: String = keys.chars().take(width).collect();
     frame.push_str(&foot);
     frame.push_str("\x1b[K\x1b[?2026l");
 
@@ -457,19 +737,16 @@ pub fn opener(
         .collect::<Vec<_>>()
         .join(" ");
     if env("TMUX").is_some_and(|value| !value.is_empty()) {
-        return Ok((
-            "tmux".to_string(),
-            vec![
-                "split-window".to_string(),
-                "-h".to_string(),
-                "-d".to_string(),
-                "-l".to_string(),
-                PANE_COLUMNS.to_string(),
-                "-c".to_string(),
-                root.display().to_string(),
-                shell_line,
-            ],
-        ));
+        // A pane of this window titled as the view titles itself is the
+        // view: close it. Otherwise open one, keeping focus where it is.
+        let script = format!(
+            "pane=$(tmux list-panes -F '#{{pane_id}} #{{pane_title}}' | sed -n 's/ {PANE_TITLE}$//p' | head -1)\n\
+             if [ -n \"$pane\" ]; then tmux kill-pane -t \"$pane\"\n\
+             else tmux split-window -h -d -l {PANE_COLUMNS} -c {} {}\nfi",
+            shell_quote(&root.display().to_string()),
+            shell_quote(&shell_line),
+        );
+        return Ok(("sh".to_string(), vec!["-c".to_string(), script]));
     }
     if cfg!(target_os = "macos") && env("TERM_PROGRAM").as_deref() == Some("ghostty") {
         // The pane goes beside the terminal this was typed in, found by its
@@ -482,18 +759,36 @@ pub fn opener(
                  {shell_line} --open"
             ));
         };
+        // In the tab this terminal is in, a pane titled as the view titles
+        // itself is the view: close it. Otherwise open one beside this
+        // terminal and give the focus back.
         let script = format!(
             "tell application \"Ghostty\"\n\
-             set here to first terminal whose tty is {}\n\
+             set here to first terminal whose tty is {tty}\n\
+             set panes to {{}}\n\
+             repeat with w in windows\n\
+             repeat with t in tabs of w\n\
+             if (tty of terminals of t) contains {tty} then\n\
+             set panes to (terminals of t whose name is {title})\n\
+             end if\n\
+             end repeat\n\
+             end repeat\n\
+             if (count of panes) > 0 then\n\
+             repeat with pane in panes\n\
+             close pane\n\
+             end repeat\n\
+             else\n\
              set cfg to new surface configuration\n\
-             set command of cfg to {}\n\
-             set initial working directory of cfg to {}\n\
-             set pane to split here direction right with configuration cfg\n\
+             set command of cfg to {command}\n\
+             set initial working directory of cfg to {folder}\n\
+             split here direction right with configuration cfg\n\
              focus here\n\
+             end if\n\
              end tell",
-            applescript_string(tty),
-            applescript_string(&shell_line),
-            applescript_string(&root.display().to_string()),
+            tty = applescript_string(tty),
+            title = applescript_string(PANE_TITLE),
+            command = applescript_string(&format!("{shell_line} --fit")),
+            folder = applescript_string(&root.display().to_string()),
         );
         return Ok(("osascript".to_string(), vec!["-e".to_string(), script]));
     }
@@ -603,6 +898,36 @@ mod tests {
         assert_eq!(asked.last().unwrap(), &["one", "two"]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn keys_pick_a_repository_open_its_graph_and_come_back() {
+        use screen::Key;
+        let mut pane = Pane {
+            showing: Showing::Projects,
+            only: None,
+            projects: vec!["Tools".to_string()],
+            repositories: vec!["one".to_string(), "two".to_string()],
+            picked: 0,
+        };
+        assert_eq!(pane.press(Key::Down), Asks::Draw);
+        assert_eq!(pane.press(Key::Char(b'j')), Asks::Draw);
+        assert_eq!(pane.picked(), Some("two"), "it stops at the last one");
+        assert_eq!(pane.press(Key::Char(b'g')), Asks::Draw);
+        assert_eq!(pane.showing, Showing::Graph("two".to_string()));
+        // In a graph the picking keys do nothing, and back returns.
+        assert_eq!(pane.press(Key::Down), Asks::Nothing);
+        assert_eq!(pane.press(Key::Back), Asks::Draw);
+        assert_eq!(pane.showing, Showing::Projects);
+        assert_eq!(pane.press(Key::Up), Asks::Draw);
+        assert_eq!(pane.picked(), Some("one"));
+        // `p` moves to the next project and starts at its first repository.
+        pane.picked = 1;
+        assert_eq!(pane.press(Key::Char(b'p')), Asks::Draw);
+        assert_eq!((pane.only.as_deref(), pane.picked), (Some("Tools"), 0));
+        assert_eq!(pane.press(Key::Char(b'q')), Asks::Quit);
+        assert_eq!(pane.press(Key::Char(b'r')), Asks::Again);
+    }
+
     #[test]
     fn p_steps_through_every_project_and_back_to_all() {
         let names = vec!["Platform".to_string(), "Tools".to_string()];
@@ -616,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn inside_tmux_the_pane_is_a_tmux_split_that_keeps_focus() {
+    fn inside_tmux_open_is_a_toggle_that_keeps_focus() {
         let env = |name: &str| (name == "TMUX").then(|| "/tmp/tmux-1/default,1,0".to_string());
         let (program, args) = opener(
             Path::new("/bin/toimija"),
@@ -626,39 +951,64 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(program, "tmux");
-        assert_eq!(
-            args,
-            [
-                "split-window",
-                "-h",
-                "-d",
-                "-l",
-                "38",
-                "-c",
-                "/work",
-                "/bin/toimija side"
-            ]
+        assert_eq!(program, "sh");
+        // A pane titled as the view is closed; otherwise one is opened.
+        assert!(args[1].contains("s/ toimija side$//p"), "{}", args[1]);
+        assert!(
+            args[1].contains("tmux kill-pane -t \"$pane\""),
+            "{}",
+            args[1]
+        );
+        assert!(
+            args[1].contains("else tmux split-window -h -d -l 38 -c /work '/bin/toimija side'"),
+            "{}",
+            args[1]
         );
     }
 
     #[test]
     fn a_project_name_cannot_become_shell_or_applescript() {
-        let env = |name: &str| (name == "TMUX").then(|| "x".to_string());
-        let hostile = "a'; rm -rf ~; \"";
-        let (_, args) = opener(
-            Path::new("/bin/toimija"),
-            Path::new("/work"),
-            Some(hostile),
-            &env,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            args.last().unwrap(),
-            "/bin/toimija side --project 'a'\\''; rm -rf ~; \"'"
-        );
+        // One word for the shell, however it is written.
+        assert_eq!(shell_quote("a'; rm -rf ~; \""), "'a'\\''; rm -rf ~; \"'");
+        assert_eq!(shell_quote("SDLC"), "SDLC");
+        assert_eq!(shell_quote(""), "''");
+        // And one string for AppleScript.
         assert_eq!(applescript_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn the_views_are_numbered_and_the_one_on_screen_is_bracketed() {
+        assert_eq!(
+            Showing::Projects.tabs(),
+            "[1 projects] 2 graph  3 relations "
+        );
+        assert_eq!(
+            Showing::Graph("one".to_string()).tabs(),
+            " 1 projects [2 graph] 3 relations "
+        );
+        assert!(Showing::Relations.tabs().ends_with("[3 relations]"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_number_goes_straight_to_its_view() {
+        use screen::Key;
+        let mut pane = Pane {
+            showing: Showing::Projects,
+            only: None,
+            projects: Vec::new(),
+            repositories: vec!["one".to_string()],
+            picked: 0,
+        };
+        assert_eq!(pane.press(Key::Char(b'3')), Asks::Draw);
+        assert_eq!(pane.showing, Showing::Relations);
+        assert_eq!(pane.press(Key::Char(b'2')), Asks::Draw);
+        assert_eq!(pane.showing, Showing::Graph("one".to_string()));
+        assert_eq!(pane.press(Key::Char(b'1')), Asks::Draw);
+        assert_eq!(pane.showing, Showing::Projects);
+        // With no repository to pick there is no graph to go to.
+        pane.repositories.clear();
+        assert_eq!(pane.press(Key::Char(b'2')), Asks::Nothing);
     }
 
     #[cfg(target_os = "macos")]
