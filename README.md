@@ -113,7 +113,7 @@ toimija run claude         # start an agent as a session, with the packet in its
 toimija enter              # the packet now, for an agent started some other way
 toimija sessions           # who is working in this repository, and why; which worktrees are finished
 toimija graph              # the branches in progress: proven or not, review level, who is there
-toimija side --open        # the same across a workspace's projects, kept on screen in a pane
+toimija side --open        # projects, a repository's graph and relations in a pane; again to close it
 toimija intent "fix the login redirect"          # a session says why it is here
 toimija handover --next "tests still to write"   # a note for the next agent
 ```

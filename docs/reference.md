@@ -868,18 +868,107 @@ asked at once. In a repository, `graph` is the branch graph described above.
 `toimija side` keeps the same view on screen in a narrow pane, from a
 workspace folder or any of its repositories:
 
-- `toimija side --open` asks for a pane on the right and runs there: under
-  tmux with `tmux split-window`, in Ghostty on macOS through its AppleScript
-  interface (macOS asks once for permission). Elsewhere it prints the command
-  to run in a split you open yourself.
-- Keys: `r` reads everything again, `p` steps through the projects, `q` quits.
-- It is an ordinary foreground command that redraws in place. It captures no
-  mouse, writes nothing and ends with its pane.
-- While nothing moves it starts no process. Every second and a half it reads
+- `toimija side --open` asks for a pane on the right and runs there, beside
+  the terminal it was typed in: under tmux with `tmux split-window`, in
+  Ghostty on macOS through its AppleScript interface (macOS asks once for
+  permission). Ghostty starts a pane's command without your shell's
+  profile, so the pane is handed the `PATH` of the shell it was opened
+  from, which is how it finds sykli, vessa and ohjaa. The pane is made 38 columns wide. Elsewhere it prints the
+  command to run in a split you open yourself.
+- `--open` is a toggle: when the pane is already there, in this tmux window
+  or this Ghostty tab, it closes it instead.
+  In Ghostty the view is asked to quit first and the pane then closed, as
+  Ghostty can take a pane away without ending the program in it; the view
+  also ends by itself when it finds its terminal gone.
+- Four views, by number. `1` is the calm one: a line when something needs
+  you, each repository of the projects on a line, the files you have not
+  committed when there are any, and the branch graph of the repository
+  picked, which has the rest of the pane. `2` gives the graph the whole
+  pane and everything known of each tip, `3` shows the declared relations
+  between the repositories, `4` what needs you in full, every agent
+  session of the last day, what each agent read and wrote, and the
+  knowledge with what ohjaa flagged. The view on screen is lit in the row
+  under the name. The pane opens on `1` and leaves the keyboard in your
+  terminal, so it is there without a key.
+- A tip of the graph is one line: its branch, `⌂` when a working copy has
+  it checked out, how long since it got a commit, any review, and sykli's
+  mark. Under the tip your shell has checked out are its commit and
+  subject and the handover `toimija handover` left there. View `2` adds,
+  for every tip, the commits sykli counts it ahead of the base (`+4`), its
+  commit and subject while everything fits, the agent sessions vessa read
+  in a working copy on that branch, and its handover. Where sykli gives no
+  count none is shown.
+- A gate that is running turns its mark, on the repository's line and on
+  the tip, and the tip says under it which task is on (`gate running:
+  test`), in every view. View `2` adds under each tip what sykli's records
+  say of its gate: `proven 5m ago · took 25s` (or `from cache` where no
+  task had to run), `clippy failed 2h ago` with the tasks that failed, and
+  the reason behind a `?`. A part sykli does not give is left out.
+- A repository's line: `▸` when it is the one picked, sykli's mark for the
+  branch checked out, the name, `●` when a session is open there, the
+  branch, `±3` for three uncommitted paths, `↑2 ↓40` for commits ahead of
+  and behind its base. The marks, which the row above the keys repeats:
+  `✓` proven, `✗` failed, `○` not run, `⌂` a working copy; `?` is unknown, and in the graph `–` is a
+  commit with no gate, `◉` is the base, and a review that is not `none` is
+  written before the mark. What is unknown shows `?`, never nothing.
+- The agent sessions come from `vessa digest --since 24h --json` and the
+  knowledge card from the summary line of `ohjaa check`, each asked every
+  two minutes in the background. A tool that is not installed or fails is
+  said so in its card; a count vessa does not know shows as `?` with no
+  bar, never as zero, and a partial read is marked partial. A session that
+  wrote within the last two minutes has a mark that beats. Toimija reads
+  no conversation.
+- The pane opened by `--open` follows the shell it was opened from: when
+  you `cd` into another repository of the workspace, or into one of its
+  linked worktrees, that repository is picked and its graph shown, with
+  the branch you have checked out lit. It asks the kernel for the shell's
+  directory and reads the `.git` above it; no process is started. A key
+  that picks another repository holds until you change directory again.
+- A band at the top of view `4` gives three numbers: agent sessions running now,
+  tokens written over the last day (`written +?` when an agent's count is
+  not known and so left out), and knowledge waiting for a person.
+- The frame is drawn at once and filled as answers come: a mark turns by
+  the clock while git, sykli, vessa or ohjaa is being asked, on threads of
+  their own, so keys are taken meanwhile. The pane redraws six times a
+  second only while something on it moves, and otherwise waits.
+- Colour is exact where `COLORTERM` says the terminal has true colour, and
+  the terminal's own sixteen colours elsewhere.
+- The mouse does what the keys do, as the keyboard stays in your terminal:
+  a click on a view's name goes to it, a click on a repository picks it,
+  and the wheel scrolls the graph. A click on a branch marked `⌂` takes
+  your shell to the working copy that has it checked out, by typing `cd`
+  and Enter there. It types only into a shell waiting at its prompt: while
+  a program runs in it nothing is typed, and the row above the keys says
+  so. That row says what a click did for a few seconds. To select text in
+  the pane, hold Shift.
+- Keys, once the pane is clicked: `1` to `4` the views, `j` and `k` or the
+  arrows pick a repository, `p` steps through the projects, `r` reads
+  everything again, `q` quits.
+- Without `--project` the pane shows the project of the repository your
+  shell is in (the smallest that declares it), and every project where
+  your shell is in none. `p` holds another until you change directory.
+- What needs a person is said in sentences, the most pressing first, one
+  line of it in the first view and all of it in view `4`: a gate that failed, with the
+  task that failed where sykli names it (`toimija: clippy failed on
+  feat/x`), a review that blocks, knowledge with errors, proposals waiting, rules ohjaa flagged.
+  With nothing it says so.
+- `HERE` shows when your shell is in a working copy with files changed and
+  not committed, and names them, from `git status --porcelain`, asked
+  when you change directory and every twenty seconds.
+- Each tip of the graph says how long since its branch got a commit, and a
+  branch left for two weeks is drawn faint.
+- One key for the pane, in Ghostty: add
+  `keybind = super+shift+b=text:toimija side --open\r` to its config. The
+  key types the command into the terminal it is pressed in, so press it at
+  a prompt: once to open the pane beside that terminal, again to close it.
+- It is an ordinary foreground command that redraws in place. It writes
+  nothing and ends with its pane.
+- While nothing moves it starts no git or sykli process. Every second and a half it reads
   a few file times for each repository; git and sykli are asked again only
-  for a repository whose commits, index, branch or receipts moved, and on a
-  slow timer for uncommitted edits (20 seconds where a session is open, three
-  minutes elsewhere).
+  for a repository whose commits, index, branch, receipts or gate runs
+  moved, and on a slow timer for uncommitted edits (20 seconds where a
+  session is open or a gate runs, three minutes elsewhere). Which task of a
+  failed gate failed costs one more sykli process, asked only then.
 - `--once` prints the view and exits, as it does whenever the output is not a
   terminal. `--width` sets the columns.
 
