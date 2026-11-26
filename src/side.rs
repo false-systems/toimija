@@ -276,6 +276,7 @@ mod screen {
     }
 
     /// Columns, and the width of the terminal in pixels when it says.
+    #[cfg(target_os = "macos")]
     pub fn columns_and_pixels() -> Option<(usize, usize)> {
         // SAFETY: TIOCGWINSZ fills the winsize it is given.
         unsafe {
@@ -449,6 +450,17 @@ fn graph_lines(runner: &dyn CommandRunner, dir: &Path, width: usize) -> Vec<Stri
     }
 }
 
+/// The graphs already asked for, by repository: the files each rested on,
+/// the width it was drawn for, and its lines.
+type Graphs = std::collections::HashMap<String, (Fingerprint, usize, Vec<String>)>;
+
+/// The lines between the projects and the graph under them: whose graph it is.
+fn graph_heading(name: &str, width: usize) -> Vec<String> {
+    let label = format!("graph  {name} ");
+    let rule = "─".repeat(width.saturating_sub(label.chars().count()));
+    vec![String::new(), format!("{label}{rule}")]
+}
+
 #[cfg(unix)]
 fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -475,7 +487,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     };
     let mut memory = Memory::default();
     // The graph last drawn: whose it is, the files it rests on, its lines.
-    let mut graph: Option<(String, Fingerprint, usize, Vec<String>)> = None;
+    let mut graphs: Graphs = Graphs::new();
     let _screen = screen::enter().context("the terminal could not be prepared")?;
     if options.fit {
         fit_pane();
@@ -493,7 +505,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                 Some(Asks::Quit) => return Ok(0),
                 Some(Asks::Again) => {
                     memory.clear();
-                    graph = None;
+                    graphs.clear();
                     drawn = None;
                 }
                 Some(Asks::Draw) => drawn = None,
@@ -527,9 +539,12 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let (title, body, keys) = match &pane.showing {
+        let title = match &pane.showing {
+            Showing::Graph(name) => name.clone(),
+            Showing::Projects | Showing::Relations => pane.only.clone().unwrap_or(folder),
+        };
+        let (mut body, keys) = match &pane.showing {
             Showing::Projects => (
-                pane.only.clone().unwrap_or(folder),
                 match &view {
                     Ok(view) => project::render_rows(view, width, pane.picked()),
                     Err(error) => vec![format!("not read: {error:#}")],
@@ -537,7 +552,6 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                 "jk pick  p next project  r  q quit",
             ),
             Showing::Relations => (
-                pane.only.clone().unwrap_or(folder),
                 match &view {
                     Ok(view) => {
                         let lines = project::render_relations(view, width);
@@ -551,34 +565,36 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                 },
                 "p next project  r again  q quit",
             ),
-            Showing::Graph(name) => {
-                let dir = root.join(name);
-                let now = fingerprint(&dir);
-                let fresh = graph
-                    .as_ref()
-                    .is_some_and(|(of, at, wide, _)| of == name && *at == now && *wide == width);
-                if !fresh {
-                    // Asking takes a moment in a clone with many branches.
-                    draw(
-                        name,
-                        &pane.showing.tabs(),
-                        &["reading…".to_string()],
-                        "",
-                        width,
-                        rows,
-                    )?;
-                    graph = Some((name.clone(), now, width, graph_lines(runner, &dir, width)));
-                }
-                (
-                    name.clone(),
-                    graph
-                        .as_ref()
-                        .map(|kept| kept.3.clone())
-                        .unwrap_or_default(),
-                    "1 back  r again  q quit",
-                )
-            }
+            Showing::Graph(_) => (Vec::new(), "1 back  r again  q quit"),
         };
+        // The graph is on screen without a key: under the projects it is the
+        // picked repository's, and view 2 gives it the whole pane.
+        let of = match &pane.showing {
+            Showing::Projects => pane.picked().map(str::to_string),
+            Showing::Graph(name) => Some(name.clone()),
+            Showing::Relations => None,
+        };
+        if let Some(name) = of {
+            if pane.showing == Showing::Projects {
+                body.extend(graph_heading(&name, width));
+            }
+            let dir = root.join(&name);
+            let now = fingerprint(&dir);
+            let fresh = graphs
+                .get(&name)
+                .is_some_and(|(at, wide, _)| *at == now && *wide == width);
+            if !fresh {
+                // Asking takes a moment in a clone with many branches.
+                let mut waiting = body.clone();
+                waiting.push("reading…".to_string());
+                draw(&title, &pane.showing.tabs(), &waiting, keys, width, rows)?;
+                let lines = graph_lines(runner, &dir, width);
+                graphs.insert(name.clone(), (now, width, lines));
+            }
+            if let Some((_, _, lines)) = graphs.get(&name) {
+                body.extend(lines.iter().cloned());
+            }
+        }
         draw(&title, &pane.showing.tabs(), &body, keys, width, rows)?;
     }
     Ok(0)
@@ -990,6 +1006,14 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn the_graph_under_the_projects_says_whose_it_is_and_fits_the_pane() {
+        let lines = graph_heading("sykli", 20);
+        assert_eq!(lines[0], "");
+        assert!(lines[1].starts_with("graph  sykli ─"), "{lines:?}");
+        assert_eq!(lines[1].chars().count(), 20);
+    }
+
     #[test]
     fn a_number_goes_straight_to_its_view() {
         use screen::Key;

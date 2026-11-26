@@ -876,8 +876,11 @@ workspace folder or any of its repositories:
 - `--open` is a toggle: when the pane is already there, in this tmux window
   or this Ghostty tab, it closes it instead.
 - Three views, by number: `1` where each repository of the projects stands,
-  `2` the branch graph of the repository picked, `3` the declared relations
-  between them. The line under the title shows which is on screen.
+  with the branch graph of the repository picked under it, `2` that graph
+  with the whole pane to itself, `3` the declared relations between them.
+  The line under the title shows which is on screen. The pane opens on `1`
+  and leaves the keyboard in your terminal, so the graph is there without a
+  key; click the pane to give it keys.
 - Keys: `j` and `k` or the arrows pick a repository, `p` steps through the
   projects, `r` reads everything again, `q` quits.
 - It is an ordinary foreground command that redraws in place. It captures no
