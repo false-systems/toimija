@@ -335,7 +335,7 @@ fn safe(value: &str) -> String {
 
 /// `text` over as many lines as it needs, each starting with `indent` and
 /// no wider than `width`. A word longer than a line is cut.
-fn wrap(text: &str, indent: &str, width: usize) -> Vec<String> {
+pub fn wrap(text: &str, indent: &str, width: usize) -> Vec<String> {
     let room = width.saturating_sub(indent.chars().count()).max(8);
     let mut lines = Vec::new();
     let mut line = String::new();

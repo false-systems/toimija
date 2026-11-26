@@ -145,10 +145,13 @@ pub enum Command {
     /// uncommitted changes, distance from its base, what sykli's receipts
     /// say and who is working there, and redraws when something moves.
     /// `--open` asks Ghostty (on macOS) or tmux for a pane on the right and
-    /// runs there. Keys: `j`/`k` pick a repository, `g` its branch graph, `p`
-    /// next project or back, `r` read again, `q` quit.
-    /// Read-only; it starts no process while nothing changes, captures no
-    /// mouse and lives only as long as its pane.
+    /// runs there, and again closes it. Under the repositories it shows the
+    /// latest agent sessions (from vessa), the state of the knowledge (from
+    /// ohjaa) and the branch graph of the repository picked. Keys: `1` to
+    /// `4` change view, `j`/`k` pick a repository, `p` next project, `r`
+    /// read again, `q` quit.
+    /// Read-only; it asks git and sykli only when something moved, captures
+    /// no mouse and lives only as long as its pane.
     #[command(
         after_help = "Examples:\n  toimija side --open               # a pane on the right, kept up to date\n  \
         toimija side --project SDLC       # one project\n  \

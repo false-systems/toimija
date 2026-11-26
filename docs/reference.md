@@ -875,17 +875,26 @@ workspace folder or any of its repositories:
   command to run in a split you open yourself.
 - `--open` is a toggle: when the pane is already there, in this tmux window
   or this Ghostty tab, it closes it instead.
-- Three views, by number: `1` where each repository of the projects stands,
-  with the branch graph of the repository picked under it, `2` that graph
-  with the whole pane to itself, `3` the declared relations between them.
-  The line under the title shows which is on screen. The pane opens on `1`
-  and leaves the keyboard in your terminal, so the graph is there without a
-  key; click the pane to give it keys.
+- Four views, by number. `1` is everything at once: where each repository
+  of the projects stands, the latest agent sessions, the state of the
+  knowledge, and the branch graph of the repository picked. `2` gives that
+  graph the whole pane, `3` shows the declared relations between the
+  repositories, `4` every agent session of the last day with the tokens
+  each agent read and wrote. The line under the title shows which is on
+  screen. The pane opens on `1` and leaves the keyboard in your terminal,
+  so all of it is there without a key; click the pane to give it keys.
+- The agent sessions come from `vessa digest --since 24h --json` and the
+  knowledge line from `ohjaa check`, each asked every two minutes in the
+  background. A tool that is not installed or fails is said so in its
+  section; a count vessa does not know shows as `?`, never as zero, and a
+  partial read is marked partial. Toimija reads no conversation.
+- Colours are the terminal's own: proven green, failed or blocking red,
+  unknown, not run and no gate yellow.
 - Keys: `j` and `k` or the arrows pick a repository, `p` steps through the
   projects, `r` reads everything again, `q` quits.
 - It is an ordinary foreground command that redraws in place. It captures no
   mouse, writes nothing and ends with its pane.
-- While nothing moves it starts no process. Every second and a half it reads
+- While nothing moves it starts no git or sykli process. Every second and a half it reads
   a few file times for each repository; git and sykli are asked again only
   for a repository whose commits, index, branch or receipts moved, and on a
   slow timer for uncommitted edits (20 seconds where a session is open, three

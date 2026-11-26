@@ -9,13 +9,15 @@
 //! An idle tick starts no process. Each tick it reads a few file times for
 //! each repository shown; git and sykli are asked again only for a
 //! repository whose files moved, on `r`, and on a slow timer for uncommitted
-//! edits, which touch no file git keeps.
+//! edits, which touch no file git keeps. The other tools are asked on a
+//! timer of their own, off the thread that draws: vessa for the agent
+//! sessions of the last day and ohjaa for its summary.
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context as _, Result};
@@ -23,6 +25,8 @@ use anyhow::{Context as _, Result};
 use crate::command::CommandRunner;
 use crate::project::{self, Asked, View};
 use crate::workspace;
+
+mod tools;
 
 /// The width asked for when this command opens its own pane, in columns.
 pub const PANE_COLUMNS: u16 = 38;
@@ -33,6 +37,10 @@ const TICK: Duration = Duration::from_millis(1500);
 const BUSY_RECHECK: Duration = Duration::from_secs(20);
 /// And where nobody is.
 const QUIET_RECHECK: Duration = Duration::from_secs(180);
+/// How often vessa and ohjaa are asked again.
+const TOOLS_RECHECK: Duration = Duration::from_secs(120);
+/// Marks a line of the pane as a section heading, for [`draw`] to set bold.
+const HEAD: char = '\u{e000}';
 
 /// The file times that move when a repository's commits, index, branch or
 /// receipts do. Equal fingerprints mean git and sykli need not be asked.
@@ -341,6 +349,8 @@ enum Showing {
     Graph(String),
     /// The declared relationships between the repositories shown.
     Relations,
+    /// The agent sessions of the last day, as vessa read them.
+    Agents,
 }
 
 impl Showing {
@@ -350,15 +360,16 @@ impl Showing {
             if on {
                 format!("[{text}]")
             } else {
-                format!(" {text} ")
+                text.to_string()
             }
         };
-        format!(
-            "{}{}{}",
+        [
             mark(matches!(self, Showing::Projects), "1 projects"),
             mark(matches!(self, Showing::Graph(_)), "2 graph"),
-            mark(matches!(self, Showing::Relations), "3 relations"),
-        )
+            mark(matches!(self, Showing::Relations), "3 links"),
+            mark(matches!(self, Showing::Agents), "4 agents"),
+        ]
+        .join(" ")
     }
 }
 
@@ -411,7 +422,14 @@ impl Pane {
                 self.showing = Showing::Relations;
                 Asks::Draw
             }
-            (Showing::Graph(_) | Showing::Relations, Key::Back | Key::Char(b'p' | b'g' | b'h')) => {
+            (_, Key::Char(b'4')) => {
+                self.showing = Showing::Agents;
+                Asks::Draw
+            }
+            (
+                Showing::Graph(_) | Showing::Relations | Showing::Agents,
+                Key::Back | Key::Char(b'p' | b'g' | b'h'),
+            ) => {
                 self.showing = Showing::Projects;
                 Asks::Draw
             }
@@ -454,11 +472,77 @@ fn graph_lines(runner: &dyn CommandRunner, dir: &Path, width: usize) -> Vec<Stri
 /// the width it was drawn for, and its lines.
 type Graphs = std::collections::HashMap<String, (Fingerprint, usize, Vec<String>)>;
 
-/// The lines between the projects and the graph under them: whose graph it is.
-fn graph_heading(name: &str, width: usize) -> Vec<String> {
-    let label = format!("graph  {name} ");
-    let rule = "─".repeat(width.saturating_sub(label.chars().count()));
-    vec![String::new(), format!("{label}{rule}")]
+/// A section heading: its label, then a rule to the pane's edge.
+fn section(label: &str, width: usize) -> String {
+    let rule = "─".repeat(width.saturating_sub(label.chars().count() + 1));
+    format!("{HEAD}{label} {rule}")
+}
+
+/// What vessa and ohjaa last said, asked again on a timer by a thread of
+/// its own: vessa takes seconds, and the pane must not wait for it.
+#[derive(Default)]
+struct Tools {
+    facts: Arc<Mutex<Option<tools::Facts>>>,
+    busy: Arc<AtomicBool>,
+    /// Set when an answer came that is not on screen yet.
+    arrived: Arc<AtomicBool>,
+    asked: Option<Instant>,
+}
+
+impl Tools {
+    fn due(&self) -> bool {
+        self.asked.is_none_or(|at| at.elapsed() >= TOOLS_RECHECK)
+    }
+
+    fn ask(&mut self, root: &Path) {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.asked = Some(Instant::now());
+        let (facts, busy, arrived) = (
+            Arc::clone(&self.facts),
+            Arc::clone(&self.busy),
+            Arc::clone(&self.arrived),
+        );
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let read = tools::Facts::read(&root);
+            *facts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(read);
+            busy.store(false, Ordering::SeqCst);
+            arrived.store(true, Ordering::SeqCst);
+        });
+    }
+
+    fn facts(&self) -> Option<tools::Facts> {
+        self.facts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// The agent sessions, at most `limit`, or why there are none to show.
+fn agents_body(facts: Option<&tools::Facts>, width: usize, limit: usize) -> Vec<String> {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0);
+    match facts.map(|facts| &facts.agents) {
+        None => vec!["reading…".to_string()],
+        Some(Ok(agents)) => tools::agents_lines(agents, now, width, limit),
+        Some(Err(why)) => project::wrap(&format!("not read: {why}"), "", width),
+    }
+}
+
+/// ohjaa's summary, or why there is none.
+fn knowledge_body(facts: Option<&tools::Facts>, width: usize) -> Vec<String> {
+    match facts.map(|facts| &facts.knowledge) {
+        None => vec!["reading…".to_string()],
+        Some(Ok(summary)) => project::wrap(summary, "", width),
+        Some(Err(why)) => project::wrap(&format!("not read: {why}"), "", width),
+    }
 }
 
 #[cfg(unix)]
@@ -488,6 +572,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     let mut memory = Memory::default();
     // The graph last drawn: whose it is, the files it rests on, its lines.
     let mut graphs: Graphs = Graphs::new();
+    let mut tools = Tools::default();
     let _screen = screen::enter().context("the terminal could not be prepared")?;
     if options.fit {
         fit_pane();
@@ -497,7 +582,11 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
     while !stop.load(Ordering::Relaxed) {
         // An idle tick: nothing moved and the view is recent. Wait for a
         // key and look again, without reading or drawing anything.
+        if tools.due() {
+            tools.ask(root);
+        }
         let idle = drawn.is_some_and(|at| at.elapsed() < BUSY_RECHECK)
+            && !tools.arrived.load(Ordering::SeqCst)
             && !resized.load(Ordering::Relaxed)
             && !memory.moved(root);
         if idle {
@@ -506,6 +595,7 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                 Some(Asks::Again) => {
                     memory.clear();
                     graphs.clear();
+                    tools.asked = None;
                     drawn = None;
                 }
                 Some(Asks::Draw) => drawn = None,
@@ -515,6 +605,8 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
         }
         drawn = Some(Instant::now());
         resized.store(false, Ordering::Relaxed);
+        tools.arrived.store(false, Ordering::SeqCst);
+        let facts = tools.facts();
         let (columns, rows) = screen::size().unwrap_or((usize::from(PANE_COLUMNS), 40));
         let width = options.width.unwrap_or(columns).min(columns);
 
@@ -541,7 +633,9 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
             .unwrap_or_default();
         let title = match &pane.showing {
             Showing::Graph(name) => name.clone(),
-            Showing::Projects | Showing::Relations => pane.only.clone().unwrap_or(folder),
+            Showing::Projects | Showing::Relations | Showing::Agents => {
+                pane.only.clone().unwrap_or(folder)
+            }
         };
         let (mut body, keys) = match &pane.showing {
             Showing::Projects => (
@@ -566,17 +660,40 @@ fn live(runner: &dyn CommandRunner, root: &Path, options: Options) -> Result<i32
                 "p next project  r again  q quit",
             ),
             Showing::Graph(_) => (Vec::new(), "1 back  r again  q quit"),
+            Showing::Agents => {
+                let mut lines = vec![section("LAST DAY, BY AGENT", width)];
+                match facts.as_ref().map(|facts| &facts.agents) {
+                    Some(Ok(agents)) => lines.extend(tools::totals_lines(agents)),
+                    _ => lines.push("…".to_string()),
+                }
+                lines.push(String::new());
+                lines.push(section("SESSIONS", width));
+                lines.extend(agents_body(facts.as_ref(), width, usize::MAX));
+                lines.push(String::new());
+                lines.push(section("KNOWLEDGE", width));
+                lines.extend(knowledge_body(facts.as_ref(), width));
+                (lines, "1 back  r again  q quit")
+            }
         };
+        if pane.showing == Showing::Projects {
+            body.push(String::new());
+            body.push(section("AGENTS", width));
+            body.extend(agents_body(facts.as_ref(), width, 4));
+            body.push(String::new());
+            body.push(section("KNOWLEDGE", width));
+            body.extend(knowledge_body(facts.as_ref(), width));
+        }
         // The graph is on screen without a key: under the projects it is the
         // picked repository's, and view 2 gives it the whole pane.
         let of = match &pane.showing {
             Showing::Projects => pane.picked().map(str::to_string),
             Showing::Graph(name) => Some(name.clone()),
-            Showing::Relations => None,
+            Showing::Relations | Showing::Agents => None,
         };
         if let Some(name) = of {
             if pane.showing == Showing::Projects {
-                body.extend(graph_heading(&name, width));
+                body.push(String::new());
+                body.push(section(&format!("GRAPH {name}"), width));
             }
             let dir = root.join(&name);
             let now = fingerprint(&dir);
@@ -673,6 +790,41 @@ fn next_project(names: &[String], now: Option<&str>) -> Option<String> {
     }
 }
 
+/// One line of the pane, cut to its width and then coloured: a heading
+/// bold, the picked repository in reverse, the words that say how a commit
+/// stands in green, yellow or red, and the detail under a repository dim.
+/// The colours are the terminal's own, so they follow its theme.
+fn styled(text: &str, width: usize) -> String {
+    if let Some(heading) = text.strip_prefix(HEAD) {
+        let cut: String = heading.chars().take(width).collect();
+        return format!("\x1b[1m{cut}\x1b[0m");
+    }
+    let cut: String = text.chars().take(width).collect();
+    if cut.ends_with(project::PICKED) {
+        return format!("\x1b[7m{cut}\x1b[0m");
+    }
+    let mut out = cut.clone();
+    for (word, colour) in [
+        (" proven", "32"),
+        (" now ", "32"),
+        ("●", "32"),
+        (" failed", "31"),
+        ("blocking", "31"),
+        (" unknown", "33"),
+        (" not run", "33"),
+        (" no gate", "33"),
+        ("not read", "33"),
+        ("partial:", "33"),
+    ] {
+        out = out.replace(word, &format!("\x1b[{colour}m{word}\x1b[39m"));
+    }
+    if cut.starts_with("    ") || cut.starts_with("… ") {
+        format!("\x1b[2m{out}\x1b[0m")
+    } else {
+        out
+    }
+}
+
 /// One frame, written once, inside the terminal's synchronized-output marks
 /// so a half-drawn frame is never shown. The picked repository's line is
 /// drawn in reverse as well as marked.
@@ -700,19 +852,20 @@ fn draw(
     let room = rows.saturating_sub(5);
 
     let mut frame = String::from("\x1b[?2026h\x1b[H");
+    frame.push_str(&styled(&format!("{HEAD}{heading}"), width));
+    frame.push_str("\x1b[K\r\n");
+    let tabs: String = tabs.chars().take(width).collect();
+    frame.push_str("\x1b[2m");
+    frame.push_str(
+        &tabs
+            .replace('[', "\x1b[22;1;7m ")
+            .replace(']', " \x1b[0;2m"),
+    );
+    frame.push_str("\x1b[0m\x1b[K\r\n");
     let mut line = |text: &str| {
-        let cut: String = text.chars().take(width).collect();
-        if cut.ends_with(project::PICKED) {
-            frame.push_str("\x1b[7m");
-            frame.push_str(&cut);
-            frame.push_str("\x1b[0m");
-        } else {
-            frame.push_str(&cut);
-        }
+        frame.push_str(&styled(text, width));
         frame.push_str("\x1b[K\r\n");
     };
-    line(&heading);
-    line(tabs);
     line("");
     for text in body.iter().take(room) {
         line(text);
@@ -724,8 +877,9 @@ fn draw(
     // The last row: the keys.
     frame.push_str(&format!("\x1b[{rows};1H"));
     let foot: String = keys.chars().take(width).collect();
+    frame.push_str("\x1b[2m");
     frame.push_str(&foot);
-    frame.push_str("\x1b[K\x1b[?2026l");
+    frame.push_str("\x1b[0m\x1b[K\x1b[?2026l");
 
     let mut out = std::io::stdout().lock();
     out.write_all(frame.as_bytes())?;
@@ -996,22 +1150,50 @@ mod tests {
     fn the_views_are_numbered_and_the_one_on_screen_is_bracketed() {
         assert_eq!(
             Showing::Projects.tabs(),
-            "[1 projects] 2 graph  3 relations "
+            "[1 projects] 2 graph 3 links 4 agents"
         );
         assert_eq!(
             Showing::Graph("one".to_string()).tabs(),
-            " 1 projects [2 graph] 3 relations "
+            "1 projects [2 graph] 3 links 4 agents"
         );
-        assert!(Showing::Relations.tabs().ends_with("[3 relations]"));
+        assert!(Showing::Relations.tabs().contains("[3 links]"));
+        assert!(Showing::Agents.tabs().ends_with("[4 agents]"));
+        // Whichever is on screen, the line fits the pane.
+        assert!(Showing::Agents.tabs().chars().count() <= usize::from(PANE_COLUMNS));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn the_graph_under_the_projects_says_whose_it_is_and_fits_the_pane() {
-        let lines = graph_heading("sykli", 20);
-        assert_eq!(lines[0], "");
-        assert!(lines[1].starts_with("graph  sykli ─"), "{lines:?}");
-        assert_eq!(lines[1].chars().count(), 20);
+    fn a_heading_is_bold_to_the_panes_edge_and_words_get_their_colour() {
+        let heading = section("GRAPH sykli", 20);
+        assert_eq!(heading.chars().count(), 21, "the mark and twenty columns");
+        assert_eq!(styled(&heading, 20), "\x1b[1mGRAPH sykli ────────\x1b[0m");
+        assert_eq!(
+            styled("|    proven  review: none", 40),
+            "|   \x1b[32m proven\x1b[39m  review: none"
+        );
+        assert!(styled("    main  clean  failed", 40).starts_with("\x1b[2m"));
+        assert!(styled("    main  clean  failed", 40).contains("\x1b[31m failed"));
+        // Cut before it is coloured, so a colour never counts as width.
+        assert_eq!(styled("abc proven", 6), "abc pr");
+        let picked = format!("○ one {}", project::PICKED);
+        assert_eq!(styled(&picked, 40), format!("\x1b[7m{picked}\x1b[0m"));
+    }
+
+    #[test]
+    fn what_a_tool_did_not_say_is_said_not_left_blank() {
+        assert_eq!(agents_body(None, 38, 4), ["reading…"]);
+        let facts = tools::Facts {
+            agents: Err("vessa is not installed".to_string()),
+            knowledge: Ok("3 current, 1 waiting for a decision".to_string()),
+        };
+        assert_eq!(
+            agents_body(Some(&facts), 38, 4),
+            ["not read: vessa is not installed"]
+        );
+        assert_eq!(
+            knowledge_body(Some(&facts), 38),
+            ["3 current, 1 waiting for a decision"]
+        );
     }
 
     #[test]
@@ -1026,6 +1208,8 @@ mod tests {
         };
         assert_eq!(pane.press(Key::Char(b'3')), Asks::Draw);
         assert_eq!(pane.showing, Showing::Relations);
+        assert_eq!(pane.press(Key::Char(b'4')), Asks::Draw);
+        assert_eq!(pane.showing, Showing::Agents);
         assert_eq!(pane.press(Key::Char(b'2')), Asks::Draw);
         assert_eq!(pane.showing, Showing::Graph("one".to_string()));
         assert_eq!(pane.press(Key::Char(b'1')), Asks::Draw);
